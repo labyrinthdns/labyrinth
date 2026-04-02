@@ -146,10 +146,13 @@ func (r *Resolver) resolveIterative(
 			return &ResolveResult{RCODE: dns.RCodeServFail}, nil
 		}
 
-		// Loop detection
-		queryKey := nsIP + "|" + name
+		// Loop detection: include currentZone so that querying the same NS IP
+		// for the same name at different delegation levels (common for TLDs like
+		// .tr where ns1.nic.tr serves .tr, com.tr, net.tr, etc.) is not
+		// mistakenly flagged as a loop.
+		queryKey := nsIP + "|" + name + "|" + currentZone
 		if visited.Has(queryKey) {
-			r.logger.Warn("loop detected", "ns", nsIP, "name", name)
+			r.logger.Warn("loop detected", "ns", nsIP, "name", name, "zone", currentZone)
 			return &ResolveResult{RCODE: dns.RCodeServFail}, nil
 		}
 		visited.Add(queryKey)
@@ -362,18 +365,28 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 			}
 
 			result, err := r.Resolve(ns.hostname, dns.TypeA, dns.ClassIN)
-			if err == nil && len(result.Answers) > 0 {
-				ip, err := dns.ParseA(result.Answers[0].RData)
-				if err == nil {
-					return ns.hostname, ip.String(), nil
+			if err == nil {
+				// Scan all answers for an A record (answers may include
+				// CNAME records before the final A record).
+				for _, rr := range result.Answers {
+					if rr.Type == dns.TypeA {
+						ip, parseErr := dns.ParseA(rr.RData)
+						if parseErr == nil {
+							return ns.hostname, ip.String(), nil
+						}
+					}
 				}
 			}
 			// Fallback to AAAA (always try, even with PreferIPv4 — it's a last resort)
 			result, err = r.Resolve(ns.hostname, dns.TypeAAAA, dns.ClassIN)
-			if err == nil && len(result.Answers) > 0 {
-				ip, err := dns.ParseAAAA(result.Answers[0].RData)
-				if err == nil {
-					return ns.hostname, ip.String(), nil
+			if err == nil {
+				for _, rr := range result.Answers {
+					if rr.Type == dns.TypeAAAA {
+						ip, parseErr := dns.ParseAAAA(rr.RData)
+						if parseErr == nil {
+							return ns.hostname, ip.String(), nil
+						}
+					}
 				}
 			}
 		}
