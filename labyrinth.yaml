@@ -51,6 +51,9 @@ web:
   # Maximum number of entries for top clients/domains leaderboards
   top_clients_limit: 20
   top_domains_limit: 20
+  # Automatic update check — queries GitHub Releases periodically
+  auto_update: true
+  update_check_interval: 24h
   auth:
     username: "admin"
     password_hash: "$2a$10$nS.tf.v7HRdqyChSmP9nBeJKXESl/J2bn8OnCEHCe5UYugbygOCjO"

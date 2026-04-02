@@ -66,11 +66,13 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"format": cfg.Logging.Format,
 		},
 		"web": map[string]interface{}{
-			"enabled":           cfg.Web.Enabled,
-			"addr":              cfg.Web.Addr,
-			"query_log_buffer":  cfg.Web.QueryLogBuffer,
-			"top_clients_limit": cfg.Web.TopClientsLimit,
-			"top_domains_limit": cfg.Web.TopDomainsLimit,
+			"enabled":               cfg.Web.Enabled,
+			"addr":                  cfg.Web.Addr,
+			"query_log_buffer":      cfg.Web.QueryLogBuffer,
+			"top_clients_limit":     cfg.Web.TopClientsLimit,
+			"top_domains_limit":     cfg.Web.TopDomainsLimit,
+			"auto_update":           cfg.Web.AutoUpdate,
+			"update_check_interval": cfg.Web.UpdateCheckInterval.String(),
 			"auth": map[string]interface{}{
 				"username":      cfg.Web.Auth.Username,
 				"password_hash": authPassword,

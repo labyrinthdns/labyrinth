@@ -221,6 +221,9 @@ func main() {
 			}
 		}()
 
+		// Background update checker
+		go adminServer.StartUpdateChecker(ctx)
+
 		// Start Zabbix agent if enabled
 		if cfg.Zabbix.Enabled && cfg.Zabbix.Addr != "" {
 			go func() {
