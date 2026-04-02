@@ -1,0 +1,12 @@
+.project/
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+.env.example
+.env.*.local
+.env.*.production
+.env.*.development
+.env.*.test
+.env.*.example
