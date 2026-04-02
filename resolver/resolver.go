@@ -368,14 +368,12 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 					return ns.hostname, ip.String(), nil
 				}
 			}
-			// Fallback to AAAA
-			if !r.config.PreferIPv4 {
-				result, err = r.Resolve(ns.hostname, dns.TypeAAAA, dns.ClassIN)
-				if err == nil && len(result.Answers) > 0 {
-					ip, err := dns.ParseAAAA(result.Answers[0].RData)
-					if err == nil {
-						return ns.hostname, ip.String(), nil
-					}
+			// Fallback to AAAA (always try, even with PreferIPv4 — it's a last resort)
+			result, err = r.Resolve(ns.hostname, dns.TypeAAAA, dns.ClassIN)
+			if err == nil && len(result.Answers) > 0 {
+				ip, err := dns.ParseAAAA(result.Answers[0].RData)
+				if err == nil {
+					return ns.hostname, ip.String(), nil
 				}
 			}
 		}
