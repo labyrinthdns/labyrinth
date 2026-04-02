@@ -324,7 +324,17 @@ func TestValidateJWT_TamperedSignature(t *testing.T) {
 	secret := []byte("test-secret")
 	token, _ := generateJWT("carol", secret)
 
-	tampered := token[:len(token)-1] + "X"
+	// Flip a character in the middle of the signature to ensure actual tampering
+	parts := strings.SplitN(token, ".", 3)
+	sig := parts[2]
+	// Toggle the first character of the signature
+	var flipped byte
+	if sig[0] == 'A' {
+		flipped = 'B'
+	} else {
+		flipped = 'A'
+	}
+	tampered := parts[0] + "." + parts[1] + "." + string(flipped) + sig[1:]
 	_, err := validateJWT(tampered, secret)
 	if err == nil {
 		t.Fatal("expected error for tampered signature")
