@@ -8,20 +8,26 @@ export function useQueryStream(maxEntries = 200) {
   const [paused, setPaused] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const pausedRef = useRef(false)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const unmountedRef = useRef(false)
 
   pausedRef.current = paused
 
   const connect = useCallback(() => {
+    if (unmountedRef.current) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
     const ws = createQueryWebSocket()
     wsRef.current = ws
 
-    ws.onopen = () => setConnected(true)
+    ws.onopen = () => {
+      if (!unmountedRef.current) setConnected(true)
+    }
     ws.onclose = () => {
+      if (unmountedRef.current) return
       setConnected(false)
       // Auto-reconnect after 3 seconds
-      setTimeout(connect, 3000)
+      reconnectTimerRef.current = setTimeout(connect, 3000)
     }
     ws.onerror = () => ws.close()
     ws.onmessage = (event) => {
@@ -37,8 +43,14 @@ export function useQueryStream(maxEntries = 200) {
   }, [maxEntries])
 
   useEffect(() => {
+    unmountedRef.current = false
     connect()
     return () => {
+      unmountedRef.current = true
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
       wsRef.current?.close()
     }
   }, [connect])

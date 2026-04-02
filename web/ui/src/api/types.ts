@@ -56,13 +56,19 @@ export interface CacheStats {
   negative_entries: number
 }
 
+export interface CacheRecord {
+  name: string
+  type: string
+  ttl: number
+  rdata: string
+}
+
 export interface CacheEntry {
   name: string
   type: string
   ttl: number
   negative: boolean
-  rcode: string
-  records: number
+  records: CacheRecord[]
 }
 
 export interface SetupStatus {

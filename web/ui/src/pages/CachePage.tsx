@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type FormEvent } from 'react'
+import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
 import { Database, Search, Trash2, AlertCircle, Loader2 } from 'lucide-react'
 import { api } from '@/api/client'
 import type { CacheStats, CacheEntry } from '@/api/types'
@@ -33,6 +33,14 @@ export default function CachePage() {
   const [flushing, setFlushing] = useState(false)
   const [flushConfirm, setFlushConfirm] = useState(false)
   const [message, setMessage] = useState('')
+  const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Clear message timer on unmount to prevent setState on unmounted component
+  useEffect(() => {
+    return () => {
+      if (messageTimerRef.current) clearTimeout(messageTimerRef.current)
+    }
+  }, [])
 
   const fetchStats = useCallback(async () => {
     try {
@@ -89,7 +97,8 @@ export default function CachePage() {
       setFlushing(false)
     }
 
-    setTimeout(() => setMessage(''), 3000)
+    if (messageTimerRef.current) clearTimeout(messageTimerRef.current)
+    messageTimerRef.current = setTimeout(() => setMessage(''), 3000)
   }
 
   async function handleDelete() {
@@ -104,7 +113,8 @@ export default function CachePage() {
       setMessage(err instanceof Error ? err.message : 'Delete failed')
     }
 
-    setTimeout(() => setMessage(''), 3000)
+    if (messageTimerRef.current) clearTimeout(messageTimerRef.current)
+    messageTimerRef.current = setTimeout(() => setMessage(''), 3000)
   }
 
   const inputClass =
@@ -202,57 +212,74 @@ export default function CachePage() {
 
           {/* Lookup result */}
           {lookupResult && (
-            <div className="mt-4 bg-slate-50 dark:bg-slate-900 rounded-lg p-4 space-y-2">
+            <div className="mt-4 bg-slate-50 dark:bg-slate-900 rounded-lg p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                  Result
+                  Cache Entry
                 </h3>
                 <button
                   onClick={handleDelete}
                   className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
                 >
                   <Trash2 size={12} />
-                  Delete Entry
+                  Delete
                 </button>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-sm">
+
+              {/* Entry info */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
                 <div>
-                  <span className="text-slate-500 dark:text-slate-400">Name</span>
-                  <p className="font-mono text-slate-900 dark:text-slate-100">
-                    {lookupResult.name}
-                  </p>
+                  <span className="text-slate-500 dark:text-slate-400 text-xs block">Name</span>
+                  <span className="font-mono text-slate-900 dark:text-slate-100">{String(lookupResult.name || '—')}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 dark:text-slate-400">Type</span>
-                  <p className="font-mono text-slate-900 dark:text-slate-100">
-                    {lookupResult.type}
-                  </p>
+                  <span className="text-slate-500 dark:text-slate-400 text-xs block">Type</span>
+                  <span className="font-mono text-slate-900 dark:text-slate-100">{String(lookupResult.type || '—')}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 dark:text-slate-400">TTL</span>
-                  <p className="font-mono text-slate-900 dark:text-slate-100">
-                    {lookupResult.ttl}s
-                  </p>
+                  <span className="text-slate-500 dark:text-slate-400 text-xs block">TTL</span>
+                  <span className="font-mono text-slate-900 dark:text-slate-100">{String(lookupResult.ttl ?? 0)}s</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 dark:text-slate-400">RCode</span>
-                  <p className="font-mono text-slate-900 dark:text-slate-100">
-                    {lookupResult.rcode}
-                  </p>
-                </div>
-                <div>
-                  <span className="text-slate-500 dark:text-slate-400">Negative</span>
-                  <p className={lookupResult.negative ? 'text-red-500' : 'text-green-500'}>
-                    {lookupResult.negative ? 'Yes' : 'No'}
-                  </p>
-                </div>
-                <div>
-                  <span className="text-slate-500 dark:text-slate-400">Records</span>
-                  <p className="font-mono text-slate-900 dark:text-slate-100">
-                    {lookupResult.records}
-                  </p>
+                  <span className="text-slate-500 dark:text-slate-400 text-xs block">Negative</span>
+                  <span className={`font-medium ${lookupResult.negative ? 'text-red-500' : 'text-green-500'}`}>
+                    {lookupResult.negative ? 'Yes (NXDOMAIN/NODATA)' : 'No'}
+                  </span>
                 </div>
               </div>
+
+              {/* Records table */}
+              {Array.isArray(lookupResult.records) && lookupResult.records.length > 0 && (
+                <div>
+                  <span className="text-slate-500 dark:text-slate-400 text-xs block mb-2">
+                    Records ({lookupResult.records.length})
+                  </span>
+                  <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+                    <table className="w-full text-xs font-mono">
+                      <thead>
+                        <tr className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                          <th className="text-left px-3 py-2">Type</th>
+                          <th className="text-left px-3 py-2">TTL</th>
+                          <th className="text-left px-3 py-2">Data</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {lookupResult.records.map((rec, i) => (
+                          <tr key={i} className="text-slate-900 dark:text-slate-100">
+                            <td className="px-3 py-1.5">
+                              <span className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 text-[10px] font-semibold">
+                                {String(rec.type || '?')}
+                              </span>
+                            </td>
+                            <td className="px-3 py-1.5 text-slate-500">{String(rec.ttl ?? 0)}s</td>
+                            <td className="px-3 py-1.5 break-all">{String(rec.rdata || '—')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
