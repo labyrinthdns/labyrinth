@@ -3,7 +3,7 @@ package resolver
 import (
 	"strings"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 // DelegationNS represents a delegated nameserver with optional glue.

@@ -3,13 +3,13 @@ package resolver
 import (
 	"strings"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 type responseType int
 
 const (
-	responseAnswer   responseType = iota
+	responseAnswer responseType = iota
 	responseCNAME
 	responseReferral
 	responseNXDomain

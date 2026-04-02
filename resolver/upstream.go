@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 func (r *Resolver) queryUpstream(nsIP string, name string, qtype uint16, qclass uint16) (*dns.Message, error) {

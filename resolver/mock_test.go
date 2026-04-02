@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/cache"
-	"github.com/labyrinth-dns/labyrinth/dns"
-	"github.com/labyrinth-dns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/metrics"
 )
 
 // mockDNSServer runs a UDP+TCP DNS server that replies with canned responses.

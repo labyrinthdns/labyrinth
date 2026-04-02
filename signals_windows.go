@@ -5,7 +5,7 @@ package main
 import (
 	"log/slog"
 
-	"github.com/labyrinth-dns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/cache"
 )
 
 func setupUnixSignals(_ *slog.Logger, _ *cache.Cache) {

@@ -11,13 +11,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/cache"
-	"github.com/labyrinth-dns/labyrinth/config"
-	applog "github.com/labyrinth-dns/labyrinth/log"
-	"github.com/labyrinth-dns/labyrinth/metrics"
-	"github.com/labyrinth-dns/labyrinth/resolver"
-	"github.com/labyrinth-dns/labyrinth/security"
-	"github.com/labyrinth-dns/labyrinth/server"
+	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/config"
+	"github.com/labyrinthdns/labyrinth/daemon"
+	applog "github.com/labyrinthdns/labyrinth/log"
+	"github.com/labyrinthdns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/resolver"
+	"github.com/labyrinthdns/labyrinth/security"
+	"github.com/labyrinthdns/labyrinth/server"
+	"github.com/labyrinthdns/labyrinth/web"
 )
 
 var (
@@ -27,19 +29,25 @@ var (
 )
 
 func main() {
+	// Set version info for web package
+	web.Version = version
+	web.BuildTime = buildTime
+	web.GoVersion = goVersion
+
 	// CLI flags
 	listenAddr := flag.String("listen", "", "listen address (default :53)")
 	metricsAddr := flag.String("metrics", "", "metrics HTTP address")
+	webAddr := flag.String("web", "", "web dashboard address (overrides config)")
 	configPath := flag.String("config", "labyrinth.yaml", "config file path")
 	logLevel := flag.String("log-level", "", "log level: debug|info|warn|error")
 	logFormat := flag.String("log-format", "", "log format: json|text")
 	cacheSize := flag.Int("cache-size", 0, "max cache entries")
+	daemonMode := flag.Bool("daemon", false, "run as background daemon")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("Labyrinth %s\nPure Go Recursive DNS Resolver\nBuilt: %s\nGo: %s\nOS/Arch: %s/%s\n",
-			version, buildTime, goVersion, runtime.GOOS, runtime.GOARCH)
+		printVersion()
 		os.Exit(0)
 	}
 
@@ -47,8 +55,7 @@ func main() {
 	if args := flag.Args(); len(args) > 0 {
 		switch args[0] {
 		case "version":
-			fmt.Printf("Labyrinth %s\nPure Go Recursive DNS Resolver\nBuilt: %s\nGo: %s\nOS/Arch: %s/%s\n",
-				version, buildTime, goVersion, runtime.GOOS, runtime.GOARCH)
+			printVersion()
 			os.Exit(0)
 		case "check":
 			_, err := config.Load(*configPath)
@@ -58,10 +65,43 @@ func main() {
 			}
 			fmt.Println("configuration is valid")
 			os.Exit(0)
+		case "hash":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: labyrinth hash <password>")
+				os.Exit(1)
+			}
+			hash, err := web.HashPassword(args[1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "hash error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println(hash)
+			os.Exit(0)
+		case "daemon":
+			handleDaemonCommand(args[1:], *configPath)
+			os.Exit(0)
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: labyrinth [flags] [check|version]\n", args[0])
+			fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: labyrinth [flags] [check|version|hash|daemon]\n", args[0])
 			os.Exit(1)
 		}
+	}
+
+	// Daemon mode
+	if *daemonMode {
+		cfg, _ := config.Load(*configPath)
+		pidFile := "/var/run/labyrinth.pid"
+		if cfg != nil && cfg.Daemon.PIDFile != "" {
+			pidFile = cfg.Daemon.PIDFile
+		}
+		isDaemon, err := daemon.Daemonize(pidFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
+			os.Exit(1)
+		}
+		if !isDaemon {
+			os.Exit(0) // parent exits
+		}
+		// child continues
 	}
 
 	// Load configuration
@@ -77,6 +117,10 @@ func main() {
 	}
 	if *metricsAddr != "" {
 		cfg.Server.MetricsAddr = *metricsAddr
+	}
+	if *webAddr != "" {
+		cfg.Web.Addr = *webAddr
+		cfg.Web.Enabled = true
 	}
 	if *logLevel != "" {
 		cfg.Logging.Level = *logLevel
@@ -148,30 +192,55 @@ func main() {
 		}
 	}()
 
-	// Start metrics HTTP server
-	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", m)
-		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			stats := c.Stats()
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"status":"healthy","cache_entries":%d,"uptime":"%s"}`,
-				stats.Entries, time.Since(m.StartTime()).Round(time.Second))
-		})
-		mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-			if res.IsReady() {
-				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprint(w, `{"status":"ready"}`)
-			} else {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				fmt.Fprint(w, `{"status":"not ready"}`)
-			}
-		})
-		logger.Info("metrics server starting", "addr", cfg.Server.MetricsAddr)
-		if err := http.ListenAndServe(cfg.Server.MetricsAddr, mux); err != nil {
-			logger.Error("metrics server error", "error", err)
+	// Start web dashboard (replaces standalone metrics server when enabled)
+	if cfg.Web.Enabled {
+		adminServer := web.NewAdminServer(cfg, c, m, res, logger)
+
+		// Wire query log hook
+		handler.OnQuery = func(client, qname, qtype, rcode string, cached bool, durationMs float64) {
+			adminServer.RecordQuery(client, qname, qtype, rcode, cached, durationMs)
 		}
-	}()
+
+		go func() {
+			logger.Info("web dashboard starting", "addr", cfg.Web.Addr)
+			if err := adminServer.Start(ctx); err != nil && ctx.Err() == nil {
+				logger.Error("web dashboard error", "error", err)
+			}
+		}()
+
+		// Start Zabbix agent if enabled
+		if cfg.Zabbix.Enabled && cfg.Zabbix.Addr != "" {
+			go func() {
+				logger.Info("zabbix agent starting", "addr", cfg.Zabbix.Addr)
+				web.StartZabbixAgent(ctx, cfg.Zabbix.Addr, m, c, logger)
+			}()
+		}
+	} else {
+		// Standalone metrics server (legacy mode)
+		go func() {
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", m)
+			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+				stats := c.Stats()
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"status":"healthy","cache_entries":%d,"uptime":"%s"}`,
+					stats.Entries, time.Since(m.StartTime()).Round(time.Second))
+			})
+			mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+				if res.IsReady() {
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprint(w, `{"status":"ready"}`)
+				} else {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					fmt.Fprint(w, `{"status":"not ready"}`)
+				}
+			})
+			logger.Info("metrics server starting", "addr", cfg.Server.MetricsAddr)
+			if err := http.ListenAndServe(cfg.Server.MetricsAddr, mux); err != nil {
+				logger.Error("metrics server error", "error", err)
+			}
+		}()
+	}
 
 	// Start DNS servers
 	errCh := make(chan error, 2)
@@ -195,7 +264,8 @@ func main() {
 
 	logger.Info("labyrinth started",
 		"listen", cfg.Server.ListenAddr,
-		"metrics", cfg.Server.MetricsAddr,
+		"web", cfg.Web.Addr,
+		"web_enabled", cfg.Web.Enabled,
 		"cache_max", cfg.Cache.MaxEntries,
 		"qmin", cfg.Resolver.QMinEnabled,
 	)
@@ -211,22 +281,73 @@ func main() {
 			case syscall.SIGINT, syscall.SIGTERM:
 				logger.Info("shutting down", "signal", sig)
 				cancel()
-
 				time.Sleep(cfg.Server.GracefulPeriod)
-
 				stats := c.Stats()
 				logger.Info("final stats", "cache_entries", stats.Entries)
+				// Clean up PID file if running as daemon
+				if *daemonMode && cfg.Daemon.PIDFile != "" {
+					daemon.RemovePID(cfg.Daemon.PIDFile)
+				}
 				os.Exit(0)
 			}
 
 		case err := <-errCh:
 			if ctx.Err() != nil {
-				// Expected error on shutdown
 				continue
 			}
 			logger.Error("server error", "error", err)
 			cancel()
 			os.Exit(1)
 		}
+	}
+}
+
+func printVersion() {
+	fmt.Printf("Labyrinth %s\nPure Go Recursive DNS Resolver\nBuilt: %s\nGo: %s\nOS/Arch: %s/%s\n",
+		version, buildTime, goVersion, runtime.GOOS, runtime.GOARCH)
+}
+
+func handleDaemonCommand(args []string, configPath string) {
+	cfg, _ := config.Load(configPath)
+	pidFile := "/var/run/labyrinth.pid"
+	if cfg != nil && cfg.Daemon.PIDFile != "" {
+		pidFile = cfg.Daemon.PIDFile
+	}
+
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: labyrinth daemon [start|stop|status]")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "start":
+		isDaemon, err := daemon.Daemonize(pidFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if !isDaemon {
+			os.Exit(0)
+		}
+	case "stop":
+		if err := daemon.StopDaemon(pidFile); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "status":
+		running, pid, err := daemon.StatusDaemon(pidFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "not running (no PID file)\n")
+			os.Exit(1)
+		}
+		if running {
+			fmt.Printf("running (PID %d)\n", pid)
+		} else {
+			fmt.Printf("not running (stale PID %d)\n", pid)
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown daemon command: %s\n", args[0])
+		os.Exit(1)
 	}
 }

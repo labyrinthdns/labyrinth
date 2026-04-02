@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/cache"
-	"github.com/labyrinth-dns/labyrinth/dns"
-	"github.com/labyrinth-dns/labyrinth/metrics"
-	"github.com/labyrinth-dns/labyrinth/resolver"
-	"github.com/labyrinth-dns/labyrinth/security"
+	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/resolver"
+	"github.com/labyrinthdns/labyrinth/security"
 )
 
 // Handler processes a raw DNS query and returns a raw DNS response.
@@ -29,6 +29,10 @@ type MainHandler struct {
 	acl      *security.ACL
 	metrics  *metrics.Metrics
 	logger   *slog.Logger
+
+	// OnQuery is an optional callback invoked after each query is resolved.
+	// Parameters: client IP, qname, qtype, rcode, whether served from cache, duration in ms.
+	OnQuery func(client, qname, qtype, rcode string, cached bool, durationMs float64)
 }
 
 // NewMainHandler creates a new MainHandler.
@@ -104,13 +108,21 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		if err == nil {
 			duration := time.Since(start)
 			h.metrics.ObserveQueryDuration(duration)
+			durationMs := float64(duration.Microseconds()) / 1000.0
 			h.logger.Info("query_resolved",
 				"client", clientIP,
 				"qname", q.Name,
 				"qtype", qtypeStr,
 				"cache_hit", true,
-				"duration_ms", float64(duration.Microseconds())/1000.0,
+				"duration_ms", durationMs,
 			)
+			cacheRCode := dns.RCodeToString[entry.RCODE]
+			if cacheRCode == "" {
+				cacheRCode = "NOERROR"
+			}
+			if h.OnQuery != nil {
+				h.OnQuery(clientIP, q.Name, qtypeStr, cacheRCode, true, durationMs)
+			}
 			return resp, nil
 		}
 	}
@@ -150,6 +162,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	h.metrics.ObserveQueryDuration(duration)
 	h.metrics.IncResponses(rcodeStr)
 
+	durationMs := float64(duration.Microseconds()) / 1000.0
 	h.logger.Info("query_resolved",
 		"client", clientIP,
 		"qname", q.Name,
@@ -157,8 +170,12 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		"rcode", rcodeStr,
 		"answer_count", len(result.Answers),
 		"cache_hit", false,
-		"duration_ms", float64(duration.Microseconds())/1000.0,
+		"duration_ms", durationMs,
 	)
+
+	if h.OnQuery != nil {
+		h.OnQuery(clientIP, q.Name, qtypeStr, rcodeStr, false, durationMs)
+	}
 
 	resp, buildErr := h.buildResponse(msg, result)
 	if buildErr != nil {

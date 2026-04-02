@@ -54,7 +54,9 @@ func (c *Cache) Flush() {
 
 // CacheStats holds cache statistics.
 type CacheStats struct {
-	Entries int
+	Entries         int
+	PositiveEntries int
+	NegativeEntries int
 }
 
 // Stats returns current cache statistics.
@@ -67,4 +69,27 @@ func (c *Cache) Stats() CacheStats {
 		s.mu.RUnlock()
 	}
 	return CacheStats{Entries: total}
+}
+
+// DetailedStats returns detailed cache statistics including positive/negative breakdowns.
+func (c *Cache) DetailedStats() CacheStats {
+	var total, positive, negative int
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.mu.RLock()
+		for _, entry := range s.entries {
+			total++
+			if entry.Negative {
+				negative++
+			} else {
+				positive++
+			}
+		}
+		s.mu.RUnlock()
+	}
+	return CacheStats{
+		Entries:         total,
+		PositiveEntries: positive,
+		NegativeEntries: negative,
+	}
 }

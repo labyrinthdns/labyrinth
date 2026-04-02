@@ -3,7 +3,7 @@ package security
 import (
 	"strings"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 // SanitizeBailiwick removes records from a DNS response that are

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
-	"github.com/labyrinth-dns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/metrics"
 )
 
 const shardCount = 256
@@ -272,6 +272,48 @@ func (c *Cache) enforceMaxEntriesLocked(s *shard) {
 			break
 		}
 	}
+}
+
+// Lookup retrieves an entry from the cache without deleting expired entries.
+// Unlike Get, this is a read-only operation suitable for inspection.
+func (c *Cache) Lookup(name string, qtype uint16, class uint16) (*Entry, bool) {
+	name = strings.ToLower(name)
+	key := cacheKey{name: name, qtype: qtype, class: class}
+	idx := c.shardIndex(name)
+
+	s := &c.shards[idx]
+	s.mu.RLock()
+	entry, ok := s.entries[key]
+	s.mu.RUnlock()
+
+	if !ok {
+		return nil, false
+	}
+
+	remaining := entry.RemainingTTL()
+	if remaining == 0 {
+		return nil, false
+	}
+
+	decayed := entry.WithDecayedTTL(remaining)
+	return decayed, true
+}
+
+// Delete removes a specific entry from the cache.
+// Returns true if the entry was found and deleted.
+func (c *Cache) Delete(name string, qtype uint16, class uint16) bool {
+	name = strings.ToLower(name)
+	key := cacheKey{name: name, qtype: qtype, class: class}
+	idx := c.shardIndex(name)
+
+	s := &c.shards[idx]
+	s.mu.Lock()
+	_, ok := s.entries[key]
+	if ok {
+		delete(s.entries, key)
+	}
+	s.mu.Unlock()
+	return ok
 }
 
 func cloneRRs(rrs []dns.ResourceRecord) []dns.ResourceRecord {

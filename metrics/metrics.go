@@ -126,6 +126,51 @@ func (h *histogram) writeTo(w io.Writer, name string) {
 	fmt.Fprintf(w, "%s_count %d\n", name, h.count.Load())
 }
 
+// MetricsSnapshot holds a point-in-time snapshot of all metrics.
+type MetricsSnapshot struct {
+	QueriesByType      map[string]int64
+	ResponsesByRCode   map[string]int64
+	CacheHits          int64
+	CacheMisses        int64
+	CacheEvictions     int64
+	UpstreamQueries    int64
+	UpstreamErrors     int64
+	RateLimited        int64
+	UptimeSeconds      float64
+	Goroutines         int
+	QueryDurationCount int64
+}
+
+// Snapshot returns a point-in-time snapshot of all metrics.
+func (m *Metrics) Snapshot() MetricsSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	qbt := make(map[string]int64, len(m.queriesTotal))
+	for k, v := range m.queriesTotal {
+		qbt[k] = v.Load()
+	}
+
+	rbr := make(map[string]int64, len(m.responsesTotal))
+	for k, v := range m.responsesTotal {
+		rbr[k] = v.Load()
+	}
+
+	return MetricsSnapshot{
+		QueriesByType:      qbt,
+		ResponsesByRCode:   rbr,
+		CacheHits:          m.cacheHits.Load(),
+		CacheMisses:        m.cacheMisses.Load(),
+		CacheEvictions:     m.cacheEvictions.Load(),
+		UpstreamQueries:    m.upstreamQueries.Load(),
+		UpstreamErrors:     m.upstreamErrors.Load(),
+		RateLimited:        m.rateLimited.Load(),
+		UptimeSeconds:      time.Since(m.startTime).Seconds(),
+		Goroutines:         runtime.NumGoroutine(),
+		QueryDurationCount: m.queryDurations.count.Load(),
+	}
+}
+
 // WriteMetrics writes all metrics in Prometheus text format.
 func (m *Metrics) WriteMetrics(w io.Writer) {
 	m.mu.RLock()

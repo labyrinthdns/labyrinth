@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 func TestInZone(t *testing.T) {
@@ -19,7 +19,7 @@ func TestInZone(t *testing.T) {
 		{"a.b.c.google.com", "google.com", true},
 		{"evil.com", "google.com", false},
 		{"notgoogle.com", "google.com", false},
-		{"anything", "", true},     // root zone — everything in zone
+		{"anything", "", true}, // root zone — everything in zone
 		{"com", "com", true},
 		{"google.com", "com", true},
 	}

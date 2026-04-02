@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/internal/pool"
+	"github.com/labyrinthdns/labyrinth/internal/pool"
 )
 
 // UDPServer handles DNS queries over UDP.

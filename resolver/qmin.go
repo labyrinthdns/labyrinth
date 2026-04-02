@@ -3,7 +3,7 @@ package resolver
 import (
 	"strings"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 // minimizeQName returns a minimized query name and type for the current

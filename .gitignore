@@ -28,5 +28,13 @@ Thumbs.db
 .env
 .env.*
 
+# Frontend
+web/ui/node_modules/
+web/ui/dist/
+
+# Coverage
+coverage*.out
+*.html
+
 # Project spec (not part of source)
 .project/

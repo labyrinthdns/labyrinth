@@ -3,7 +3,7 @@ package cache
 import (
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 // NegativeType indicates the type of negative cache entry.

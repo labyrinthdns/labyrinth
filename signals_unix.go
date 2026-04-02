@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/labyrinth-dns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/cache"
 )
 
 func setupUnixSignals(logger *slog.Logger, c *cache.Cache) {

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
-	"github.com/labyrinth-dns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/metrics"
 )
 
 func BenchmarkCacheGet(b *testing.B) {

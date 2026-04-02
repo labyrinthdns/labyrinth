@@ -7,9 +7,9 @@ import (
 	"net"
 	"testing"
 
-	"github.com/labyrinth-dns/labyrinth/cache"
-	"github.com/labyrinth-dns/labyrinth/dns"
-	"github.com/labyrinth-dns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/metrics"
 )
 
 // testHandler creates a MainHandler with only metrics (for unit tests that don't need full resolver).

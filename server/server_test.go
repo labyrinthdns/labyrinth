@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/cache"
-	"github.com/labyrinth-dns/labyrinth/dns"
-	"github.com/labyrinth-dns/labyrinth/metrics"
-	"github.com/labyrinth-dns/labyrinth/resolver"
-	"github.com/labyrinth-dns/labyrinth/security"
+	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/resolver"
+	"github.com/labyrinthdns/labyrinth/security"
 )
 
 // networkAvailable checks whether outbound DNS traffic can reach the internet.

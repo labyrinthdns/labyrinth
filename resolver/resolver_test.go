@@ -3,7 +3,7 @@ package resolver
 import (
 	"testing"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 func TestClassifyResponseNXDomain(t *testing.T) {

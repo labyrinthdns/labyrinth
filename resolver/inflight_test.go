@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 func TestInflightCoalescing(t *testing.T) {

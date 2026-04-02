@@ -49,5 +49,17 @@ func defaultConfig() *Config {
 			Format: "json",
 		},
 		ACL: ACLConfig{},
+		Web: WebConfig{
+			Enabled:        true,
+			Addr:           "127.0.0.1:9153",
+			QueryLogBuffer: 1000,
+		},
+		Daemon: DaemonConfig{
+			Enabled: false,
+			PIDFile: "/var/run/labyrinth.pid",
+		},
+		Zabbix: ZabbixConfig{
+			Enabled: false,
+		},
 	}
 }

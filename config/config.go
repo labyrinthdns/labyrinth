@@ -16,6 +16,35 @@ type Config struct {
 	Security SecurityConfig
 	Logging  LoggingConfig
 	ACL      ACLConfig
+	Web      WebConfig
+	Daemon   DaemonConfig
+	Zabbix   ZabbixConfig
+}
+
+// WebConfig holds web dashboard settings.
+type WebConfig struct {
+	Enabled        bool
+	Addr           string
+	QueryLogBuffer int
+	Auth           WebAuthConfig
+}
+
+// WebAuthConfig holds web dashboard authentication settings.
+type WebAuthConfig struct {
+	Username     string
+	PasswordHash string
+}
+
+// DaemonConfig holds daemon mode settings.
+type DaemonConfig struct {
+	Enabled bool
+	PIDFile string
+}
+
+// ZabbixConfig holds Zabbix integration settings.
+type ZabbixConfig struct {
+	Enabled bool
+	Addr    string
 }
 
 // ServerConfig holds server-related settings.
@@ -251,6 +280,41 @@ func applyYAML(cfg *Config, values map[string]string) {
 	}
 	if v, ok := values["logging.format"]; ok {
 		cfg.Logging.Format = v
+	}
+
+	// Web
+	if v, ok := values["web.enabled"]; ok {
+		cfg.Web.Enabled = parseBool(v)
+	}
+	if v, ok := values["web.addr"]; ok {
+		cfg.Web.Addr = v
+	}
+	if v, ok := values["web.query_log_buffer"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Web.QueryLogBuffer = n
+		}
+	}
+	if v, ok := values["web.auth.username"]; ok {
+		cfg.Web.Auth.Username = v
+	}
+	if v, ok := values["web.auth.password_hash"]; ok {
+		cfg.Web.Auth.PasswordHash = v
+	}
+
+	// Daemon
+	if v, ok := values["daemon.enabled"]; ok {
+		cfg.Daemon.Enabled = parseBool(v)
+	}
+	if v, ok := values["daemon.pid_file"]; ok {
+		cfg.Daemon.PIDFile = v
+	}
+
+	// Zabbix
+	if v, ok := values["zabbix.enabled"]; ok {
+		cfg.Zabbix.Enabled = parseBool(v)
+	}
+	if v, ok := values["zabbix.addr"]; ok {
+		cfg.Zabbix.Addr = v
 	}
 }
 

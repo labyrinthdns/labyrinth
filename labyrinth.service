@@ -1,6 +1,6 @@
 [Unit]
 Description=Labyrinth Recursive DNS Resolver
-Documentation=https://github.com/labyrinth-dns/labyrinth
+Documentation=https://github.com/labyrinthdns/labyrinth
 After=network-online.target
 Wants=network-online.target
 

@@ -3,7 +3,7 @@ package resolver
 import (
 	"strings"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 // extractCNAMETarget finds the CNAME target for qname in the message.

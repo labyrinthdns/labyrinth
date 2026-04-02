@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/labyrinth-dns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dns"
 )
 
 // tcMockDNS returns TC=1 on UDP and full answer on TCP, to test TC fallback.
@@ -61,9 +61,12 @@ func startTXIDMismatchMockDNS(t *testing.T) *mockDNSServer {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	tcp, _ := net.Listen("tcp", udp.LocalAddr().String())
-
 	_, portStr, _ := net.SplitHostPort(udp.LocalAddr().String())
+	tcp, err := net.Listen("tcp", "127.0.0.1:"+portStr)
+	if err != nil {
+		udp.Close()
+		t.Fatalf("tcp listen: %v", err)
+	}
 
 	m := &mockDNSServer{udpConn: udp, tcpLn: tcp, port: portStr, ip: "127.0.0.1"}
 
@@ -113,7 +116,7 @@ func TestResolveIterativeCNAMEChaseAndCache(t *testing.T) {
 		if qname == "www.chase.com" {
 			cnameRData := dns.BuildPlainName("real.chase.com")
 			return &dns.Message{
-				Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 				Questions: q.Questions,
 				Answers: []dns.ResourceRecord{{
 					Name: "www.chase.com", Type: dns.TypeCNAME, Class: dns.ClassIN,
@@ -123,7 +126,7 @@ func TestResolveIterativeCNAMEChaseAndCache(t *testing.T) {
 		}
 		// real.chase.com: return A
 		return &dns.Message{
-			Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 			Questions: q.Questions,
 			Answers: []dns.ResourceRecord{{
 				Name: qname, Type: dns.TypeA, Class: dns.ClassIN,
@@ -151,7 +154,7 @@ func TestResolveIterativeNXDOMAINCache(t *testing.T) {
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		soaRData := buildSOARData()
 		return &dns.Message{
-			Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeNXDomain).Build()},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeNXDomain).Build()},
 			Questions: q.Questions,
 			Authority: []dns.ResourceRecord{{
 				Name: "com", Type: dns.TypeSOA, Class: dns.ClassIN,
@@ -186,7 +189,7 @@ func TestResolveIterativeReferralFollowed(t *testing.T) {
 		if queryCount == 1 {
 			nsRData := dns.BuildPlainName("ns1.ref.com")
 			return &dns.Message{
-				Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 				Questions: q.Questions,
 				Authority: []dns.ResourceRecord{{
 					Name: "ref.com", Type: dns.TypeNS, Class: dns.ClassIN,
@@ -200,7 +203,7 @@ func TestResolveIterativeReferralFollowed(t *testing.T) {
 		}
 		// Second: answer
 		return &dns.Message{
-			Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 			Questions: q.Questions,
 			Answers: []dns.ResourceRecord{{
 				Name: qname, Type: dns.TypeA, Class: dns.ClassIN,
@@ -233,7 +236,7 @@ func TestResolveIterativeQMinNoDataFallback(t *testing.T) {
 		if qtype == dns.TypeNS && qname != "." {
 			soaRData := buildSOARData()
 			return &dns.Message{
-				Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 				Questions: q.Questions,
 				Authority: []dns.ResourceRecord{{
 					Name: qname, Type: dns.TypeSOA, Class: dns.ClassIN,
@@ -243,7 +246,7 @@ func TestResolveIterativeQMinNoDataFallback(t *testing.T) {
 		}
 		// Full A query: answer
 		return &dns.Message{
-			Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 			Questions: q.Questions,
 			Answers: []dns.ResourceRecord{{
 				Name: qname, Type: dns.TypeA, Class: dns.ClassIN,
@@ -268,7 +271,7 @@ func TestResolveIterativeEmptyReferral(t *testing.T) {
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		// Return referral with NS record but broken RDATA (empty)
 		return &dns.Message{
-			Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 			Questions: q.Questions,
 			Authority: []dns.ResourceRecord{{
 				Name: "example.com", Type: dns.TypeNS, Class: dns.ClassIN,
@@ -301,7 +304,7 @@ func TestSelectAndResolveNSRecursiveResolveAAAA(t *testing.T) {
 		if qname == "ns1.other.com" && qtype == dns.TypeA {
 			soaRData := buildSOARData()
 			return &dns.Message{
-				Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 				Questions: q.Questions,
 				Authority: []dns.ResourceRecord{{
 					Name: "other.com", Type: dns.TypeSOA, Class: dns.ClassIN,
@@ -312,7 +315,7 @@ func TestSelectAndResolveNSRecursiveResolveAAAA(t *testing.T) {
 		// Resolve ns1.other.com AAAA → answer
 		if qname == "ns1.other.com" && qtype == dns.TypeAAAA {
 			return &dns.Message{
-				Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 				Questions: q.Questions,
 				Answers: []dns.ResourceRecord{{
 					Name: "ns1.other.com", Type: dns.TypeAAAA, Class: dns.ClassIN,
@@ -322,7 +325,7 @@ func TestSelectAndResolveNSRecursiveResolveAAAA(t *testing.T) {
 		}
 		// Default
 		return &dns.Message{
-			Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 			Questions: q.Questions,
 			Answers: []dns.ResourceRecord{{
 				Name: qname, Type: dns.TypeA, Class: dns.ClassIN,
