@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // UpdateInfo holds information about available updates.
@@ -129,6 +130,17 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Replace current executable
+	// On Windows, rename running exe to .old first since overwrite is blocked
+	if runtime.GOOS == "windows" {
+		oldPath := exePath + ".old"
+		os.Remove(oldPath) // clean up previous .old if exists
+		if err := os.Rename(exePath, oldPath); err != nil {
+			os.Remove(tmpPath)
+			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to move current executable: %v", err)})
+			return
+		}
+	}
+
 	if err := os.Rename(tmpPath, exePath); err != nil {
 		os.Remove(tmpPath)
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to replace executable: %v", err)})
@@ -148,7 +160,9 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 		f.Flush()
 	}
 
+	// Delay restart slightly to ensure HTTP response is sent
 	go func() {
+		time.Sleep(500 * time.Millisecond)
 		if err := restartSelf(); err != nil {
 			s.logger.Error("restart failed", "error", err)
 		}
@@ -180,10 +194,18 @@ func checkForUpdate() (*UpdateInfo, error) {
 		assetName += ".exe"
 	}
 
+	// dev builds always show update available if there's a release
+	updateAvailable := false
+	if currentVersion == "dev" || currentVersion == "" {
+		updateAvailable = release.TagName != ""
+	} else {
+		updateAvailable = compareSemver(currentVersion, latestVersion) < 0
+	}
+
 	info := &UpdateInfo{
 		CurrentVersion:  Version,
 		LatestVersion:   release.TagName,
-		UpdateAvailable: compareSemver(currentVersion, latestVersion) < 0,
+		UpdateAvailable: updateAvailable,
 		ReleaseURL:      release.HTMLURL,
 		ReleaseNotes:    release.Body,
 		AssetName:       assetName,
