@@ -11,7 +11,11 @@ func (s *AdminServer) handleBlocklistStats(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if s.blocklist == nil {
-		jsonResponse(w, http.StatusOK, map[string]interface{}{"enabled": false})
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"enabled": false, "total_rules": 0, "list_count": 0,
+			"blocked_total": 0, "custom_blocks": 0, "custom_allows": 0,
+			"blocking_mode": "nxdomain",
+		})
 		return
 	}
 	jsonResponse(w, http.StatusOK, s.blocklist.Stats())
@@ -35,7 +39,7 @@ func (s *AdminServer) handleBlocklistRefresh(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if s.blocklist == nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "blocklist not enabled"})
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "blocklist not enabled"})
 		return
 	}
 	go s.blocklist.RefreshAll()
@@ -48,7 +52,7 @@ func (s *AdminServer) handleBlocklistBlock(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if s.blocklist == nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "blocklist not enabled"})
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "blocklist not enabled"})
 		return
 	}
 
@@ -70,7 +74,7 @@ func (s *AdminServer) handleBlocklistUnblock(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if s.blocklist == nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "blocklist not enabled"})
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "blocklist not enabled"})
 		return
 	}
 
