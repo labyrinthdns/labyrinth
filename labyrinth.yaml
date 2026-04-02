@@ -1,0 +1,47 @@
+# labyrinth.yaml — Example configuration
+# All values shown are defaults. Uncomment and modify as needed.
+
+server:
+  listen_addr: "0.0.0.0:53"
+  metrics_addr: "127.0.0.1:9153"
+  max_udp_size: 4096
+  tcp_timeout: 10s
+  max_tcp_connections: 256
+  graceful_shutdown: 5s
+
+resolver:
+  max_depth: 30
+  max_cname_depth: 10
+  upstream_timeout: 2s
+  upstream_retries: 3
+  qname_minimization: true
+  prefer_ipv4: true
+
+cache:
+  max_entries: 100000
+  min_ttl: 5
+  max_ttl: 86400
+  negative_max_ttl: 3600
+  sweep_interval: 60s
+  serve_stale: false
+  serve_stale_ttl: 30
+
+security:
+  rate_limit:
+    enabled: true
+    rate: 50
+    burst: 100
+  rrl:
+    enabled: true
+    responses_per_second: 5
+    slip_ratio: 2
+    ipv4_prefix: 24
+    ipv6_prefix: 56
+
+logging:
+  level: info
+  format: json
+
+# access_control:
+#   allow: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+#   deny:

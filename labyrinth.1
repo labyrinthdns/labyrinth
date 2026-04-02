@@ -1,0 +1,140 @@
+.TH LABYRINTH 1 "April 2026" "Labyrinth 1.0.0" "User Commands"
+.SH NAME
+labyrinth \- pure Go recursive DNS resolver
+.SH SYNOPSIS
+.B labyrinth
+[\fIflags\fR] [\fIcommand\fR]
+.SH DESCRIPTION
+.B Labyrinth
+is a recursive-only DNS resolver written in pure Go with zero external
+dependencies. It receives DNS queries from clients, navigates the global DNS
+hierarchy from root servers down to authoritative nameservers, caches results,
+and returns answers \(em all within a single, statically compiled binary.
+.PP
+Labyrinth does not serve authoritative zones. It does one thing \(em recursive
+resolution \(em and does it correctly, safely, and fast.
+.SH COMMANDS
+.TP
+.B check
+Validate the configuration file and exit.
+.TP
+.B version
+Print version information and exit.
+.SH OPTIONS
+.TP
+.BR \-listen " " \fIaddress\fR
+Listen address for DNS queries (default ":53").
+.TP
+.BR \-metrics " " \fIaddress\fR
+Metrics HTTP endpoint address (default "127.0.0.1:9153").
+.TP
+.BR \-config " " \fIpath\fR
+Configuration file path (default "labyrinth.yaml").
+.TP
+.BR \-log\-level " " \fIlevel\fR
+Log level: debug, info, warn, error (default "info").
+.TP
+.BR \-log\-format " " \fIformat\fR
+Log format: json, text (default "json").
+.TP
+.BR \-cache\-size " " \fIn\fR
+Maximum cache entries (default 100000).
+.TP
+.BR \-version
+Print version information and exit.
+.SH CONFIGURATION
+Configuration is loaded in this priority order (highest first):
+.IP 1. 4
+CLI flags
+.IP 2.
+Environment variables (prefix: LABYRINTH_)
+.IP 3.
+Configuration file (labyrinth.yaml)
+.IP 4.
+Compiled defaults
+.PP
+See
+.I labyrinth.yaml
+for a complete list of configuration options.
+.SH ENVIRONMENT
+.TP
+.B LABYRINTH_SERVER_LISTEN_ADDR
+Override server listen address.
+.TP
+.B LABYRINTH_SERVER_METRICS_ADDR
+Override metrics HTTP address.
+.TP
+.B LABYRINTH_LOGGING_LEVEL
+Override log level.
+.TP
+.B LABYRINTH_LOGGING_FORMAT
+Override log format.
+.TP
+.B LABYRINTH_CACHE_MAX_ENTRIES
+Override maximum cache entries.
+.TP
+.B LABYRINTH_RESOLVER_MAX_DEPTH
+Override maximum resolution depth.
+.SH SIGNALS
+.TP
+.B SIGINT, SIGTERM
+Graceful shutdown. Stops accepting new connections, waits for in-flight
+queries to complete (grace period configurable), then exits.
+.TP
+.B SIGUSR1
+Flush entire cache.
+.TP
+.B SIGUSR2
+Dump cache statistics to log.
+.TP
+.B SIGHUP
+Log config reload notification.
+.SH HTTP ENDPOINTS
+.TP
+.B GET /metrics
+Prometheus-compatible metrics in text exposition format.
+.TP
+.B GET /health
+JSON health check: {"status":"healthy","cache_entries":N,"uptime":"..."}
+.TP
+.B GET /ready
+Readiness probe. Returns 200 after root hint priming is complete, 503 during startup.
+.SH EXAMPLES
+Start with defaults:
+.PP
+.RS
+.B labyrinth
+.RE
+.PP
+Start with custom listen address and debug logging:
+.PP
+.RS
+.B labyrinth -listen 0.0.0.0:5353 -log-level debug -log-format text
+.RE
+.PP
+Validate configuration:
+.PP
+.RS
+.B labyrinth -config /etc/labyrinth/labyrinth.yaml check
+.RE
+.PP
+Query the running resolver:
+.PP
+.RS
+.B dig @localhost google.com A
+.RE
+.SH FILES
+.TP
+.I labyrinth.yaml
+Default configuration file (searched in current directory).
+.TP
+.I /etc/labyrinth/labyrinth.yaml
+Recommended location for system-wide configuration.
+.SH SEE ALSO
+.BR dig (1),
+.BR unbound (8),
+.BR named (8)
+.SH AUTHORS
+Labyrinth DNS Project <https://github.com/labyrinth-dns/labyrinth>
+.SH BUGS
+Report bugs at https://github.com/labyrinth-dns/labyrinth/issues

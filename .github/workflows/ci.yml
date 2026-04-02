@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: ["1.23"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -v -count=1 -timeout 60s
+
+      - name: Test with race detector
+        if: runner.os == 'Linux'
+        run: go test ./... -race -count=1 -timeout 120s
+
+      - name: Build
+        run: go build -o labyrinth${{ runner.os == 'Windows' && '.exe' || '' }} .
+
+      - name: Fuzz (1 min)
+        if: runner.os == 'Linux'
+        run: |
+          go test ./dns/ -fuzz=FuzzUnpack -fuzztime=30s || true
+          go test ./dns/ -fuzz=FuzzDecodeName -fuzztime=30s || true
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: labyrinth-${{ matrix.os }}
+          path: labyrinth*

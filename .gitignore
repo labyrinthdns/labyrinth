@@ -1,12 +1,32 @@
-.project/
+# Binaries
+labyrinth
+labyrinth.exe
+labyrinth-*
+*.exe
+*.exe~
+*.bin
+
+# Test binaries
+*.test
+*.test.exe
+
+# Go build cache
+*.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
 .env
-.env.local
-.env.production
-.env.development
-.env.test
-.env.example
-.env.*.local
-.env.*.production
-.env.*.development
-.env.*.test
-.env.*.example
+.env.*
+
+# Project spec (not part of source)
+.project/
