@@ -23,10 +23,10 @@ func (s *AdminServer) handleBlocklistLists(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if s.blocklist == nil {
-		jsonResponse(w, http.StatusOK, []interface{}{})
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"lists": []interface{}{}})
 		return
 	}
-	jsonResponse(w, http.StatusOK, s.blocklist.Sources())
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"lists": s.blocklist.Sources()})
 }
 
 func (s *AdminServer) handleBlocklistRefresh(w http.ResponseWriter, r *http.Request) {
