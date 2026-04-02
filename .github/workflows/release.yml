@@ -7,8 +7,6 @@ on:
 permissions:
   contents: write
   packages: write
-  pages: write
-  id-token: write
 
 jobs:
   test:
@@ -147,24 +145,3 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  website:
-    needs: test
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Build website
-        working-directory: website
-        run: npm ci && npm run build
-      - uses: actions/configure-pages@v4
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: website/dist
-      - id: deployment
-        uses: actions/deploy-pages@v4
