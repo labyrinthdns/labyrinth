@@ -9,6 +9,7 @@ import DashboardPage from '@/pages/DashboardPage'
 import QueriesPage from '@/pages/QueriesPage'
 import CachePage from '@/pages/CachePage'
 import ConfigPage from '@/pages/ConfigPage'
+import BlocklistPage from '@/pages/BlocklistPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = getToken()
@@ -115,6 +116,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <CachePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/blocklist"
+            element={
+              <ProtectedRoute>
+                <BlocklistPage />
               </ProtectedRoute>
             }
           />

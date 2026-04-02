@@ -19,6 +19,10 @@ type Metrics struct {
 	upstreamQueries atomic.Int64
 	upstreamErrors  atomic.Int64
 	rateLimited    atomic.Int64
+	dnssecSecure   atomic.Int64
+	dnssecInsecure atomic.Int64
+	dnssecBogus    atomic.Int64
+	blockedQueries atomic.Int64
 
 	queryDurations *histogram
 
@@ -50,6 +54,10 @@ func (m *Metrics) IncCacheMisses()  { m.cacheMisses.Add(1) }
 func (m *Metrics) IncUpstreamQueries() { m.upstreamQueries.Add(1) }
 func (m *Metrics) IncUpstreamErrors()  { m.upstreamErrors.Add(1) }
 func (m *Metrics) IncRateLimited()     { m.rateLimited.Add(1) }
+func (m *Metrics) IncDNSSECSecure()    { m.dnssecSecure.Add(1) }
+func (m *Metrics) IncDNSSECInsecure()  { m.dnssecInsecure.Add(1) }
+func (m *Metrics) IncDNSSECBogus()     { m.dnssecBogus.Add(1) }
+func (m *Metrics) IncBlockedQueries()  { m.blockedQueries.Add(1) }
 
 func (m *Metrics) IncCacheEvictions(reason string) {
 	m.cacheEvictions.Add(1)
@@ -139,6 +147,10 @@ type MetricsSnapshot struct {
 	UptimeSeconds      float64
 	Goroutines         int
 	QueryDurationCount int64
+	DNSSECSecure       int64
+	DNSSECInsecure     int64
+	DNSSECBogus        int64
+	BlockedQueries     int64
 }
 
 // Snapshot returns a point-in-time snapshot of all metrics.
@@ -168,6 +180,10 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		UptimeSeconds:      time.Since(m.startTime).Seconds(),
 		Goroutines:         runtime.NumGoroutine(),
 		QueryDurationCount: m.queryDurations.count.Load(),
+		DNSSECSecure:       m.dnssecSecure.Load(),
+		DNSSECInsecure:     m.dnssecInsecure.Load(),
+		DNSSECBogus:        m.dnssecBogus.Load(),
+		BlockedQueries:     m.blockedQueries.Load(),
 	}
 }
 
@@ -188,6 +204,10 @@ func (m *Metrics) WriteMetrics(w io.Writer) {
 	fmt.Fprintf(w, "labyrinth_upstream_queries_total %d\n", m.upstreamQueries.Load())
 	fmt.Fprintf(w, "labyrinth_upstream_errors_total %d\n", m.upstreamErrors.Load())
 	fmt.Fprintf(w, "labyrinth_rate_limited_total %d\n", m.rateLimited.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_secure_total %d\n", m.dnssecSecure.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_insecure_total %d\n", m.dnssecInsecure.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_bogus_total %d\n", m.dnssecBogus.Load())
+	fmt.Fprintf(w, "labyrinth_blocked_queries_total %d\n", m.blockedQueries.Load())
 	fmt.Fprintf(w, "labyrinth_uptime_seconds %.0f\n", time.Since(m.startTime).Seconds())
 	fmt.Fprintf(w, "labyrinth_goroutines %d\n", runtime.NumGoroutine())
 

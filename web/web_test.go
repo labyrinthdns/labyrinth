@@ -42,7 +42,7 @@ func testAdminServer(t *testing.T) *AdminServer {
 			QueryLogBuffer: 100,
 		},
 	}
-	return NewAdminServer(cfg, c, m, nil, logger)
+	return NewAdminServer(cfg, c, m, nil, logger, nil)
 }
 
 func testAdminServerWithAuth(t *testing.T) (*AdminServer, string) {
@@ -67,7 +67,7 @@ func testAdminServerWithAuth(t *testing.T) (*AdminServer, string) {
 			},
 		},
 	}
-	return NewAdminServer(cfg, c, m, nil, logger), password
+	return NewAdminServer(cfg, c, m, nil, logger, nil), password
 }
 
 func decodeJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]interface{} {
@@ -1361,7 +1361,7 @@ func TestNewAdminServer_DefaultQueryLogBuffer(t *testing.T) {
 			QueryLogBuffer: 0,
 		},
 	}
-	srv := NewAdminServer(cfg, c, m, nil, logger)
+	srv := NewAdminServer(cfg, c, m, nil, logger, nil)
 	if srv.queryLog.capacity != 1000 {
 		t.Fatalf("want default capacity 1000, got %d", srv.queryLog.capacity)
 	}

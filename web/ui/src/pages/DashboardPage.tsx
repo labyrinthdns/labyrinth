@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Globe, Zap, Database, Clock, AlertTriangle, Users } from 'lucide-react'
+import { Globe, Zap, Database, Clock, AlertTriangle, Users, Shield, Lock } from 'lucide-react'
 import {
   AreaChart,
   Area,
@@ -149,6 +149,23 @@ export default function DashboardPage() {
           value={stats ? formatUptime(stats.uptime_seconds) : '0m'}
           iconColor="bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400"
         />
+        {stats && (stats.blocked_queries || 0) > 0 && (
+          <StatCard
+            icon={Shield}
+            label="Blocked"
+            value={formatNumber(stats.blocked_queries || 0)}
+            iconColor="bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400"
+          />
+        )}
+        {stats && ((stats.dnssec_secure || 0) > 0 || (stats.dnssec_bogus || 0) > 0) && (
+          <StatCard
+            icon={Lock}
+            label="DNSSEC"
+            value={formatNumber(stats.dnssec_secure || 0)}
+            sub={`${formatNumber(stats.dnssec_secure || 0)} secure / ${formatNumber(stats.dnssec_bogus || 0)} bogus`}
+            iconColor="bg-teal-100 dark:bg-teal-900/40 text-teal-600 dark:text-teal-400"
+          />
+        )}
       </div>
 
       {/* Charts row */}

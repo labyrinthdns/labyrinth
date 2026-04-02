@@ -11,6 +11,7 @@ import (
 
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/dnssec"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/security"
 )
@@ -23,6 +24,7 @@ type ResolverConfig struct {
 	UpstreamRetries int
 	QMinEnabled     bool
 	PreferIPv4      bool
+	DNSSECEnabled   bool
 	// UpstreamPort overrides the DNS port for upstream queries (default "53").
 	// Used for testing with mock DNS servers.
 	UpstreamPort string
@@ -30,21 +32,23 @@ type ResolverConfig struct {
 
 // ResolveResult holds the outcome of a recursive resolution.
 type ResolveResult struct {
-	Answers    []dns.ResourceRecord
-	Authority  []dns.ResourceRecord
-	Additional []dns.ResourceRecord
-	RCODE      uint8
+	Answers      []dns.ResourceRecord
+	Authority    []dns.ResourceRecord
+	Additional   []dns.ResourceRecord
+	RCODE        uint8
+	DNSSECStatus string // "secure", "insecure", "bogus", ""
 }
 
 // Resolver implements recursive DNS resolution.
 type Resolver struct {
-	cache       *cache.Cache
-	rootServers []NameServer
-	config      ResolverConfig
-	metrics     *metrics.Metrics
-	logger      *slog.Logger
-	ready       bool
-	inflight    *inflight
+	cache           *cache.Cache
+	rootServers     []NameServer
+	config          ResolverConfig
+	metrics         *metrics.Metrics
+	logger          *slog.Logger
+	ready           bool
+	inflight        *inflight
+	dnssecValidator *dnssec.Validator
 }
 
 // NewResolver creates a new recursive resolver.
@@ -93,6 +97,19 @@ func (r *Resolver) PrimeRootHints() error {
 	// Even if priming fails, mark as ready so the resolver can still function
 	r.ready = true
 	return errors.New("root hint priming failed after 3 attempts")
+}
+
+// EnableDNSSEC creates the DNSSEC validator, allowing the resolver to
+// validate signed responses. Call this after PrimeRootHints.
+func (r *Resolver) EnableDNSSEC(logger *slog.Logger) {
+	r.dnssecValidator = dnssec.NewValidator(r, logger)
+}
+
+// QueryDNSSEC sends a DNS query with the DO bit set. It satisfies the
+// dnssec.Querier interface so the validator can fetch DNSKEY/DS records.
+func (r *Resolver) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.Message, error) {
+	idx := rand.IntN(len(r.rootServers))
+	return r.queryUpstream(r.rootServers[idx].IPv4, name, qtype, qclass)
 }
 
 // Resolve performs recursive resolution for the given query.
@@ -174,12 +191,29 @@ func (r *Resolver) resolveIterative(
 
 		switch rtype {
 		case responseAnswer:
-			return &ResolveResult{
+			result := &ResolveResult{
 				Answers:    response.Answers,
 				Authority:  response.Authority,
 				Additional: response.Additional,
 				RCODE:      dns.RCodeNoError,
-			}, nil
+			}
+			if r.dnssecValidator != nil {
+				vr := r.dnssecValidator.ValidateResponse(response, name, qtype)
+				switch vr {
+				case dnssec.Secure:
+					r.metrics.IncDNSSECSecure()
+					result.DNSSECStatus = "secure"
+				case dnssec.Insecure:
+					r.metrics.IncDNSSECInsecure()
+					result.DNSSECStatus = "insecure"
+				case dnssec.Bogus:
+					r.metrics.IncDNSSECBogus()
+					return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
+				default:
+					result.DNSSECStatus = "insecure"
+				}
+			}
+			return result, nil
 
 		case responseCNAME:
 			target := extractCNAMETarget(response, name)
