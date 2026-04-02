@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Labyrinth DNS Resolver — Install Script
-# Usage: curl -sSL https://raw.githubusercontent.com/labyrinth-dns/labyrinth/main/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash
 # Or:    bash install.sh [--no-service] [--version v1.0.0]
 
 REPO="labyrinth-dns/labyrinth"

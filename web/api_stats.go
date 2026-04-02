@@ -13,20 +13,36 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snap := s.metrics.Snapshot()
-	cacheStats := s.cache.Stats()
+	cacheStats := s.cache.DetailedStats()
+
+	var hitRatio float64
+	total := snap.CacheHits + snap.CacheMisses
+	if total > 0 {
+		hitRatio = float64(snap.CacheHits) / float64(total)
+	}
+
+	resolverReady := false
+	if s.resolver != nil {
+		resolverReady = s.resolver.IsReady()
+	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"queries_by_type":    snap.QueriesByType,
-		"responses_by_rcode": snap.ResponsesByRCode,
-		"cache_hits":         snap.CacheHits,
-		"cache_misses":       snap.CacheMisses,
-		"cache_evictions":    snap.CacheEvictions,
-		"cache_entries":      cacheStats.Entries,
-		"upstream_queries":   snap.UpstreamQueries,
-		"upstream_errors":    snap.UpstreamErrors,
-		"rate_limited":       snap.RateLimited,
-		"uptime_seconds":     snap.UptimeSeconds,
-		"goroutines":         snap.Goroutines,
+		"queries_by_type":      snap.QueriesByType,
+		"responses_by_rcode":   snap.ResponsesByRCode,
+		"cache_hits":           snap.CacheHits,
+		"cache_misses":         snap.CacheMisses,
+		"cache_evictions":      snap.CacheEvictions,
+		"cache_entries":        cacheStats.Entries,
+		"cache_positive":       cacheStats.PositiveEntries,
+		"cache_negative":       cacheStats.NegativeEntries,
+		"cache_hit_ratio":      hitRatio,
+		"upstream_queries":     snap.UpstreamQueries,
+		"upstream_errors":      snap.UpstreamErrors,
+		"rate_limited":         snap.RateLimited,
+		"uptime_seconds":       snap.UptimeSeconds,
+		"goroutines":           snap.Goroutines,
+		"query_duration_count": snap.QueryDurationCount,
+		"resolver_ready":       resolverReady,
 	})
 }
 

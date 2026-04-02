@@ -4,6 +4,10 @@
 
 *"Follow the thread through the DNS labyrinth."*
 
+<p align="center">
+  <img src="assets/banner.jpeg" alt="Labyrinth DNS Resolver Dashboard" width="100%" />
+</p>
+
 ---
 
 ## Features
@@ -21,7 +25,7 @@
 
 ```bash
 # One-line install (Linux/macOS, as root)
-curl -sSL https://raw.githubusercontent.com/labyrinth-dns/labyrinth/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash
 
 # Then open the dashboard to complete setup:
 # http://127.0.0.1:9153
@@ -36,7 +40,7 @@ The installer downloads the latest release, installs the binary, creates a defau
 curl -sSL .../install.sh | bash -s -- --no-service
 
 # Install specific version
-curl -sSL .../install.sh | bash -s -- --version v1.0.0
+curl -sSL .../install.sh | bash -s -- --version v0.1.0
 
 # Uninstall
 curl -sSL .../uninstall.sh | bash
@@ -51,9 +55,9 @@ cd labyrinth
 cd web/ui && npm ci && npm run build && cd ../..
 go build -ldflags="-s -w" -o labyrinth .
 
-# Docker
-docker build -t labyrinth .
-docker run -p 53:53/udp -p 53:53/tcp -p 9153:9153 labyrinth
+# Docker (GHCR)
+docker pull ghcr.io/labyrinthdns/labyrinth:latest
+docker run -p 53:53/udp -p 53:53/tcp -p 9153:9153 ghcr.io/labyrinthdns/labyrinth:latest
 
 # Docker Compose
 docker-compose up -d

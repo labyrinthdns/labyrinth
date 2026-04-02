@@ -59,7 +59,12 @@ export default function CachePage() {
       const res = await api.cacheLookup(lookupName.trim(), lookupType) as unknown as CacheEntry
       setLookupResult(res)
     } catch (err) {
-      setLookupError(err instanceof Error ? err.message : 'Lookup failed')
+      const msg = err instanceof Error ? err.message : 'Lookup failed'
+      if (msg.includes('404') || msg.includes('not found')) {
+        setLookupError(`"${lookupName.trim()}" (${lookupType}) is not in the cache. Try querying it first with: dig @localhost ${lookupName.trim()} ${lookupType}`)
+      } else {
+        setLookupError(msg)
+      }
     } finally {
       setLookupLoading(false)
     }
@@ -183,10 +188,14 @@ export default function CachePage() {
             </button>
           </form>
 
-          {/* Lookup error */}
+          {/* Lookup result message */}
           {lookupError && (
-            <div className="mt-4 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
-              <AlertCircle size={14} />
+            <div className={`mt-4 flex items-start gap-2 text-sm rounded-lg px-4 py-3 ${
+              lookupError.includes('not in the cache')
+                ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800'
+                : 'text-red-600 dark:text-red-400'
+            }`}>
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
               {lookupError}
             </div>
           )}

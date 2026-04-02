@@ -1381,32 +1381,24 @@ func TestRecordQuery(t *testing.T) {
 	}
 }
 
-func TestSpaHandler_NonAPIPath(t *testing.T) {
-	srv := testAdminServer(t)
-	handler := srv.spaHandler()
+func TestSPAHandler_NonAPIPath(t *testing.T) {
+	handler := SPAHandler()
 
 	req := httptest.NewRequest("GET", "/dashboard", nil)
 	w := httptest.NewRecorder()
-	handler(w, req)
+	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", w.Code)
 	}
-	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
-		t.Fatalf("want text/html, got %q", ct)
-	}
-	if !strings.Contains(w.Body.String(), "Labyrinth Dashboard") {
-		t.Fatal("expected placeholder HTML content")
-	}
 }
 
-func TestSpaHandler_APIPath(t *testing.T) {
-	srv := testAdminServer(t)
-	handler := srv.spaHandler()
+func TestSPAHandler_APIPath(t *testing.T) {
+	handler := SPAHandler()
 
 	req := httptest.NewRequest("GET", "/api/unknown", nil)
 	w := httptest.NewRecorder()
-	handler(w, req)
+	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("want 404 for unknown /api/ path, got %d", w.Code)

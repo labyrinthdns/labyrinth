@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -147,50 +146,6 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/zabbix/items", s.requireAuth(s.handleZabbixItems))
 	mux.HandleFunc("/api/zabbix/item", s.requireAuth(s.handleZabbixItem))
 
-	// SPA handler — catch-all for frontend
-	mux.HandleFunc("/", s.spaHandler())
-}
-
-// spaHandler serves a placeholder HTML page until the React frontend is built.
-// For SPA routing, all non-API paths fall back to index.html.
-func (s *AdminServer) spaHandler() http.HandlerFunc {
-	const placeholderHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Labyrinth Dashboard</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            display: flex; align-items: center; justify-content: center;
-            min-height: 100vh; margin: 0;
-            background: #0f172a; color: #e2e8f0;
-        }
-        .container { text-align: center; }
-        h1 { font-size: 2rem; margin-bottom: 0.5rem; }
-        p { color: #94a3b8; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Labyrinth Dashboard</h1>
-        <p>The admin dashboard frontend is not yet built.</p>
-        <p>API is available at <code>/api/</code></p>
-    </div>
-</body>
-</html>`
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Serve API routes through the mux (they are already registered)
-		// Only handle non-API paths here
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			http.NotFound(w, r)
-			return
-		}
-
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, placeholderHTML)
-	}
+	// SPA handler — serves embedded React frontend with SPA routing fallback
+	mux.Handle("/", SPAHandler())
 }

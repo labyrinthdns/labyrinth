@@ -83,24 +83,24 @@ export default function DashboardPage() {
     return () => clearInterval(interval)
   }, [fetchData])
 
-  // Compute total queries
-  const totalQueries = stats
+  // Compute total queries (guard against null/undefined)
+  const totalQueries = stats?.queries_by_type
     ? Object.values(stats.queries_by_type).reduce((a, b) => a + b, 0)
     : 0
 
   // RCode data for pie chart
-  const rcodeData = stats
+  const rcodeData = stats?.responses_by_rcode
     ? Object.entries(stats.responses_by_rcode)
         .filter(([, count]) => count > 0)
         .map(([name, value]) => ({ name, value }))
     : []
 
   // Format timeseries for chart
-  const chartData = timeseries.map((b) => ({
-    time: new Date(b.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    queries: b.queries,
-    cacheHits: b.cache_hits,
-    cacheMisses: b.cache_misses,
+  const chartData = (timeseries || []).map((b) => ({
+    time: b.ts ? new Date(b.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+    queries: b.queries || 0,
+    cacheHits: b.cache_hits || 0,
+    cacheMisses: b.cache_misses || 0,
   }))
 
   return (
@@ -126,15 +126,15 @@ export default function DashboardPage() {
         <StatCard
           icon={Zap}
           label="Cache Hit Ratio"
-          value={stats ? `${(stats.cache_hit_ratio * 100).toFixed(1)}%` : '0%'}
-          sub={stats ? `${formatNumber(stats.cache_hits)} hits / ${formatNumber(stats.cache_misses)} misses` : undefined}
+          value={stats ? `${((stats.cache_hit_ratio || 0) * 100).toFixed(1)}%` : '0%'}
+          sub={stats ? `${formatNumber(stats.cache_hits || 0)} hits / ${formatNumber(stats.cache_misses || 0)} misses` : undefined}
           iconColor="bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
         />
         <StatCard
           icon={Database}
           label="Cache Entries"
-          value={stats ? formatNumber(stats.cache_entries) : '0'}
-          sub={stats ? `${formatNumber(stats.cache_positive)} positive / ${formatNumber(stats.cache_negative)} negative` : undefined}
+          value={stats ? formatNumber(stats.cache_entries || 0) : '0'}
+          sub={stats ? `${formatNumber(stats.cache_positive || 0)} positive / ${formatNumber(stats.cache_negative || 0)} negative` : undefined}
           iconColor="bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
         />
         <StatCard

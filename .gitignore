@@ -31,10 +31,12 @@ Thumbs.db
 # Frontend
 web/ui/node_modules/
 web/ui/dist/
+website/node_modules/
+website/dist/
 
 # Coverage
 coverage*.out
-*.html
+coverage*.html
 
 # Project spec (not part of source)
 .project/

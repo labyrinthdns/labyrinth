@@ -1,8 +1,8 @@
-version: "3.8"
-
 services:
   labyrinth:
-    build: .
+    image: ghcr.io/labyrinthdns/labyrinth:latest
+    # Or build locally:
+    # build: .
     ports:
       - "53:53/udp"
       - "53:53/tcp"

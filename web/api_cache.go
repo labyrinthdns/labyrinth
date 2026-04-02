@@ -73,7 +73,7 @@ func (s *AdminServer) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats := s.cache.Stats()
+	stats := s.cache.DetailedStats()
 	snap := s.metrics.Snapshot()
 
 	hitRate := float64(0)
@@ -83,11 +83,13 @@ func (s *AdminServer) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"entries":   stats.Entries,
-		"hits":      snap.CacheHits,
-		"misses":    snap.CacheMisses,
-		"evictions": snap.CacheEvictions,
-		"hit_rate":  hitRate,
+		"entries":          stats.Entries,
+		"positive_entries": stats.PositiveEntries,
+		"negative_entries": stats.NegativeEntries,
+		"hits":             snap.CacheHits,
+		"misses":           snap.CacheMisses,
+		"evictions":        snap.CacheEvictions,
+		"hit_rate":         hitRate,
 	})
 }
 
