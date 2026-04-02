@@ -36,6 +36,7 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"upstream_retries":     cfg.Resolver.UpstreamRetries,
 			"qname_minimization":   cfg.Resolver.QMinEnabled,
 			"prefer_ipv4":          cfg.Resolver.PreferIPv4,
+			"dnssec_enabled":       cfg.Resolver.DNSSECEnabled,
 		},
 		"cache": map[string]interface{}{
 			"max_entries":      cfg.Cache.MaxEntries,
@@ -81,6 +82,14 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"acl": map[string]interface{}{
 			"allow": cfg.ACL.Allow,
 			"deny":  cfg.ACL.Deny,
+		},
+		"blocklist": map[string]interface{}{
+			"enabled":          cfg.Blocklist.Enabled,
+			"refresh_interval": cfg.Blocklist.RefreshInterval.String(),
+			"blocking_mode":    cfg.Blocklist.BlockingMode,
+			"custom_ip":        cfg.Blocklist.CustomIP,
+			"whitelist":        cfg.Blocklist.Whitelist,
+			"list_count":       len(cfg.Blocklist.Lists),
 		},
 	})
 }

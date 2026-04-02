@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/labyrinthdns/labyrinth/blocklist"
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/daemon"
@@ -180,6 +181,7 @@ func main() {
 		UpstreamRetries: cfg.Resolver.UpstreamRetries,
 		QMinEnabled:     cfg.Resolver.QMinEnabled,
 		PreferIPv4:      cfg.Resolver.PreferIPv4,
+		DNSSECEnabled:   cfg.Resolver.DNSSECEnabled,
 	}, m, logger)
 
 	handler := server.NewMainHandler(res, c, rl, rrl, acl, m, logger)
@@ -192,6 +194,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Blocklist
+	var blocklistMgr *blocklist.Manager
+	if cfg.Blocklist.Enabled {
+		blocklistMgr = blocklist.NewManager(blocklist.ManagerConfig{
+			Lists:           convertBlocklistEntries(cfg.Blocklist.Lists),
+			Whitelist:       cfg.Blocklist.Whitelist,
+			BlockingMode:    cfg.Blocklist.BlockingMode,
+			CustomIP:        cfg.Blocklist.CustomIP,
+			RefreshInterval: cfg.Blocklist.RefreshInterval,
+		}, logger)
+		handler.SetBlocklist(blocklistMgr)
+		go blocklistMgr.Start(ctx)
+	}
+
 	// Start background tasks
 	go c.StartSweeper(ctx, cfg.Cache.SweepInterval)
 	if rl != nil {
@@ -203,11 +219,15 @@ func main() {
 		if err := res.PrimeRootHints(); err != nil {
 			logger.Warn("root hint priming failed", "error", err)
 		}
+		if cfg.Resolver.DNSSECEnabled {
+			res.EnableDNSSEC(logger)
+			logger.Info("DNSSEC validation enabled")
+		}
 	}()
 
 	// Start web dashboard (replaces standalone metrics server when enabled)
 	if cfg.Web.Enabled {
-		adminServer := web.NewAdminServer(cfg, c, m, res, logger)
+		adminServer := web.NewAdminServer(cfg, c, m, res, logger, blocklistMgr)
 
 		// Wire query log hook
 		handler.OnQuery = func(client, qname, qtype, rcode string, cached bool, durationMs float64) {
@@ -319,7 +339,7 @@ func main() {
 }
 
 func printVersion() {
-	fmt.Printf("Labyrinth %s\nPure Go Recursive DNS Resolver\nBuilt: %s\nGo: %s\nOS/Arch: %s/%s\n",
+	fmt.Printf("Labyrinth %s\nPure Go Recursive DNS Resolver\nBuilt: %s\nGo: %s\nOS/Arch: %s/%s\nWebsite: https://labyrinthdns.com\nGitHub: https://github.com/labyrinthdns/labyrinth\n",
 		version, buildTime, goVersion, runtime.GOOS, runtime.GOARCH)
 }
 
@@ -366,4 +386,12 @@ func handleDaemonCommand(args []string, configPath string) {
 		fmt.Fprintf(os.Stderr, "unknown daemon command: %s\n", args[0])
 		os.Exit(1)
 	}
+}
+
+func convertBlocklistEntries(entries []config.BlocklistEntry) []blocklist.ListEntry {
+	result := make([]blocklist.ListEntry, len(entries))
+	for i, e := range entries {
+		result[i] = blocklist.ListEntry{URL: e.URL, Format: e.Format}
+	}
+	return result
 }

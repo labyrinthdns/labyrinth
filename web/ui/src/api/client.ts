@@ -1,4 +1,4 @@
-import type { TopEntry, NegativeCacheEntry, UpdateInfo } from '@/api/types'
+import type { TopEntry, NegativeCacheEntry, UpdateInfo, BlocklistStats, BlocklistListEntry } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
 
@@ -100,6 +100,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
     }),
+
+  blocklistStats: () => request<BlocklistStats>('/api/blocklist/stats'),
+  blocklistLists: () => request<{ lists: BlocklistListEntry[] }>('/api/blocklist/lists'),
+  blocklistRefresh: () => request<{ status: string }>('/api/blocklist/refresh', { method: 'POST' }),
+  blocklistBlock: (domain: string) => request<{ status: string }>('/api/blocklist/block', { method: 'POST', body: JSON.stringify({ domain }) }),
+  blocklistUnblock: (domain: string) => request<{ status: string }>('/api/blocklist/unblock', { method: 'POST', body: JSON.stringify({ domain }) }),
+  blocklistCheck: (domain: string) => request<{ domain: string; blocked: boolean }>(`/api/blocklist/check?domain=${domain}`),
 }
 
 export function createQueryWebSocket(): WebSocket {

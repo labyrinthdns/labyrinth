@@ -20,6 +20,7 @@ func defaultConfig() *Config {
 			UpstreamRetries: 3,
 			QMinEnabled:     true,
 			PreferIPv4:      true,
+			DNSSECEnabled:   true,
 		},
 		Cache: CacheConfig{
 			MaxEntries:    100000,
@@ -64,6 +65,11 @@ func defaultConfig() *Config {
 		},
 		Zabbix: ZabbixConfig{
 			Enabled: false,
+		},
+		Blocklist: BlocklistConfig{
+			Enabled:         false,
+			RefreshInterval: 24 * time.Hour,
+			BlockingMode:    "nxdomain",
 		},
 	}
 }

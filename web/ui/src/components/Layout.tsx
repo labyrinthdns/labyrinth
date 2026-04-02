@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Activity,
   Database,
+  Shield,
   Settings,
   Sun,
   Moon,
@@ -27,6 +28,7 @@ const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/queries', icon: Activity, label: 'Queries' },
   { to: '/cache', icon: Database, label: 'Cache' },
+  { to: '/blocklist', icon: Shield, label: 'Blocklist' },
   { to: '/config', icon: Settings, label: 'Config' },
 ]
 
@@ -137,10 +139,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        {/* Version info */}
-        {currentVersion && (
-          <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800">
-            {!collapsed ? (
+        {/* Version info & links */}
+        <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800">
+          {currentVersion && (
+            !collapsed ? (
               <p className="text-xs text-slate-400 dark:text-slate-500">
                 v{currentVersion}
               </p>
@@ -148,9 +150,31 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center" title={`v${currentVersion}`}>
                 v{currentVersion.split('.').slice(0, 2).join('.')}
               </p>
-            )}
-          </div>
-        )}
+            )
+          )}
+          {!collapsed && (
+            <div className="mt-2 space-y-1">
+              <a
+                href="https://labyrinthdns.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+              >
+                <ExternalLink size={10} />
+                Website
+              </a>
+              <a
+                href="https://github.com/labyrinthdns/labyrinth"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+              >
+                <ExternalLink size={10} />
+                GitHub
+              </a>
+            </div>
+          )}
+        </div>
       </aside>
 
       {/* Main area */}
@@ -198,6 +222,30 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <div className="absolute right-0 mt-1 w-44 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-lg z-40 py-1">
                     <div className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700">
                       Signed in as <span className="font-medium text-slate-700 dark:text-slate-200">{username}</span>
+                    </div>
+                    <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700">
+                      <p className="text-xs font-medium text-slate-700 dark:text-slate-200">Labyrinth {currentVersion ? `v${currentVersion}` : ''}</p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">Pure Go Recursive DNS Resolver</p>
+                      <div className="flex items-center gap-3 mt-1.5">
+                        <a
+                          href="https://labyrinthdns.com"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                        >
+                          <ExternalLink size={8} />
+                          Website
+                        </a>
+                        <a
+                          href="https://github.com/labyrinthdns/labyrinth"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                        >
+                          <ExternalLink size={8} />
+                          GitHub
+                        </a>
+                      </div>
                     </div>
                     <button
                       onClick={handleLogout}

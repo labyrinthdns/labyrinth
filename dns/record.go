@@ -105,6 +105,43 @@ func UnpackRR(msg []byte, offset int) (ResourceRecord, int, error) {
 			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
 		}
 
+	case TypeRRSIG:
+		// Fixed fields are 18 bytes, then signer name (possibly compressed), then signature.
+		if wireRDLength >= 18 {
+			signerName, nameEnd, nameErr := DecodeName(msg, rdataStart+18)
+			if nameErr == nil {
+				fixedFields := make([]byte, 18)
+				copy(fixedFields, msg[rdataStart:rdataStart+18])
+				nameBytes := encodePlainName(signerName)
+				sigLen := newOffset - nameEnd
+				rr.RData = make([]byte, 18+len(nameBytes)+sigLen)
+				copy(rr.RData, fixedFields)
+				copy(rr.RData[18:], nameBytes)
+				if sigLen > 0 {
+					copy(rr.RData[18+len(nameBytes):], msg[nameEnd:nameEnd+sigLen])
+				}
+			} else {
+				rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+			}
+		} else {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+		}
+
+	case TypeNSEC:
+		// Next domain name (possibly compressed) followed by type bitmaps.
+		name, nameEnd, nameErr := DecodeName(msg, rdataStart)
+		if nameErr == nil {
+			nameBytes := encodePlainName(name)
+			bitmapLen := newOffset - nameEnd
+			rr.RData = make([]byte, len(nameBytes)+bitmapLen)
+			copy(rr.RData, nameBytes)
+			if bitmapLen > 0 {
+				copy(rr.RData[len(nameBytes):], msg[nameEnd:nameEnd+bitmapLen])
+			}
+		} else {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+		}
+
 	default:
 		rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
 	}

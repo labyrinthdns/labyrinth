@@ -304,6 +304,42 @@ func packRData(w *wireWriter, rr ResourceRecord) error {
 			err = w.writeBytes(rr.RData)
 		}
 
+	case TypeRRSIG:
+		// 18 bytes fixed fields + signer name (plain) + signature
+		if len(rr.RData) >= 18 {
+			if err = w.writeBytes(rr.RData[:18]); err != nil {
+				return err
+			}
+			signerName, nameEnd, nameErr := DecodeName(rr.RData, 18)
+			if nameErr != nil {
+				err = w.writeBytes(rr.RData[18:])
+			} else {
+				if err = EncodeName(w, signerName); err != nil {
+					return err
+				}
+				// Write signature bytes after the signer name
+				if nameEnd < len(rr.RData) {
+					err = w.writeBytes(rr.RData[nameEnd:])
+				}
+			}
+		} else {
+			err = w.writeBytes(rr.RData)
+		}
+
+	case TypeNSEC:
+		// Next domain name (plain) + type bitmaps
+		name, nameEnd, nameErr := DecodeName(rr.RData, 0)
+		if nameErr != nil {
+			err = w.writeBytes(rr.RData)
+		} else {
+			if err = EncodeName(w, name); err != nil {
+				return err
+			}
+			if nameEnd < len(rr.RData) {
+				err = w.writeBytes(rr.RData[nameEnd:])
+			}
+		}
+
 	default:
 		// A, AAAA, TXT, OPT, unknown: write raw
 		err = w.writeBytes(rr.RData)

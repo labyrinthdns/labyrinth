@@ -7,16 +7,18 @@ import (
 
 // QueryEntry represents a single DNS query log entry.
 type QueryEntry struct {
-	ID         uint64  `json:"id"`
-	GlobalNum  uint64  `json:"global_num"`
-	ClientNum  uint64  `json:"client_num"`
-	Timestamp  string  `json:"ts"`
-	Client     string  `json:"client"`
-	QName      string  `json:"qname"`
-	QType      string  `json:"qtype"`
-	RCode      string  `json:"rcode"`
-	Cached     bool    `json:"cached"`
-	DurationMs float64 `json:"duration_ms"`
+	ID           uint64  `json:"id"`
+	GlobalNum    uint64  `json:"global_num"`
+	ClientNum    uint64  `json:"client_num"`
+	Timestamp    string  `json:"ts"`
+	Client       string  `json:"client"`
+	QName        string  `json:"qname"`
+	QType        string  `json:"qtype"`
+	RCode        string  `json:"rcode"`
+	Cached       bool    `json:"cached"`
+	DurationMs   float64 `json:"duration_ms"`
+	Blocked      bool    `json:"blocked"`
+	DNSSECStatus string  `json:"dnssec_status,omitempty"`
 }
 
 // QueryLog is a thread-safe ring buffer of DNS query entries with pub/sub support.

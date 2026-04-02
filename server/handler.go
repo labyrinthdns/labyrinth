@@ -30,10 +30,24 @@ type MainHandler struct {
 	metrics     *metrics.Metrics
 	logger      *slog.Logger
 	noCacheNets []*net.IPNet
+	blocklist   interface {
+		IsBlocked(string) bool
+		BlockingMode() string
+		CustomIP() string
+	}
 
 	// OnQuery is an optional callback invoked after each query is resolved.
-	// Parameters: client IP, qname, qtype, rcode, whether served from cache, duration in ms.
+	// Parameters: client IP, qname, qtype, rcode (may be "BLOCKED"), whether served from cache, duration in ms.
 	OnQuery func(client, qname, qtype, rcode string, cached bool, durationMs float64)
+}
+
+// SetBlocklist configures an optional blocklist for the handler.
+func (h *MainHandler) SetBlocklist(bl interface {
+	IsBlocked(string) bool
+	BlockingMode() string
+	CustomIP() string
+}) {
+	h.blocklist = bl
 }
 
 // NewMainHandler creates a new MainHandler.
@@ -135,6 +149,24 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		qtypeStr = "OTHER"
 	}
 	h.metrics.IncQueries(qtypeStr)
+
+	// 2.5 Blocklist check
+	if h.blocklist != nil && h.blocklist.IsBlocked(q.Name) {
+		h.metrics.IncBlockedQueries()
+		resp, err := h.buildBlockedResponse(msg, q)
+		if err != nil {
+			return nil, err
+		}
+		duration := time.Since(start)
+		h.metrics.ObserveQueryDuration(duration)
+		h.metrics.IncResponses("BLOCKED")
+		durationMs := float64(duration.Microseconds()) / 1000.0
+		h.logger.Debug("query_blocked", "client", clientIP, "qname", q.Name, "qtype", qtypeStr)
+		if h.OnQuery != nil {
+			h.OnQuery(clientIP, q.Name, qtypeStr, "BLOCKED", true, durationMs)
+		}
+		return resp, nil
+	}
 
 	bypassCache := h.shouldBypassCache(clientIP)
 
@@ -345,6 +377,54 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 	}
 
 	return packed, nil
+}
+
+func (h *MainHandler) buildBlockedResponse(query *dns.Message, q dns.Question) ([]byte, error) {
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID:    query.Header.ID,
+			Flags: dns.NewFlagBuilder().SetQR(true).SetRD(query.Header.RD()).SetRA(true).SetRCODE(dns.RCodeNXDomain).Build(),
+		},
+		Questions: query.Questions,
+	}
+
+	mode := "nxdomain"
+	if h.blocklist != nil {
+		mode = h.blocklist.BlockingMode()
+	}
+
+	switch mode {
+	case "null_ip":
+		resp.Header.Flags = dns.NewFlagBuilder().SetQR(true).SetRD(query.Header.RD()).SetRA(true).SetRCODE(dns.RCodeNoError).Build()
+		if q.Type == dns.TypeA {
+			resp.Answers = []dns.ResourceRecord{{
+				Name: q.Name, Type: dns.TypeA, Class: dns.ClassIN, TTL: 0, RDLength: 4, RData: []byte{0, 0, 0, 0},
+			}}
+		} else if q.Type == dns.TypeAAAA {
+			resp.Answers = []dns.ResourceRecord{{
+				Name: q.Name, Type: dns.TypeAAAA, Class: dns.ClassIN, TTL: 0, RDLength: 16, RData: make([]byte, 16),
+			}}
+		}
+	case "custom_ip":
+		customIP := "0.0.0.0"
+		if h.blocklist != nil {
+			customIP = h.blocklist.CustomIP()
+		}
+		ip := net.ParseIP(customIP)
+		if ip != nil && q.Type == dns.TypeA {
+			ipv4 := ip.To4()
+			if ipv4 != nil {
+				resp.Header.Flags = dns.NewFlagBuilder().SetQR(true).SetRD(query.Header.RD()).SetRA(true).SetRCODE(dns.RCodeNoError).Build()
+				resp.Answers = []dns.ResourceRecord{{
+					Name: q.Name, Type: dns.TypeA, Class: dns.ClassIN, TTL: 0, RDLength: 4, RData: ipv4,
+				}}
+			}
+		}
+	}
+	// default: nxdomain - already set
+
+	buf := make([]byte, 4096)
+	return dns.Pack(resp, buf)
 }
 
 func extractIP(addr net.Addr) string {

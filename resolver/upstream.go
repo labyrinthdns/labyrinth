@@ -51,7 +51,7 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 			Class: qclass,
 		}},
 		Additional: []dns.ResourceRecord{
-			dns.BuildOPT(4096, false),
+			dns.BuildOPT(4096, r.config.DNSSECEnabled),
 		},
 	}
 

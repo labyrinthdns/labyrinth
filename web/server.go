@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/labyrinthdns/labyrinth/blocklist"
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/metrics"
@@ -25,27 +26,29 @@ var (
 
 // AdminServer provides the admin dashboard HTTP backend.
 type AdminServer struct {
-	cache          *cache.Cache
-	metrics        *metrics.Metrics
-	resolver       *resolver.Resolver
-	config         *config.Config
-	queryLog       *QueryLog
-	timeSeries     *TimeSeriesAggregator
-	logger         *slog.Logger
-	jwtSecret      []byte
-	setupDone      bool
-	nextID         atomic.Uint64
-	topClients     *TopTracker
-	topDomains     *TopTracker
-	clientQueryNum map[string]*atomic.Uint64
-	clientNumMu    sync.Mutex
-	updateCache    *UpdateInfo
+	cache           *cache.Cache
+	metrics         *metrics.Metrics
+	resolver        *resolver.Resolver
+	config          *config.Config
+	queryLog        *QueryLog
+	timeSeries      *TimeSeriesAggregator
+	logger          *slog.Logger
+	jwtSecret       []byte
+	setupDone       bool
+	nextID          atomic.Uint64
+	topClients      *TopTracker
+	topDomains      *TopTracker
+	clientQueryNum  map[string]*atomic.Uint64
+	clientNumMu     sync.Mutex
+	updateCache     *UpdateInfo
 	updateCheckedAt time.Time
-	updateMu       sync.RWMutex
+	updateMu        sync.RWMutex
+	blocklist       *blocklist.Manager
 }
 
-// NewAdminServer creates a new AdminServer.
-func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *resolver.Resolver, logger *slog.Logger) *AdminServer {
+// NewAdminServer creates a new AdminServer. The bl parameter is optional and
+// may be nil when the blocklist feature is disabled.
+func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *resolver.Resolver, logger *slog.Logger, bl *blocklist.Manager) *AdminServer {
 	bufSize := cfg.Web.QueryLogBuffer
 	if bufSize <= 0 {
 		bufSize = 1000
@@ -70,6 +73,7 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		topClients:     NewTopTracker(cfg.Web.TopClientsLimit),
 		topDomains:     NewTopTracker(cfg.Web.TopDomainsLimit),
 		clientQueryNum: make(map[string]*atomic.Uint64),
+		blocklist:      bl,
 	}
 }
 
@@ -129,6 +133,8 @@ func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached boo
 	s.clientNumMu.Unlock()
 	clientNum := counter.Add(1)
 
+	blocked := rcode == "BLOCKED"
+
 	entry := QueryEntry{
 		ID:         id,
 		GlobalNum:  id,
@@ -140,6 +146,7 @@ func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached boo
 		RCode:      rcode,
 		Cached:     cached,
 		DurationMs: durationMs,
+		Blocked:    blocked,
 	}
 	s.queryLog.Record(entry)
 
@@ -179,6 +186,12 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/cache/negative", s.requireAuth(s.handleNegativeCache))
 	mux.HandleFunc("/api/system/update/check", s.requireAuth(s.handleCheckUpdate))
 	mux.HandleFunc("/api/system/update/apply", s.requireAuth(s.handleApplyUpdate))
+	mux.HandleFunc("/api/blocklist/stats", s.requireAuth(s.handleBlocklistStats))
+	mux.HandleFunc("/api/blocklist/lists", s.requireAuth(s.handleBlocklistLists))
+	mux.HandleFunc("/api/blocklist/refresh", s.requireAuth(s.handleBlocklistRefresh))
+	mux.HandleFunc("/api/blocklist/block", s.requireAuth(s.handleBlocklistBlock))
+	mux.HandleFunc("/api/blocklist/unblock", s.requireAuth(s.handleBlocklistUnblock))
+	mux.HandleFunc("/api/blocklist/check", s.requireAuth(s.handleBlocklistCheck))
 
 	// SPA handler — serves embedded React frontend with SPA routing fallback
 	mux.Handle("/", SPAHandler())

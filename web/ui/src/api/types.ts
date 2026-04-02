@@ -28,6 +28,10 @@ export interface StatsResponse {
   cache_negative: number
   cache_hit_ratio: number
   resolver_ready: boolean
+  dnssec_secure: number
+  dnssec_insecure: number
+  dnssec_bogus: number
+  blocked_queries: number
 }
 
 export interface TimeSeriesBucket {
@@ -50,6 +54,8 @@ export interface QueryEntry {
   duration_ms: number
   global_num: number
   client_num: number
+  blocked?: boolean
+  dnssec_status?: string
 }
 
 export interface CacheStats {
@@ -128,4 +134,23 @@ export interface UpdateInfo {
   release_url?: string
   release_notes?: string
   asset_name?: string
+}
+
+export interface BlocklistStats {
+  enabled: boolean
+  total_rules: number
+  list_count: number
+  blocked_total: number
+  custom_blocks: number
+  custom_allows: number
+  blocking_mode: string
+}
+
+export interface BlocklistListEntry {
+  url: string
+  format: string
+  enabled: boolean
+  last_update: string
+  rule_count: number
+  error?: string
 }

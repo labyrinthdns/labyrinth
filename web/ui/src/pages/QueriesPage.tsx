@@ -1,4 +1,4 @@
-import { Pause, Play, Trash2, Wifi, WifiOff } from 'lucide-react'
+import { Pause, Play, Trash2, Wifi, WifiOff, Shield } from 'lucide-react'
 import { useQueryStream } from '@/hooks/useWebSocket'
 import { formatDuration } from '@/lib/utils'
 
@@ -157,7 +157,26 @@ export default function QueriesPage() {
                       {q.qtype}
                     </td>
                     <td className="px-4 py-2.5">
-                      <RcodeBadge rcode={q.rcode} />
+                      <div className="flex items-center gap-1.5">
+                        {q.blocked ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400">
+                            <Shield size={10} />
+                            Blocked
+                          </span>
+                        ) : (
+                          <RcodeBadge rcode={q.rcode} />
+                        )}
+                        {q.dnssec_status === 'secure' && (
+                          <span title="DNSSEC Secure">
+                            <Shield size={12} className="text-green-500 dark:text-green-400" />
+                          </span>
+                        )}
+                        {q.dnssec_status === 'bogus' && (
+                          <span title="DNSSEC Bogus">
+                            <Shield size={12} className="text-red-500 dark:text-red-400" />
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-2.5">
                       <CachedBadge cached={q.cached} />

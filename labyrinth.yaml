@@ -16,6 +16,7 @@ resolver:
   upstream_retries: 3
   qname_minimization: true
   prefer_ipv4: true
+  dnssec_enabled: true
 
 cache:
   max_entries: 100000
@@ -57,6 +58,15 @@ web:
   auth:
     username: "admin"
     password_hash: "$2a$10$nS.tf.v7HRdqyChSmP9nBeJKXESl/J2bn8OnCEHCe5UYugbygOCjO"
+
+blocklist:
+  enabled: false
+  # Pipe-separated URL|format pairs
+  # lists: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|hosts"
+  refresh_interval: 24h
+  blocking_mode: nxdomain  # nxdomain, null_ip, custom_ip
+  # custom_ip: "0.0.0.0"
+  # whitelist: example.com, another.com
 
 # access_control:
 #   allow: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16

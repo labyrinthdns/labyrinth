@@ -10,15 +10,32 @@ import (
 
 // Config holds the complete application configuration.
 type Config struct {
-	Server   ServerConfig
-	Resolver ResolverConfig
-	Cache    CacheConfig
-	Security SecurityConfig
-	Logging  LoggingConfig
-	ACL      ACLConfig
-	Web      WebConfig
-	Daemon   DaemonConfig
-	Zabbix   ZabbixConfig
+	Server    ServerConfig
+	Resolver  ResolverConfig
+	Cache     CacheConfig
+	Security  SecurityConfig
+	Logging   LoggingConfig
+	ACL       ACLConfig
+	Web       WebConfig
+	Daemon    DaemonConfig
+	Zabbix    ZabbixConfig
+	Blocklist BlocklistConfig
+}
+
+// BlocklistConfig holds blocklist filtering settings.
+type BlocklistConfig struct {
+	Enabled         bool
+	Lists           []BlocklistEntry
+	RefreshInterval time.Duration
+	BlockingMode    string
+	CustomIP        string
+	Whitelist       []string
+}
+
+// BlocklistEntry holds a single blocklist source URL and its format.
+type BlocklistEntry struct {
+	URL    string
+	Format string
 }
 
 // WebConfig holds web dashboard settings.
@@ -70,6 +87,7 @@ type ResolverConfig struct {
 	UpstreamRetries int
 	QMinEnabled     bool
 	PreferIPv4      bool
+	DNSSECEnabled   bool
 }
 
 // CacheConfig holds cache settings.
@@ -196,6 +214,9 @@ func applyYAML(cfg *Config, values map[string]string) {
 	}
 	if v, ok := values["resolver.prefer_ipv4"]; ok {
 		cfg.Resolver.PreferIPv4 = parseBool(v)
+	}
+	if v, ok := values["resolver.dnssec_enabled"]; ok {
+		cfg.Resolver.DNSSECEnabled = parseBool(v)
 	}
 
 	// Cache
@@ -342,6 +363,28 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["zabbix.addr"]; ok {
 		cfg.Zabbix.Addr = v
 	}
+
+	// Blocklist
+	if v, ok := values["blocklist.enabled"]; ok {
+		cfg.Blocklist.Enabled = parseBool(v)
+	}
+	if v, ok := values["blocklist.lists"]; ok && v != "" {
+		cfg.Blocklist.Lists = parseBlocklistEntries(v)
+	}
+	if v, ok := values["blocklist.refresh_interval"]; ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Blocklist.RefreshInterval = d
+		}
+	}
+	if v, ok := values["blocklist.blocking_mode"]; ok {
+		cfg.Blocklist.BlockingMode = v
+	}
+	if v, ok := values["blocklist.custom_ip"]; ok {
+		cfg.Blocklist.CustomIP = v
+	}
+	if v, ok := values["blocklist.whitelist"]; ok && v != "" {
+		cfg.Blocklist.Whitelist = parseCSVList(v)
+	}
 }
 
 func applyEnv(cfg *Config) {
@@ -393,6 +436,26 @@ func parseCSVList(s string) []string {
 		item = strings.TrimSpace(item)
 		if item != "" {
 			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// parseBlocklistEntries parses a pipe-separated list of "url|format" pairs
+// separated by commas: "url1|format1,url2|format2".
+func parseBlocklistEntries(s string) []BlocklistEntry {
+	var result []BlocklistEntry
+	for _, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		parts := strings.SplitN(item, "|", 2)
+		if len(parts) == 2 {
+			result = append(result, BlocklistEntry{
+				URL:    strings.TrimSpace(parts[0]),
+				Format: strings.TrimSpace(parts[1]),
+			})
 		}
 	}
 	return result
