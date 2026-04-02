@@ -66,17 +66,25 @@ export default function DashboardPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, tsRes, clientsRes, domainsRes] = await Promise.all([
-        api.stats() as Promise<unknown>,
-        api.timeseries('5m') as Promise<unknown>,
+      const [statsRes, tsRes, clientsRes, domainsRes] = await Promise.allSettled([
+        api.stats(),
+        api.timeseries('5m'),
         api.topClients(10),
         api.topDomains(10),
       ])
-      setStats(statsRes as StatsResponse)
-      const tsData = tsRes as { buckets: TimeSeriesBucket[] }
-      setTimeseries(tsData.buckets || [])
-      setTopClients(clientsRes.entries || [])
-      setTopDomains(domainsRes.entries || [])
+      if (statsRes.status === 'fulfilled') setStats(statsRes.value as unknown as StatsResponse)
+      if (tsRes.status === 'fulfilled') {
+        const tsData = tsRes.value as unknown as { buckets: TimeSeriesBucket[] }
+        setTimeseries(tsData?.buckets || [])
+      }
+      if (clientsRes.status === 'fulfilled') {
+        const data = clientsRes.value as unknown as { entries?: TopEntry[] }
+        setTopClients(data?.entries || [])
+      }
+      if (domainsRes.status === 'fulfilled') {
+        const data = domainsRes.value as unknown as { entries?: TopEntry[] }
+        setTopDomains(data?.entries || [])
+      }
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch stats')

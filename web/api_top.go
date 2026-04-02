@@ -20,7 +20,7 @@ func (s *AdminServer) handleTopClients(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries := s.topClients.Top(limit)
-	jsonResponse(w, http.StatusOK, entries)
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"entries": entries})
 }
 
 // handleTopDomains handles GET /api/stats/top-domains — returns top queried domains.
@@ -38,5 +38,5 @@ func (s *AdminServer) handleTopDomains(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries := s.topDomains.Top(limit)
-	jsonResponse(w, http.StatusOK, entries)
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"entries": entries})
 }
