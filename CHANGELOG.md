@@ -4,6 +4,72 @@ All notable changes to Labyrinth will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-04-03
+
+### Added
+
+#### DNSSEC Validation
+- Full DNSSEC signature verification (RSA/SHA-256, ECDSA P-256/P-384, ED25519)
+- New DNS record types: DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM
+- Trust chain validation from IANA root KSK (key tag 20326) to signer zone
+- DS digest verification (SHA-1, SHA-256, SHA-384)
+- DO flag on upstream queries when DNSSEC enabled
+- Bogus responses return SERVFAIL, Secure responses set AD flag
+- DNSSEC metrics: secure/insecure/bogus counters on dashboard
+- Config: `resolver.dnssec_enabled` (default: true)
+
+#### DNS Blocklist / Filtering (Pi-hole style)
+- Domain blocking with configurable sources (hosts, domain list, AdBlock Plus formats)
+- Three blocking modes: NXDOMAIN, null IP (0.0.0.0/::), custom IP
+- Wildcard blocking and whitelist overrides
+- Periodic list refresh from remote URLs (configurable interval)
+- Zero-latency blocking (checked before cache lookup)
+- Full web dashboard: list management, quick block/unblock, domain check
+- API: `/api/blocklist/{stats,lists,refresh,block,unblock,check}`
+
+#### Analytics & Dashboard
+- Top clients leaderboard (by query count, configurable limit)
+- Top domains leaderboard (by query count, configurable limit)
+- Global and per-client query numbering in live query stream
+- Negative cache entries display with NXDOMAIN/NODATA badges
+- Blocked queries stat card and DNSSEC status card on dashboard
+- DNSSEC shield badges in query stream (green=secure, red=bogus)
+
+#### Self-Update
+- Automatic version check against GitHub Releases (configurable interval)
+- One-click update from web dashboard with confirmation dialog
+- Binary download, replacement, and automatic service restart
+- Platform-specific restart: `syscall.Exec` (Unix), process spawn (Windows)
+- Windows: rename running exe to `.old` before replacement
+- Config: `web.auto_update` (default: true), `web.update_check_interval` (default: 24h)
+
+#### Authentication & Security
+- Password change via web UI (Configuration page)
+- Minimum 8-character password validation with CLI error messages
+- CLI `labyrinth hash` command with usage documentation
+- Per-client cache bypass (`cache.no_cache_clients` CIDR list)
+
+#### Operations
+- About info: website + GitHub links in sidebar, user menu, CLI banner
+- `update.sh` script for one-line server updates with automatic rollback
+- Improved `install.sh` with v0.2.0 default config, bench tool download, banner
+- Improved `uninstall.sh` with bench binary cleanup
+
+### Fixed
+- In-bailiwick NS resolution for TLDs like `.tr`, `.br`, `.uk` where nameserver
+  hostnames are within the same zone (e.g., `ns71.ns.tr` for `.tr` zone)
+- `formatNumber()` crash on undefined/null values
+- Blocklist API returning 400 when feature is disabled (now returns 200 with empty data)
+- Top clients/domains API returning raw array instead of `{entries: [...]}` wrapper
+- Flaky JWT tampered signature test
+- Data race in resolver test closures (atomic counters)
+
+### Tests
+- 90+ new tests across blocklist, dnssec, and dns packages
+- Blocklist: matcher (16 tests), parser (16 tests) — exact, wildcard, whitelist, concurrency
+- DNSSEC: verify (11 tests), DS (8 tests), trust anchor (3 tests), validator (11 tests)
+- DNS: 15 DNSSEC record parser tests (DNSKEY, DS, RRSIG, NSEC, NSEC3, type bitmaps)
+
 ## [0.1.0] - 2026-04-02
 
 ### Added
