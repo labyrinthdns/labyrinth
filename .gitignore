@@ -1,7 +1,7 @@
 # Binaries
-labyrinth
-labyrinth.exe
-labyrinth-*
+/labyrinth
+/labyrinth.exe
+/labyrinth-*
 *.exe
 *.exe~
 *.bin
