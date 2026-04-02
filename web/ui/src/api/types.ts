@@ -48,6 +48,8 @@ export interface QueryEntry {
   rcode: string
   cached: boolean
   duration_ms: number
+  global_num: number
+  client_num: number
 }
 
 export interface CacheStats {
@@ -103,4 +105,27 @@ export interface VersionResponse {
   build_time: string
   go_version: string
   os_arch: string
+}
+
+export interface TopEntry {
+  key: string
+  count: number
+}
+
+export interface NegativeCacheEntry {
+  name: string
+  type: string
+  neg_type: string
+  rcode: string
+  ttl: number
+  authority: { name: string; type: string; ttl: number; rdata: string }[]
+}
+
+export interface UpdateInfo {
+  current_version: string
+  latest_version: string
+  update_available: boolean
+  release_url?: string
+  release_notes?: string
+  asset_name?: string
 }

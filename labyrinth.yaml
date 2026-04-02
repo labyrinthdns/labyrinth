@@ -25,6 +25,8 @@ cache:
   sweep_interval: 60s
   serve_stale: false
   serve_stale_ttl: 30
+  # Comma-separated list of client IPs/CIDRs that bypass the cache (always resolve fresh)
+  # no_cache_clients: 192.168.1.100, 10.0.0.0/24
 
 security:
   rate_limit:
@@ -46,6 +48,9 @@ web:
   enabled: true
   addr: "127.0.0.1:9153"
   query_log_buffer: 1000
+  # Maximum number of entries for top clients/domains leaderboards
+  top_clients_limit: 20
+  top_domains_limit: 20
   auth:
     username: "admin"
     password_hash: "$2a$10$nS.tf.v7HRdqyChSmP9nBeJKXESl/J2bn8OnCEHCe5UYugbygOCjO"

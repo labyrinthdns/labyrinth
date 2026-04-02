@@ -50,9 +50,11 @@ func defaultConfig() *Config {
 		},
 		ACL: ACLConfig{},
 		Web: WebConfig{
-			Enabled:        true,
-			Addr:           "127.0.0.1:9153",
-			QueryLogBuffer: 1000,
+			Enabled:         true,
+			Addr:            "127.0.0.1:9153",
+			QueryLogBuffer:  1000,
+			TopClientsLimit: 20,
+			TopDomainsLimit: 20,
 		},
 		Daemon: DaemonConfig{
 			Enabled: false,

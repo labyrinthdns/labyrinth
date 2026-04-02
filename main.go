@@ -68,11 +68,20 @@ func main() {
 		case "hash":
 			if len(args) < 2 {
 				fmt.Fprintln(os.Stderr, "usage: labyrinth hash <password>")
+				fmt.Fprintf(os.Stderr, "\nGenerates a bcrypt hash for use in labyrinth.yaml web.auth.password_hash.\n")
+				fmt.Fprintf(os.Stderr, "Password must be at least %d characters.\n", web.MinPasswordLength)
+				fmt.Fprintf(os.Stderr, "\nExample:\n")
+				fmt.Fprintf(os.Stderr, "  labyrinth hash MySecurePass123\n")
+				fmt.Fprintf(os.Stderr, "\nThen add to labyrinth.yaml:\n")
+				fmt.Fprintf(os.Stderr, "  web:\n")
+				fmt.Fprintf(os.Stderr, "    auth:\n")
+				fmt.Fprintf(os.Stderr, "      username: admin\n")
+				fmt.Fprintf(os.Stderr, "      password_hash: <paste hash here>\n")
 				os.Exit(1)
 			}
 			hash, err := web.HashPassword(args[1])
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "hash error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 			fmt.Println(hash)
@@ -174,6 +183,10 @@ func main() {
 	}, m, logger)
 
 	handler := server.NewMainHandler(res, c, rl, rrl, acl, m, logger)
+
+	if len(cfg.Cache.NoCacheClients) > 0 {
+		handler.SetNoCacheClients(cfg.Cache.NoCacheClients)
+	}
 
 	// Context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

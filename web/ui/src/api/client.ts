@@ -1,3 +1,5 @@
+import type { TopEntry, NegativeCacheEntry, UpdateInfo } from '@/api/types'
+
 const TOKEN_KEY = 'labyrinth_token'
 
 export function getToken(): string | null {
@@ -79,6 +81,25 @@ export const api = {
   health: () => request<Record<string, unknown>>('/api/system/health'),
 
   version: () => request<{ version: string; build_time: string; go_version: string }>('/api/system/version'),
+
+  topClients: (limit?: number) =>
+    request<{ entries: TopEntry[] }>(`/api/stats/top-clients${limit ? `?limit=${limit}` : ''}`),
+
+  topDomains: (limit?: number) =>
+    request<{ entries: TopEntry[] }>(`/api/stats/top-domains${limit ? `?limit=${limit}` : ''}`),
+
+  cacheNegative: (limit = 100) =>
+    request<{ entries: NegativeCacheEntry[] }>(`/api/cache/negative?limit=${limit}`),
+
+  checkUpdate: () => request<UpdateInfo>('/api/system/update/check'),
+
+  applyUpdate: () => request<{ status: string }>('/api/system/update/apply', { method: 'POST' }),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ status: string }>('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
 }
 
 export function createQueryWebSocket(): WebSocket {

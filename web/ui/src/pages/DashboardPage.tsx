@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Globe, Zap, Database, Clock, AlertTriangle } from 'lucide-react'
+import { Globe, Zap, Database, Clock, AlertTriangle, Users } from 'lucide-react'
 import {
   AreaChart,
   Area,
@@ -13,7 +13,7 @@ import {
   Legend,
 } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, TimeSeriesBucket } from '@/api/types'
+import type { StatsResponse, TimeSeriesBucket, TopEntry } from '@/api/types'
 import { formatNumber, formatUptime } from '@/lib/utils'
 
 const RCODE_COLORS: Record<string, string> = {
@@ -60,17 +60,23 @@ function StatCard({
 export default function DashboardPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [timeseries, setTimeseries] = useState<TimeSeriesBucket[]>([])
+  const [topClients, setTopClients] = useState<TopEntry[]>([])
+  const [topDomains, setTopDomains] = useState<TopEntry[]>([])
   const [error, setError] = useState('')
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, tsRes] = await Promise.all([
+      const [statsRes, tsRes, clientsRes, domainsRes] = await Promise.all([
         api.stats() as Promise<unknown>,
         api.timeseries('5m') as Promise<unknown>,
+        api.topClients(10),
+        api.topDomains(10),
       ])
       setStats(statsRes as StatsResponse)
       const tsData = tsRes as { buckets: TimeSeriesBucket[] }
       setTimeseries(tsData.buckets || [])
+      setTopClients(clientsRes.entries || [])
+      setTopDomains(domainsRes.entries || [])
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch stats')
@@ -265,6 +271,73 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Top Clients & Top Domains */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Top Clients */}
+        <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-4 flex items-center gap-2">
+            <Users size={16} className="text-amber-600 dark:text-amber-400" />
+            Top Clients
+          </h2>
+          {topClients.length > 0 ? (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  <th className="text-left pb-2 w-8">#</th>
+                  <th className="text-left pb-2">Client</th>
+                  <th className="text-right pb-2">Queries</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                {topClients.map((entry, i) => (
+                  <tr key={entry.key}>
+                    <td className="py-1.5 text-xs text-slate-400">{i + 1}</td>
+                    <td className="py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{entry.key}</td>
+                    <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="flex items-center justify-center h-20 text-sm text-slate-400">
+              No data yet
+            </div>
+          )}
+        </div>
+
+        {/* Top Domains */}
+        <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-4 flex items-center gap-2">
+            <Globe size={16} className="text-amber-600 dark:text-amber-400" />
+            Top Domains
+          </h2>
+          {topDomains.length > 0 ? (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  <th className="text-left pb-2 w-8">#</th>
+                  <th className="text-left pb-2">Domain</th>
+                  <th className="text-right pb-2">Queries</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                {topDomains.map((entry, i) => (
+                  <tr key={entry.key}>
+                    <td className="py-1.5 text-xs text-slate-400">{i + 1}</td>
+                    <td className="py-1.5 text-xs text-slate-700 dark:text-slate-300 max-w-xs truncate" title={entry.key}>{entry.key}</td>
+                    <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="flex items-center justify-center h-20 text-sm text-slate-400">
+              No data yet
+            </div>
+          )}
         </div>
       </div>
 

@@ -47,7 +47,7 @@ func testAdminServer(t *testing.T) *AdminServer {
 
 func testAdminServerWithAuth(t *testing.T) (*AdminServer, string) {
 	t.Helper()
-	password := "s3cret"
+	password := "s3cretPass!"
 	hash, err := HashPassword(password)
 	if err != nil {
 		t.Fatal(err)
@@ -378,11 +378,11 @@ func TestHashPassword(t *testing.T) {
 }
 
 func TestCheckPassword(t *testing.T) {
-	hash, _ := HashPassword("hunter2")
-	if !checkPassword("hunter2", hash) {
+	hash, _ := HashPassword("hunter2pass")
+	if !checkPassword("hunter2pass", hash) {
 		t.Fatal("correct password should match")
 	}
-	if checkPassword("wrong", hash) {
+	if checkPassword("wrongpassword", hash) {
 		t.Fatal("wrong password should not match")
 	}
 }

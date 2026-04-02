@@ -4,8 +4,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/dns"
 )
 
@@ -188,4 +190,29 @@ func (s *AdminServer) handleCacheDelete(w http.ResponseWriter, r *http.Request) 
 
 	s.logger.Info("cache entry deleted via admin API", "name", name, "type", typeStr)
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleNegativeCache handles GET /api/cache/negative — returns negative cache entries.
+func (s *AdminServer) handleNegativeCache(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	entries := s.cache.NegativeEntries(limit)
+	if entries == nil {
+		entries = []cache.NegativeEntryInfo{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"entries": entries,
+		"count":   len(entries),
+	})
 }
