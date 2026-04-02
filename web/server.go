@@ -39,6 +39,9 @@ type AdminServer struct {
 	topDomains     *TopTracker
 	clientQueryNum map[string]*atomic.Uint64
 	clientNumMu    sync.Mutex
+	updateCache    *UpdateInfo
+	updateCheckedAt time.Time
+	updateMu       sync.RWMutex
 }
 
 // NewAdminServer creates a new AdminServer.

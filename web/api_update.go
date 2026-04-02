@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,20 +39,95 @@ type githubAsset struct {
 
 const githubReleasesURL = "https://api.github.com/repos/labyrinthdns/labyrinth/releases/latest"
 
-// handleCheckUpdate handles GET /api/system/update/check — checks for available updates.
+// handleCheckUpdate handles GET /api/system/update/check — returns cached update info or fetches fresh.
 func (s *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
 
+	// Return cached result if fresh enough
+	s.updateMu.RLock()
+	cached := s.updateCache
+	checkedAt := s.updateCheckedAt
+	s.updateMu.RUnlock()
+
+	if cached != nil && time.Since(checkedAt) < s.config.Web.UpdateCheckInterval {
+		jsonResponse(w, http.StatusOK, cached)
+		return
+	}
+
+	// Fetch fresh
 	info, err := checkForUpdate()
 	if err != nil {
+		// Return stale cache if available
+		if cached != nil {
+			jsonResponse(w, http.StatusOK, cached)
+			return
+		}
 		jsonResponse(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("update check failed: %v", err)})
 		return
 	}
 
+	s.updateMu.Lock()
+	s.updateCache = info
+	s.updateCheckedAt = time.Now()
+	s.updateMu.Unlock()
+
 	jsonResponse(w, http.StatusOK, info)
+}
+
+// StartUpdateChecker runs a background goroutine that periodically checks for updates.
+func (s *AdminServer) StartUpdateChecker(ctx context.Context) {
+	if !s.config.Web.AutoUpdate {
+		return
+	}
+
+	interval := s.config.Web.UpdateCheckInterval
+	if interval < time.Minute {
+		interval = 24 * time.Hour
+	}
+
+	// Initial check after 30 seconds (let server finish starting)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(30 * time.Second):
+	}
+
+	info, err := checkForUpdate()
+	if err == nil {
+		s.updateMu.Lock()
+		s.updateCache = info
+		s.updateCheckedAt = time.Now()
+		s.updateMu.Unlock()
+		if info.UpdateAvailable {
+			s.logger.Info("update available", "current", info.CurrentVersion, "latest", info.LatestVersion)
+		}
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			info, err := checkForUpdate()
+			if err != nil {
+				s.logger.Debug("update check failed", "error", err)
+				continue
+			}
+			s.updateMu.Lock()
+			s.updateCache = info
+			s.updateCheckedAt = time.Now()
+			s.updateMu.Unlock()
+			if info.UpdateAvailable {
+				s.logger.Info("update available", "current", info.CurrentVersion, "latest", info.LatestVersion)
+			}
+		}
+	}
 }
 
 // handleApplyUpdate handles POST /api/system/update/apply — downloads and applies an update.

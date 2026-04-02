@@ -23,12 +23,14 @@ type Config struct {
 
 // WebConfig holds web dashboard settings.
 type WebConfig struct {
-	Enabled         bool
-	Addr            string
-	QueryLogBuffer  int
-	TopClientsLimit int
-	TopDomainsLimit int
-	Auth            WebAuthConfig
+	Enabled             bool
+	Addr                string
+	QueryLogBuffer      int
+	TopClientsLimit     int
+	TopDomainsLimit     int
+	AutoUpdate          bool
+	UpdateCheckInterval time.Duration
+	Auth                WebAuthConfig
 }
 
 // WebAuthConfig holds web dashboard authentication settings.
@@ -308,6 +310,14 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["web.top_domains_limit"]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Web.TopDomainsLimit = n
+		}
+	}
+	if v, ok := values["web.auto_update"]; ok {
+		cfg.Web.AutoUpdate = parseBool(v)
+	}
+	if v, ok := values["web.update_check_interval"]; ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Web.UpdateCheckInterval = d
 		}
 	}
 	if v, ok := values["web.auth.username"]; ok {

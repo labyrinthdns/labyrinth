@@ -45,6 +45,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     api.checkUpdate().then(setUpdateInfo).catch(() => {})
     api.version().then((v) => setCurrentVersion(v.version)).catch(() => {})
+    // Re-check every hour
+    const interval = setInterval(() => {
+      api.checkUpdate().then(setUpdateInfo).catch(() => {})
+    }, 60 * 60 * 1000)
+    return () => clearInterval(interval)
   }, [])
 
   const handleApplyUpdate = useCallback(async () => {
