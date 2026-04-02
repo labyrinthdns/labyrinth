@@ -1,9 +1,12 @@
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS TARGETARCH
+ARG VERSION=dev
 WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w \
-  -X main.version=$(git describe --tags --always 2>/dev/null || echo dev) \
+  -X main.version=${VERSION} \
   -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
   -X 'main.goVersion=$(go version | cut -d\" \" -f3)'" \
   -o /labyrinth .

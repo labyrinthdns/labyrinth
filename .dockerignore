@@ -1,0 +1,13 @@
+.git
+.github
+.project
+website
+web/ui/node_modules
+web/ui/src
+web/ui/package.json
+web/ui/package-lock.json
+web/ui/tsconfig*.json
+web/ui/vite.config.ts
+web/ui/eslint.config.js
+web/ui/index.html
+*.md
