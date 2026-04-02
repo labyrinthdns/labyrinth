@@ -38,13 +38,14 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"prefer_ipv4":          cfg.Resolver.PreferIPv4,
 		},
 		"cache": map[string]interface{}{
-			"max_entries":    cfg.Cache.MaxEntries,
-			"min_ttl":        cfg.Cache.MinTTL,
-			"max_ttl":        cfg.Cache.MaxTTL,
+			"max_entries":      cfg.Cache.MaxEntries,
+			"min_ttl":          cfg.Cache.MinTTL,
+			"max_ttl":          cfg.Cache.MaxTTL,
 			"negative_max_ttl": cfg.Cache.NegMaxTTL,
-			"sweep_interval": cfg.Cache.SweepInterval.String(),
-			"serve_stale":    cfg.Cache.ServeStale,
-			"stale_ttl":      cfg.Cache.StaleTTL,
+			"sweep_interval":   cfg.Cache.SweepInterval.String(),
+			"serve_stale":      cfg.Cache.ServeStale,
+			"stale_ttl":        cfg.Cache.StaleTTL,
+			"no_cache_clients": cfg.Cache.NoCacheClients,
 		},
 		"security": map[string]interface{}{
 			"rate_limit": map[string]interface{}{
@@ -65,9 +66,11 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"format": cfg.Logging.Format,
 		},
 		"web": map[string]interface{}{
-			"enabled":          cfg.Web.Enabled,
-			"addr":             cfg.Web.Addr,
-			"query_log_buffer": cfg.Web.QueryLogBuffer,
+			"enabled":           cfg.Web.Enabled,
+			"addr":              cfg.Web.Addr,
+			"query_log_buffer":  cfg.Web.QueryLogBuffer,
+			"top_clients_limit": cfg.Web.TopClientsLimit,
+			"top_domains_limit": cfg.Web.TopDomainsLimit,
 			"auth": map[string]interface{}{
 				"username":      cfg.Web.Auth.Username,
 				"password_hash": authPassword,

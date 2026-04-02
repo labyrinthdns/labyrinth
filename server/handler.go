@@ -22,13 +22,14 @@ type Handler interface {
 
 // MainHandler ties together parsing, resolution, and response assembly.
 type MainHandler struct {
-	resolver *resolver.Resolver
-	cache    *cache.Cache
-	limiter  *security.RateLimiter
-	rrl      *security.RRL
-	acl      *security.ACL
-	metrics  *metrics.Metrics
-	logger   *slog.Logger
+	resolver    *resolver.Resolver
+	cache       *cache.Cache
+	limiter     *security.RateLimiter
+	rrl         *security.RRL
+	acl         *security.ACL
+	metrics     *metrics.Metrics
+	logger      *slog.Logger
+	noCacheNets []*net.IPNet
 
 	// OnQuery is an optional callback invoked after each query is resolved.
 	// Parameters: client IP, qname, qtype, rcode, whether served from cache, duration in ms.
@@ -54,6 +55,40 @@ func NewMainHandler(
 		metrics:  m,
 		logger:   logger,
 	}
+}
+
+// SetNoCacheClients configures the list of client IPs/CIDRs that should bypass the cache.
+func (h *MainHandler) SetNoCacheClients(cidrs []string) {
+	for _, cidr := range cidrs {
+		if !strings.Contains(cidr, "/") {
+			if strings.Contains(cidr, ":") {
+				cidr += "/128"
+			} else {
+				cidr += "/32"
+			}
+		}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			h.noCacheNets = append(h.noCacheNets, ipNet)
+		}
+	}
+}
+
+// shouldBypassCache returns true if the given client IP should bypass the cache.
+func (h *MainHandler) shouldBypassCache(clientIP string) bool {
+	if len(h.noCacheNets) == 0 {
+		return false
+	}
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
+		return false
+	}
+	for _, ipNet := range h.noCacheNets {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) {
@@ -101,29 +136,33 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	}
 	h.metrics.IncQueries(qtypeStr)
 
+	bypassCache := h.shouldBypassCache(clientIP)
+
 	// 3. Cache lookup
-	if entry, ok := h.cache.Get(q.Name, q.Type, q.Class); ok {
-		h.metrics.IncCacheHits()
-		resp, err := h.buildCacheResponse(msg, entry)
-		if err == nil {
-			duration := time.Since(start)
-			h.metrics.ObserveQueryDuration(duration)
-			durationMs := float64(duration.Microseconds()) / 1000.0
-			h.logger.Info("query_resolved",
-				"client", clientIP,
-				"qname", q.Name,
-				"qtype", qtypeStr,
-				"cache_hit", true,
-				"duration_ms", durationMs,
-			)
-			cacheRCode := dns.RCodeToString[entry.RCODE]
-			if cacheRCode == "" {
-				cacheRCode = "NOERROR"
+	if !bypassCache {
+		if entry, ok := h.cache.Get(q.Name, q.Type, q.Class); ok {
+			h.metrics.IncCacheHits()
+			resp, err := h.buildCacheResponse(msg, entry)
+			if err == nil {
+				duration := time.Since(start)
+				h.metrics.ObserveQueryDuration(duration)
+				durationMs := float64(duration.Microseconds()) / 1000.0
+				h.logger.Info("query_resolved",
+					"client", clientIP,
+					"qname", q.Name,
+					"qtype", qtypeStr,
+					"cache_hit", true,
+					"duration_ms", durationMs,
+				)
+				cacheRCode := dns.RCodeToString[entry.RCODE]
+				if cacheRCode == "" {
+					cacheRCode = "NOERROR"
+				}
+				if h.OnQuery != nil {
+					h.OnQuery(clientIP, q.Name, qtypeStr, cacheRCode, true, durationMs)
+				}
+				return resp, nil
 			}
-			if h.OnQuery != nil {
-				h.OnQuery(clientIP, q.Name, qtypeStr, cacheRCode, true, durationMs)
-			}
-			return resp, nil
 		}
 	}
 	h.metrics.IncCacheMisses()
@@ -149,12 +188,14 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		rcodeStr = "UNKNOWN"
 	}
 
-	if result.RCODE == dns.RCodeNoError && len(result.Answers) > 0 {
-		h.cache.Store(q.Name, q.Type, q.Class, result.Answers, result.Authority)
-	} else if result.RCODE == dns.RCodeNXDomain {
-		h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority)
-	} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
-		h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority)
+	if !bypassCache {
+		if result.RCODE == dns.RCodeNoError && len(result.Answers) > 0 {
+			h.cache.Store(q.Name, q.Type, q.Class, result.Answers, result.Authority)
+		} else if result.RCODE == dns.RCodeNXDomain {
+			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority)
+		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
+			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority)
+		}
 	}
 
 	// 6. Build response

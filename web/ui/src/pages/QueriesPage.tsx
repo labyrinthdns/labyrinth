@@ -91,6 +91,9 @@ export default function QueriesPage() {
             <thead className="bg-slate-50 dark:bg-slate-900 sticky top-0 z-10">
               <tr>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  #
+                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   Time
                 </th>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
@@ -117,7 +120,7 @@ export default function QueriesPage() {
               {queries.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
                   >
                     <div className="flex flex-col items-center gap-2">
@@ -135,11 +138,17 @@ export default function QueriesPage() {
                     key={q.id}
                     className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors"
                   >
+                    <td className="px-4 py-2.5 text-xs font-mono text-slate-400 dark:text-slate-500 whitespace-nowrap">
+                      {q.global_num ?? q.id}
+                    </td>
                     <td className="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
                       {new Date(q.ts).toLocaleTimeString()}
                     </td>
                     <td className="px-4 py-2.5 text-xs font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
                       {q.client}
+                      {q.client_num != null && (
+                        <span className="ml-1.5 text-xs text-slate-400">#{q.client_num}</span>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100 font-medium max-w-xs truncate">
                       {q.qname}

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
-import { Database, Search, Trash2, AlertCircle, Loader2 } from 'lucide-react'
+import { Database, Search, Trash2, AlertCircle, Loader2, RefreshCw } from 'lucide-react'
 import { api } from '@/api/client'
-import type { CacheStats, CacheEntry } from '@/api/types'
+import type { CacheStats, CacheEntry, NegativeCacheEntry } from '@/api/types'
 import { formatNumber } from '@/lib/utils'
 
 const DNS_TYPES = ['A', 'AAAA', 'NS', 'CNAME', 'MX', 'TXT', 'SOA', 'SRV', 'PTR']
@@ -33,6 +33,8 @@ export default function CachePage() {
   const [flushing, setFlushing] = useState(false)
   const [flushConfirm, setFlushConfirm] = useState(false)
   const [message, setMessage] = useState('')
+  const [negativeEntries, setNegativeEntries] = useState<NegativeCacheEntry[]>([])
+  const [negativeLoading, setNegativeLoading] = useState(false)
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Clear message timer on unmount to prevent setState on unmounted component
@@ -51,9 +53,22 @@ export default function CachePage() {
     }
   }, [])
 
+  const fetchNegative = useCallback(async () => {
+    setNegativeLoading(true)
+    try {
+      const res = await api.cacheNegative()
+      setNegativeEntries(res.entries || [])
+    } catch {
+      // silently ignore
+    } finally {
+      setNegativeLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     fetchStats()
-  }, [fetchStats])
+    fetchNegative()
+  }, [fetchStats, fetchNegative])
 
   async function handleLookup(e: FormEvent) {
     e.preventDefault()
@@ -329,6 +344,82 @@ export default function CachePage() {
               Flush Cache
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Negative Cache Entries */}
+      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+        <div className="flex items-center justify-between p-6 pb-4">
+          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-2">
+            <AlertCircle size={16} />
+            Negative Cache Entries
+          </h2>
+          <button
+            onClick={fetchNegative}
+            disabled={negativeLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+          >
+            <RefreshCw size={14} className={negativeLoading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 dark:bg-slate-900">
+              <tr>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  Name
+                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  Type
+                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  Neg Type
+                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  RCode
+                </th>
+                <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  TTL
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+              {negativeEntries.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-400 dark:text-slate-500">
+                    {negativeLoading ? 'Loading...' : 'No negative cache entries'}
+                  </td>
+                </tr>
+              ) : (
+                negativeEntries.map((entry, i) => (
+                  <tr key={`${entry.name}-${entry.type}-${i}`} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">
+                    <td className="px-4 py-2.5 font-mono text-xs text-slate-900 dark:text-slate-100 max-w-xs truncate" title={entry.name}>
+                      {entry.name}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">
+                      {entry.type}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                        entry.neg_type === 'NXDOMAIN'
+                          ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400'
+                          : 'bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400'
+                      }`}>
+                        {entry.neg_type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">
+                      {entry.rcode}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-xs font-mono text-slate-500 dark:text-slate-400">
+                      {entry.ttl}s
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

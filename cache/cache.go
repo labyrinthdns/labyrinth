@@ -316,6 +316,109 @@ func (c *Cache) Delete(name string, qtype uint16, class uint16) bool {
 	return ok
 }
 
+// ResourceRecordInfo holds a human-readable representation of a DNS resource record.
+type ResourceRecordInfo struct {
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	TTL   uint32 `json:"ttl"`
+	RData string `json:"rdata"`
+}
+
+// NegativeEntryInfo holds information about a negative cache entry.
+type NegativeEntryInfo struct {
+	Name         string             `json:"name"`
+	QType        string             `json:"qtype"`
+	NegType      string             `json:"neg_type"`
+	RCODE        string             `json:"rcode"`
+	RemainingTTL uint32             `json:"remaining_ttl"`
+	Authority    []ResourceRecordInfo `json:"authority"`
+}
+
+// NegativeEntries returns up to limit negative cache entries across all shards.
+func (c *Cache) NegativeEntries(limit int) []NegativeEntryInfo {
+	var result []NegativeEntryInfo
+
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.mu.RLock()
+		for key, entry := range s.entries {
+			if !entry.Negative {
+				continue
+			}
+			remaining := entry.RemainingTTL()
+			if remaining == 0 {
+				continue
+			}
+
+			negTypeStr := "UNKNOWN"
+			switch entry.NegType {
+			case NegNXDomain:
+				negTypeStr = "NXDOMAIN"
+			case NegNoData:
+				negTypeStr = "NODATA"
+			}
+
+			rcodeStr := dns.RCodeToString[entry.RCODE]
+			if rcodeStr == "" {
+				rcodeStr = "UNKNOWN"
+			}
+
+			qtypeStr := dns.TypeToString[key.qtype]
+			if qtypeStr == "" {
+				qtypeStr = "UNKNOWN"
+			}
+
+			auth := make([]ResourceRecordInfo, 0, len(entry.Authority))
+			for _, rr := range entry.Authority {
+				typeStr := dns.TypeToString[rr.Type]
+				if typeStr == "" {
+					typeStr = "UNKNOWN"
+				}
+				auth = append(auth, ResourceRecordInfo{
+					Name:  rr.Name,
+					Type:  typeStr,
+					TTL:   remaining,
+					RData: formatAuthorityRData(rr),
+				})
+			}
+
+			result = append(result, NegativeEntryInfo{
+				Name:         key.name,
+				QType:        qtypeStr,
+				NegType:      negTypeStr,
+				RCODE:        rcodeStr,
+				RemainingTTL: remaining,
+				Authority:    auth,
+			})
+
+			if limit > 0 && len(result) >= limit {
+				s.mu.RUnlock()
+				return result
+			}
+		}
+		s.mu.RUnlock()
+	}
+
+	return result
+}
+
+// formatAuthorityRData formats the RDATA of an authority record as a string.
+func formatAuthorityRData(rr dns.ResourceRecord) string {
+	switch rr.Type {
+	case dns.TypeSOA:
+		soa, err := dns.ParseSOA(rr.RData, 0)
+		if err == nil {
+			return soa.MName + " " + soa.RName
+		}
+	case dns.TypeNS:
+		name, _, err := dns.DecodeName(rr.RData, 0)
+		if err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
 func cloneRRs(rrs []dns.ResourceRecord) []dns.ResourceRecord {
 	if rrs == nil {
 		return nil

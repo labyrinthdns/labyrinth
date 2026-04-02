@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type FormEvent } from 'react'
 import {
   Server,
   Globe,
@@ -8,6 +8,9 @@ import {
   LayoutDashboard,
   Activity,
   Loader2,
+  Lock,
+  Eye,
+  EyeOff,
 } from 'lucide-react'
 import { api } from '@/api/client'
 
@@ -238,6 +241,145 @@ export default function ConfigPage() {
             </div>
           )
         })}
+      </div>
+
+      {/* Password Change */}
+      <PasswordChangeCard />
+    </div>
+  )
+}
+
+function PasswordChangeCard() {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [showCurrent, setShowCurrent] = useState(false)
+  const [showNew, setShowNew] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
+  const [messageType, setMessageType] = useState<'success' | 'error'>('success')
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setMessage('')
+
+    if (newPassword.length < 8) {
+      setMessage('New password must be at least 8 characters')
+      setMessageType('error')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setMessage('New passwords do not match')
+      setMessageType('error')
+      return
+    }
+
+    setLoading(true)
+    try {
+      await api.changePassword(currentPassword, newPassword)
+      setMessage('Password changed successfully')
+      setMessageType('success')
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to change password'
+      setMessage(msg.includes('incorrect') ? 'Current password is incorrect' : msg)
+      setMessageType('error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const inputClass =
+    'bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 w-full text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-600/50 focus:border-amber-600 transition-colors pr-10'
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700/50 flex items-center gap-3">
+        <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+          <Lock size={16} className="text-amber-600 dark:text-amber-400" />
+        </div>
+        <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wide">
+          Change Password
+        </h2>
+      </div>
+      <div className="p-6">
+        {message && (
+          <div className={`mb-4 text-sm rounded-lg px-4 py-3 ${
+            messageType === 'success'
+              ? 'bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400'
+              : 'bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'
+          }`}>
+            {message}
+          </div>
+        )}
+        <form onSubmit={handleSubmit} className="space-y-4 max-w-md">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Current Password
+            </label>
+            <div className="relative">
+              <input
+                type={showCurrent ? 'text' : 'password'}
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                required
+                className={inputClass}
+              />
+              <button
+                type="button"
+                onClick={() => setShowCurrent(!showCurrent)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+              >
+                {showCurrent ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+              New Password
+            </label>
+            <div className="relative">
+              <input
+                type={showNew ? 'text' : 'password'}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                required
+                minLength={8}
+                className={inputClass}
+                placeholder="Minimum 8 characters"
+              />
+              <button
+                type="button"
+                onClick={() => setShowNew(!showNew)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+              >
+                {showNew ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Confirm New Password
+            </label>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              className={inputClass}
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 transition-colors"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />}
+            {loading ? 'Changing...' : 'Change Password'}
+          </button>
+        </form>
       </div>
     </div>
   )

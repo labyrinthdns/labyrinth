@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,16 +25,20 @@ var (
 
 // AdminServer provides the admin dashboard HTTP backend.
 type AdminServer struct {
-	cache      *cache.Cache
-	metrics    *metrics.Metrics
-	resolver   *resolver.Resolver
-	config     *config.Config
-	queryLog   *QueryLog
-	timeSeries *TimeSeriesAggregator
-	logger     *slog.Logger
-	jwtSecret  []byte
-	setupDone  bool
-	nextID     atomic.Uint64
+	cache          *cache.Cache
+	metrics        *metrics.Metrics
+	resolver       *resolver.Resolver
+	config         *config.Config
+	queryLog       *QueryLog
+	timeSeries     *TimeSeriesAggregator
+	logger         *slog.Logger
+	jwtSecret      []byte
+	setupDone      bool
+	nextID         atomic.Uint64
+	topClients     *TopTracker
+	topDomains     *TopTracker
+	clientQueryNum map[string]*atomic.Uint64
+	clientNumMu    sync.Mutex
 }
 
 // NewAdminServer creates a new AdminServer.
@@ -51,14 +56,17 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 	}
 
 	return &AdminServer{
-		cache:      c,
-		metrics:    m,
-		resolver:   r,
-		config:     cfg,
-		queryLog:   NewQueryLog(bufSize),
-		timeSeries: NewTimeSeriesAggregator(),
-		logger:     logger,
-		jwtSecret:  secret,
+		cache:          c,
+		metrics:        m,
+		resolver:       r,
+		config:         cfg,
+		queryLog:       NewQueryLog(bufSize),
+		timeSeries:     NewTimeSeriesAggregator(),
+		logger:         logger,
+		jwtSecret:      secret,
+		topClients:     NewTopTracker(cfg.Web.TopClientsLimit),
+		topDomains:     NewTopTracker(cfg.Web.TopDomainsLimit),
+		clientQueryNum: make(map[string]*atomic.Uint64),
 	}
 }
 
@@ -103,8 +111,25 @@ func (s *AdminServer) Start(ctx context.Context) error {
 // RecordQuery is called from the DNS handler hook to log a query.
 func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached bool, durationMs float64) {
 	id := s.nextID.Add(1)
+
+	// Track top clients and domains
+	s.topClients.Inc(client)
+	s.topDomains.Inc(qname)
+
+	// Track per-client query number
+	s.clientNumMu.Lock()
+	counter, ok := s.clientQueryNum[client]
+	if !ok {
+		counter = &atomic.Uint64{}
+		s.clientQueryNum[client] = counter
+	}
+	s.clientNumMu.Unlock()
+	clientNum := counter.Add(1)
+
 	entry := QueryEntry{
 		ID:         id,
+		GlobalNum:  id,
+		ClientNum:  clientNum,
 		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
 		Client:     client,
 		QName:      qname,
@@ -134,6 +159,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 
 	// Protected routes
 	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleMe))
+	mux.HandleFunc("/api/auth/change-password", s.requireAuth(s.handleChangePassword))
 	mux.HandleFunc("/api/stats", s.requireAuth(s.handleStats))
 	mux.HandleFunc("/api/stats/timeseries", s.requireAuth(s.handleTimeSeries))
 	mux.HandleFunc("/api/cache/stats", s.requireAuth(s.handleCacheStats))
@@ -145,6 +171,11 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/queries/stream", s.requireAuth(s.handleQueryStreamWS))
 	mux.HandleFunc("/api/zabbix/items", s.requireAuth(s.handleZabbixItems))
 	mux.HandleFunc("/api/zabbix/item", s.requireAuth(s.handleZabbixItem))
+	mux.HandleFunc("/api/stats/top-clients", s.requireAuth(s.handleTopClients))
+	mux.HandleFunc("/api/stats/top-domains", s.requireAuth(s.handleTopDomains))
+	mux.HandleFunc("/api/cache/negative", s.requireAuth(s.handleNegativeCache))
+	mux.HandleFunc("/api/system/update/check", s.requireAuth(s.handleCheckUpdate))
+	mux.HandleFunc("/api/system/update/apply", s.requireAuth(s.handleApplyUpdate))
 
 	// SPA handler — serves embedded React frontend with SPA routing fallback
 	mux.Handle("/", SPAHandler())

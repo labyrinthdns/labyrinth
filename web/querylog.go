@@ -8,6 +8,8 @@ import (
 // QueryEntry represents a single DNS query log entry.
 type QueryEntry struct {
 	ID         uint64  `json:"id"`
+	GlobalNum  uint64  `json:"global_num"`
+	ClientNum  uint64  `json:"client_num"`
 	Timestamp  string  `json:"ts"`
 	Client     string  `json:"client"`
 	QName      string  `json:"qname"`

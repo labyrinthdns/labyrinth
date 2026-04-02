@@ -23,10 +23,12 @@ type Config struct {
 
 // WebConfig holds web dashboard settings.
 type WebConfig struct {
-	Enabled        bool
-	Addr           string
-	QueryLogBuffer int
-	Auth           WebAuthConfig
+	Enabled         bool
+	Addr            string
+	QueryLogBuffer  int
+	TopClientsLimit int
+	TopDomainsLimit int
+	Auth            WebAuthConfig
 }
 
 // WebAuthConfig holds web dashboard authentication settings.
@@ -70,13 +72,14 @@ type ResolverConfig struct {
 
 // CacheConfig holds cache settings.
 type CacheConfig struct {
-	MaxEntries    int
-	MinTTL        uint32
-	MaxTTL        uint32
-	NegMaxTTL     uint32
-	SweepInterval time.Duration
-	ServeStale    bool
-	StaleTTL      uint32
+	MaxEntries     int
+	MinTTL         uint32
+	MaxTTL         uint32
+	NegMaxTTL      uint32
+	SweepInterval  time.Duration
+	ServeStale     bool
+	StaleTTL       uint32
+	NoCacheClients []string
 }
 
 // SecurityConfig holds security settings.
@@ -227,6 +230,9 @@ func applyYAML(cfg *Config, values map[string]string) {
 			cfg.Cache.StaleTTL = uint32(n)
 		}
 	}
+	if v, ok := values["cache.no_cache_clients"]; ok && v != "" {
+		cfg.Cache.NoCacheClients = parseCSVList(v)
+	}
 
 	// Security
 	if v, ok := values["security.rate_limit.enabled"]; ok {
@@ -292,6 +298,16 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["web.query_log_buffer"]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Web.QueryLogBuffer = n
+		}
+	}
+	if v, ok := values["web.top_clients_limit"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Web.TopClientsLimit = n
+		}
+	}
+	if v, ok := values["web.top_domains_limit"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Web.TopDomainsLimit = n
 		}
 	}
 	if v, ok := values["web.auth.username"]; ok {
