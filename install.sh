@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Labyrinth DNS Resolver — Install Script
 # Usage: curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash
-# Or:    bash install.sh [--no-service] [--version v1.0.0]
+# Or:    bash install.sh [--no-service] [--version v0.2.0]
 
-REPO="labyrinth-dns/labyrinth"
+REPO="labyrinthdns/labyrinth"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/labyrinth"
 CONFIG_FILE="${CONFIG_DIR}/labyrinth.yaml"
@@ -14,17 +14,24 @@ SERVICE_FILE="/etc/systemd/system/labyrinth.service"
 VERSION=""
 NO_SERVICE=false
 
-# Parse args
 while [[ $# -gt 0 ]]; do
   case $1 in
     --no-service) NO_SERVICE=true; shift ;;
     --version) VERSION="$2"; shift 2 ;;
     --help|-h)
-      echo "Usage: install.sh [--no-service] [--version v1.0.0]"
+      echo "Labyrinth DNS Resolver — Installer"
+      echo ""
+      echo "Usage: install.sh [OPTIONS]"
       echo ""
       echo "Options:"
       echo "  --no-service    Skip systemd service installation"
       echo "  --version TAG   Install specific version (default: latest)"
+      echo "  --help, -h      Show this help"
+      echo ""
+      echo "Examples:"
+      echo "  curl -sSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash"
+      echo "  bash install.sh --version v0.2.0"
+      echo "  bash install.sh --no-service"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -36,12 +43,20 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
-ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+ok()    { echo -e "${GREEN}[ OK ]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 fail()  { echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
+
+echo -e "${CYAN}"
+echo "  ╔═══════════════════════════════════════╗"
+echo "  ║   Labyrinth DNS Resolver — Installer  ║"
+echo "  ║   https://labyrinthdns.com            ║"
+echo "  ╚═══════════════════════════════════════╝"
+echo -e "${NC}"
 
 # Check root
 if [[ $EUID -ne 0 ]]; then
@@ -70,41 +85,44 @@ fi
 
 info "Installing Labyrinth ${VERSION}..."
 
-# Download binary
+# Check if already installed
+if command -v labyrinth &>/dev/null; then
+  CURRENT=$("${INSTALL_DIR}/labyrinth" version 2>&1 | head -1 || echo "unknown")
+  warn "Labyrinth already installed: ${CURRENT}"
+  warn "Use update.sh for upgrades. Continuing with fresh install..."
+fi
+
+# Download binaries
 BINARY_NAME="labyrinth-${OS}-${ARCH}"
-if [[ "$OS" == "windows" ]]; then
-  BINARY_NAME="${BINARY_NAME}.exe"
-fi
-
+BENCH_NAME="labyrinth-bench-${OS}-${ARCH}"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY_NAME}"
-TMP_FILE=$(mktemp)
+BENCH_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BENCH_NAME}"
 
-info "Downloading from ${DOWNLOAD_URL}..."
-if ! curl -sSL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
-  # Fallback: try tar.gz archive
-  ARCHIVE_URL="https://github.com/${REPO}/releases/download/${VERSION}/labyrinth-${VERSION}-${OS}-${ARCH}.tar.gz"
-  info "Direct binary not found, trying archive: ${ARCHIVE_URL}..."
-  TMP_DIR=$(mktemp -d)
-  if ! curl -sSL "$ARCHIVE_URL" | tar xz -C "$TMP_DIR"; then
-    fail "Download failed. Check the version and try again."
-  fi
-  TMP_FILE=$(find "$TMP_DIR" -name "labyrinth*" -type f | head -1)
-  if [[ -z "$TMP_FILE" ]]; then
-    fail "Binary not found in archive"
-  fi
+TMP_FILE=$(mktemp)
+info "Downloading labyrinth..."
+if ! curl -fsSL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
+  rm -f "$TMP_FILE"
+  fail "Download failed: ${DOWNLOAD_URL}"
 fi
 
-# Install binary
 chmod +x "$TMP_FILE"
 mv "$TMP_FILE" "${INSTALL_DIR}/labyrinth"
-ok "Binary installed to ${INSTALL_DIR}/labyrinth"
+ok "Binary installed: ${INSTALL_DIR}/labyrinth"
 
-# Verify
-if ! "${INSTALL_DIR}/labyrinth" -version > /dev/null 2>&1; then
-  fail "Binary verification failed"
+# Download bench tool (optional, don't fail)
+TMP_BENCH=$(mktemp)
+info "Downloading labyrinth-bench..."
+if curl -fsSL -o "$TMP_BENCH" "$BENCH_URL" 2>/dev/null; then
+  chmod +x "$TMP_BENCH"
+  mv "$TMP_BENCH" "${INSTALL_DIR}/labyrinth-bench"
+  ok "Bench tool installed: ${INSTALL_DIR}/labyrinth-bench"
+else
+  rm -f "$TMP_BENCH"
+  warn "Bench tool not available (optional)"
 fi
 
-INSTALLED_VERSION=$("${INSTALL_DIR}/labyrinth" -version 2>&1 | head -1)
+# Verify
+INSTALLED_VERSION=$("${INSTALL_DIR}/labyrinth" version 2>&1 | head -1)
 ok "${INSTALLED_VERSION}"
 
 # Create config directory
@@ -117,7 +135,8 @@ fi
 if [[ ! -f "$CONFIG_FILE" ]]; then
   cat > "$CONFIG_FILE" << 'YAML'
 # Labyrinth DNS Resolver Configuration
-# See: https://github.com/labyrinthdns/labyrinth
+# Documentation: https://labyrinthdns.com/docs
+# GitHub: https://github.com/labyrinthdns/labyrinth
 
 server:
   listen_addr: "0.0.0.0:53"
@@ -133,6 +152,7 @@ resolver:
   upstream_retries: 3
   qname_minimization: true
   prefer_ipv4: true
+  dnssec_enabled: true
 
 cache:
   max_entries: 100000
@@ -163,6 +183,21 @@ web:
   enabled: true
   addr: "127.0.0.1:9153"
   query_log_buffer: 1000
+  top_clients_limit: 20
+  top_domains_limit: 20
+  auto_update: true
+  update_check_interval: 24h
+  # Set up admin credentials via the web setup wizard
+  # or manually with: labyrinth hash <password>
+  # auth:
+  #   username: admin
+  #   password_hash: <bcrypt hash>
+
+# blocklist:
+#   enabled: true
+#   lists: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|hosts"
+#   refresh_interval: 24h
+#   blocking_mode: nxdomain
 
 # access_control:
 #   allow: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
@@ -183,15 +218,13 @@ else
     ok "Created service user: ${SERVICE_USER}"
   fi
 
-  # Set ownership
   chown -R "$SERVICE_USER":"$SERVICE_USER" "$CONFIG_DIR" 2>/dev/null || true
 
-  # Check for systemd
   if command -v systemctl &>/dev/null; then
     cat > "$SERVICE_FILE" << 'SERVICE'
 [Unit]
 Description=Labyrinth Recursive DNS Resolver
-Documentation=https://github.com/labyrinthdns/labyrinth
+Documentation=https://labyrinthdns.com
 After=network-online.target
 Wants=network-online.target
 
@@ -222,7 +255,6 @@ SERVICE
     systemctl enable labyrinth 2>/dev/null || true
     ok "Service enabled"
 
-    # Start the service
     if systemctl is-active labyrinth &>/dev/null; then
       systemctl restart labyrinth
       ok "Service restarted"
@@ -231,12 +263,11 @@ SERVICE
       ok "Service started"
     fi
 
-    # Wait and verify
     sleep 2
     if systemctl is-active labyrinth &>/dev/null; then
       ok "Labyrinth is running"
     else
-      warn "Service may have failed to start. Check: journalctl -u labyrinth"
+      warn "Service may have failed to start. Check: journalctl -u labyrinth -e"
     fi
   else
     warn "systemd not found. Start manually: labyrinth -config ${CONFIG_FILE}"
@@ -244,9 +275,9 @@ SERVICE
 fi
 
 echo ""
-echo -e "${GREEN}=====================================${NC}"
-echo -e "${GREEN}  Labyrinth installed successfully!  ${NC}"
-echo -e "${GREEN}=====================================${NC}"
+echo -e "${GREEN}╔═══════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║  Labyrinth installed successfully!    ║${NC}"
+echo -e "${GREEN}╚═══════════════════════════════════════╝${NC}"
 echo ""
 echo "  Binary:    ${INSTALL_DIR}/labyrinth"
 echo "  Config:    ${CONFIG_FILE}"
@@ -255,7 +286,8 @@ echo ""
 echo "  Test:      dig @localhost google.com A"
 echo "  Logs:      journalctl -u labyrinth -f"
 echo "  Status:    systemctl status labyrinth"
+echo "  Update:    curl -sSL https://raw.githubusercontent.com/${REPO}/main/update.sh | sudo bash"
 echo ""
-echo "  First visit the dashboard to complete setup:"
+echo "  Visit the dashboard to complete setup:"
 echo "  http://127.0.0.1:9153"
 echo ""
