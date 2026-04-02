@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,9 +451,9 @@ func TestQueryTCPDirect(t *testing.T) {
 }
 
 func TestQueryUpstreamRetry(t *testing.T) {
-	callCount := 0
+	var callCount atomic.Int32
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
-		callCount++
+		callCount.Add(1)
 		return &dns.Message{
 			Header: dns.Header{
 				Flags: dns.NewFlagBuilder().SetQR(true).Build(),
@@ -630,16 +631,16 @@ func buildSOARData() []byte {
 }
 
 func TestResolveWithDelegation(t *testing.T) {
-	queryCount := 0
+	var queryCount atomic.Int32
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
-		queryCount++
+		count := queryCount.Add(1)
 		if len(q.Questions) == 0 {
 			return nil
 		}
 		qname := q.Questions[0].Name
 
 		// First query: referral
-		if queryCount == 1 && qname == "test.example.com" {
+		if count == 1 && qname == "test.example.com" {
 			nsRData := dns.BuildPlainName("ns1.mock.com")
 			return &dns.Message{
 				Header: dns.Header{
@@ -685,9 +686,9 @@ func TestResolveWithDelegation(t *testing.T) {
 
 func TestQueryUpstreamTCFallback(t *testing.T) {
 	// Simulate TC=1 UDP response to trigger TCP fallback
-	callCount := 0
+	var callCount atomic.Int32
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
-		callCount++
+		callCount.Add(1)
 		resp := &dns.Message{
 			Header: dns.Header{
 				Flags: dns.NewFlagBuilder().SetQR(true).Build(),
