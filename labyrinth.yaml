@@ -28,9 +28,9 @@ cache:
 
 security:
   rate_limit:
-    enabled: true
-    rate: 50
-    burst: 100
+    enabled: false
+    rate: 5000
+    burst: 10000
   rrl:
     enabled: true
     responses_per_second: 5
