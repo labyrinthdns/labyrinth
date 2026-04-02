@@ -3,6 +3,7 @@ package resolver
 import (
 	"encoding/binary"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	"github.com/labyrinthdns/labyrinth/dns"
@@ -11,10 +12,10 @@ import (
 // tcMockDNS returns TC=1 on UDP and full answer on TCP, to test TC fallback.
 func startTCMockDNS(t *testing.T) *mockDNSServer {
 	t.Helper()
-	udpCount := 0
+	var udpCount atomic.Int32
 	return startMockDNS(t, func(q *dns.Message) *dns.Message {
-		udpCount++
-		if udpCount <= 1 {
+		count := udpCount.Add(1)
+		if count <= 1 {
 			// First UDP response: TC=1
 			return &dns.Message{
 				Header: dns.Header{
@@ -104,9 +105,9 @@ func TestQueryUpstreamOnceTXIDMismatch(t *testing.T) {
 }
 
 func TestResolveIterativeCNAMEChaseAndCache(t *testing.T) {
-	queryNum := 0
+	var queryNum atomic.Int32
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
-		queryNum++
+		queryNum.Add(1)
 		if len(q.Questions) == 0 {
 			return nil
 		}
@@ -177,16 +178,16 @@ func TestResolveIterativeNXDOMAINCache(t *testing.T) {
 }
 
 func TestResolveIterativeReferralFollowed(t *testing.T) {
-	queryCount := 0
+	var queryCount atomic.Int32
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
-		queryCount++
+		count := queryCount.Add(1)
 		if len(q.Questions) == 0 {
 			return nil
 		}
 		qname := q.Questions[0].Name
 
 		// First query: referral
-		if queryCount == 1 {
+		if count == 1 {
 			nsRData := dns.BuildPlainName("ns1.ref.com")
 			return &dns.Message{
 				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
@@ -223,9 +224,9 @@ func TestResolveIterativeReferralFollowed(t *testing.T) {
 }
 
 func TestResolveIterativeQMinNoDataFallback(t *testing.T) {
-	queryCount := 0
+	var queryCount atomic.Int32
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
-		queryCount++
+		queryCount.Add(1)
 		if len(q.Questions) == 0 {
 			return nil
 		}
