@@ -348,9 +348,19 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 		}
 	}
 
-	// Recursive resolve for NS hostname (only if different zone) — try A then AAAA
-	for _, ns := range shuffled {
-		if !security.InZone(ns.hostname, currentZone) {
+	// Recursive resolve for NS hostname — try A then AAAA.
+	// First pass: out-of-bailiwick NS (safe, no loop risk).
+	// Second pass: in-bailiwick NS (needed for TLDs like .tr where NS is *.ns.tr).
+	for pass := 0; pass < 2; pass++ {
+		for _, ns := range shuffled {
+			inZone := security.InZone(ns.hostname, currentZone)
+			if pass == 0 && inZone {
+				continue // first pass: skip in-bailiwick
+			}
+			if pass == 1 && !inZone {
+				continue // second pass: skip out-of-bailiwick (already tried)
+			}
+
 			result, err := r.Resolve(ns.hostname, dns.TypeA, dns.ClassIN)
 			if err == nil && len(result.Answers) > 0 {
 				ip, err := dns.ParseA(result.Answers[0].RData)
@@ -359,11 +369,13 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 				}
 			}
 			// Fallback to AAAA
-			result, err = r.Resolve(ns.hostname, dns.TypeAAAA, dns.ClassIN)
-			if err == nil && len(result.Answers) > 0 {
-				ip, err := dns.ParseAAAA(result.Answers[0].RData)
-				if err == nil {
-					return ns.hostname, ip.String(), nil
+			if !r.config.PreferIPv4 {
+				result, err = r.Resolve(ns.hostname, dns.TypeAAAA, dns.ClassIN)
+				if err == nil && len(result.Answers) > 0 {
+					ip, err := dns.ParseAAAA(result.Answers[0].RData)
+					if err == nil {
+						return ns.hostname, ip.String(), nil
+					}
 				}
 			}
 		}
