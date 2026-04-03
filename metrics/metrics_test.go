@@ -190,6 +190,34 @@ func TestServeHTTP(t *testing.T) {
 	}
 }
 
+func TestDNSSECAndBlockedCounters(t *testing.T) {
+	m := NewMetrics()
+
+	m.IncDNSSECSecure()
+	m.IncDNSSECSecure()
+	m.IncDNSSECInsecure()
+	m.IncDNSSECBogus()
+	m.IncBlockedQueries()
+	m.IncBlockedQueries()
+	m.IncBlockedQueries()
+
+	var buf bytes.Buffer
+	m.WriteMetrics(&buf)
+	output := buf.String()
+
+	checks := []string{
+		"labyrinth_dnssec_secure_total 2",
+		"labyrinth_dnssec_insecure_total 1",
+		"labyrinth_dnssec_bogus_total 1",
+		"labyrinth_blocked_queries_total 3",
+	}
+	for _, check := range checks {
+		if !strings.Contains(output, check) {
+			t.Errorf("metrics output missing %q", check)
+		}
+	}
+}
+
 func TestAddCacheEvictions(t *testing.T) {
 	m := NewMetrics()
 

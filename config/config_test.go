@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -611,5 +613,192 @@ func TestApplyEnvMetricsAddr(t *testing.T) {
 
 	if cfg.Server.MetricsAddr != "0.0.0.0:9999" {
 		t.Errorf("expected MetricsAddr='0.0.0.0:9999', got %q", cfg.Server.MetricsAddr)
+	}
+}
+
+func TestParseBlocklistEntries(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []BlocklistEntry
+	}{
+		{
+			name:     "single entry",
+			input:    "https://example.com/list.txt|hosts",
+			expected: []BlocklistEntry{{URL: "https://example.com/list.txt", Format: "hosts"}},
+		},
+		{
+			name:  "multiple entries",
+			input: "https://a.com/l1|hosts,https://b.com/l2|domains",
+			expected: []BlocklistEntry{
+				{URL: "https://a.com/l1", Format: "hosts"},
+				{URL: "https://b.com/l2", Format: "domains"},
+			},
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: nil,
+		},
+		{
+			name:     "empty items with commas",
+			input:    " , , ",
+			expected: nil,
+		},
+		{
+			name:     "entry without pipe separator is skipped",
+			input:    "https://example.com/list.txt",
+			expected: nil,
+		},
+		{
+			name:  "mixed valid and no-pipe entries",
+			input: "https://a.com/l1|hosts,nopipe,https://b.com/l2|domains",
+			expected: []BlocklistEntry{
+				{URL: "https://a.com/l1", Format: "hosts"},
+				{URL: "https://b.com/l2", Format: "domains"},
+			},
+		},
+		{
+			name:     "whitespace trimming",
+			input:    " https://a.com/list | hosts ",
+			expected: []BlocklistEntry{{URL: "https://a.com/list", Format: "hosts"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseBlocklistEntries(tt.input)
+			if len(got) != len(tt.expected) {
+				t.Fatalf("expected %d entries, got %d: %v", len(tt.expected), len(got), got)
+			}
+			for i := range got {
+				if got[i].URL != tt.expected[i].URL {
+					t.Errorf("[%d] URL: expected %q, got %q", i, tt.expected[i].URL, got[i].URL)
+				}
+				if got[i].Format != tt.expected[i].Format {
+					t.Errorf("[%d] Format: expected %q, got %q", i, tt.expected[i].Format, got[i].Format)
+				}
+			}
+		})
+	}
+}
+
+func TestApplyYAMLBlocklistFields(t *testing.T) {
+	cfg := defaultConfig()
+	values := map[string]string{
+		"blocklist.enabled":          "true",
+		"blocklist.lists":            "https://example.com/hosts.txt|hosts,https://example.com/domains.txt|domains",
+		"blocklist.refresh_interval": "12h",
+		"blocklist.blocking_mode":    "custom_ip",
+		"blocklist.custom_ip":        "0.0.0.0",
+		"blocklist.whitelist":        "example.com, example.org",
+	}
+
+	applyYAML(cfg, values)
+
+	if !cfg.Blocklist.Enabled {
+		t.Error("blocklist should be enabled")
+	}
+	if len(cfg.Blocklist.Lists) != 2 {
+		t.Fatalf("expected 2 blocklist entries, got %d", len(cfg.Blocklist.Lists))
+	}
+	if cfg.Blocklist.Lists[0].URL != "https://example.com/hosts.txt" {
+		t.Errorf("lists[0].URL: got %q", cfg.Blocklist.Lists[0].URL)
+	}
+	if cfg.Blocklist.Lists[0].Format != "hosts" {
+		t.Errorf("lists[0].Format: got %q", cfg.Blocklist.Lists[0].Format)
+	}
+	if cfg.Blocklist.Lists[1].URL != "https://example.com/domains.txt" {
+		t.Errorf("lists[1].URL: got %q", cfg.Blocklist.Lists[1].URL)
+	}
+	if cfg.Blocklist.RefreshInterval != 12*time.Hour {
+		t.Errorf("refresh_interval: got %v", cfg.Blocklist.RefreshInterval)
+	}
+	if cfg.Blocklist.BlockingMode != "custom_ip" {
+		t.Errorf("blocking_mode: got %q", cfg.Blocklist.BlockingMode)
+	}
+	if cfg.Blocklist.CustomIP != "0.0.0.0" {
+		t.Errorf("custom_ip: got %q", cfg.Blocklist.CustomIP)
+	}
+	if len(cfg.Blocklist.Whitelist) != 2 {
+		t.Fatalf("expected 2 whitelist entries, got %d", len(cfg.Blocklist.Whitelist))
+	}
+	if cfg.Blocklist.Whitelist[0] != "example.com" || cfg.Blocklist.Whitelist[1] != "example.org" {
+		t.Errorf("whitelist: got %v", cfg.Blocklist.Whitelist)
+	}
+}
+
+func TestLoadWithInvalidYAMLSyntax(t *testing.T) {
+	// Our simple YAML parser never returns an error, so the parseYAML error
+	// branch in Load is unreachable dead code. We verify that even
+	// badly-formed YAML still loads (falling back to defaults + env).
+	tmpFile, err := os.CreateTemp("", "labyrinth-malformed-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	badYAML := `
+:::: not valid yaml at all {{{{
+	tabs mixed: with: colons: everywhere
+`
+	tmpFile.Write([]byte(badYAML))
+	tmpFile.Close()
+
+	cfg, err := Load(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("load should succeed (simple parser ignores syntax errors): %v", err)
+	}
+	if cfg.Server.ListenAddr != ":53" {
+		t.Errorf("expected default listen addr, got %q", cfg.Server.ListenAddr)
+	}
+}
+
+func TestApplyYAMLNoCacheClients(t *testing.T) {
+	cfg := defaultConfig()
+	values := map[string]string{
+		"cache.no_cache_clients": "192.168.1.1, 10.0.0.1, 172.16.0.0/12",
+	}
+
+	applyYAML(cfg, values)
+
+	if len(cfg.Cache.NoCacheClients) != 3 {
+		t.Fatalf("expected 3 no_cache_clients, got %d", len(cfg.Cache.NoCacheClients))
+	}
+	if cfg.Cache.NoCacheClients[0] != "192.168.1.1" {
+		t.Errorf("no_cache_clients[0]: got %q", cfg.Cache.NoCacheClients[0])
+	}
+	if cfg.Cache.NoCacheClients[1] != "10.0.0.1" {
+		t.Errorf("no_cache_clients[1]: got %q", cfg.Cache.NoCacheClients[1])
+	}
+	if cfg.Cache.NoCacheClients[2] != "172.16.0.0/12" {
+		t.Errorf("no_cache_clients[2]: got %q", cfg.Cache.NoCacheClients[2])
+	}
+}
+
+func TestLoadYAMLParseError(t *testing.T) {
+	// Cover the parseYAML error return path in Load (lines 146-148).
+	// Temporarily replace yamlParser with one that always returns an error.
+	orig := yamlParser
+	yamlParser = func(data []byte) (map[string]string, error) {
+		return nil, fmt.Errorf("forced parse error")
+	}
+	defer func() { yamlParser = orig }()
+
+	tmpFile, err := os.CreateTemp("", "labyrinth-parseerr-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	tmpFile.Write([]byte("server:\n  listen_addr: ':53'\n"))
+	tmpFile.Close()
+
+	_, err = Load(tmpFile.Name())
+	if err == nil {
+		t.Fatal("expected error from Load when yamlParser fails")
+	}
+	if !strings.Contains(err.Error(), "parse config") {
+		t.Errorf("expected 'parse config' in error, got: %v", err)
 	}
 }
