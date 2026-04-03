@@ -267,7 +267,7 @@ func (r *Resolver) resolveIterative(
 			// Cache NS delegation records
 			r.cacheDelegation(response, zone)
 
-			// Cache glue records (A and AAAA)
+			// Cache glue records (A and AAAA) with their wire TTL (RFC 2181 §5.4.1)
 			for _, delNS := range newNS {
 				if delNS.IPv4 != "" {
 					ip := parseIPv4Bytes(delNS.IPv4)
@@ -275,7 +275,7 @@ func (r *Resolver) resolveIterative(
 						r.cache.Store(delNS.Hostname, dns.TypeA, dns.ClassIN,
 							[]dns.ResourceRecord{{
 								Name: delNS.Hostname, Type: dns.TypeA, Class: dns.ClassIN,
-								TTL: 3600, RDLength: 4, RData: ip,
+								TTL: delNS.IPv4TTL, RDLength: 4, RData: ip,
 							}}, nil)
 					}
 				}
@@ -286,7 +286,7 @@ func (r *Resolver) resolveIterative(
 						r.cache.Store(delNS.Hostname, dns.TypeAAAA, dns.ClassIN,
 							[]dns.ResourceRecord{{
 								Name: delNS.Hostname, Type: dns.TypeAAAA, Class: dns.ClassIN,
-								TTL: 3600, RDLength: 16, RData: ipBytes,
+								TTL: delNS.IPv6TTL, RDLength: 16, RData: ipBytes,
 							}}, nil)
 					}
 				}

@@ -11,6 +11,8 @@ type DelegationNS struct {
 	Hostname string
 	IPv4     string
 	IPv6     string
+	IPv4TTL  uint32
+	IPv6TTL  uint32
 }
 
 func extractDelegation(msg *dns.Message) ([]DelegationNS, string) {
@@ -53,11 +55,13 @@ func extractDelegation(msg *dns.Message) ([]DelegationNS, string) {
 			ip, err := dns.ParseA(rr.RData)
 			if err == nil {
 				ns.IPv4 = ip.String()
+				ns.IPv4TTL = rr.TTL
 			}
 		case dns.TypeAAAA:
 			ip, err := dns.ParseAAAA(rr.RData)
 			if err == nil {
 				ns.IPv6 = ip.String()
+				ns.IPv6TTL = rr.TTL
 			}
 		}
 	}

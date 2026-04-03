@@ -15,6 +15,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   gets NS records in the answer section instead of a proper referral, the resolver now
   retries with the full query name. Fixes resolution of domains like `dgn.net.tr`,
   `hurriyet.com.tr` and similar multi-level `.tr` domains.
+- Serve-stale (RFC 8767): now correctly triggers on SERVFAIL results, not only on
+  Go-level errors. Previously, upstream SERVFAIL bypassed stale serving entirely.
+- EDNS0 FORMERR fallback (RFC 6891 §7): when an upstream server returns FORMERR
+  (doesn't support EDNS0), the resolver retries without the OPT record.
+- RRL slip now sets TC bit (RFC 1035): rate-limited clients receive a proper truncated
+  response forcing TCP retry, instead of an empty NOERROR that looked like NODATA.
+- NXDOMAIN now cached per name, not per (name, type) (RFC 2308 §3): a single NXDOMAIN
+  response covers all query types for that name, reducing duplicate upstream queries.
+- Glue records now cached with their wire TTL instead of hardcoded 3600s (RFC 2181 §5.4.1).
+- Response truncation now cuts at record boundaries and zeroes section counts
+  instead of slicing mid-record, producing valid DNS messages (RFC 1035 §4.1.1).
+- Response classification: unrelated answer records (ANCount > 0 but no match for
+  qname/qtype) now fall through to authority section checks instead of being treated
+  as a valid answer.
 - False loop detection for `.tr` and similar TLD nameserver queries — the same NS IP
   (e.g., `ns1.nic.tr`) serving multiple zone levels (`.tr`, `com.tr`, `net.tr`) was
   mistakenly flagged as a loop. Loop detection key now includes `currentZone`.

@@ -37,6 +37,25 @@ func (r *Resolver) queryUpstream(nsIP string, name string, qtype uint16, qclass 
 var randTXIDFunc = randomTXID
 
 func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qclass uint16) (*dns.Message, error) {
+	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true)
+	if err != nil {
+		return nil, err
+	}
+
+	// RFC 6891 §7: If the server returns FORMERR (doesn't understand EDNS0),
+	// retry without the OPT record.
+	if msg.Header.RCODE() == dns.RCodeFormErr {
+		msg, err = r.sendQuery(nsIP, name, qtype, qclass, false)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return msg, nil
+}
+
+// sendQuery builds, sends and validates a single upstream DNS query.
+func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool) (*dns.Message, error) {
 	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
@@ -55,9 +74,11 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 			Type:  qtype,
 			Class: qclass,
 		}},
-		Additional: []dns.ResourceRecord{
+	}
+	if withEDNS0 {
+		query.Additional = []dns.ResourceRecord{
 			dns.BuildOPT(4096, r.config.DNSSECEnabled),
-		},
+		}
 	}
 
 	buf := make([]byte, 4096)

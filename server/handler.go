@@ -201,17 +201,28 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 
 	// 4. Recursive resolution
 	result, err := h.resolver.Resolve(q.Name, q.Type, q.Class)
-	if err != nil {
-		// Serve stale: if resolution fails, try serving expired cache (RFC 8767)
+
+	// Serve stale (RFC 8767): if resolution failed (Go error or SERVFAIL),
+	// try serving expired cache entry before giving up.
+	resolveOK := err == nil && result != nil && result.RCODE != dns.RCodeServFail
+	if !resolveOK {
 		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok {
 			h.logger.Info("serving stale cache", "qname", q.Name, "qtype", qtypeStr)
 			resp, buildErr := h.buildCacheResponse(msg, staleEntry)
 			if buildErr == nil {
+				duration := time.Since(start)
+				h.metrics.ObserveQueryDuration(duration)
+				h.metrics.IncResponses("NOERROR")
+				if h.OnQuery != nil {
+					h.OnQuery(clientIP, q.Name, qtypeStr, "NOERROR", true, float64(duration.Microseconds())/1000.0)
+				}
 				return resp, nil
 			}
 		}
-		h.metrics.IncResponses("SERVFAIL")
-		return h.buildError(query, dns.RCodeServFail)
+		if err != nil {
+			h.metrics.IncResponses("SERVFAIL")
+			return h.buildError(query, dns.RCodeServFail)
+		}
 	}
 
 	// 5. Cache store
@@ -263,7 +274,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 			return nil, nil // silently drop
 		case security.RRLSlip:
 			// Send truncated response (TC=1) to force TCP retry
-			return h.buildError(query, dns.RCodeNoError)
+			return h.buildSlipResponse(query)
 		}
 	}
 
@@ -310,6 +321,21 @@ func (h *MainHandler) buildError(query []byte, rcode uint8) ([]byte, error) {
 	}
 	copy(buf[12:], query[12:offset])
 	return buf[:offset], nil
+}
+
+// buildSlipResponse creates a minimal response with TC=1 (truncated) to force
+// the client to retry over TCP. Used by RRL slip to rate-limit without dropping.
+func (h *MainHandler) buildSlipResponse(query []byte) ([]byte, error) {
+	resp, err := h.buildError(query, dns.RCodeNoError)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp) >= 4 {
+		flags := binary.BigEndian.Uint16(resp[2:4])
+		flags |= 1 << 9 // TC bit
+		binary.BigEndian.PutUint16(resp[2:4], flags)
+	}
+	return resp, nil
 }
 
 func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry) ([]byte, error) {
@@ -371,9 +397,27 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 		maxSize = int(query.EDNS0.UDPSize)
 	}
 	if len(packed) > maxSize {
-		// Set TC bit and truncate
+		// Set TC bit and send only header + question section (RFC 1035 §4.1.1).
+		// This avoids sending a malformed message with partial records.
 		binary.BigEndian.PutUint16(packed[2:4], binary.BigEndian.Uint16(packed[2:4])|(1<<9))
-		packed = packed[:maxSize]
+		binary.BigEndian.PutUint16(packed[6:8], 0)  // ANCount = 0
+		binary.BigEndian.PutUint16(packed[8:10], 0)  // NSCount = 0
+		binary.BigEndian.PutUint16(packed[10:12], 0) // ARCount = 0
+		// Keep header (12 bytes) + question section only
+		qEnd := 12
+		qdcount := binary.BigEndian.Uint16(packed[4:6])
+		for i := 0; i < int(qdcount) && qEnd < len(packed); i++ {
+			_, n, err := dns.DecodeName(packed, qEnd)
+			if err != nil {
+				break
+			}
+			qEnd = n + 4 // skip QTYPE + QCLASS
+		}
+		if qEnd > maxSize {
+			qEnd = 12 // question itself too big, send header only
+			binary.BigEndian.PutUint16(packed[4:6], 0) // QDCount = 0
+		}
+		packed = packed[:qEnd]
 	}
 
 	return packed, nil
