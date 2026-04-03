@@ -6,7 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.3.0] - 2026-04-03
 
+### Added
+- Cache lookup `ALL` type — queries all cached record types for a domain in one request
+  (default selection in web dashboard dropdown)
+
 ### Fixed
+- QNAME minimization with `.tr`-style TLDs: when a minimized query (e.g., `net.tr NS`)
+  gets NS records in the answer section instead of a proper referral, the resolver now
+  retries with the full query name. Fixes resolution of domains like `dgn.net.tr`,
+  `hurriyet.com.tr` and similar multi-level `.tr` domains.
 - False loop detection for `.tr` and similar TLD nameserver queries — the same NS IP
   (e.g., `ns1.nic.tr`) serving multiple zone levels (`.tr`, `com.tr`, `net.tr`) was
   mistakenly flagged as a loop. Loop detection key now includes `currentZone`.
