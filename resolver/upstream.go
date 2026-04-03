@@ -168,7 +168,10 @@ func validateResponseQuestion(msg *dns.Message, name string, qtype uint16, qclas
 		return errors.New("response has no question section")
 	}
 	q := msg.Questions[0]
-	if !strings.EqualFold(q.Name, name) || q.Type != qtype || q.Class != qclass {
+	// Normalize root zone: "." and "" are equivalent after wire decode.
+	qn := strings.TrimSuffix(strings.ToLower(q.Name), ".")
+	nm := strings.TrimSuffix(strings.ToLower(name), ".")
+	if qn != nm || q.Type != qtype || q.Class != qclass {
 		return errors.New("response question mismatch")
 	}
 	return nil
