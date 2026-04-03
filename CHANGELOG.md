@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under `example.tr`). NS address lookups now bypass the inflight deduplicator.
 - Cache lookup in `selectAndResolveNS` now scans all cached records instead of only
   the first entry, fixing failures when the first cached record has corrupt RDATA.
+- Upstream response question section validation: responses with mismatched qname/qtype
+  are now rejected, hardening against off-path cache poisoning attempts.
 
 ### Changed
 - Blocklist enabled by default in example configuration (`labyrinth.yaml`)

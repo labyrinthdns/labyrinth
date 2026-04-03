@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/dns"
@@ -76,6 +77,10 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 	if msg.Header.ID != txID {
 		return nil, errors.New("transaction ID mismatch")
 	}
+	// Validate question section matches what we asked
+	if err := validateResponseQuestion(msg, name, qtype, qclass); err != nil {
+		return nil, err
+	}
 
 	// TC bit set → retry over TCP
 	if msg.Header.TC() {
@@ -89,6 +94,9 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 		}
 		if msg.Header.ID != txID {
 			return nil, errors.New("transaction ID mismatch")
+		}
+		if err := validateResponseQuestion(msg, name, qtype, qclass); err != nil {
+			return nil, err
 		}
 	}
 
@@ -150,6 +158,20 @@ func (r *Resolver) queryTCP(nsIP string, query []byte) ([]byte, error) {
 	}
 
 	return resp, nil
+}
+
+// validateResponseQuestion checks that the response carries exactly the
+// question we asked. This prevents an off-path attacker who guesses the
+// TX ID from injecting records for a different domain.
+func validateResponseQuestion(msg *dns.Message, name string, qtype uint16, qclass uint16) error {
+	if len(msg.Questions) == 0 {
+		return errors.New("response has no question section")
+	}
+	q := msg.Questions[0]
+	if !strings.EqualFold(q.Name, name) || q.Type != qtype || q.Class != qclass {
+		return errors.New("response question mismatch")
+	}
+	return nil
 }
 
 func randomTXID() (uint16, error) {
