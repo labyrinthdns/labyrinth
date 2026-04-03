@@ -12,6 +12,8 @@ func defaultConfig() *Config {
 			MaxTCPConns:    256,
 			MaxUDPWorkers:  10000,
 			GracefulPeriod: 5 * time.Second,
+			TCPPipelineMax: 100,
+			TCPIdleTimeout: 5 * time.Second,
 		},
 		Resolver: ResolverConfig{
 			MaxDepth:        30,
