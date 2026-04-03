@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -69,10 +70,17 @@ func startTXIDMismatchMockDNS(t *testing.T) *mockDNSServer {
 		t.Fatalf("listen: %v", err)
 	}
 	_, portStr, _ := net.SplitHostPort(udp.LocalAddr().String())
-	tcp, err := net.Listen("tcp", "127.0.0.1:"+portStr)
+	var tcp net.Listener
+	for i := 0; i < 10; i++ {
+		tcp, err = net.Listen("tcp", "127.0.0.1:"+portStr)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		udp.Close()
-		t.Fatalf("tcp listen: %v", err)
+		t.Skipf("tcp listen on same port failed: %v", err)
 	}
 
 	m := &mockDNSServer{udpConn: udp, tcpLn: tcp, port: portStr, ip: "127.0.0.1"}
@@ -1129,10 +1137,17 @@ func TestQueryUpstreamOnceTCFallbackQuestionMismatch(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	_, portStr, _ := net.SplitHostPort(udp.LocalAddr().String())
-	tcp, err := net.Listen("tcp", "127.0.0.1:"+portStr)
+	var tcp net.Listener
+	for i := 0; i < 10; i++ {
+		tcp, err = net.Listen("tcp", "127.0.0.1:"+portStr)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		udp.Close()
-		t.Fatalf("tcp listen: %v", err)
+		t.Skipf("tcp listen on same port failed: %v", err)
 	}
 
 	mockSrv := &mockDNSServer{udpConn: udp, tcpLn: tcp, port: portStr, ip: "127.0.0.1",
@@ -1231,10 +1246,17 @@ func TestQueryUpstreamOnceTCFallbackTXIDMismatch(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	_, portStr, _ := net.SplitHostPort(udp.LocalAddr().String())
-	tcp, err := net.Listen("tcp", "127.0.0.1:"+portStr)
+	var tcp net.Listener
+	for i := 0; i < 10; i++ {
+		tcp, err = net.Listen("tcp", "127.0.0.1:"+portStr)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		udp.Close()
-		t.Fatalf("tcp listen: %v", err)
+		t.Skipf("tcp listen on same port failed: %v", err)
 	}
 
 	mockSrv := &mockDNSServer{udpConn: udp, tcpLn: tcp, port: portStr, ip: "127.0.0.1"}
@@ -1569,10 +1591,17 @@ func TestQueryUpstreamOnceTCFallbackTCPUnpackError(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	_, portStr, _ := net.SplitHostPort(udp.LocalAddr().String())
-	tcp, err := net.Listen("tcp", "127.0.0.1:"+portStr)
+	var tcp net.Listener
+	for attempt := 0; attempt < 10; attempt++ {
+		tcp, err = net.Listen("tcp", "127.0.0.1:"+portStr)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		udp.Close()
-		t.Fatalf("tcp listen: %v", err)
+		t.Skipf("tcp listen on same port failed (Windows port reuse): %v", err)
 	}
 
 	go func() {
@@ -2271,5 +2300,62 @@ func TestQueryUDPWriteErrorLargePayload(t *testing.T) {
 	_, err := r.queryUDP("127.0.0.1", bigQuery)
 	// May or may not error depending on OS, but exercises the write path
 	_ = err
+}
+
+func TestQueryUpstreamOnceRandomTXIDError(t *testing.T) {
+	orig := randTXIDFunc
+	randTXIDFunc = func() (uint16, error) {
+		return 0, errors.New("entropy exhausted")
+	}
+	defer func() { randTXIDFunc = orig }()
+
+	m := metrics.NewMetrics()
+	c := cache.NewCache(100, 5, 86400, 3600, m)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	r := NewResolver(c, ResolverConfig{
+		UpstreamTimeout: 100 * time.Millisecond,
+		UpstreamRetries: 1,
+		UpstreamPort:    "19990",
+	}, m, logger)
+
+	_, err := r.queryUpstreamOnce("127.0.0.1", "test.com", dns.TypeA, dns.ClassIN)
+	if err == nil || err.Error() != "entropy exhausted" {
+		t.Errorf("expected 'entropy exhausted' error, got: %v", err)
+	}
+}
+
+func TestQueryTCPWriteError(t *testing.T) {
+	// Start a TCP listener that accepts and immediately closes the connection
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close() // close immediately to cause write/read error
+		}
+	}()
+
+	m := metrics.NewMetrics()
+	c := cache.NewCache(100, 5, 86400, 3600, m)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	r := NewResolver(c, ResolverConfig{
+		UpstreamTimeout: 500 * time.Millisecond,
+		UpstreamRetries: 1,
+		UpstreamPort:    port,
+	}, m, logger)
+
+	query := buildQueryBytes(0x1234, "test.com", dns.TypeA)
+	_, err = r.queryTCP("127.0.0.1", query)
+	if err == nil {
+		t.Error("expected error from TCP write/read on closed connection")
+	}
 }
 

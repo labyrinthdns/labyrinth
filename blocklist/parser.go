@@ -38,9 +38,9 @@ func ParseHostsFile(r io.Reader) []string {
 		// Strip inline comments.
 		if idx := strings.IndexByte(line, '#'); idx >= 0 {
 			line = strings.TrimSpace(line[:idx])
-		}
-		if line == "" {
-			continue
+			if line == "" {
+				continue
+			}
 		}
 
 		fields := strings.Fields(line)
@@ -55,9 +55,6 @@ func ParseHostsFile(r io.Reader) []string {
 
 		domain := strings.ToLower(fields[1])
 		if _, skip := skipDomains[domain]; skip {
-			continue
-		}
-		if domain == "" {
 			continue
 		}
 
@@ -80,9 +77,9 @@ func ParseDomainList(r io.Reader) []string {
 		// Strip inline comments.
 		if idx := strings.IndexByte(line, '#'); idx >= 0 {
 			line = strings.TrimSpace(line[:idx])
-		}
-		if line == "" {
-			continue
+			if line == "" {
+				continue
+			}
 		}
 
 		domains = append(domains, strings.ToLower(line))

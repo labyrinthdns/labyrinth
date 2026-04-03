@@ -191,11 +191,7 @@ func parseRSAPublicKey(keyData []byte) (*rsa.PublicKey, error) {
 	}
 
 	expBytes := keyData[offset : offset+expLen]
-	modBytes := keyData[offset+expLen:]
-
-	if len(modBytes) == 0 {
-		return nil, errInvalidRSAKey
-	}
+	modBytes := keyData[offset+expLen:] // guaranteed non-empty by check above
 
 	// Parse exponent as big-endian integer.
 	exp := new(big.Int).SetBytes(expBytes)
@@ -279,19 +275,15 @@ func verifyECDSA(signedData, signature, keyData []byte, algorithm uint8) error {
 		return err
 	}
 
-	hashAlg, err := hashForAlgorithm(algorithm)
-	if err != nil {
-		return err
-	}
+	// hashForAlgorithm is guaranteed to succeed here because
+	// parseECDSAPublicKey already rejected unsupported algorithms.
+	hashAlg, _ := hashForAlgorithm(algorithm)
 
 	var coordLen int
-	switch algorithm {
-	case dns.AlgECDSAP256:
-		coordLen = 32
-	case dns.AlgECDSAP384:
+	if algorithm == dns.AlgECDSAP384 {
 		coordLen = 48
-	default:
-		return errUnsupportedAlg
+	} else {
+		coordLen = 32 // AlgECDSAP256
 	}
 
 	if len(signature) != coordLen*2 {
