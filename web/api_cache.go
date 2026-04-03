@@ -113,7 +113,52 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 		typeStr = "A"
 	}
 
-	qtype, ok := stringToType[strings.ToUpper(typeStr)]
+	typeUpper := strings.ToUpper(typeStr)
+
+	// ALL: return all cached types for this name
+	if typeUpper == "ALL" {
+		entries := s.cache.LookupAll(name, dns.ClassIN)
+		if len(entries) == 0 {
+			jsonResponse(w, http.StatusNotFound, map[string]string{"error": "no entries found"})
+			return
+		}
+
+		var results []map[string]interface{}
+		for _, entry := range entries {
+			records := make([]map[string]interface{}, 0, len(entry.Records))
+			entryType := ""
+			for _, rr := range entry.Records {
+				if entryType == "" {
+					entryType = dns.TypeToString[rr.Type]
+				}
+				records = append(records, map[string]interface{}{
+					"name":  rr.Name,
+					"type":  dns.TypeToString[rr.Type],
+					"ttl":   rr.TTL,
+					"rdata": formatRData(rr),
+				})
+			}
+			if entryType == "" {
+				entryType = "UNKNOWN"
+			}
+			results = append(results, map[string]interface{}{
+				"name":     name,
+				"type":     entryType,
+				"records":  records,
+				"negative": entry.Negative,
+				"ttl":      entry.RemainingTTL(),
+			})
+		}
+
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"name":    name,
+			"type":    "ALL",
+			"entries": results,
+		})
+		return
+	}
+
+	qtype, ok := stringToType[typeUpper]
 	if !ok {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "unsupported query type"})
 		return

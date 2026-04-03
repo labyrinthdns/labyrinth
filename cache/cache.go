@@ -298,6 +298,29 @@ func (c *Cache) Lookup(name string, qtype uint16, class uint16) (*Entry, bool) {
 	return decayed, true
 }
 
+// LookupAll returns all cached entries for the given name (across all types).
+func (c *Cache) LookupAll(name string, class uint16) []*Entry {
+	name = strings.ToLower(name)
+	idx := c.shardIndex(name)
+
+	s := &c.shards[idx]
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var results []*Entry
+	for key, entry := range s.entries {
+		if key.name == name && key.class == class {
+			remaining := entry.RemainingTTL()
+			if remaining == 0 {
+				continue
+			}
+			decayed := entry.WithDecayedTTL(remaining)
+			results = append(results, decayed)
+		}
+	}
+	return results
+}
+
 // Delete removes a specific entry from the cache.
 // Returns true if the entry was found and deleted.
 func (c *Cache) Delete(name string, qtype uint16, class uint16) bool {

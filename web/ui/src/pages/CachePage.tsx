@@ -4,7 +4,7 @@ import { api } from '@/api/client'
 import type { CacheStats, CacheEntry, NegativeCacheEntry } from '@/api/types'
 import { formatNumber } from '@/lib/utils'
 
-const DNS_TYPES = ['A', 'AAAA', 'NS', 'CNAME', 'MX', 'TXT', 'SOA', 'SRV', 'PTR']
+const DNS_TYPES = ['ALL', 'A', 'AAAA', 'NS', 'CNAME', 'MX', 'TXT', 'SOA', 'SRV', 'PTR']
 
 function StatCard({
   label,
@@ -26,8 +26,9 @@ function StatCard({
 export default function CachePage() {
   const [stats, setStats] = useState<CacheStats | null>(null)
   const [lookupName, setLookupName] = useState('')
-  const [lookupType, setLookupType] = useState('A')
+  const [lookupType, setLookupType] = useState('ALL')
   const [lookupResult, setLookupResult] = useState<CacheEntry | null>(null)
+  const [lookupResults, setLookupResults] = useState<CacheEntry[]>([])
   const [lookupError, setLookupError] = useState('')
   const [lookupLoading, setLookupLoading] = useState(false)
   const [flushing, setFlushing] = useState(false)
@@ -77,14 +78,20 @@ export default function CachePage() {
     setLookupLoading(true)
     setLookupError('')
     setLookupResult(null)
+    setLookupResults([])
 
     try {
-      const res = await api.cacheLookup(lookupName.trim(), lookupType) as unknown as CacheEntry
-      setLookupResult(res)
+      const res = await api.cacheLookup(lookupName.trim(), lookupType)
+      if (lookupType === 'ALL' && res && (res as Record<string, unknown>).entries) {
+        const allRes = res as unknown as { entries: CacheEntry[] }
+        setLookupResults(allRes.entries || [])
+      } else {
+        setLookupResult(res as unknown as CacheEntry)
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lookup failed'
       if (msg.includes('404') || msg.includes('not found')) {
-        setLookupError(`"${lookupName.trim()}" (${lookupType}) is not in the cache. Try querying it first with: dig @localhost ${lookupName.trim()} ${lookupType}`)
+        setLookupError(`"${lookupName.trim()}" (${lookupType}) is not in the cache. Try querying it first with: dig @localhost ${lookupName.trim()} ${lookupType === 'ALL' ? 'A' : lookupType}`)
       } else {
         setLookupError(msg)
       }
@@ -104,6 +111,7 @@ export default function CachePage() {
       await api.cacheFlush()
       setMessage('Cache flushed successfully')
       setLookupResult(null)
+      setLookupResults([])
       setFlushConfirm(false)
       fetchStats()
     } catch (err) {
@@ -222,6 +230,53 @@ export default function CachePage() {
             }`}>
               <AlertCircle size={14} className="mt-0.5 shrink-0" />
               {lookupError}
+            </div>
+          )}
+
+          {/* ALL lookup results */}
+          {lookupResults.length > 0 && (
+            <div className="mt-4 space-y-3">
+              {lookupResults.map((entry, idx) => (
+                <div key={idx} className="bg-slate-50 dark:bg-slate-900 rounded-lg p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                      {String(entry.type || 'UNKNOWN')}
+                    </h3>
+                    <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+                      <span>TTL: {String(entry.ttl ?? 0)}s</span>
+                      <span className={entry.negative ? 'text-red-500' : 'text-green-500'}>
+                        {entry.negative ? 'Negative' : 'Positive'}
+                      </span>
+                    </div>
+                  </div>
+                  {Array.isArray(entry.records) && entry.records.length > 0 && (
+                    <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+                      <table className="w-full text-xs font-mono">
+                        <thead>
+                          <tr className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                            <th className="text-left px-3 py-2">Type</th>
+                            <th className="text-left px-3 py-2">TTL</th>
+                            <th className="text-left px-3 py-2">Data</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {entry.records.map((rec, i) => (
+                            <tr key={i} className="text-slate-900 dark:text-slate-100">
+                              <td className="px-3 py-1.5">
+                                <span className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 text-[10px] font-semibold">
+                                  {String(rec.type || '?')}
+                                </span>
+                              </td>
+                              <td className="px-3 py-1.5 text-slate-500">{String(rec.ttl ?? 0)}s</td>
+                              <td className="px-3 py-1.5 break-all">{String(rec.rdata || '—')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
