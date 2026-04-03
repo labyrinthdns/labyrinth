@@ -6,6 +6,26 @@ import { formatNumber } from '@/lib/utils'
 
 const DNS_TYPES = ['ALL', 'A', 'AAAA', 'NS', 'CNAME', 'MX', 'TXT', 'SOA', 'SRV', 'PTR']
 
+// Convert an IPv4/IPv6 address to its reverse DNS (in-addr.arpa / ip6.arpa) name.
+function toReverseDNS(input: string): string | null {
+  const trimmed = input.trim()
+  // IPv4: 1.2.3.4 → 4.3.2.1.in-addr.arpa
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) {
+    return trimmed.split('.').reverse().join('.') + '.in-addr.arpa'
+  }
+  // IPv6: expand and reverse nibbles → ...ip6.arpa
+  if (trimmed.includes(':')) {
+    // Expand :: and normalize to 32 hex nibbles
+    const parts = trimmed.split(':')
+    const missing = 8 - parts.filter(p => p !== '').length
+    const expanded = parts.flatMap(p => p === '' ? Array(missing + 1).fill('0000') : [p.padStart(4, '0')])
+    if (expanded.length === 8) {
+      return expanded.join('').split('').reverse().join('.') + '.ip6.arpa'
+    }
+  }
+  return null
+}
+
 function StatCard({
   label,
   value,
@@ -80,8 +100,17 @@ export default function CachePage() {
     setLookupResult(null)
     setLookupResults([])
 
+    // Auto-detect IP addresses and convert to reverse DNS format
+    let queryName = lookupName.trim()
+    let queryType = lookupType
+    const reverseName = toReverseDNS(queryName)
+    if (reverseName) {
+      queryName = reverseName
+      queryType = 'PTR'
+    }
+
     try {
-      const res = await api.cacheLookup(lookupName.trim(), lookupType)
+      const res = await api.cacheLookup(queryName, queryType)
       if (lookupType === 'ALL' && res && (res as Record<string, unknown>).entries) {
         const allRes = res as unknown as { entries: CacheEntry[] }
         setLookupResults(allRes.entries || [])
@@ -91,7 +120,11 @@ export default function CachePage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lookup failed'
       if (msg.includes('404') || msg.includes('not found')) {
-        setLookupError(`"${lookupName.trim()}" (${lookupType}) is not in the cache. Try querying it first with: dig @localhost ${lookupName.trim()} ${lookupType === 'ALL' ? 'A' : lookupType}`)
+        const digType = queryType === 'ALL' ? 'A' : queryType
+        const hint = reverseName
+          ? `"${queryName}" (PTR for ${lookupName.trim()}) is not in the cache. Try: dig @localhost -x ${lookupName.trim()}`
+          : `"${queryName}" (${digType}) is not in the cache. Try: dig @localhost ${queryName} ${digType}`
+        setLookupError(hint)
       } else {
         setLookupError(msg)
       }
