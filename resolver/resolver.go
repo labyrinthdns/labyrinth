@@ -178,21 +178,28 @@ func (r *Resolver) resolveIterative(
 		// Bailiwick filter
 		security.SanitizeBailiwick(response, currentZone)
 
-		// Classify response
-		rtype := classifyResponse(response, name, qtype)
+		// Classify response using the actual query parameters (which may
+		// differ from the original name/qtype when QMIN is active).
+		rtype := classifyResponse(response, queryName, queryType)
 
 		// If using QNAME minimization and the minimized query did not
-		// produce a referral, retry with the full query name (RFC 9156 §3).
-		// This covers: NXDOMAIN/NODATA for non-existent intermediate labels,
-		// and responseAnswer where the NS returns NS records in the answer
-		// section (common with .tr TLDs) instead of a proper referral.
+		// produce a useful referral, retry with the full query name
+		// (RFC 9156 §3). A referral means the NS delegated to a child
+		// zone — we follow that. Anything else (answer for the minimized
+		// name, NXDOMAIN, NODATA, ServFail) means we should ask the
+		// full question to get the real delegation or answer.
 		if r.config.QMinEnabled && queryName != name && rtype != responseReferral {
-			response2, err2 := r.queryUpstream(nsIP, name, qtype, qclass)
-			if err2 == nil {
-				security.SanitizeBailiwick(response2, currentZone)
-				rtype = classifyResponse(response2, name, qtype)
-				response = response2
+			response, err = r.queryUpstream(nsIP, name, qtype, qclass)
+			if err != nil {
+				r.logger.Debug("qmin fallback upstream error", "ns", nsIP, "error", err)
+				nameservers = removeNSByIP(nameservers, nsIP)
+				if len(nameservers) == 0 {
+					return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+				}
+				continue
 			}
+			security.SanitizeBailiwick(response, currentZone)
+			rtype = classifyResponse(response, name, qtype)
 		}
 
 		switch rtype {

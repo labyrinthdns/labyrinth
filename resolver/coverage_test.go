@@ -1867,6 +1867,9 @@ func TestClassifyResponseNSAndSOA(t *testing.T) {
 // --- classifyResponse: answer with unrelated records (classify.go:55) ---
 
 func TestClassifyResponseAnswerUnrelatedType(t *testing.T) {
+	// Unrelated answer records (ANCount > 0 but no match for qname/qtype)
+	// should fall through to authority checks. With no authority section,
+	// the result is responseServFail (no useful information).
 	msg := &dns.Message{
 		Header: dns.Header{
 			Flags:   dns.NewFlagBuilder().SetQR(true).Build(),
@@ -1878,8 +1881,19 @@ func TestClassifyResponseAnswerUnrelatedType(t *testing.T) {
 		}},
 	}
 	rtype := classifyResponse(msg, "test.com", dns.TypeA)
-	if rtype != responseAnswer {
-		t.Errorf("expected responseAnswer for unrelated answer type, got %d", rtype)
+	if rtype != responseServFail {
+		t.Errorf("expected responseServFail for unrelated answer with no authority, got %d", rtype)
+	}
+
+	// With NS in authority → should be treated as referral
+	nsRData := dns.BuildPlainName("ns1.test.com")
+	msg.Authority = []dns.ResourceRecord{{
+		Name: "test.com", Type: dns.TypeNS, Class: dns.ClassIN,
+		TTL: 3600, RDLength: uint16(len(nsRData)), RData: nsRData,
+	}}
+	rtype = classifyResponse(msg, "test.com", dns.TypeA)
+	if rtype != responseReferral {
+		t.Errorf("expected responseReferral for unrelated answer with NS authority, got %d", rtype)
 	}
 }
 
