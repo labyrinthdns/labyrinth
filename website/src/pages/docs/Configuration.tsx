@@ -62,6 +62,30 @@ export default function Configuration({ dark }: Props) {
         </tbody>
       </table>
 
+      <h2 className={h2}>dnssec</h2>
+
+      <p className={p}>Controls DNSSEC validation (RFC 4033-4035).</p>
+
+      <table className={tc}>
+        <thead><tr className={th}><th className="text-left py-2 pr-4 font-semibold">Key</th><th className="text-left py-2 pr-4 font-semibold">Type</th><th className="text-left py-2 pr-4 font-semibold">Default</th><th className="text-left py-2 font-semibold">Description</th></tr></thead>
+        <tbody>
+          <tr className={td}><td className="py-2 pr-4"><code className={ic}>enabled</code></td><td className="py-2 pr-4">bool</td><td className="py-2 pr-4"><code className={ic}>true</code></td><td className="py-2">Enable DNSSEC validation for all queries</td></tr>
+        </tbody>
+      </table>
+
+      <h2 className={h2}>blocklist</h2>
+
+      <p className={p}>Controls DNS blocklist filtering (Pi-hole style ad/tracker blocking).</p>
+
+      <table className={tc}>
+        <thead><tr className={th}><th className="text-left py-2 pr-4 font-semibold">Key</th><th className="text-left py-2 pr-4 font-semibold">Type</th><th className="text-left py-2 pr-4 font-semibold">Default</th><th className="text-left py-2 font-semibold">Description</th></tr></thead>
+        <tbody>
+          <tr className={td}><td className="py-2 pr-4"><code className={ic}>enabled</code></td><td className="py-2 pr-4">bool</td><td className="py-2 pr-4"><code className={ic}>false</code></td><td className="py-2">Enable DNS blocklist filtering</td></tr>
+          <tr className={td}><td className="py-2 pr-4"><code className={ic}>lists</code></td><td className="py-2 pr-4">[]string</td><td className="py-2 pr-4"><code className={ic}>[]</code></td><td className="py-2">URLs of blocklist files (hosts or domain-list format)</td></tr>
+          <tr className={td}><td className="py-2 pr-4"><code className={ic}>refresh_interval</code></td><td className="py-2 pr-4">duration</td><td className="py-2 pr-4"><code className={ic}>"24h"</code></td><td className="py-2">How often to refresh blocklists from sources</td></tr>
+        </tbody>
+      </table>
+
       <h2 className={h2}>cache</h2>
 
       <p className={p}>Controls the 256-shard concurrent cache.</p>
@@ -120,6 +144,18 @@ export default function Configuration({ dark }: Props) {
         </tbody>
       </table>
 
+      <h2 className={h2}>auto_update</h2>
+
+      <p className={p}>Controls the self-update mechanism accessible from the web dashboard.</p>
+
+      <table className={tc}>
+        <thead><tr className={th}><th className="text-left py-2 pr-4 font-semibold">Key</th><th className="text-left py-2 pr-4 font-semibold">Type</th><th className="text-left py-2 pr-4 font-semibold">Default</th><th className="text-left py-2 font-semibold">Description</th></tr></thead>
+        <tbody>
+          <tr className={td}><td className="py-2 pr-4"><code className={ic}>enabled</code></td><td className="py-2 pr-4">bool</td><td className="py-2 pr-4"><code className={ic}>true</code></td><td className="py-2">Enable self-update from the web dashboard</td></tr>
+          <tr className={td}><td className="py-2 pr-4"><code className={ic}>check_interval</code></td><td className="py-2 pr-4">duration</td><td className="py-2 pr-4"><code className={ic}>"24h"</code></td><td className="py-2">How often to check for new versions</td></tr>
+        </tbody>
+      </table>
+
       <h2 className={h2}>daemon</h2>
 
       <table className={tc}>
@@ -167,6 +203,16 @@ resolver:
   total_timeout: "30s"
   enable_request_coalescing: true
 
+dnssec:
+  enabled: true
+
+blocklist:
+  enabled: true
+  lists:
+    - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+    - "https://adaway.org/hosts.txt"
+  refresh_interval: "12h"
+
 cache:
   max_entries_per_shard: 50000
   serve_stale: true
@@ -199,6 +245,10 @@ web:
   port: 9153
   token_lifetime: "12h"
 
+auto_update:
+  enabled: true
+  check_interval: "24h"
+
 logging:
   level: "info"
   format: "json"
@@ -213,6 +263,14 @@ zabbix:
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`server:
   address: "0.0.0.0"
   port: 53
+
+dnssec:
+  enabled: true
+
+blocklist:
+  enabled: true
+  lists:
+    - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
 
 cache:
   max_entries_per_shard: 5000

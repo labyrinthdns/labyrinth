@@ -5,6 +5,7 @@ const metrics = [
   { value: '4.4M', label: 'msg unpack/sec' },
   { value: '<50\u00B5s', label: 'cache hit latency' },
   { value: '6.8MB', label: 'binary size' },
+  { value: '840+', label: 'tests passing' },
 ]
 
 export default function Performance() {
@@ -50,7 +51,7 @@ export default function Performance() {
         </div>
 
         {/* Metrics grid */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 sm:gap-8">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-6 sm:gap-8">
           {metrics.map((metric, index) => (
             <div
               key={metric.label}
