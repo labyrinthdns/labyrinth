@@ -393,3 +393,107 @@ func TestExtractDelegationAAAAGlue(t *testing.T) {
 		t.Errorf("IPv6 glue: expected '2001:db8::1', got %q", delegation[0].IPv6)
 	}
 }
+
+func TestQMinNXDOMAINRetry(t *testing.T) {
+	// When QMIN sends a minimized query and gets NXDOMAIN, the resolver
+	// should retry with the full query name (RFC 9156 §3).
+	var queries []string
+	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
+		if len(q.Questions) == 0 {
+			return nil
+		}
+		qname := q.Questions[0].Name
+		qtype := q.Questions[0].Type
+		queries = append(queries, qname)
+
+		// Minimized NS query → NXDOMAIN (intermediate label doesn't exist)
+		if qtype == dns.TypeNS && qname != "." {
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeNXDomain).Build()},
+				Questions: q.Questions,
+				Authority: []dns.ResourceRecord{{
+					Name: "com", Type: dns.TypeSOA, Class: dns.ClassIN,
+					TTL: 300, RDLength: uint16(len(buildSOARData())), RData: buildSOARData(),
+				}},
+			}
+		}
+		// Full A query → answer
+		return &dns.Message{
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+			Questions: q.Questions,
+			Answers: []dns.ResourceRecord{{
+				Name: qname, Type: dns.TypeA, Class: dns.ClassIN,
+				TTL: 300, RDLength: 4, RData: []byte{10, 0, 0, 42},
+			}},
+		}
+	})
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	r.config.QMinEnabled = true
+	result, err := r.Resolve("www.qmin-nx.com", dns.TypeA, dns.ClassIN)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if result.RCODE != dns.RCodeNoError {
+		t.Errorf("expected NOERROR after QMIN NXDOMAIN retry, got %d", result.RCODE)
+	}
+}
+
+func TestSelectAndResolveNSCacheSkipsBadFirstRecord(t *testing.T) {
+	// Cache has two A records: first is corrupt, second is valid.
+	// selectAndResolveNS should skip the bad one and return the good one.
+	mock := startMockDNS(t, func(q *dns.Message) *dns.Message { return nil })
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	r.cache.Store("ns1.test.com", dns.TypeA, dns.ClassIN, []dns.ResourceRecord{
+		{Name: "ns1.test.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 300, RDLength: 2, RData: []byte{0xFF, 0xFF}}, // corrupt: only 2 bytes
+		{Name: "ns1.test.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 300, RDLength: 4, RData: []byte{10, 20, 30, 40}}, // valid
+	}, nil)
+
+	ns := []nsEntry{{hostname: "ns1.test.com"}}
+	_, ip, err := r.selectAndResolveNS(ns, newVisitedSet(), "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if ip != "10.20.30.40" {
+		t.Errorf("expected 10.20.30.40 from second cache record, got %q", ip)
+	}
+}
+
+func TestResolveNSAddrBypassesInflight(t *testing.T) {
+	// resolveNSAddr should work independently of the inflight coalescer,
+	// preventing deadlock when NS hostname resolution would hit the same key.
+	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
+		if len(q.Questions) == 0 {
+			return nil
+		}
+		return &dns.Message{
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+			Questions: q.Questions,
+			Answers: []dns.ResourceRecord{{
+				Name: q.Questions[0].Name, Type: dns.TypeA, Class: dns.ClassIN,
+				TTL: 300, RDLength: 4, RData: []byte{1, 2, 3, 4},
+			}},
+		}
+	})
+	defer mock.close()
+
+	r := testResolver(t, mock)
+
+	// Call resolveNSAddr directly — should succeed without going through inflight
+	result, err := r.resolveNSAddr("ns1.example.tr", dns.TypeA)
+	if err != nil {
+		t.Fatalf("resolveNSAddr error: %v", err)
+	}
+	if result.RCODE != dns.RCodeNoError {
+		t.Errorf("expected NOERROR, got %d", result.RCODE)
+	}
+	if len(result.Answers) == 0 {
+		t.Error("expected answers from resolveNSAddr")
+	}
+}
+

@@ -181,9 +181,10 @@ func (r *Resolver) resolveIterative(
 		// Classify response
 		rtype := classifyResponse(response, name, qtype)
 
-		// If using QNAME minimization and we got NODATA for NS query,
-		// it might mean the name exists but has no NS — try full query
-		if r.config.QMinEnabled && queryName != name && rtype == responseNoData {
+		// If using QNAME minimization and the minimized query returned
+		// NXDOMAIN or NODATA, retry with the full query name (RFC 9156 §3).
+		// The intermediate label may not exist, but the final name might.
+		if r.config.QMinEnabled && queryName != name && (rtype == responseNoData || rtype == responseNXDomain) {
 			response2, err2 := r.queryUpstream(nsIP, name, qtype, qclass)
 			if err2 == nil {
 				security.SanitizeBailiwick(response2, currentZone)
@@ -333,25 +334,30 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 		}
 	}
 
-	// Try cache lookup for NS IP (A first, then AAAA)
+	// Try cache lookup for NS IP (A first, then AAAA).
+	// Scan all cached records — the first one may have corrupt RDATA.
 	for _, ns := range shuffled {
-		if entry, ok := r.cache.Get(ns.hostname, dns.TypeA, dns.ClassIN); ok && len(entry.Records) > 0 {
-			ip, err := dns.ParseA(entry.Records[0].RData)
-			if err == nil {
-				return ns.hostname, ip.String(), nil
+		if entry, ok := r.cache.Get(ns.hostname, dns.TypeA, dns.ClassIN); ok {
+			for _, rr := range entry.Records {
+				if ip, err := dns.ParseA(rr.RData); err == nil {
+					return ns.hostname, ip.String(), nil
+				}
 			}
 		}
 	}
 	for _, ns := range shuffled {
-		if entry, ok := r.cache.Get(ns.hostname, dns.TypeAAAA, dns.ClassIN); ok && len(entry.Records) > 0 {
-			ip, err := dns.ParseAAAA(entry.Records[0].RData)
-			if err == nil {
-				return ns.hostname, ip.String(), nil
+		if entry, ok := r.cache.Get(ns.hostname, dns.TypeAAAA, dns.ClassIN); ok {
+			for _, rr := range entry.Records {
+				if ip, err := dns.ParseAAAA(rr.RData); err == nil {
+					return ns.hostname, ip.String(), nil
+				}
 			}
 		}
 	}
 
 	// Recursive resolve for NS hostname — try A then AAAA.
+	// Use resolveNSAddr (bypasses inflight) to avoid deadlock when the NS
+	// hostname itself requires resolution through the same inflight key.
 	// First pass: out-of-bailiwick NS (safe, no loop risk).
 	// Second pass: in-bailiwick NS (needed for TLDs like .tr where NS is *.ns.tr).
 	for pass := 0; pass < 2; pass++ {
@@ -364,7 +370,7 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 				continue // second pass: skip out-of-bailiwick (already tried)
 			}
 
-			result, err := r.Resolve(ns.hostname, dns.TypeA, dns.ClassIN)
+			result, err := r.resolveNSAddr(ns.hostname, dns.TypeA)
 			if err == nil {
 				// Scan all answers for an A record (answers may include
 				// CNAME records before the final A record).
@@ -378,7 +384,7 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 				}
 			}
 			// Fallback to AAAA (always try, even with PreferIPv4 — it's a last resort)
-			result, err = r.Resolve(ns.hostname, dns.TypeAAAA, dns.ClassIN)
+			result, err = r.resolveNSAddr(ns.hostname, dns.TypeAAAA)
 			if err == nil {
 				for _, rr := range result.Answers {
 					if rr.Type == dns.TypeAAAA {
@@ -476,6 +482,15 @@ func parseIPv4Bytes(ipStr string) []byte {
 		result[i] = byte(val)
 	}
 	return result
+}
+
+// resolveNSAddr resolves a nameserver hostname bypassing the inflight
+// coalescer. This prevents deadlock when the NS hostname resolution would
+// hit the same inflight key as the caller (e.g., ns1.example.tr while
+// already resolving something under example.tr).
+func (r *Resolver) resolveNSAddr(name string, qtype uint16) (*ResolveResult, error) {
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	return r.resolveIterative(name, qtype, dns.ClassIN, 0, newVisitedSet())
 }
 
 func (r *Resolver) dnsPort() string {
