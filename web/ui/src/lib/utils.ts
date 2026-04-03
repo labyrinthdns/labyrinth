@@ -26,3 +26,26 @@ export function formatUptime(seconds: number): string {
   if (h > 0) return `${h}h ${m}m`
   return `${m}m`
 }
+
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || Number.isNaN(bytes)) return '0 B'
+  if (bytes < 1024) return `${bytes.toFixed(0)} B`
+  const units = ['KB', 'MB', 'GB', 'TB', 'PB']
+  let value = bytes / 1024
+  let idx = 0
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024
+    idx++
+  }
+  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[idx]}`
+}
+
+export function normalizeVersion(version: string | null | undefined): string {
+  if (!version) return ''
+  return version.trim().replace(/^[vV]+/, '')
+}
+
+export function formatVersion(version: string | null | undefined): string {
+  const normalized = normalizeVersion(version)
+  return normalized ? `v${normalized}` : ''
+}

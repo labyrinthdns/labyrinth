@@ -1,8 +1,8 @@
 package security
 
 import (
-	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,7 +19,7 @@ const (
 // RRL implements Response Rate Limiting to prevent DNS amplification attacks.
 type RRL struct {
 	mu                 sync.Mutex
-	entries            map[string]*rrlEntry
+	entries            map[rrlKey]*rrlEntry
 	responsesPerSecond float64
 	slipRatio          int
 	ipv4Prefix         int
@@ -27,21 +27,35 @@ type RRL struct {
 	cleanupInterval    time.Duration
 }
 
+const defaultRRLCleanupInterval = 5 * time.Minute
+
+const (
+	maxRRLPrefixLen       = 64
+	maxRRLQNameLen        = 255
+	maxRRLResponseTypeLen = 32
+)
+
+type rrlKey struct {
+	prefix       string
+	qname        string
+	responseType string
+}
+
 type rrlEntry struct {
-	tokens   float64
-	lastTime time.Time
+	tokens    float64
+	lastTime  time.Time
 	slipCount int
 }
 
 // NewRRL creates a new Response Rate Limiter.
 func NewRRL(responsesPerSecond float64, slipRatio, ipv4Prefix, ipv6Prefix int) *RRL {
 	return &RRL{
-		entries:            make(map[string]*rrlEntry),
+		entries:            make(map[rrlKey]*rrlEntry),
 		responsesPerSecond: responsesPerSecond,
 		slipRatio:          slipRatio,
 		ipv4Prefix:         ipv4Prefix,
 		ipv6Prefix:         ipv6Prefix,
-		cleanupInterval:    5 * time.Minute,
+		cleanupInterval:    defaultRRLCleanupInterval,
 	}
 }
 
@@ -50,8 +64,12 @@ func (r *RRL) AllowResponse(sourceIP string, qname string, responseType string) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	prefix := r.sourcePrefix(sourceIP)
-	key := fmt.Sprintf("%s|%s|%s", prefix, qname, responseType)
+	prefix := normalizeRRLKeyPart(r.sourcePrefix(sourceIP), maxRRLPrefixLen, false)
+	key := rrlKey{
+		prefix:       prefix,
+		qname:        normalizeRRLKeyPart(qname, maxRRLQNameLen, true),
+		responseType: strings.ToUpper(normalizeRRLKeyPart(responseType, maxRRLResponseTypeLen, false)),
+	}
 	now := time.Now()
 
 	entry, ok := r.entries[key]
@@ -98,11 +116,25 @@ func (r *RRL) sourcePrefix(ipStr string) string {
 	return ip.Mask(mask).String()
 }
 
+func normalizeRRLKeyPart(value string, maxLen int, lower bool) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	if len(value) > maxLen {
+		value = value[:maxLen]
+	}
+	if lower {
+		return strings.ToLower(value)
+	}
+	return value
+}
+
 // StartCleanup removes stale RRL entries periodically.
 func (r *RRL) StartCleanup(ctx interface{ Done() <-chan struct{} }) {
 	interval := r.cleanupInterval
 	if interval <= 0 {
-		interval = 5 * time.Minute
+		interval = defaultRRLCleanupInterval
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
