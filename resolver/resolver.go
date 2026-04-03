@@ -181,10 +181,12 @@ func (r *Resolver) resolveIterative(
 		// Classify response
 		rtype := classifyResponse(response, name, qtype)
 
-		// If using QNAME minimization and the minimized query returned
-		// NXDOMAIN or NODATA, retry with the full query name (RFC 9156 §3).
-		// The intermediate label may not exist, but the final name might.
-		if r.config.QMinEnabled && queryName != name && (rtype == responseNoData || rtype == responseNXDomain) {
+		// If using QNAME minimization and the minimized query did not
+		// produce a referral, retry with the full query name (RFC 9156 §3).
+		// This covers: NXDOMAIN/NODATA for non-existent intermediate labels,
+		// and responseAnswer where the NS returns NS records in the answer
+		// section (common with .tr TLDs) instead of a proper referral.
+		if r.config.QMinEnabled && queryName != name && rtype != responseReferral {
 			response2, err2 := r.queryUpstream(nsIP, name, qtype, qclass)
 			if err2 == nil {
 				security.SanitizeBailiwick(response2, currentZone)
