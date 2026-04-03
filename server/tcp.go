@@ -103,6 +103,13 @@ func (s *TCPServer) Serve(ctx context.Context) error {
 }
 
 func (s *TCPServer) handleTCP(conn net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("panic in TCP handler", "client", conn.RemoteAddr(), "panic", r)
+		}
+		conn.Close()
+	}()
+
 	// Set initial deadline for the first query
 	conn.SetDeadline(time.Now().Add(s.timeout))
 

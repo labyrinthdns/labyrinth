@@ -31,34 +31,34 @@ var (
 
 // clientQueryEntry tracks query counts with last access time for TTL-based cleanup.
 type clientQueryEntry struct {
-	count     atomic.Uint64
+	count      atomic.Uint64
 	lastAccess time.Time
 }
 
 // AdminServer provides the admin dashboard HTTP backend.
 type AdminServer struct {
-	cache           *cache.Cache
-	metrics         *metrics.Metrics
-	resolver        *resolver.Resolver
-	config          *config.Config
-	configPath      string
-	queryLog        *QueryLog
-	timeSeries      *TimeSeriesAggregator
-	logger          *slog.Logger
-	jwtSecret       []byte
-	setupDone       bool
-	nextID          atomic.Uint64
-	topClients      *TopTracker
-	topDomains      *TopTracker
-	clientQueryNum  map[string]*clientQueryEntry
-	clientNumMu     sync.Mutex
+	cache                 *cache.Cache
+	metrics               *metrics.Metrics
+	resolver              *resolver.Resolver
+	config                *config.Config
+	configPath            string
+	queryLog              *QueryLog
+	timeSeries            *TimeSeriesAggregator
+	logger                *slog.Logger
+	jwtSecret             []byte
+	setupDone             bool
+	nextID                atomic.Uint64
+	topClients            *TopTracker
+	topDomains            *TopTracker
+	clientQueryNum        map[string]*clientQueryEntry
+	clientNumMu           sync.Mutex
 	clientCleanupInterval time.Duration
-	updateCache     *UpdateInfo
-	updateCheckedAt time.Time
-	updateMu        sync.RWMutex
-	blocklist       *blocklist.Manager
-	dohEnabled      bool
-	dohHandler      server.Handler
+	updateCache           *UpdateInfo
+	updateCheckedAt       time.Time
+	updateMu              sync.RWMutex
+	blocklist             *blocklist.Manager
+	dohEnabled            bool
+	dohHandler            server.Handler
 }
 
 // NewAdminServer creates a new AdminServer. The bl parameter is optional and
@@ -79,20 +79,20 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 	cleanupInterval := 5 * time.Minute
 
 	return &AdminServer{
-		cache:          c,
-		metrics:        m,
-		resolver:       r,
-		config:         cfg,
-		configPath:     "labyrinth.yaml",
-		queryLog:       NewQueryLog(bufSize),
-		timeSeries:     NewTimeSeriesAggregator(),
-		logger:         logger,
-		jwtSecret:      secret,
-		topClients:     NewTopTracker(cfg.Web.TopClientsLimit),
-		topDomains:     NewTopTracker(cfg.Web.TopDomainsLimit),
-		clientQueryNum: make(map[string]*clientQueryEntry),
+		cache:                 c,
+		metrics:               m,
+		resolver:              r,
+		config:                cfg,
+		configPath:            "labyrinth.yaml",
+		queryLog:              NewQueryLog(bufSize),
+		timeSeries:            NewTimeSeriesAggregator(),
+		logger:                logger,
+		jwtSecret:             secret,
+		topClients:            NewTopTracker(cfg.Web.TopClientsLimit),
+		topDomains:            NewTopTracker(cfg.Web.TopDomainsLimit),
+		clientQueryNum:        make(map[string]*clientQueryEntry),
 		clientCleanupInterval: cleanupInterval,
-		blocklist:      bl,
+		blocklist:             bl,
 	}, nil
 }
 
@@ -320,6 +320,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	// System routes
 	mux.HandleFunc("/api/system/health", s.handleHealth)
 	mux.HandleFunc("/api/system/version", s.handleVersion)
+	mux.HandleFunc("/api/system/profile", s.requireAuth(s.handleSystemProfile))
 
 	// Protected routes
 	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleMe))

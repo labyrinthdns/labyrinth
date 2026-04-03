@@ -267,349 +267,156 @@ func Load(path string) (*Config, error) {
 }
 
 func applyYAML(cfg *Config, values map[string]string) {
-	if v, ok := values["server.listen_addr"]; ok {
-		cfg.Server.ListenAddr = v
-	}
-	if v, ok := values["server.metrics_addr"]; ok {
-		cfg.Server.MetricsAddr = v
-	}
-	if v, ok := values["server.max_udp_size"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Server.MaxUDPSize = n
+	setString := func(dst *string, keys ...string) {
+		if v, ok := firstConfigValue(values, keys...); ok {
+			*dst = v
 		}
 	}
-	if v, ok := values["server.tcp_timeout"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Server.TCPTimeout = d
+	setBool := func(dst *bool, keys ...string) {
+		if v, ok := firstConfigValue(values, keys...); ok {
+			*dst = parseBool(v)
 		}
 	}
-	if v, ok := values["server.max_tcp_connections"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Server.MaxTCPConns = n
-		}
-	} else if v, ok := values["server.max_tcp_conns"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Server.MaxTCPConns = n
+	setInt := func(dst *int, keys ...string) {
+		if v, ok := firstConfigValue(values, keys...); ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				*dst = n
+			}
 		}
 	}
-	if v, ok := values["server.max_udp_workers"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Server.MaxUDPWorkers = n
+	setUint32 := func(dst *uint32, keys ...string) {
+		if v, ok := firstConfigValue(values, keys...); ok {
+			if n, err := strconv.ParseUint(v, 10, 32); err == nil {
+				*dst = uint32(n)
+			}
 		}
 	}
-	if v, ok := values["server.graceful_shutdown"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Server.GracefulPeriod = d
-		}
-	} else if v, ok := values["server.graceful_period"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Server.GracefulPeriod = d
+	setFloat64 := func(dst *float64, keys ...string) {
+		if v, ok := firstConfigValue(values, keys...); ok {
+			if n, err := strconv.ParseFloat(v, 64); err == nil {
+				*dst = n
+			}
 		}
 	}
-	if v, ok := values["server.tcp_pipeline_max"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Server.TCPPipelineMax = n
+	setDuration := func(dst *time.Duration, keys ...string) {
+		if v, ok := firstConfigValue(values, keys...); ok {
+			if d, err := time.ParseDuration(v); err == nil {
+				*dst = d
+			}
 		}
 	}
-	if v, ok := values["server.tcp_idle_timeout"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Server.TCPIdleTimeout = d
+	setCSV := func(dst *[]string, keys ...string) {
+		if v, ok := firstConfigValue(values, keys...); ok && strings.TrimSpace(v) != "" {
+			*dst = parseCSVList(v)
 		}
 	}
-	if v, ok := values["server.dot_enabled"]; ok {
-		cfg.Server.DoTEnabled = parseBool(v)
-	}
-	if v, ok := values["server.dot_listen_addr"]; ok {
-		cfg.Server.DoTListenAddr = v
-	}
-	if v, ok := values["server.tls_cert_file"]; ok {
-		cfg.Server.TLSCertFile = v
-	}
-	if v, ok := values["server.tls_key_file"]; ok {
-		cfg.Server.TLSKeyFile = v
-	}
+
+	// Server
+	setString(&cfg.Server.ListenAddr, "server.listen_addr")
+	setString(&cfg.Server.MetricsAddr, "server.metrics_addr")
+	setInt(&cfg.Server.MaxUDPSize, "server.max_udp_size")
+	setDuration(&cfg.Server.TCPTimeout, "server.tcp_timeout")
+	setInt(&cfg.Server.MaxTCPConns, "server.max_tcp_connections", "server.max_tcp_conns")
+	setInt(&cfg.Server.MaxUDPWorkers, "server.max_udp_workers")
+	setDuration(&cfg.Server.GracefulPeriod, "server.graceful_shutdown", "server.graceful_period")
+	setInt(&cfg.Server.TCPPipelineMax, "server.tcp_pipeline_max")
+	setDuration(&cfg.Server.TCPIdleTimeout, "server.tcp_idle_timeout")
+	setBool(&cfg.Server.DoTEnabled, "server.dot_enabled")
+	setString(&cfg.Server.DoTListenAddr, "server.dot_listen_addr")
+	setString(&cfg.Server.TLSCertFile, "server.tls_cert_file")
+	setString(&cfg.Server.TLSKeyFile, "server.tls_key_file")
 
 	// Resolver
-	if v, ok := values["resolver.max_depth"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Resolver.MaxDepth = n
-		}
-	}
-	if v, ok := values["resolver.max_cname_depth"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Resolver.MaxCNAMEDepth = n
-		}
-	}
-	if v, ok := values["resolver.upstream_timeout"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Resolver.UpstreamTimeout = d
-		}
-	}
-	if v, ok := values["resolver.upstream_retries"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Resolver.UpstreamRetries = n
-		}
-	}
-	if v, ok := values["resolver.qname_minimization"]; ok {
-		cfg.Resolver.QMinEnabled = parseBool(v)
-	}
-	if v, ok := values["resolver.prefer_ipv4"]; ok {
-		cfg.Resolver.PreferIPv4 = parseBool(v)
-	}
-	if v, ok := values["resolver.dnssec_enabled"]; ok {
-		cfg.Resolver.DNSSECEnabled = parseBool(v)
-	}
-	if v, ok := values["resolver.harden_below_nxdomain"]; ok {
-		cfg.Resolver.HardenBelowNXDomain = parseBool(v)
-	}
-	if v, ok := values["resolver.root_hints_refresh"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Resolver.RootHintsRefresh = d
-		}
-	}
-	if v, ok := values["resolver.ecs_enabled"]; ok {
-		cfg.Resolver.ECSEnabled = parseBool(v)
-	}
-	if v, ok := values["resolver.ecs_max_prefix"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Resolver.ECSMaxPrefix = n
-		}
-	}
-	if v, ok := values["resolver.dns64_enabled"]; ok {
-		cfg.Resolver.DNS64Enabled = parseBool(v)
-	}
-	if v, ok := values["resolver.dns64_prefix"]; ok {
-		cfg.Resolver.DNS64Prefix = v
-	}
+	setInt(&cfg.Resolver.MaxDepth, "resolver.max_depth")
+	setInt(&cfg.Resolver.MaxCNAMEDepth, "resolver.max_cname_depth")
+	setDuration(&cfg.Resolver.UpstreamTimeout, "resolver.upstream_timeout")
+	setInt(&cfg.Resolver.UpstreamRetries, "resolver.upstream_retries")
+	setBool(&cfg.Resolver.QMinEnabled, "resolver.qname_minimization")
+	setBool(&cfg.Resolver.PreferIPv4, "resolver.prefer_ipv4")
+	setBool(&cfg.Resolver.DNSSECEnabled, "resolver.dnssec_enabled")
+	setBool(&cfg.Resolver.HardenBelowNXDomain, "resolver.harden_below_nxdomain")
+	setDuration(&cfg.Resolver.RootHintsRefresh, "resolver.root_hints_refresh")
+	setBool(&cfg.Resolver.ECSEnabled, "resolver.ecs_enabled")
+	setInt(&cfg.Resolver.ECSMaxPrefix, "resolver.ecs_max_prefix")
+	setBool(&cfg.Resolver.DNS64Enabled, "resolver.dns64_enabled")
+	setString(&cfg.Resolver.DNS64Prefix, "resolver.dns64_prefix")
 
 	// Cache
-	if v, ok := values["cache.max_entries"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Cache.MaxEntries = n
-		}
-	}
-	if v, ok := values["cache.min_ttl"]; ok {
-		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-			cfg.Cache.MinTTL = uint32(n)
-		}
-	}
-	if v, ok := values["cache.max_ttl"]; ok {
-		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-			cfg.Cache.MaxTTL = uint32(n)
-		}
-	}
-	if v, ok := values["cache.negative_max_ttl"]; ok {
-		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-			cfg.Cache.NegMaxTTL = uint32(n)
-		}
-	}
-	if v, ok := values["cache.sweep_interval"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Cache.SweepInterval = d
-		}
-	}
-	if v, ok := values["cache.serve_stale"]; ok {
-		cfg.Cache.ServeStale = parseBool(v)
-	}
-	if v, ok := values["cache.serve_stale_ttl"]; ok {
-		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-			cfg.Cache.StaleTTL = uint32(n)
-		}
-	} else if v, ok := values["cache.stale_ttl"]; ok {
-		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-			cfg.Cache.StaleTTL = uint32(n)
-		}
-	}
-	if v, ok := values["cache.no_cache_clients"]; ok && v != "" {
-		cfg.Cache.NoCacheClients = parseCSVList(v)
-	}
-	if v, ok := values["cache.prefetch"]; ok {
-		cfg.Cache.Prefetch = parseBool(v)
-	}
+	setInt(&cfg.Cache.MaxEntries, "cache.max_entries")
+	setUint32(&cfg.Cache.MinTTL, "cache.min_ttl")
+	setUint32(&cfg.Cache.MaxTTL, "cache.max_ttl")
+	setUint32(&cfg.Cache.NegMaxTTL, "cache.negative_max_ttl")
+	setDuration(&cfg.Cache.SweepInterval, "cache.sweep_interval")
+	setBool(&cfg.Cache.ServeStale, "cache.serve_stale")
+	setUint32(&cfg.Cache.StaleTTL, "cache.serve_stale_ttl", "cache.stale_ttl")
+	setCSV(&cfg.Cache.NoCacheClients, "cache.no_cache_clients")
+	setBool(&cfg.Cache.Prefetch, "cache.prefetch")
 
 	// Security
-	if v, ok := values["security.private_address_filter"]; ok {
-		cfg.Security.PrivateAddressFilter = parseBool(v)
-	}
-	if v, ok := values["security.dns_cookies"]; ok {
-		cfg.Security.DNSCookies = parseBool(v)
-	}
-	if v, ok := values["security.rate_limit.enabled"]; ok {
-		cfg.Security.RateLimit.Enabled = parseBool(v)
-	}
-	if v, ok := values["security.rate_limit.rate"]; ok {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.Security.RateLimit.Rate = f
-		}
-	}
-	if v, ok := values["security.rate_limit.burst"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Security.RateLimit.Burst = n
-		}
-	}
-	if v, ok := values["security.rrl.enabled"]; ok {
-		cfg.Security.RRL.Enabled = parseBool(v)
-	}
-	if v, ok := values["security.rrl.responses_per_second"]; ok {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.Security.RRL.ResponsesPerSecond = f
-		}
-	}
-	if v, ok := values["security.rrl.slip_ratio"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Security.RRL.SlipRatio = n
-		}
-	}
-	if v, ok := values["security.rrl.ipv4_prefix"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Security.RRL.IPv4Prefix = n
-		}
-	}
-	if v, ok := values["security.rrl.ipv6_prefix"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Security.RRL.IPv6Prefix = n
-		}
-	}
+	setBool(&cfg.Security.PrivateAddressFilter, "security.private_address_filter")
+	setBool(&cfg.Security.DNSCookies, "security.dns_cookies")
+	setBool(&cfg.Security.RateLimit.Enabled, "security.rate_limit.enabled")
+	setFloat64(&cfg.Security.RateLimit.Rate, "security.rate_limit.rate")
+	setInt(&cfg.Security.RateLimit.Burst, "security.rate_limit.burst")
+	setBool(&cfg.Security.RRL.Enabled, "security.rrl.enabled")
+	setFloat64(&cfg.Security.RRL.ResponsesPerSecond, "security.rrl.responses_per_second")
+	setInt(&cfg.Security.RRL.SlipRatio, "security.rrl.slip_ratio")
+	setInt(&cfg.Security.RRL.IPv4Prefix, "security.rrl.ipv4_prefix")
+	setInt(&cfg.Security.RRL.IPv6Prefix, "security.rrl.ipv6_prefix")
 
-	// ACL — parse comma-separated or individual entries
-	if v, ok := values["access_control.allow"]; ok && v != "" {
-		cfg.ACL.Allow = parseCSVList(v)
-	}
-	if v, ok := values["access_control.deny"]; ok && v != "" {
-		cfg.ACL.Deny = parseCSVList(v)
-	}
-
-	// Per-zone ACL: "access_control.zones.<zone>.allow" and ".deny"
+	// ACL: parse comma-separated or individual entries
+	setCSV(&cfg.ACL.Allow, "access_control.allow")
+	setCSV(&cfg.ACL.Deny, "access_control.deny")
 	cfg.ACL.Zones = parseACLZones(values)
 
 	// Logging
-	if v, ok := values["logging.level"]; ok {
-		cfg.Logging.Level = v
-	}
-	if v, ok := values["logging.format"]; ok {
-		cfg.Logging.Format = v
-	}
+	setString(&cfg.Logging.Level, "logging.level")
+	setString(&cfg.Logging.Format, "logging.format")
 
 	// Web
-	if v, ok := values["web.enabled"]; ok {
-		cfg.Web.Enabled = parseBool(v)
-	}
-	if v, ok := values["web.addr"]; ok {
-		cfg.Web.Addr = v
-	}
-	if v, ok := values["web.query_log_buffer"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Web.QueryLogBuffer = n
-		}
-	}
-	if v, ok := values["web.top_clients_limit"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Web.TopClientsLimit = n
-		}
-	}
-	if v, ok := values["web.top_domains_limit"]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Web.TopDomainsLimit = n
-		}
-	}
-	if v, ok := values["web.auto_update"]; ok {
-		cfg.Web.AutoUpdate = parseBool(v)
-	}
-	if v, ok := values["web.update_check_interval"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Web.UpdateCheckInterval = d
-		}
-	}
-	if v, ok := values["web.doh_enabled"]; ok {
-		cfg.Web.DoHEnabled = parseBool(v)
-	}
-	if v, ok := values["web.doh3_enabled"]; ok {
-		cfg.Web.DoH3Enabled = parseBool(v)
-	}
-	if v, ok := values["web.tls_enabled"]; ok {
-		cfg.Web.TLSEnabled = parseBool(v)
-	}
-	if v, ok := values["web.tls_cert_file"]; ok {
-		cfg.Web.TLSCertFile = v
-	}
-	if v, ok := values["web.tls_key_file"]; ok {
-		cfg.Web.TLSKeyFile = v
-	}
-	if v, ok := values["web.auth.username"]; ok {
-		cfg.Web.Auth.Username = v
-	}
-	if v, ok := values["web.auth.password_hash"]; ok {
-		cfg.Web.Auth.PasswordHash = v
-	}
+	setBool(&cfg.Web.Enabled, "web.enabled")
+	setString(&cfg.Web.Addr, "web.addr")
+	setInt(&cfg.Web.QueryLogBuffer, "web.query_log_buffer")
+	setInt(&cfg.Web.TopClientsLimit, "web.top_clients_limit")
+	setInt(&cfg.Web.TopDomainsLimit, "web.top_domains_limit")
+	setBool(&cfg.Web.AutoUpdate, "web.auto_update")
+	setDuration(&cfg.Web.UpdateCheckInterval, "web.update_check_interval")
+	setBool(&cfg.Web.DoHEnabled, "web.doh_enabled")
+	setBool(&cfg.Web.DoH3Enabled, "web.doh3_enabled")
+	setBool(&cfg.Web.TLSEnabled, "web.tls_enabled")
+	setString(&cfg.Web.TLSCertFile, "web.tls_cert_file")
+	setString(&cfg.Web.TLSKeyFile, "web.tls_key_file")
+	setString(&cfg.Web.Auth.Username, "web.auth.username")
+	setString(&cfg.Web.Auth.PasswordHash, "web.auth.password_hash")
 
 	// Daemon
-	if v, ok := values["daemon.enabled"]; ok {
-		cfg.Daemon.Enabled = parseBool(v)
-	}
-	if v, ok := values["daemon.pid_file"]; ok {
-		cfg.Daemon.PIDFile = v
-	}
+	setBool(&cfg.Daemon.Enabled, "daemon.enabled")
+	setString(&cfg.Daemon.PIDFile, "daemon.pid_file")
 
 	// Zabbix
-	if v, ok := values["zabbix.enabled"]; ok {
-		cfg.Zabbix.Enabled = parseBool(v)
-	}
-	if v, ok := values["zabbix.addr"]; ok {
-		cfg.Zabbix.Addr = v
-	}
+	setBool(&cfg.Zabbix.Enabled, "zabbix.enabled")
+	setString(&cfg.Zabbix.Addr, "zabbix.addr")
 
 	// Blocklist
-	if v, ok := values["blocklist.enabled"]; ok {
-		cfg.Blocklist.Enabled = parseBool(v)
-	}
-	if v, ok := values["blocklist.lists"]; ok && v != "" {
+	setBool(&cfg.Blocklist.Enabled, "blocklist.enabled")
+	if v, ok := firstConfigValue(values, "blocklist.lists"); ok && strings.TrimSpace(v) != "" {
 		cfg.Blocklist.Lists = parseBlocklistEntries(v)
 	}
-	if v, ok := values["blocklist.refresh_interval"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Blocklist.RefreshInterval = d
-		}
-	}
-	if v, ok := values["blocklist.blocking_mode"]; ok {
-		cfg.Blocklist.BlockingMode = v
-	}
-	if v, ok := values["blocklist.custom_ip"]; ok {
-		cfg.Blocklist.CustomIP = v
-	}
-	if v, ok := values["blocklist.whitelist"]; ok && v != "" {
-		cfg.Blocklist.Whitelist = parseCSVList(v)
-	}
+	setDuration(&cfg.Blocklist.RefreshInterval, "blocklist.refresh_interval")
+	setString(&cfg.Blocklist.BlockingMode, "blocklist.blocking_mode")
+	setString(&cfg.Blocklist.CustomIP, "blocklist.custom_ip")
+	setCSV(&cfg.Blocklist.Whitelist, "blocklist.whitelist")
 
 	// Cluster
-	if v, ok := values["cluster.enabled"]; ok {
-		cfg.Cluster.Enabled = parseBool(v)
-	}
-	if v, ok := values["cluster.role"]; ok {
-		cfg.Cluster.Role = v
-	}
-	if v, ok := values["cluster.node_id"]; ok {
-		cfg.Cluster.NodeID = v
-	}
-	if v, ok := values["cluster.shared_fields"]; ok && v != "" {
-		cfg.Cluster.SharedFields = parseCSVList(v)
-	}
-	if v, ok := values["cluster.actions.fanout_cache_flush"]; ok {
-		cfg.Cluster.Actions.FanoutCacheFlush = parseBool(v)
-	}
-	if v, ok := values["cluster.actions.fanout_blocklist_refresh"]; ok {
-		cfg.Cluster.Actions.FanoutBlocklistRefresh = parseBool(v)
-	}
-	if v, ok := values["cluster.sync.mode"]; ok {
-		cfg.Cluster.Sync.Mode = v
-	}
-	if v, ok := values["cluster.sync.push_on_save"]; ok {
-		cfg.Cluster.Sync.PushOnSave = parseBool(v)
-	}
-	if v, ok := values["cluster.sync.pull_interval"]; ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Cluster.Sync.PullInterval = d
-		}
-	}
+	setBool(&cfg.Cluster.Enabled, "cluster.enabled")
+	setString(&cfg.Cluster.Role, "cluster.role")
+	setString(&cfg.Cluster.NodeID, "cluster.node_id")
+	setCSV(&cfg.Cluster.SharedFields, "cluster.shared_fields")
+	setBool(&cfg.Cluster.Actions.FanoutCacheFlush, "cluster.actions.fanout_cache_flush")
+	setBool(&cfg.Cluster.Actions.FanoutBlocklistRefresh, "cluster.actions.fanout_blocklist_refresh")
+	setString(&cfg.Cluster.Sync.Mode, "cluster.sync.mode")
+	setBool(&cfg.Cluster.Sync.PushOnSave, "cluster.sync.push_on_save")
+	setDuration(&cfg.Cluster.Sync.PullInterval, "cluster.sync.pull_interval")
 	cfg.Cluster.Peers = parseClusterPeers(values)
 
 	// Local zones: parsed from "local_zones.<name>.type" and "local_zones.<name>.data"
@@ -622,6 +429,14 @@ func applyYAML(cfg *Config, values map[string]string) {
 	cfg.StubZones = parseStubZones(values)
 }
 
+func firstConfigValue(values map[string]string, keys ...string) (string, bool) {
+	for _, key := range keys {
+		if v, ok := values[key]; ok {
+			return v, true
+		}
+	}
+	return "", false
+}
 func applyEnv(cfg *Config) {
 	if v := os.Getenv("LABYRINTH_SERVER_LISTEN_ADDR"); v != "" {
 		cfg.Server.ListenAddr = v

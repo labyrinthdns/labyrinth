@@ -7,6 +7,7 @@ import type {
   ConfigRawResponse,
   ConfigValidateResponse,
   ConfigSaveResponse,
+  SystemProfileResponse,
 } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
@@ -101,6 +102,7 @@ export const api = {
   health: () => request<Record<string, unknown>>('/api/system/health'),
 
   version: () => request<{ version: string; build_time: string; go_version: string }>('/api/system/version'),
+  systemProfile: () => request<SystemProfileResponse>('/api/system/profile'),
 
   topClients: (limit?: number) =>
     request<{ entries: TopEntry[] }>(`/api/stats/top-clients${limit ? `?limit=${limit}` : ''}`),
