@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"math/rand/v2"
@@ -51,6 +52,7 @@ type Resolver struct {
 	dnssecValidator *dnssec.Validator
 	localZones      *LocalZoneTable
 	forwardTable    *ForwardTable
+	infraCache      *InfraCache
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -67,7 +69,13 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 		metrics:     m,
 		logger:      logger,
 		inflight:    newInflight(),
+		infraCache:  NewInfraCache(),
 	}
+}
+
+// InfraCache returns the resolver's infrastructure cache for external use.
+func (r *Resolver) InfraCache() *InfraCache {
+	return r.infraCache
 }
 
 // IsReady returns whether the resolver has completed root hint priming.
@@ -104,6 +112,26 @@ func (r *Resolver) PrimeRootHints() error {
 	// Even if priming fails, mark as ready so the resolver can still function
 	r.ready = true
 	return errors.New("root hint priming failed after 3 attempts")
+}
+
+// StartRootRefresh runs a background goroutine that re-primes root hints
+// at the given interval (RFC 8109). Call this after the initial PrimeRootHints.
+func (r *Resolver) StartRootRefresh(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := r.PrimeRootHints(); err != nil {
+				r.logger.Warn("root hints refresh failed", "error", err)
+			} else {
+				r.logger.Debug("root hints refreshed")
+			}
+		}
+	}
 }
 
 // EnableDNSSEC creates the DNSSEC validator, allowing the resolver to
@@ -211,8 +239,10 @@ func (r *Resolver) resolveIterativeFrom(
 		}
 
 		// Send upstream query
+		queryStart := time.Now()
 		response, err := r.queryUpstream(nsIP, queryName, queryType, qclass)
 		if err != nil {
+			r.infraCache.RecordFailure(nsIP)
 			r.logger.Debug("upstream error", "ns", nsIP, "error", err)
 			nameservers = removeNSByIP(nameservers, nsIP)
 			if len(nameservers) == 0 {
@@ -220,6 +250,7 @@ func (r *Resolver) resolveIterativeFrom(
 			}
 			continue
 		}
+		r.infraCache.RecordRTT(nsIP, time.Since(queryStart))
 
 		// Bailiwick filter
 		security.SanitizeBailiwick(response, currentZone)
@@ -393,12 +424,8 @@ func (r *Resolver) resolveIterativeFrom(
 }
 
 func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet, currentZone string) (string, string, error) {
-	// Shuffle for load distribution
-	shuffled := make([]nsEntry, len(nameservers))
-	copy(shuffled, nameservers)
-	rand.Shuffle(len(shuffled), func(i, j int) {
-		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
-	})
+	// Sort by RTT (fastest first) instead of random shuffle
+	shuffled := r.infraCache.SortByRTT(nameservers)
 
 	// Prefer NS with IPv4 glue
 	for _, ns := range shuffled {

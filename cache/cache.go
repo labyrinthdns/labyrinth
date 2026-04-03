@@ -21,6 +21,16 @@ type Cache struct {
 	serveStale bool
 	staleTTL   uint32
 	metrics    *metrics.Metrics
+
+	// hardenBelowNX enables RFC 8020: if a parent domain has an NXDOMAIN
+	// cache entry, sub-domain queries return NXDOMAIN immediately.
+	hardenBelowNX bool
+
+	// prefetchEnabled enables proactive cache refresh: entries are
+	// re-resolved in the background when their remaining TTL drops below
+	// 10% of the original TTL.
+	prefetchEnabled bool
+	prefetchFunc    func(name string, qtype, qclass uint16)
 }
 
 type shard struct {
@@ -90,6 +100,12 @@ func (c *Cache) Get(name string, qtype uint16, class uint16) (*Entry, bool) {
 			s.mu.RUnlock()
 		}
 		if !ok {
+			// RFC 8020 harden-below-nxdomain: walk up parent labels
+			if c.hardenBelowNX && qtype != 0 {
+				if nxEntry, found := c.checkParentNXDomain(name, class); found {
+					return nxEntry, true
+				}
+			}
 			return nil, false
 		}
 	}
@@ -109,8 +125,68 @@ func (c *Cache) Get(name string, qtype uint16, class uint16) (*Entry, bool) {
 		return nil, false
 	}
 
+	// Prefetch: trigger async re-resolution when TTL drops below 10% of original
+	if c.prefetchEnabled && c.prefetchFunc != nil && remaining > 0 {
+		threshold := entry.OrigTTL / 10
+		if threshold == 0 {
+			threshold = 1
+		}
+		if remaining < threshold && entry.tryPrefetch() {
+			go c.prefetchFunc(name, qtype, class)
+		}
+	}
+
 	decayed := entry.WithDecayedTTL(remaining)
 	return decayed, true
+}
+
+// checkParentNXDomain walks up the label hierarchy looking for a cached
+// NXDOMAIN sentinel (qtype=0). Returns the parent NXDOMAIN entry if found.
+func (c *Cache) checkParentNXDomain(name string, class uint16) (*Entry, bool) {
+	// Walk up labels: for "sub.nonexist.com", check "nonexist.com", then "com"
+	for {
+		dotIdx := strings.IndexByte(name, '.')
+		if dotIdx < 0 {
+			break
+		}
+		parent := name[dotIdx+1:]
+		if parent == "" {
+			break
+		}
+
+		parentIdx := c.shardIndex(parent)
+		ps := &c.shards[parentIdx]
+		nxKey := cacheKey{name: parent, qtype: 0, class: class}
+		ps.mu.RLock()
+		entry, ok := ps.entries[nxKey]
+		ps.mu.RUnlock()
+
+		if ok {
+			remaining := entry.RemainingTTL()
+			if remaining > 0 {
+				decayed := entry.WithDecayedTTL(remaining)
+				return decayed, true
+			}
+		}
+
+		name = parent
+	}
+	return nil, false
+}
+
+// SetHardenBelowNX enables or disables RFC 8020 harden-below-nxdomain.
+func (c *Cache) SetHardenBelowNX(enabled bool) {
+	c.hardenBelowNX = enabled
+}
+
+// SetPrefetchEnabled enables or disables proactive cache prefetching.
+func (c *Cache) SetPrefetchEnabled(enabled bool) {
+	c.prefetchEnabled = enabled
+}
+
+// SetPrefetchFunc sets the callback used to re-resolve entries nearing expiry.
+func (c *Cache) SetPrefetchFunc(fn func(name string, qtype, qclass uint16)) {
+	c.prefetchFunc = fn
 }
 
 // GetStale retrieves an expired entry from the cache for serve-stale (RFC 8767).

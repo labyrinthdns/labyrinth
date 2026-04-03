@@ -456,3 +456,190 @@ func TestGetExpiredNilMetrics(t *testing.T) {
 		t.Error("expected miss for expired entry")
 	}
 }
+
+func TestHardenBelowNXDomain(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+	c.SetHardenBelowNX(true)
+
+	// Store NXDOMAIN for "nonexist.com"
+	authority := []dns.ResourceRecord{{
+		Name: "com", Type: dns.TypeSOA, Class: dns.ClassIN,
+		TTL: 600, RDLength: 0, RData: nil,
+	}}
+	c.StoreNegative("nonexist.com", dns.TypeA, dns.ClassIN, NegNXDomain, dns.RCodeNXDomain, authority)
+
+	// Query for sub.nonexist.com should return NXDOMAIN from parent
+	entry, ok := c.Get("sub.nonexist.com", dns.TypeA, dns.ClassIN)
+	if !ok {
+		t.Fatal("expected harden-below-nxdomain hit for sub.nonexist.com")
+	}
+	if entry.RCODE != dns.RCodeNXDomain {
+		t.Errorf("expected NXDOMAIN rcode, got %d", entry.RCODE)
+	}
+
+	// Query for deep.sub.nonexist.com should also return NXDOMAIN
+	entry, ok = c.Get("deep.sub.nonexist.com", dns.TypeAAAA, dns.ClassIN)
+	if !ok {
+		t.Fatal("expected harden-below-nxdomain hit for deep.sub.nonexist.com")
+	}
+	if entry.RCODE != dns.RCodeNXDomain {
+		t.Errorf("expected NXDOMAIN rcode, got %d", entry.RCODE)
+	}
+}
+
+func TestHardenBelowNXDomainDisabled(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+	c.SetHardenBelowNX(false)
+
+	authority := []dns.ResourceRecord{{
+		Name: "com", Type: dns.TypeSOA, Class: dns.ClassIN,
+		TTL: 600, RDLength: 0, RData: nil,
+	}}
+	c.StoreNegative("nonexist.com", dns.TypeA, dns.ClassIN, NegNXDomain, dns.RCodeNXDomain, authority)
+
+	// With feature disabled, sub-domain should miss
+	_, ok := c.Get("sub.nonexist.com", dns.TypeA, dns.ClassIN)
+	if ok {
+		t.Error("expected cache miss when harden-below-nxdomain is disabled")
+	}
+}
+
+func TestHardenBelowNXDomainNoFalsePositive(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+	c.SetHardenBelowNX(true)
+
+	// Store NXDOMAIN for "nonexist.example.com"
+	authority := []dns.ResourceRecord{{
+		Name: "example.com", Type: dns.TypeSOA, Class: dns.ClassIN,
+		TTL: 600, RDLength: 0, RData: nil,
+	}}
+	c.StoreNegative("nonexist.example.com", dns.TypeA, dns.ClassIN, NegNXDomain, dns.RCodeNXDomain, authority)
+
+	// "other.example.com" should NOT be affected (sibling, not child)
+	_, ok := c.Get("other.example.com", dns.TypeA, dns.ClassIN)
+	if ok {
+		t.Error("sibling domain should not be affected by NXDOMAIN of another name")
+	}
+}
+
+func TestPrefetchTriggersNearExpiry(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+	c.SetPrefetchEnabled(true)
+
+	var prefetched sync.Map
+	c.SetPrefetchFunc(func(name string, qtype, qclass uint16) {
+		prefetched.Store(name, true)
+	})
+
+	// Store with TTL=10 so threshold is 1 second (10/10=1)
+	answers := []dns.ResourceRecord{{
+		Name: "prefetch.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 10, RDLength: 4, RData: []byte{1, 2, 3, 4},
+	}}
+	c.Store("prefetch.com", dns.TypeA, dns.ClassIN, answers, nil)
+
+	// Immediate access should NOT trigger prefetch (TTL still high)
+	c.Get("prefetch.com", dns.TypeA, dns.ClassIN)
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := prefetched.Load("prefetch.com"); ok {
+		t.Error("prefetch should not trigger when TTL is high")
+	}
+
+	// Wait until remaining TTL drops below 10% (< 1 second = wait ~9.5s)
+	// For testing, use a short TTL entry instead
+	c2 := NewCache(1000, 1, 86400, 3600, m)
+	c2.SetPrefetchEnabled(true)
+
+	var prefetched2 sync.Map
+	c2.SetPrefetchFunc(func(name string, qtype, qclass uint16) {
+		prefetched2.Store(name, true)
+	})
+
+	// TTL=3, threshold=0 (3/10=0, clamped to 1), so prefetch fires when remaining < 1s
+	shortAnswers := []dns.ResourceRecord{{
+		Name: "short.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 3, RDLength: 4, RData: []byte{1, 2, 3, 4},
+	}}
+	c2.Store("short.com", dns.TypeA, dns.ClassIN, shortAnswers, nil)
+
+	// Wait 2.5 seconds so remaining is ~0.5s (< threshold of 1)
+	time.Sleep(2500 * time.Millisecond)
+
+	entry, ok := c2.Get("short.com", dns.TypeA, dns.ClassIN)
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	_ = entry
+
+	// Give the async prefetch goroutine time to execute
+	time.Sleep(100 * time.Millisecond)
+
+	if _, ok := prefetched2.Load("short.com"); !ok {
+		t.Error("prefetch should have been triggered near expiry")
+	}
+}
+
+func TestPrefetchOnlyTriggersOnce(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 1, 86400, 3600, m)
+	c.SetPrefetchEnabled(true)
+
+	var count int
+	var mu sync.Mutex
+	c.SetPrefetchFunc(func(name string, qtype, qclass uint16) {
+		mu.Lock()
+		count++
+		mu.Unlock()
+	})
+
+	answers := []dns.ResourceRecord{{
+		Name: "once.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 3, RDLength: 4, RData: []byte{1, 2, 3, 4},
+	}}
+	c.Store("once.com", dns.TypeA, dns.ClassIN, answers, nil)
+
+	// Wait until near expiry
+	time.Sleep(2500 * time.Millisecond)
+
+	// Multiple Gets should only trigger prefetch once
+	for i := 0; i < 5; i++ {
+		c.Get("once.com", dns.TypeA, dns.ClassIN)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	if count != 1 {
+		t.Errorf("expected exactly 1 prefetch trigger, got %d", count)
+	}
+	mu.Unlock()
+}
+
+func TestPrefetchDisabled(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 1, 86400, 3600, m)
+	c.SetPrefetchEnabled(false)
+
+	triggered := false
+	c.SetPrefetchFunc(func(name string, qtype, qclass uint16) {
+		triggered = true
+	})
+
+	answers := []dns.ResourceRecord{{
+		Name: "noprefetch.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 3, RDLength: 4, RData: []byte{1, 2, 3, 4},
+	}}
+	c.Store("noprefetch.com", dns.TypeA, dns.ClassIN, answers, nil)
+
+	time.Sleep(2500 * time.Millisecond)
+	c.Get("noprefetch.com", dns.TypeA, dns.ClassIN)
+	time.Sleep(100 * time.Millisecond)
+
+	if triggered {
+		t.Error("prefetch should not trigger when disabled")
+	}
+}
