@@ -497,3 +497,38 @@ func TestResolveNSAddrBypassesInflight(t *testing.T) {
 	}
 }
 
+func TestValidateResponseQuestion(t *testing.T) {
+	// Matching question — should pass
+	msg := &dns.Message{
+		Questions: []dns.Question{{Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN}},
+	}
+	if err := validateResponseQuestion(msg, "example.com", dns.TypeA, dns.ClassIN); err != nil {
+		t.Errorf("expected nil error for matching question, got: %v", err)
+	}
+
+	// Case-insensitive match — should pass
+	msg.Questions[0].Name = "EXAMPLE.COM"
+	if err := validateResponseQuestion(msg, "example.com", dns.TypeA, dns.ClassIN); err != nil {
+		t.Errorf("expected nil for case-insensitive match, got: %v", err)
+	}
+
+	// Wrong name — should fail
+	msg.Questions[0].Name = "evil.com"
+	if err := validateResponseQuestion(msg, "example.com", dns.TypeA, dns.ClassIN); err == nil {
+		t.Error("expected error for mismatched question name")
+	}
+
+	// Wrong type — should fail
+	msg.Questions[0].Name = "example.com"
+	msg.Questions[0].Type = dns.TypeAAAA
+	if err := validateResponseQuestion(msg, "example.com", dns.TypeA, dns.ClassIN); err == nil {
+		t.Error("expected error for mismatched question type")
+	}
+
+	// Empty questions — should fail
+	msg.Questions = nil
+	if err := validateResponseQuestion(msg, "example.com", dns.TypeA, dns.ClassIN); err == nil {
+		t.Error("expected error for empty question section")
+	}
+}
+
