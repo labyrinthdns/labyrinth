@@ -3,9 +3,12 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +19,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
 	"github.com/labyrinthdns/labyrinth/server"
+	"github.com/quic-go/quic-go/http3"
 )
 
 // Version info variables — set at build time from main.go.
@@ -25,12 +29,19 @@ var (
 	GoVersion = "unknown"
 )
 
+// clientQueryEntry tracks query counts with last access time for TTL-based cleanup.
+type clientQueryEntry struct {
+	count     atomic.Uint64
+	lastAccess time.Time
+}
+
 // AdminServer provides the admin dashboard HTTP backend.
 type AdminServer struct {
 	cache           *cache.Cache
 	metrics         *metrics.Metrics
 	resolver        *resolver.Resolver
 	config          *config.Config
+	configPath      string
 	queryLog        *QueryLog
 	timeSeries      *TimeSeriesAggregator
 	logger          *slog.Logger
@@ -39,8 +50,9 @@ type AdminServer struct {
 	nextID          atomic.Uint64
 	topClients      *TopTracker
 	topDomains      *TopTracker
-	clientQueryNum  map[string]*atomic.Uint64
+	clientQueryNum  map[string]*clientQueryEntry
 	clientNumMu     sync.Mutex
+	clientCleanupInterval time.Duration
 	updateCache     *UpdateInfo
 	updateCheckedAt time.Time
 	updateMu        sync.RWMutex
@@ -51,37 +63,52 @@ type AdminServer struct {
 
 // NewAdminServer creates a new AdminServer. The bl parameter is optional and
 // may be nil when the blocklist feature is disabled.
-func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *resolver.Resolver, logger *slog.Logger, bl *blocklist.Manager) *AdminServer {
+func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *resolver.Resolver, logger *slog.Logger, bl *blocklist.Manager) (*AdminServer, error) {
 	bufSize := cfg.Web.QueryLogBuffer
 	if bufSize <= 0 {
 		bufSize = 1000
 	}
 
-	// Generate a random JWT secret if none is configured
+	// Generate a random JWT secret - this is required
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
-		// Fallback to a deterministic secret (not ideal, but functional)
-		secret = []byte("labyrinth-default-jwt-secret-key!")
+		return nil, fmt.Errorf("failed to generate JWT secret: %w", err)
 	}
+
+	// Determine cleanup interval, default to 5 minutes
+	cleanupInterval := 5 * time.Minute
 
 	return &AdminServer{
 		cache:          c,
 		metrics:        m,
 		resolver:       r,
 		config:         cfg,
+		configPath:     "labyrinth.yaml",
 		queryLog:       NewQueryLog(bufSize),
 		timeSeries:     NewTimeSeriesAggregator(),
 		logger:         logger,
 		jwtSecret:      secret,
 		topClients:     NewTopTracker(cfg.Web.TopClientsLimit),
 		topDomains:     NewTopTracker(cfg.Web.TopDomainsLimit),
-		clientQueryNum: make(map[string]*atomic.Uint64),
+		clientQueryNum: make(map[string]*clientQueryEntry),
+		clientCleanupInterval: cleanupInterval,
 		blocklist:      bl,
+	}, nil
+}
+
+// SetConfigPath sets the path used by config edit endpoints.
+func (s *AdminServer) SetConfigPath(path string) {
+	if path == "" {
+		return
 	}
+	s.configPath = path
 }
 
 // Start starts the HTTP server and blocks until the context is cancelled.
 func (s *AdminServer) Start(ctx context.Context) error {
+	// Start client query cleanup goroutine
+	go s.startClientCleanup(ctx)
+
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
@@ -90,28 +117,62 @@ func (s *AdminServer) Start(ctx context.Context) error {
 		addr = "127.0.0.1:8080"
 	}
 
+	var h3Server *http3.Server
+	baseHandler := http.Handler(mux)
+
+	if s.config.Web.DoH3Enabled {
+		if !s.config.Web.TLSEnabled || s.config.Web.TLSCertFile == "" || s.config.Web.TLSKeyFile == "" {
+			return fmt.Errorf("web.doh3_enabled=true requires web.tls_enabled=true and web.tls_cert_file/web.tls_key_file")
+		}
+
+		h3Server = &http3.Server{
+			Addr:    addr,
+			Handler: mux,
+		}
+		baseHandler = withQUICHeaders(baseHandler, h3Server, s.logger)
+	}
+
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      baseHandler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
+
+	if h3Server != nil {
+		go func() {
+			s.logger.Info("admin dashboard HTTP/3 starting", "addr", addr)
+			if err := h3Server.ListenAndServeTLS(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile); err != nil &&
+				!errors.Is(err, http.ErrServerClosed) {
+				select {
+				case errCh <- fmt.Errorf("admin HTTP/3 server error: %w", err):
+				default:
+				}
+			}
+		}()
+	}
+
 	go func() {
 		if s.config.Web.TLSEnabled && s.config.Web.TLSCertFile != "" && s.config.Web.TLSKeyFile != "" {
 			s.logger.Info("admin dashboard starting with TLS", "addr", addr)
 			if err := srv.ListenAndServeTLS(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile); err != nil && err != http.ErrServerClosed {
-				errCh <- err
+				select {
+				case errCh <- err:
+				default:
+				}
 			}
 		} else {
 			s.logger.Info("admin dashboard starting", "addr", addr)
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				errCh <- err
+				select {
+				case errCh <- err:
+				default:
+				}
 			}
 		}
-		close(errCh)
 	}()
 
 	select {
@@ -119,10 +180,54 @@ func (s *AdminServer) Start(ctx context.Context) error {
 		s.logger.Info("admin dashboard shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		httpErr := srv.Shutdown(shutdownCtx)
+
+		var h3Err error
+		if h3Server != nil {
+			h3Err = h3Server.Shutdown(shutdownCtx)
+		}
+
+		if httpErr != nil {
+			return httpErr
+		}
+		return h3Err
 	case err := <-errCh:
 		return fmt.Errorf("admin server error: %w", err)
 	}
+}
+
+func withQUICHeaders(next http.Handler, h3 *http3.Server, logger *slog.Logger) http.Handler {
+	var warned atomic.Bool
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := h3.SetQUICHeaders(w.Header()); err != nil {
+			if warned.CompareAndSwap(false, true) {
+				logger.Warn("failed to set Alt-Svc header for HTTP/3", "error", err)
+			}
+		}
+		if w.Header().Get("Alt-Svc") == "" {
+			if altSvc := defaultAltSvc(h3); altSvc != "" {
+				w.Header().Set("Alt-Svc", altSvc)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func defaultAltSvc(h3 *http3.Server) string {
+	port := h3.Port
+	if port <= 0 {
+		_, p, err := net.SplitHostPort(h3.Addr)
+		if err == nil {
+			if parsed, convErr := strconv.Atoi(p); convErr == nil {
+				port = parsed
+			}
+		}
+	}
+	if port <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(`h3=":%d"; ma=2592000`, port)
 }
 
 // RecordQuery is called from the DNS handler hook to log a query.
@@ -133,19 +238,21 @@ func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached boo
 	s.topClients.Inc(client)
 	s.topDomains.Inc(qname)
 
-	// Track per-client query number
+	// Track per-client query number with TTL-based cleanup
 	s.clientNumMu.Lock()
-	counter, ok := s.clientQueryNum[client]
+	clientEntry, ok := s.clientQueryNum[client]
 	if !ok {
-		counter = &atomic.Uint64{}
-		s.clientQueryNum[client] = counter
+		clientEntry = &clientQueryEntry{lastAccess: time.Now()}
+		s.clientQueryNum[client] = clientEntry
 	}
+	// Update last access time
+	clientEntry.lastAccess = time.Now()
 	s.clientNumMu.Unlock()
-	clientNum := counter.Add(1)
+	clientNum := clientEntry.count.Add(1)
 
 	blocked := rcode == "BLOCKED"
 
-	entry := QueryEntry{
+	queryEntry := QueryEntry{
 		ID:         id,
 		GlobalNum:  id,
 		ClientNum:  clientNum,
@@ -158,10 +265,47 @@ func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached boo
 		DurationMs: durationMs,
 		Blocked:    blocked,
 	}
-	s.queryLog.Record(entry)
+	s.queryLog.Record(queryEntry)
 
 	isError := rcode == "SERVFAIL" || rcode == "FORMERR" || rcode == "REFUSED"
 	s.timeSeries.Record(cached, durationMs, isError)
+}
+
+// startClientCleanup periodically removes stale client query entries to prevent memory leak.
+func (s *AdminServer) startClientCleanup(ctx context.Context) {
+	ticker := time.NewTicker(s.clientCleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.cleanupStaleClients()
+		}
+	}
+}
+
+// cleanupStaleClients removes client entries that haven't been accessed recently.
+func (s *AdminServer) cleanupStaleClients() {
+	s.clientNumMu.Lock()
+	defer s.clientNumMu.Unlock()
+
+	// Use 2x the cleanup interval as the TTL for client entries
+	ttl := s.clientCleanupInterval * 2
+	cutoff := time.Now().Add(-ttl)
+
+	removed := 0
+	for ip, entry := range s.clientQueryNum {
+		if entry.lastAccess.Before(cutoff) {
+			delete(s.clientQueryNum, ip)
+			removed++
+		}
+	}
+
+	if removed > 0 && s.logger != nil {
+		s.logger.Debug("cleaned up stale client query entries", "count", removed)
+	}
 }
 
 // registerRoutes sets up all API routes on the given mux.
@@ -187,6 +331,8 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/cache/flush", s.requireAuth(s.handleCacheFlush))
 	mux.HandleFunc("/api/cache/entry", s.requireAuth(s.handleCacheDelete))
 	mux.HandleFunc("/api/config", s.requireAuth(s.handleGetConfig))
+	mux.HandleFunc("/api/config/raw", s.requireAuth(s.handleConfigRaw))
+	mux.HandleFunc("/api/config/validate", s.requireAuth(s.handleValidateConfig))
 	mux.HandleFunc("/api/queries/recent", s.requireAuth(s.handleRecentQueries))
 	mux.HandleFunc("/api/queries/stream", s.requireAuth(s.handleQueryStreamWS))
 	mux.HandleFunc("/api/zabbix/items", s.requireAuth(s.handleZabbixItems))

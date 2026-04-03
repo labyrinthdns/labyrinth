@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Labyrinth DNS Resolver — Update Script
 # Usage: curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/update.sh | sudo bash
-# Or:    sudo bash update.sh [--version v0.3.0] [--no-restart] [--check]
+# Or:    sudo bash update.sh [--version v0.4.1] [--no-restart] [--check]
 
 REPO="labyrinthdns/labyrinth"
 INSTALL_DIR="/usr/local/bin"
@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
       echo "Examples:"
       echo "  sudo bash update.sh                  # Update to latest"
       echo "  sudo bash update.sh --check          # Just check"
-      echo "  sudo bash update.sh --version v0.3.0 # Specific version"
+      echo "  sudo bash update.sh --version v0.4.1 # Specific version"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;

@@ -156,7 +156,10 @@ export default function DocsLayout({ dark }: DocsLayoutProps) {
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
-    setSidebarOpen(false)
+    const closeSidebar = setTimeout(() => {
+      setSidebarOpen(false)
+    }, 0)
+    return () => clearTimeout(closeSidebar)
   }, [location.pathname])
 
   // Scroll to top on navigation

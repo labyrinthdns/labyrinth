@@ -12,6 +12,10 @@ func parseYAML(data []byte) (map[string]string, error) {
 	prevIndent := -1
 
 	lines := strings.Split(string(data), "\n")
+	if len(lines) > 0 {
+		// Accept UTF-8 BOM-prefixed files (common on Windows editors).
+		lines[0] = strings.TrimPrefix(lines[0], "\ufeff")
+	}
 	for _, line := range lines {
 		// Strip comments
 		if idx := strings.Index(line, "#"); idx >= 0 {

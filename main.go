@@ -99,7 +99,11 @@ func main() {
 
 	// Daemon mode
 	if *daemonMode {
-		cfg, _ := config.Load(*configPath)
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "config load error in daemon mode: %v\n", err)
+			os.Exit(1)
+		}
 		pidFile := "/var/run/labyrinth.pid"
 		if cfg != nil && cfg.Daemon.PIDFile != "" {
 			pidFile = cfg.Daemon.PIDFile
@@ -278,13 +282,28 @@ func main() {
 
 	// Start web dashboard (replaces standalone metrics server when enabled)
 	if cfg.Web.Enabled {
-		adminServer := web.NewAdminServer(cfg, c, m, res, logger, blocklistMgr)
+		adminServer, err := web.NewAdminServer(cfg, c, m, res, logger, blocklistMgr)
+		if err != nil {
+			logger.Error("failed to create admin server", "error", err)
+			os.Exit(1)
+		}
+		adminServer.SetConfigPath(*configPath)
 
-		// Enable DoH if configured
-		if cfg.Web.DoHEnabled {
+		// Enable DoH endpoint if any DoH transport is configured.
+		if cfg.Web.DoHEnabled || cfg.Web.DoH3Enabled {
 			adminServer.SetDoHHandler(handler)
 			adminServer.SetDoHEnabled(true)
-			logger.Info("DoH enabled on web dashboard", "path", "/dns-query")
+			logger.Info("DoH endpoint enabled on web dashboard",
+				"path", "/dns-query",
+				"http", cfg.Web.DoHEnabled,
+				"http3", cfg.Web.DoH3Enabled,
+			)
+			if !cfg.Web.TLSEnabled {
+				logger.Warn("DoH is enabled without web TLS; terminate TLS at reverse proxy or enable web.tls_* settings")
+			}
+			if cfg.Web.DoH3Enabled {
+				logger.Info("DoH/HTTP3 requested; web server will advertise Alt-Svc and accept QUIC connections")
+			}
 		}
 
 		// Wire query log hook
@@ -373,6 +392,9 @@ func main() {
 		}
 		go func() { errCh <- dotServer.Serve(ctx) }()
 		logger.Info("DoT server started", "addr", cfg.Server.DoTListenAddr)
+	} else if cfg.Server.DoTEnabled {
+		logger.Error("DoT enabled but TLS certificate/key is missing", "tls_cert_file", cfg.Server.TLSCertFile, "tls_key_file", cfg.Server.TLSKeyFile)
+		os.Exit(1)
 	}
 
 	// Setup SIGUSR1/SIGUSR2 handlers (Unix only, no-op on Windows)
@@ -424,7 +446,11 @@ func printVersion() {
 }
 
 func handleDaemonCommand(args []string, configPath string) {
-	cfg, _ := config.Load(configPath)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config load error: %v\n", err)
+		os.Exit(1)
+	}
 	pidFile := "/var/run/labyrinth.pid"
 	if cfg != nil && cfg.Daemon.PIDFile != "" {
 		pidFile = cfg.Daemon.PIDFile
