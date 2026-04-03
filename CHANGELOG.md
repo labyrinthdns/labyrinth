@@ -4,6 +4,18 @@ All notable changes to Labyrinth will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-04-03
+
+### Fixed
+- False loop detection for `.tr` and similar TLD nameserver queries — the same NS IP
+  (e.g., `ns1.nic.tr`) serving multiple zone levels (`.tr`, `com.tr`, `net.tr`) was
+  mistakenly flagged as a loop. Loop detection key now includes `currentZone`.
+- NS address resolution now scans all answer records for A/AAAA instead of only
+  checking `Answers[0]`, fixing failures when CNAME records precede the address record.
+
+### Changed
+- Blocklist enabled by default in example configuration (`labyrinth.yaml`)
+
 ## [0.2.0] - 2026-04-03
 
 ### Added
