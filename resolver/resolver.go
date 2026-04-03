@@ -29,6 +29,14 @@ type ResolverConfig struct {
 	// UpstreamPort overrides the DNS port for upstream queries (default "53").
 	// Used for testing with mock DNS servers.
 	UpstreamPort string
+	// DNS64Enabled enables DNS64 synthesis (RFC 6147).
+	DNS64Enabled bool
+	// DNS64Prefix is the IPv6 prefix used for DNS64 synthesis (must be /96).
+	DNS64Prefix net.IPNet
+	// ECSEnabled enables forwarding of EDNS Client Subnet options.
+	ECSEnabled bool
+	// ECSMaxPrefix is the maximum source prefix length for ECS (default 24).
+	ECSMaxPrefix int
 }
 
 // ResolveResult holds the outcome of a recursive resolution.
@@ -181,9 +189,21 @@ func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveRe
 	}
 
 	key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
-	return r.inflight.do(key, func() (*ResolveResult, error) {
+	result, err := r.inflight.do(key, func() (*ResolveResult, error) {
 		return r.resolveIterative(name, qtype, qclass, 0, newVisitedSet())
 	})
+
+	// DNS64 synthesis (RFC 6147): if an AAAA query returned NODATA (no
+	// AAAA records), synthesize AAAA records from A records.
+	if err == nil && result != nil &&
+		qtype == dns.TypeAAAA &&
+		result.RCODE == dns.RCodeNoError &&
+		len(result.Answers) == 0 &&
+		r.config.DNS64Enabled {
+		return r.dns64Synthesize(name, qclass, result, r.config.DNS64Prefix)
+	}
+
+	return result, err
 }
 
 func (r *Resolver) resolveIterative(
@@ -365,6 +385,8 @@ func (r *Resolver) resolveIterativeFrom(
 			if len(newNS) == 0 {
 				return &ResolveResult{RCODE: dns.RCodeServFail}, nil
 			}
+			// Harden-referral-path: log suspicious NS hostnames
+			validateReferralNS(newNS, zone, r.logger)
 			nameservers = delegationToNSList(newNS)
 			currentZone = zone
 

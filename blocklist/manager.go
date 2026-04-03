@@ -52,6 +52,7 @@ type Stats struct {
 // safe for concurrent use.
 type Manager struct {
 	matcher         *Matcher
+	rpzMatcher      *RPZMatcher
 	sources         []*ListSource
 	customBlocks    map[string]struct{}
 	customAllows    map[string]struct{}
@@ -97,6 +98,7 @@ func NewManager(cfg ManagerConfig, logger *slog.Logger) *Manager {
 
 	mgr := &Manager{
 		matcher:         NewMatcher(),
+		rpzMatcher:      NewRPZMatcher(),
 		sources:         sources,
 		customBlocks:    make(map[string]struct{}),
 		customAllows:    customAllows,
@@ -132,13 +134,25 @@ func (mgr *Manager) Start(ctx context.Context) {
 }
 
 // IsBlocked checks whether domain is blocked and, if so, increments the
-// global blocked-query counter.
+// global blocked-query counter. It checks RPZ rules first, then the
+// traditional matcher.
 func (mgr *Manager) IsBlocked(domain string) bool {
+	// Check RPZ first: passthru returns nil (not blocked), other actions
+	// mean the domain is blocked.
+	if action := mgr.rpzMatcher.Match(domain); action != nil {
+		mgr.blockedTotal.Add(1)
+		return true
+	}
 	if mgr.matcher.Match(domain) {
 		mgr.blockedTotal.Add(1)
 		return true
 	}
 	return false
+}
+
+// RPZAction returns the RPZ action for a domain, or nil if no RPZ rule matches.
+func (mgr *Manager) RPZAction(domain string) *RPZAction {
+	return mgr.rpzMatcher.Match(domain)
 }
 
 // BlockingMode returns the active blocking mode ("nxdomain", "null_ip",
@@ -165,6 +179,7 @@ func (mgr *Manager) RefreshAll() {
 	start := time.Now()
 
 	newMatcher := NewMatcher()
+	newRPZMatcher := NewRPZMatcher()
 
 	mgr.mu.RLock()
 	sources := make([]*ListSource, len(mgr.sources))
@@ -173,6 +188,36 @@ func (mgr *Manager) RefreshAll() {
 
 	for _, src := range sources {
 		if !src.Enabled {
+			continue
+		}
+
+		if strings.ToLower(src.Format) == "rpz" {
+			rules, err := mgr.downloadAndParseRPZ(src.URL)
+			if err != nil {
+				mgr.logger.Error("rpz download failed",
+					"url", src.URL,
+					"error", err,
+				)
+				mgr.mu.Lock()
+				src.Error = err.Error()
+				mgr.mu.Unlock()
+				continue
+			}
+
+			for _, rule := range rules {
+				newRPZMatcher.AddRule(rule)
+			}
+
+			mgr.mu.Lock()
+			src.LastUpdate = time.Now()
+			src.RuleCount = len(rules)
+			src.Error = ""
+			mgr.mu.Unlock()
+
+			mgr.logger.Info("rpz loaded",
+				"url", src.URL,
+				"rules", len(rules),
+			)
 			continue
 		}
 
@@ -214,16 +259,21 @@ func (mgr *Manager) RefreshAll() {
 	}
 	mgr.mu.RUnlock()
 
-	// Atomic swap of the matcher.
+	// Atomic swap of both matchers.
 	mgr.mu.Lock()
 	mgr.matcher = newMatcher
+	mgr.rpzMatcher = newRPZMatcher
 	mgr.mu.Unlock()
 
 	exact, wildcards, wl := newMatcher.Stats()
+	rpzExact, rpzWild, rpzPT := newRPZMatcher.Stats()
 	mgr.logger.Info("blocklist refresh complete",
 		"exact_rules", exact,
 		"wildcard_rules", wildcards,
 		"whitelist_rules", wl,
+		"rpz_exact", rpzExact,
+		"rpz_wildcard", rpzWild,
+		"rpz_passthru", rpzPT,
 		"duration", time.Since(start).Round(time.Millisecond),
 	)
 }
@@ -254,6 +304,23 @@ func (mgr *Manager) downloadAndParse(url, format string) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("unknown list format %q", format)
 	}
+}
+
+// downloadAndParseRPZ fetches a remote URL and parses it as an RPZ zone file.
+func (mgr *Manager) downloadAndParseRPZ(url string) ([]RPZRule, error) {
+	resp, err := mgr.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	// Limit read to 50 MB to avoid memory issues with huge files.
+	limited := io.LimitReader(resp.Body, 50<<20)
+	return ParseRPZ(limited)
 }
 
 // AddList adds a new list source at runtime. The list will be fetched on

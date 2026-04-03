@@ -223,3 +223,147 @@ func TestUnpackMessageWithEDNS(t *testing.T) {
 		t.Errorf("EDNS0 UDPSize: expected 4096, got %d", unpacked.EDNS0.UDPSize)
 	}
 }
+
+func TestBuildEDEOption(t *testing.T) {
+	opt := BuildEDEOption(6, "DNSSEC validation failure")
+	if opt.Code != EDNSOptionCodeEDE {
+		t.Errorf("expected option code %d, got %d", EDNSOptionCodeEDE, opt.Code)
+	}
+	if len(opt.Data) < 2 {
+		t.Fatal("EDE data too short")
+	}
+
+	code, text, err := ParseEDEOption(opt.Data)
+	if err != nil {
+		t.Fatalf("ParseEDEOption error: %v", err)
+	}
+	if code != 6 {
+		t.Errorf("info code: expected 6, got %d", code)
+	}
+	if text != "DNSSEC validation failure" {
+		t.Errorf("extra text: expected 'DNSSEC validation failure', got %q", text)
+	}
+}
+
+func TestBuildEDEOption_NoText(t *testing.T) {
+	opt := BuildEDEOption(1, "")
+	code, text, err := ParseEDEOption(opt.Data)
+	if err != nil {
+		t.Fatalf("ParseEDEOption error: %v", err)
+	}
+	if code != 1 {
+		t.Errorf("info code: expected 1, got %d", code)
+	}
+	if text != "" {
+		t.Errorf("extra text: expected empty, got %q", text)
+	}
+}
+
+func TestParseEDEOption_TooShort(t *testing.T) {
+	_, _, err := ParseEDEOption([]byte{0x00})
+	if err == nil {
+		t.Fatal("expected error for short data")
+	}
+}
+
+func TestBuildEDEOption_AllCodes(t *testing.T) {
+	codes := []uint16{EDECodeStaleAnswer, EDECodeDNSSECBogus, EDECodeDNSKEYMissing, EDECodeNetworkError}
+	for _, code := range codes {
+		opt := BuildEDEOption(code, "test")
+		parsed, _, err := ParseEDEOption(opt.Data)
+		if err != nil {
+			t.Fatalf("code %d: %v", code, err)
+		}
+		if parsed != code {
+			t.Errorf("expected code %d, got %d", code, parsed)
+		}
+	}
+}
+
+func TestParseCookieOption_Valid(t *testing.T) {
+	data := make([]byte, 16)
+	for i := range data {
+		data[i] = byte(i + 1)
+	}
+
+	client, server := ParseCookieOption(data)
+	if len(client) != 8 {
+		t.Fatalf("client cookie length: expected 8, got %d", len(client))
+	}
+	if len(server) != 8 {
+		t.Fatalf("server cookie length: expected 8, got %d", len(server))
+	}
+
+	for i := 0; i < 8; i++ {
+		if client[i] != byte(i+1) {
+			t.Errorf("client[%d]: expected %d, got %d", i, i+1, client[i])
+		}
+	}
+	for i := 0; i < 8; i++ {
+		if server[i] != byte(i+9) {
+			t.Errorf("server[%d]: expected %d, got %d", i, i+9, server[i])
+		}
+	}
+}
+
+func TestParseCookieOption_ClientOnly(t *testing.T) {
+	data := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	client, server := ParseCookieOption(data)
+	if len(client) != 8 {
+		t.Fatalf("client cookie length: expected 8, got %d", len(client))
+	}
+	if server != nil {
+		t.Errorf("expected nil server cookie, got %v", server)
+	}
+}
+
+func TestParseCookieOption_TooShort(t *testing.T) {
+	data := []byte{1, 2, 3}
+	client, server := ParseCookieOption(data)
+	if client != nil {
+		t.Errorf("expected nil client cookie for short data")
+	}
+	if server != nil {
+		t.Errorf("expected nil server cookie for short data")
+	}
+}
+
+func TestBuildOPTWithOptions(t *testing.T) {
+	opts := []EDNSOption{
+		BuildEDEOption(6, "bogus"),
+		{Code: 10, Data: []byte{1, 2, 3, 4, 5, 6, 7, 8}},
+	}
+
+	rr := BuildOPTWithOptions(4096, true, opts)
+	if rr.Type != TypeOPT {
+		t.Errorf("Type: expected OPT, got %d", rr.Type)
+	}
+	if rr.RDLength == 0 {
+		t.Error("expected non-zero RDLength")
+	}
+
+	// Parse back
+	edns, err := ParseOPT(&rr)
+	if err != nil {
+		t.Fatalf("ParseOPT error: %v", err)
+	}
+	if len(edns.Options) != 2 {
+		t.Fatalf("expected 2 options, got %d", len(edns.Options))
+	}
+	if edns.Options[0].Code != EDNSOptionCodeEDE {
+		t.Errorf("option 0 code: expected %d, got %d", EDNSOptionCodeEDE, edns.Options[0].Code)
+	}
+	if edns.Options[1].Code != 10 {
+		t.Errorf("option 1 code: expected 10, got %d", edns.Options[1].Code)
+	}
+}
+
+func TestBuildOPTWithOptions_Empty(t *testing.T) {
+	rr := BuildOPTWithOptions(4096, false, nil)
+	if rr.RDLength != 0 {
+		t.Errorf("expected 0 RDLength for empty options, got %d", rr.RDLength)
+	}
+	if len(rr.RData) != 0 {
+		t.Errorf("expected nil RData for empty options")
+	}
+}
