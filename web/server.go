@@ -15,6 +15,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
+	"github.com/labyrinthdns/labyrinth/server"
 )
 
 // Version info variables — set at build time from main.go.
@@ -44,6 +45,8 @@ type AdminServer struct {
 	updateCheckedAt time.Time
 	updateMu        sync.RWMutex
 	blocklist       *blocklist.Manager
+	dohEnabled      bool
+	dohHandler      server.Handler
 }
 
 // NewAdminServer creates a new AdminServer. The bl parameter is optional and
@@ -97,9 +100,16 @@ func (s *AdminServer) Start(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		s.logger.Info("admin dashboard starting", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
+		if s.config.Web.TLSEnabled && s.config.Web.TLSCertFile != "" && s.config.Web.TLSKeyFile != "" {
+			s.logger.Info("admin dashboard starting with TLS", "addr", addr)
+			if err := srv.ListenAndServeTLS(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			}
+		} else {
+			s.logger.Info("admin dashboard starting", "addr", addr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			}
 		}
 		close(errCh)
 	}()
@@ -192,6 +202,11 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/blocklist/block", s.requireAuth(s.handleBlocklistBlock))
 	mux.HandleFunc("/api/blocklist/unblock", s.requireAuth(s.handleBlocklistUnblock))
 	mux.HandleFunc("/api/blocklist/check", s.requireAuth(s.handleBlocklistCheck))
+
+	// DNS-over-HTTPS (RFC 8484)
+	if s.dohEnabled && s.dohHandler != nil {
+		mux.HandleFunc("/dns-query", s.handleDoH)
+	}
 
 	// SPA handler — serves embedded React frontend with SPA routing fallback
 	mux.Handle("/", SPAHandler())

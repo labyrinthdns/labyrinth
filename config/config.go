@@ -76,6 +76,10 @@ type WebConfig struct {
 	AutoUpdate          bool
 	UpdateCheckInterval time.Duration
 	Auth                WebAuthConfig
+	DoHEnabled          bool
+	TLSEnabled          bool
+	TLSCertFile         string
+	TLSKeyFile          string
 }
 
 // WebAuthConfig holds web dashboard authentication settings.
@@ -107,17 +111,23 @@ type ServerConfig struct {
 	GracefulPeriod time.Duration
 	TCPPipelineMax int
 	TCPIdleTimeout time.Duration
+	DoTEnabled     bool
+	DoTListenAddr  string
+	TLSCertFile    string
+	TLSKeyFile     string
 }
 
 // ResolverConfig holds resolver settings.
 type ResolverConfig struct {
-	MaxDepth        int
-	MaxCNAMEDepth   int
-	UpstreamTimeout time.Duration
-	UpstreamRetries int
-	QMinEnabled     bool
-	PreferIPv4      bool
-	DNSSECEnabled   bool
+	MaxDepth            int
+	MaxCNAMEDepth       int
+	UpstreamTimeout     time.Duration
+	UpstreamRetries     int
+	QMinEnabled         bool
+	PreferIPv4          bool
+	DNSSECEnabled       bool
+	HardenBelowNXDomain bool
+	RootHintsRefresh    time.Duration
 }
 
 // CacheConfig holds cache settings.
@@ -130,12 +140,14 @@ type CacheConfig struct {
 	ServeStale     bool
 	StaleTTL       uint32
 	NoCacheClients []string
+	Prefetch       bool
 }
 
 // SecurityConfig holds security settings.
 type SecurityConfig struct {
-	RateLimit RateLimitConfig
-	RRL       RRLConfig
+	RateLimit            RateLimitConfig
+	RRL                  RRLConfig
+	PrivateAddressFilter bool
 }
 
 // RateLimitConfig holds rate limiter settings.
@@ -227,6 +239,18 @@ func applyYAML(cfg *Config, values map[string]string) {
 			cfg.Server.TCPIdleTimeout = d
 		}
 	}
+	if v, ok := values["server.dot_enabled"]; ok {
+		cfg.Server.DoTEnabled = parseBool(v)
+	}
+	if v, ok := values["server.dot_listen_addr"]; ok {
+		cfg.Server.DoTListenAddr = v
+	}
+	if v, ok := values["server.tls_cert_file"]; ok {
+		cfg.Server.TLSCertFile = v
+	}
+	if v, ok := values["server.tls_key_file"]; ok {
+		cfg.Server.TLSKeyFile = v
+	}
 
 	// Resolver
 	if v, ok := values["resolver.max_depth"]; ok {
@@ -257,6 +281,14 @@ func applyYAML(cfg *Config, values map[string]string) {
 	}
 	if v, ok := values["resolver.dnssec_enabled"]; ok {
 		cfg.Resolver.DNSSECEnabled = parseBool(v)
+	}
+	if v, ok := values["resolver.harden_below_nxdomain"]; ok {
+		cfg.Resolver.HardenBelowNXDomain = parseBool(v)
+	}
+	if v, ok := values["resolver.root_hints_refresh"]; ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Resolver.RootHintsRefresh = d
+		}
 	}
 
 	// Cache
@@ -296,8 +328,14 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["cache.no_cache_clients"]; ok && v != "" {
 		cfg.Cache.NoCacheClients = parseCSVList(v)
 	}
+	if v, ok := values["cache.prefetch"]; ok {
+		cfg.Cache.Prefetch = parseBool(v)
+	}
 
 	// Security
+	if v, ok := values["security.private_address_filter"]; ok {
+		cfg.Security.PrivateAddressFilter = parseBool(v)
+	}
 	if v, ok := values["security.rate_limit.enabled"]; ok {
 		cfg.Security.RateLimit.Enabled = parseBool(v)
 	}
@@ -380,6 +418,18 @@ func applyYAML(cfg *Config, values map[string]string) {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Web.UpdateCheckInterval = d
 		}
+	}
+	if v, ok := values["web.doh_enabled"]; ok {
+		cfg.Web.DoHEnabled = parseBool(v)
+	}
+	if v, ok := values["web.tls_enabled"]; ok {
+		cfg.Web.TLSEnabled = parseBool(v)
+	}
+	if v, ok := values["web.tls_cert_file"]; ok {
+		cfg.Web.TLSCertFile = v
+	}
+	if v, ok := values["web.tls_key_file"]; ok {
+		cfg.Web.TLSKeyFile = v
 	}
 	if v, ok := values["web.auth.username"]; ok {
 		cfg.Web.Auth.Username = v

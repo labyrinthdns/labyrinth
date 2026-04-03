@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/dns"
@@ -25,6 +26,16 @@ type Entry struct {
 	NegType    NegativeType
 	SOA        *dns.ResourceRecord
 	RCODE      uint8
+
+	// prefetched is set atomically to 1 the first time a prefetch is
+	// triggered for this entry, preventing duplicate background fetches.
+	prefetched atomic.Int32
+}
+
+// tryPrefetch atomically marks this entry as prefetched. Returns true only
+// the first time it is called (i.e. the caller should trigger the prefetch).
+func (e *Entry) tryPrefetch() bool {
+	return e.prefetched.CompareAndSwap(0, 1)
 }
 
 // RemainingTTL returns the remaining TTL in seconds.

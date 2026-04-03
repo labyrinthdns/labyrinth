@@ -11,8 +11,10 @@ const (
 	TypeTXT   uint16 = 16
 	TypeAAAA  uint16 = 28
 	TypeSRV   uint16 = 33
+	TypeHINFO uint16 = 13
 	TypeDNAME uint16 = 39
 	TypeOPT   uint16 = 41
+	TypeANY   uint16 = 255
 
 	// DNSSEC types
 	TypeDS         uint16 = 43
@@ -48,10 +50,11 @@ const (
 // TypeToString maps type values to human-readable names.
 var TypeToString = map[uint16]string{
 	TypeA: "A", TypeNS: "NS", TypeCNAME: "CNAME", TypeSOA: "SOA",
-	TypePTR: "PTR", TypeMX: "MX", TypeTXT: "TXT", TypeAAAA: "AAAA",
-	TypeSRV: "SRV", TypeDNAME: "DNAME", TypeOPT: "OPT",
+	TypeHINFO: "HINFO", TypePTR: "PTR", TypeMX: "MX", TypeTXT: "TXT",
+	TypeAAAA: "AAAA", TypeSRV: "SRV", TypeDNAME: "DNAME", TypeOPT: "OPT",
 	TypeDS: "DS", TypeRRSIG: "RRSIG", TypeNSEC: "NSEC",
 	TypeDNSKEY: "DNSKEY", TypeNSEC3: "NSEC3", TypeNSEC3PARAM: "NSEC3PARAM",
+	TypeANY: "ANY",
 }
 
 // RCodeToString maps response codes to human-readable names.
