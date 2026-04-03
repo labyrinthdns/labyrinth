@@ -52,7 +52,10 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 			return responseCNAME
 		}
 
-		return responseAnswer
+		// Answer section has records that don't match the question.
+		// Check authority section — this may actually be a referral
+		// (some servers include unrelated records in the answer section).
+		// Fall through to authority section checks below.
 	}
 
 	// 4. No answers — check authority
