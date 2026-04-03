@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mistakenly flagged as a loop. Loop detection key now includes `currentZone`.
 - NS address resolution now scans all answer records for A/AAAA instead of only
   checking `Answers[0]`, fixing failures when CNAME records precede the address record.
+- QNAME minimization: minimized query returning NXDOMAIN now retries with the full
+  query name per RFC 9156 §3, preventing false negatives for valid domains.
+- Potential deadlock in NS address resolution when the inflight coalescer held a key
+  that the NS hostname resolution also needed (e.g., `ns1.example.tr` while resolving
+  under `example.tr`). NS address lookups now bypass the inflight deduplicator.
+- Cache lookup in `selectAndResolveNS` now scans all cached records instead of only
+  the first entry, fixing failures when the first cached record has corrupt RDATA.
 
 ### Changed
 - Blocklist enabled by default in example configuration (`labyrinth.yaml`)
