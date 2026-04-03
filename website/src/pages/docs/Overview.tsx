@@ -27,8 +27,9 @@ export default function Overview({ dark }: Props) {
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
           <strong className="text-gold-500">TL;DR:</strong> Labyrinth resolves DNS queries from the root of
-          the DNS hierarchy, caches aggressively with 256 lock-free shards, exposes Prometheus and Zabbix
-          metrics, and includes a full React web dashboard &mdash; all in a ~7 MB binary.
+          the DNS hierarchy with full DNSSEC validation, caches aggressively with 256 lock-free shards,
+          blocks ads and trackers via DNS blocklists, exposes Prometheus and Zabbix metrics, and includes
+          a full React web dashboard with self-updating &mdash; all in a ~7 MB binary.
         </p>
       </div>
 
@@ -36,10 +37,13 @@ export default function Overview({ dark }: Props) {
 
       <ul className={ul}>
         <li><strong>Recursive resolution</strong> from root hints through TLD and authoritative servers, with QNAME minimization (RFC 9156)</li>
+        <li><strong>DNSSEC validation</strong> &mdash; full chain-of-trust verification with RSA, ECDSA, and ED25519 algorithm support (RFC 4033-4035)</li>
+        <li><strong>DNS blocklist</strong> &mdash; Pi-hole style DNS filtering with multiple blocklist sources, managed from the web dashboard</li>
         <li><strong>256-shard concurrent cache</strong> with FNV-1a hashing, TTL decay, negative caching (RFC 2308), and serve-stale (RFC 8767)</li>
-        <li><strong>Built-in web dashboard</strong> &mdash; a React 19 SPA served directly from the binary, with live WebSocket query stream, cache analytics, and a first-time setup wizard</li>
+        <li><strong>Built-in web dashboard</strong> &mdash; a React 19 SPA served directly from the binary, with live WebSocket query stream, cache analytics, blocklist management, and a first-time setup wizard</li>
+        <li><strong>Self-updating</strong> &mdash; check for and apply updates directly from the web dashboard with zero-downtime binary upgrades</li>
         <li><strong>Full observability</strong> &mdash; Prometheus metrics endpoint, native Zabbix agent protocol, structured JSON logging, health and readiness probes</li>
-        <li><strong>Security</strong> &mdash; bailiwick enforcement, TXID and source port randomization, per-IP rate limiting, response rate limiting (RRL), and IP-based ACLs</li>
+        <li><strong>Security</strong> &mdash; bailiwick enforcement, TXID and source port randomization, per-IP rate limiting, response rate limiting (RRL), JWT auth, and IP-based ACLs</li>
         <li><strong>Daemon mode</strong> with PID files, signal handling (SIGHUP for config reload, SIGUSR1/2 for diagnostics), and systemd integration</li>
         <li><strong>Benchmark tool</strong> (<code className={ic}>labyrinth-bench</code>) with distributed coordinator/runner architecture and a web UI for results</li>
       </ul>
@@ -50,13 +54,17 @@ export default function Overview({ dark }: Props) {
         Labyrinth follows a clean, modular architecture with clearly separated concerns:
       </p>
 
-      <pre className="code-block p-4 mb-6"><code className="text-sm text-gray-300 font-mono">{`DNS Clients ──▶ UDP/TCP Listener ──▶ Resolver Engine ──▶ Sharded Cache
-                       │                    │
-                       ▼                    ▼
-                 Security Layer      Upstream Servers
-                 (ACL, RRL, Rate)    (Root → TLD → Auth)
+      <pre className="code-block p-4 mb-6"><code className="text-sm text-gray-300 font-mono">{`DNS Clients ──▶ UDP/TCP Listener ──▶ Blocklist ──▶ Resolver Engine ──▶ Sharded Cache
+                       │                              │
+                       ▼                              ▼
+                 Security Layer              Upstream Servers
+                 (ACL, RRL, Rate)            (Root → TLD → Auth)
+                       │                              │
+                       │                        DNSSEC Validation
+                       │                     (RSA, ECDSA, ED25519)
                        │
               Web Dashboard ◀── JWT Auth ◀── Browser
+              (Blocklist, Updates)
                        │
               Observability
               (Prometheus, Zabbix, Logs)`}</code></pre>
@@ -91,7 +99,7 @@ export default function Overview({ dark }: Props) {
           <tr className={td}><td className="py-2 pr-4">Web Dashboard</td><td className="py-2 pr-4 text-gold-500">Built-in</td><td className="py-2 pr-4">No</td><td className="py-2 pr-4">No</td><td className="py-2">No</td></tr>
           <tr className={td}><td className="py-2 pr-4">Single Binary</td><td className="py-2 pr-4 text-gold-500">Yes</td><td className="py-2 pr-4">Yes</td><td className="py-2 pr-4">No</td><td className="py-2">Yes</td></tr>
           <tr className={td}><td className="py-2 pr-4">Recursive</td><td className="py-2 pr-4">Yes</td><td className="py-2 pr-4">Yes</td><td className="py-2 pr-4">Yes</td><td className="py-2">Via plugin</td></tr>
-          <tr className={td}><td className="py-2 pr-4">DNSSEC Validation</td><td className="py-2 pr-4">Planned</td><td className="py-2 pr-4">Yes</td><td className="py-2 pr-4">Yes</td><td className="py-2">Via plugin</td></tr>
+          <tr className={td}><td className="py-2 pr-4">DNSSEC Validation</td><td className="py-2 pr-4 text-gold-500">Yes</td><td className="py-2 pr-4">Yes</td><td className="py-2 pr-4">Yes</td><td className="py-2">Via plugin</td></tr>
           <tr className={td}><td className="py-2 pr-4">Prometheus Metrics</td><td className="py-2 pr-4 text-gold-500">Built-in</td><td className="py-2 pr-4">With exporter</td><td className="py-2 pr-4">With exporter</td><td className="py-2">Built-in</td></tr>
           <tr className={td}><td className="py-2 pr-4">Zabbix Agent</td><td className="py-2 pr-4 text-gold-500">Built-in</td><td className="py-2 pr-4">No</td><td className="py-2 pr-4">No</td><td className="py-2">No</td></tr>
         </tbody>
@@ -99,8 +107,8 @@ export default function Overview({ dark }: Props) {
 
       <p className={p}>
         Choose Labyrinth when you want <strong>minimal operational overhead</strong>, a <strong>built-in management UI</strong>,
-        and <strong>native monitoring integration</strong>. For environments requiring DNSSEC validation today,
-        Unbound or BIND remain the proven choices.
+        <strong>native monitoring integration</strong>, and <strong>DNSSEC validation</strong> &mdash; all in a single binary
+        with built-in DNS blocklist filtering and self-updating capabilities.
       </p>
 
       <h2 className={h2}>Next Steps</h2>

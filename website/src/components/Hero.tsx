@@ -1,7 +1,7 @@
 import { ArrowRight } from 'lucide-react'
 import GithubIcon from './GithubIcon'
 
-const pills = ['Zero Dependencies', 'Single Binary', 'Web Dashboard', 'RFC Compliant']
+const pills = ['Zero Dependencies', 'Single Binary', 'DNSSEC Validation', 'Web Dashboard', 'DNS Blocklist']
 
 export default function Hero() {
   return (

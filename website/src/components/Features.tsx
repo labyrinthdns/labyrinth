@@ -5,6 +5,9 @@ import {
   Shield,
   Activity,
   FileCheck,
+  ShieldCheck,
+  Ban,
+  RefreshCw,
 } from 'lucide-react'
 
 interface FeaturesProps {
@@ -19,6 +22,18 @@ const features = [
       'Navigates from root servers through the DNS hierarchy. QNAME minimization for privacy.',
   },
   {
+    icon: ShieldCheck,
+    title: 'DNSSEC Validation',
+    description:
+      'Full DNSSEC validation with RSA, ECDSA, and ED25519 support. Cryptographically verify every response.',
+  },
+  {
+    icon: Ban,
+    title: 'DNS Blocklist',
+    description:
+      'Pi-hole style DNS filtering with multiple blocklist sources. Block ads, trackers, and malware at the DNS level.',
+  },
+  {
     icon: Database,
     title: 'Sharded Cache',
     description:
@@ -28,13 +43,19 @@ const features = [
     icon: LayoutDashboard,
     title: 'Web Dashboard',
     description:
-      'Built-in React dashboard with live query stream, cache management, and setup wizard.',
+      'Built-in React 19 dashboard with live query stream, cache management, blocklist control, and self-updating.',
+  },
+  {
+    icon: RefreshCw,
+    title: 'Self-Updating',
+    description:
+      'Check for and apply updates directly from the web dashboard. Zero-downtime binary upgrades.',
   },
   {
     icon: Shield,
     title: 'Security First',
     description:
-      'Bailiwick enforcement, rate limiting, RRL, ACL, transaction ID randomization.',
+      'Bailiwick enforcement, JWT auth, rate limiting, RRL, ACL, transaction ID randomization.',
   },
   {
     icon: Activity,
@@ -46,7 +67,7 @@ const features = [
     icon: FileCheck,
     title: 'RFC Compliant',
     description:
-      'Full compliance with RFC 1035, 2308, 3596, 6891, 8767, 9156.',
+      'Full compliance with RFC 1035, 2308, 3596, 4033-4035, 6891, 8767, 9156.',
   },
 ]
 

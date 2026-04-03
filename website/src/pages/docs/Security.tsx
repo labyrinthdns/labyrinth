@@ -53,6 +53,37 @@ export default function Security({ dark }: Props) {
         of port entropy), making blind spoofing attacks impractical.
       </p>
 
+      <h2 className={h2}>DNSSEC Validation</h2>
+
+      <p className={p}>
+        Labyrinth performs full DNSSEC validation (RFC 4033-4035) to cryptographically verify the authenticity
+        and integrity of DNS responses. When enabled, every response is validated through the chain of trust
+        from the root zone down to the queried domain.
+      </p>
+
+      <ul className={ul}>
+        <li><strong>RSA</strong> (RSASHA1, RSASHA256, RSASHA512) &mdash; widely deployed across most zones</li>
+        <li><strong>ECDSA</strong> (ECDSAP256SHA256, ECDSAP384SHA384) &mdash; used by many modern zones including the root</li>
+        <li><strong>ED25519</strong> &mdash; next-generation algorithm with smaller signatures and faster verification</li>
+      </ul>
+
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`dnssec:
+  enabled: true    # enabled by default`}</code></pre>
+
+      <p className={p}>
+        When a DNSSEC-signed domain fails validation, Labyrinth returns SERVFAIL to the client, preventing
+        spoofed or tampered responses from reaching end users. Validated responses are cached with their
+        authentication status, so subsequent queries benefit from the validation without additional overhead.
+      </p>
+
+      <div className={info}>
+        <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
+          <strong className="text-gold-500">Note:</strong> DNSSEC validation adds latency to the first query
+          for a domain (additional DNSKEY and DS lookups), but these are cached aggressively. For unsigned
+          domains, there is no performance impact.
+        </p>
+      </div>
+
       <h2 className={h2}>Per-IP Rate Limiting</h2>
 
       <p className={p}>
@@ -129,6 +160,7 @@ export default function Security({ dark }: Props) {
       <h2 className={h2}>Best Practices</h2>
 
       <ul className={ul}>
+        <li><strong>Keep DNSSEC enabled.</strong> It is on by default and protects against cache poisoning and response tampering.</li>
         <li><strong>Never run an open resolver.</strong> Always enable ACLs if the resolver is reachable from the internet.</li>
         <li><strong>Enable RRL</strong> even on internal resolvers as defense-in-depth against compromised internal hosts.</li>
         <li><strong>Use rate limiting</strong> to prevent any single client from monopolizing resolver resources.</li>
@@ -138,6 +170,9 @@ export default function Security({ dark }: Props) {
       </ul>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Recommended production security config
+dnssec:
+  enabled: true
+
 security:
   rate_limit:
     enabled: true

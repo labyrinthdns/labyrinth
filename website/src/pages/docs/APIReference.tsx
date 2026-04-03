@@ -128,6 +128,21 @@ export default function APIReference({ dark }: Props) {
 }`}
       />
 
+      <Endpoint
+        dark={dark}
+        method="POST"
+        path="/api/auth/change-password"
+        auth={true}
+        description="Change the password for the authenticated user."
+        request={`{
+  "current_password": "old-password",
+  "new_password": "new-password"
+}`}
+        response={`{
+  "message": "Password changed successfully"
+}`}
+      />
+
       <h2 className={h2}>Statistics</h2>
 
       <Endpoint
@@ -224,6 +239,131 @@ export default function APIReference({ dark }: Props) {
   "deleted": true,
   "name": "example.com.",
   "type": "A"
+}`}
+      />
+
+      <h2 className={h2}>Blocklist</h2>
+
+      <Endpoint
+        dark={dark}
+        method="GET"
+        path="/api/blocklist/stats"
+        auth={true}
+        description="Returns blocklist statistics including total blocked domains and hit counts."
+        response={`{
+  "enabled": true,
+  "total_domains": 145832,
+  "lists_count": 2,
+  "blocked_queries_total": 4521,
+  "last_refresh": "2025-06-01T03:00:00Z"
+}`}
+      />
+
+      <Endpoint
+        dark={dark}
+        method="GET"
+        path="/api/blocklist/lists"
+        auth={true}
+        description="Returns all configured blocklist sources and their status."
+        response={`{
+  "lists": [
+    {
+      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+      "domains": 120456,
+      "last_updated": "2025-06-01T03:00:00Z",
+      "status": "ok"
+    },
+    {
+      "url": "https://adaway.org/hosts.txt",
+      "domains": 25376,
+      "last_updated": "2025-06-01T03:00:00Z",
+      "status": "ok"
+    }
+  ]
+}`}
+      />
+
+      <Endpoint
+        dark={dark}
+        method="POST"
+        path="/api/blocklist/refresh"
+        auth={true}
+        description="Trigger an immediate refresh of all blocklist sources."
+        response={`{
+  "message": "Blocklist refresh started",
+  "lists_count": 2
+}`}
+      />
+
+      <Endpoint
+        dark={dark}
+        method="POST"
+        path="/api/blocklist/block"
+        auth={true}
+        description="Add a domain to the custom blocklist."
+        request={`{
+  "domain": "ads.example.com"
+}`}
+        response={`{
+  "blocked": true,
+  "domain": "ads.example.com"
+}`}
+      />
+
+      <Endpoint
+        dark={dark}
+        method="POST"
+        path="/api/blocklist/unblock"
+        auth={true}
+        description="Remove a domain from the blocklist (adds to the whitelist if from an external list)."
+        request={`{
+  "domain": "ads.example.com"
+}`}
+        response={`{
+  "unblocked": true,
+  "domain": "ads.example.com"
+}`}
+      />
+
+      <Endpoint
+        dark={dark}
+        method="GET"
+        path="/api/blocklist/check?domain=ads.example.com"
+        auth={true}
+        description="Check if a domain is currently blocked."
+        response={`{
+  "domain": "ads.example.com",
+  "blocked": true,
+  "source": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+}`}
+      />
+
+      <h2 className={h2}>System Update</h2>
+
+      <Endpoint
+        dark={dark}
+        method="GET"
+        path="/api/system/update/check"
+        auth={true}
+        description="Check if a newer version of Labyrinth is available."
+        response={`{
+  "current_version": "v0.3.0",
+  "latest_version": "v0.3.1",
+  "update_available": true,
+  "release_url": "https://github.com/labyrinthdns/labyrinth/releases/tag/v0.3.1"
+}`}
+      />
+
+      <Endpoint
+        dark={dark}
+        method="POST"
+        path="/api/system/update/apply"
+        auth={true}
+        description="Download and apply the latest update. The server will restart automatically after a successful update."
+        response={`{
+  "message": "Update to v0.3.1 applied successfully, restarting...",
+  "previous_version": "v0.3.0",
+  "new_version": "v0.3.1"
 }`}
       />
 

@@ -16,9 +16,12 @@
 - **Web dashboard** — Real-time DNS monitoring, cache management, live query stream, dark/light theme
 - **Zero-config start** — Interactive setup wizard on first run, sane defaults for everything
 - **Recursive only** — Navigates root → TLD → authoritative, caches results
-- **RFC compliant** — RFC 1035, 2308, 3596, 6891, 8767, 9156
+- **RFC compliant** — RFC 1035, 2308, 3596, 4033-4035, 6891, 8767, 9156
+- **DNSSEC validation** — Full signature verification (RSA, ECDSA, ED25519), trust chain from root KSK
+- **DNS blocklist** — Pi-hole style domain blocking with hosts/domain/AdBlock Plus list formats
 - **Secure** — JWT auth, bcrypt passwords, bailiwick enforcement, rate limiting, ACL
 - **Observable** — Prometheus metrics, Zabbix agent, structured logging, WebSocket query stream
+- **Self-updating** — Automatic version check + one-click update from web dashboard
 - **Fast** — Sharded cache, >22M cache reads/sec, <50µs cache hit latency, request coalescing
 
 ## Quick Install
@@ -40,7 +43,7 @@ The installer downloads the latest release, installs the binary, creates a defau
 curl -sSL .../install.sh | bash -s -- --no-service
 
 # Install specific version
-curl -sSL .../install.sh | bash -s -- --version v0.1.0
+curl -sSL .../install.sh | bash -s -- --version v0.3.0
 
 # Uninstall
 curl -sSL .../uninstall.sh | bash
@@ -81,10 +84,11 @@ On first run (no config file), the dashboard shows an interactive setup wizard:
 
 | Page | Description |
 |------|-------------|
-| **Dashboard** | Real-time stats: QPS chart, cache hit ratio, response code distribution, uptime |
-| **Queries** | Live DNS query stream via WebSocket — filterable, pausable, color-coded |
-| **Cache** | Cache stats, lookup tool, flush, delete individual entries |
-| **Config** | Running configuration viewer |
+| **Dashboard** | Real-time stats: QPS chart, cache hit ratio, response code distribution, DNSSEC status, blocked queries |
+| **Queries** | Live DNS query stream via WebSocket — filterable, pausable, DNSSEC badges, blocked indicators |
+| **Cache** | Cache stats, lookup tool, flush, delete individual entries, negative cache view |
+| **Blocklist** | List management, quick block/unblock, domain check, source stats |
+| **Config** | Running configuration viewer, password change |
 
 ### Authentication
 
@@ -106,6 +110,7 @@ resolver:
   max_depth: 30
   qname_minimization: true
   prefer_ipv4: true
+  dnssec_enabled: true
 
 cache:
   max_entries: 100000
@@ -130,9 +135,17 @@ logging:
 web:
   enabled: true
   addr: "127.0.0.1:9153"
+  auto_update: true
+  update_check_interval: 24h
   auth:
     username: "admin"
     password_hash: "$2a$10$..."  # labyrinth hash <password>
+
+blocklist:
+  enabled: true
+  # lists: "https://example.com/hosts|hosts"
+  refresh_interval: 24h
+  blocking_mode: nxdomain  # nxdomain, null_ip, custom_ip
 
 # access_control:
 #   allow: 127.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16
@@ -199,10 +212,19 @@ All endpoints (except auth/setup/health) require JWT authentication via `Authori
 | POST | `/api/cache/flush` | Flush entire cache |
 | DELETE | `/api/cache/entry?name=X&type=A` | Delete cache entry |
 | GET | `/api/config` | Running config (passwords redacted) |
-| GET | `/api/setup/status` | Check if setup wizard needed |
-| POST | `/api/setup/complete` | Complete setup wizard |
+| POST | `/api/auth/change-password` | Change admin password |
+| GET | `/api/blocklist/stats` | Blocklist statistics |
+| GET | `/api/blocklist/lists` | Configured blocklist sources |
+| POST | `/api/blocklist/refresh` | Refresh all blocklists |
+| POST | `/api/blocklist/block` | Quick-block a domain |
+| POST | `/api/blocklist/unblock` | Unblock a domain |
+| GET | `/api/blocklist/check?domain=X` | Check if domain is blocked |
 | GET | `/api/system/health` | Health check |
 | GET | `/api/system/version` | Version info |
+| GET | `/api/system/update/check` | Check for updates |
+| POST | `/api/system/update/apply` | Apply available update |
+| GET | `/api/setup/status` | Check if setup wizard needed |
+| POST | `/api/setup/complete` | Complete setup wizard |
 | GET | `/api/zabbix/items` | Zabbix metric key discovery |
 | GET | `/api/zabbix/item?key=X` | Single Zabbix metric value |
 | GET | `/metrics` | Prometheus metrics |
@@ -248,6 +270,8 @@ Available keys: `labyrinth.queries.total`, `labyrinth.cache.hits`, `labyrinth.ca
   DNS Clients ─────▶│  UDP/TCP :53  ──▶ Recursive Resolver │
                     │                   ├─ Root Hints       │
                     │                   ├─ QNAME Min        │
+                    │                   ├─ DNSSEC Validation│
+                    │                   ├─ Blocklist Filter │
                     │                   ├─ Cache (256-shard)│
                     │                   └─ Bailiwick/RRL    │
                     │                                      │
@@ -296,6 +320,7 @@ Binary size: **6.8 MB** (stripped, with embedded web dashboard)
 | 2181 | DNS Clarifications | Full |
 | 2308 | Negative Caching | Full |
 | 3596 | DNS IPv6 (AAAA) | Full |
+| 4033-4035 | DNSSEC | Full |
 | 5452 | DNS Resilience | Full |
 | 6891 | EDNS0 | Full |
 | 8767 | Serving Stale Data | Optional |
@@ -312,7 +337,7 @@ cd web/ui && npm ci && npm run build && cd ../..
 # Build binary
 make build
 
-# Run tests (415+ tests)
+# Run tests (840+ tests, 98-100% coverage)
 make test
 
 # Run benchmarks
@@ -338,6 +363,8 @@ labyrinth/
 ├── main.go                 # Entry point, CLI, signal handling
 ├── dns/                    # Wire protocol, name compression, all RR types
 ├── resolver/               # Recursive resolution, QNAME min, delegation
+├── dnssec/                 # DNSSEC validation, trust chain, RSA/ECDSA/ED25519
+├── blocklist/              # Domain blocking, hosts/domain/ABP parsers
 ├── cache/                  # 256-shard concurrent cache, TTL decay, serve-stale
 ├── security/               # Bailiwick, rate limit, RRL, ACL
 ├── server/                 # UDP/TCP DNS servers, request handler

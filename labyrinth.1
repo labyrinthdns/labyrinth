@@ -1,4 +1,4 @@
-.TH LABYRINTH 1 "April 2026" "Labyrinth 0.1.0" "User Commands"
+.TH LABYRINTH 1 "April 2026" "Labyrinth 0.3.0" "User Commands"
 .SH NAME
 labyrinth \- pure Go recursive DNS resolver
 .SH SYNOPSIS
@@ -20,6 +20,12 @@ Validate the configuration file and exit.
 .TP
 .B version
 Print version information and exit.
+.TP
+.B hash " " \fIpassword\fR
+Generate bcrypt password hash for config file.
+.TP
+.B daemon " " start|stop|status
+Manage background daemon process.
 .SH OPTIONS
 .TP
 .BR \-listen " " \fIaddress\fR
@@ -39,6 +45,12 @@ Log format: json, text (default "json").
 .TP
 .BR \-cache\-size " " \fIn\fR
 Maximum cache entries (default 100000).
+.TP
+.BR \-web " " \fIaddress\fR
+Web dashboard address (overrides config).
+.TP
+.BR \-daemon
+Run as background daemon.
 .TP
 .BR \-version
 Print version information and exit.
