@@ -4,6 +4,47 @@ All notable changes to Labyrinth will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+## [0.4.1] - 2026-04-03
+
+### Added
+- Native DoH over HTTP/3 support on `/dns-query` via `web.doh3_enabled` (QUIC transport on the web listener address).
+- Alt-Svc advertisement on HTTPS responses when HTTP/3 is enabled.
+
+### Fixed
+- DoT server shutdown reliability: `Accept()` now unblocks promptly on context cancel,
+  preventing potential hang during graceful shutdown.
+- Startup validation hardened:
+  - `server.dot_enabled=true` now requires `server.tls_cert_file` and `server.tls_key_file`
+  - `web.tls_enabled=true` now requires `web.tls_cert_file` and `web.tls_key_file`
+  - `web.doh3_enabled=true` now requires `web.enabled=true`, `web.tls_enabled=true`, and web TLS cert/key
+- YAML parser now supports UTF-8 BOM-prefixed files (common on Windows editors),
+  fixing edge cases where the first key could be misparsed.
+- Web UI lint issues fixed:
+  - `useQueryStream` reconnect callback declaration order
+  - synchronous `setState` calls inside effects in dashboard/docs pages
+
+### Changed
+- CI now runs frontend lint (`web/ui`, `website`) in addition to builds.
+- CI step order adjusted to run Go vet/tests before `npm ci` to avoid `node_modules`
+  Go package noise in `go test ./...` scope.
+- Runtime warning added when DoH is enabled without web TLS configuration.
+
+### Docs
+- Website docs aligned to runtime behavior and config schema:
+  - Correct config keys (`listen_addr`, `max_entries`, `qname_minimization`, etc.)
+  - Correct WebSocket path (`/api/queries/stream`)
+  - Correct health endpoint in web mode (`/api/system/health`)
+  - Updated Signals documentation to match current implementation
+- README expanded with encrypted DNS transport section (DoH/DoT),
+  config examples, and `/dns-query` API documentation.
+
+### Tests
+- Added DoT shutdown regression test (`TestDoTServeCancelWithoutConnections`).
+- Added YAML BOM parsing test (`TestParseYAMLUTF8BOM`).
+- End-to-end smoke checks performed for DoH endpoint and DoT invalid-config fail-fast path.
+
 ## [0.3.0] - 2026-04-03
 
 ### Added

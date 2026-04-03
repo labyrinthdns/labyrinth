@@ -218,3 +218,45 @@ func TestDoTTLSVersion(t *testing.T) {
 		t.Errorf("expected TLS version >= 1.2, got 0x%04X", state.Version)
 	}
 }
+
+// TestDoTServeCancelWithoutConnections verifies that Serve exits promptly when
+// context is canceled even if no client ever connects.
+func TestDoTServeCancelWithoutConnections(t *testing.T) {
+	cert, _, err := generateSelfSignedCert()
+	if err != nil {
+		t.Fatalf("generate cert: %v", err)
+	}
+
+	serverTLSCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	tlsLn := tls.NewListener(ln, serverTLSCfg)
+	srv := NewDoTServerWithListener(tlsLn, &EchoHandler{}, 5*time.Second, 10, discardLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.Serve(ctx)
+	}()
+
+	// Cancel without creating any client connection.
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not exit after context cancel")
+	}
+}

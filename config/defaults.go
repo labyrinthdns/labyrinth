@@ -71,6 +71,7 @@ func defaultConfig() *Config {
 			TopDomainsLimit:     20,
 			AutoUpdate:          true,
 			UpdateCheckInterval: 24 * time.Hour,
+			DoH3Enabled:         false,
 		},
 		Daemon: DaemonConfig{
 			Enabled: false,
@@ -83,6 +84,21 @@ func defaultConfig() *Config {
 			Enabled:         false,
 			RefreshInterval: 24 * time.Hour,
 			BlockingMode:    "nxdomain",
+		},
+		Cluster: ClusterConfig{
+			Enabled:      false,
+			Role:         "standalone",
+			NodeID:       "node-1",
+			SharedFields: nil,
+			Actions: ClusterActionConfig{
+				FanoutCacheFlush:       false,
+				FanoutBlocklistRefresh: false,
+			},
+			Sync: ClusterSyncConfig{
+				Mode:         "off",
+				PushOnSave:   false,
+				PullInterval: 30 * time.Second,
+			},
 		},
 	}
 }

@@ -21,7 +21,7 @@ import (
 func startTCMockDNS(t *testing.T) *mockDNSServer {
 	t.Helper()
 	var udpCount atomic.Int32
-	return startMockDNS(t, func(q *dns.Message) *dns.Message {
+	m := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		count := udpCount.Add(1)
 		if count <= 1 {
 			// First UDP response: TC=1
@@ -44,6 +44,18 @@ func startTCMockDNS(t *testing.T) *mockDNSServer {
 			}},
 		}
 	})
+	// TC fallback tests require UDP/TCP on the same port. On Windows, startMockDNS
+	// may fall back to a random TCP port when bind-on-same-port fails.
+	_, tcpPort, err := net.SplitHostPort(m.tcpLn.Addr().String())
+	if err != nil {
+		m.close()
+		t.Skipf("cannot parse tcp addr for TC fallback test: %v", err)
+	}
+	if tcpPort != m.port {
+		m.close()
+		t.Skipf("skip TC fallback test: tcp port (%s) != udp port (%s)", tcpPort, m.port)
+	}
+	return m
 }
 
 func TestQueryUpstreamOnceTCFallback(t *testing.T) {
@@ -657,8 +669,8 @@ func TestResolveIterativeDNSSECBogus(t *testing.T) {
 		signerName := dns.BuildPlainName("example.com")
 		rrsigRData := make([]byte, 0, 18+len(signerName)+64)
 		rrsigRData = append(rrsigRData, 0, 1) // TypeCovered = A (1)
-		rrsigRData = append(rrsigRData, 8)     // Algorithm = 8 (RSA/SHA-256)
-		rrsigRData = append(rrsigRData, 3)     // Labels = 3
+		rrsigRData = append(rrsigRData, 8)    // Algorithm = 8 (RSA/SHA-256)
+		rrsigRData = append(rrsigRData, 3)    // Labels = 3
 		ttlBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(ttlBytes, 300)
 		rrsigRData = append(rrsigRData, ttlBytes...) // OriginalTTL
@@ -671,7 +683,7 @@ func TestResolveIterativeDNSSECBogus(t *testing.T) {
 		ktBytes := make([]byte, 2)
 		binary.BigEndian.PutUint16(ktBytes, 12345) // KeyTag
 		rrsigRData = append(rrsigRData, ktBytes...)
-		rrsigRData = append(rrsigRData, signerName...)     // Signer name
+		rrsigRData = append(rrsigRData, signerName...)       // Signer name
 		rrsigRData = append(rrsigRData, make([]byte, 64)...) // Fake signature
 
 		return &dns.Message{
@@ -729,8 +741,8 @@ func TestResolveIterativeDNSSECIndeterminate(t *testing.T) {
 		signerName := dns.BuildPlainName("example.com")
 		rrsigRData := make([]byte, 0, 18+len(signerName)+64)
 		rrsigRData = append(rrsigRData, 0, 1) // TypeCovered = A
-		rrsigRData = append(rrsigRData, 8)     // Algorithm
-		rrsigRData = append(rrsigRData, 3)     // Labels
+		rrsigRData = append(rrsigRData, 8)    // Algorithm
+		rrsigRData = append(rrsigRData, 3)    // Labels
 		ttlBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(ttlBytes, 300)
 		rrsigRData = append(rrsigRData, ttlBytes...)
@@ -2828,4 +2840,3 @@ func TestResolveReverseDNS_WithoutQMin(t *testing.T) {
 		t.Errorf("expected PTR record, got: %+v", result.Answers)
 	}
 }
-

@@ -72,27 +72,28 @@ func NewDoTServerWithListener(ln net.Listener, handler Handler, timeout time.Dur
 // Serve starts the DoT server loop. It uses the same semaphore-based
 // concurrency limiting pattern as TCPServer.
 func (s *DoTServer) Serve(ctx context.Context) error {
+	// Ensure Accept unblocks promptly on shutdown.
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = s.listener.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
 	for {
 		select {
 		case <-ctx.Done():
-			return s.listener.Close()
+			return nil
 		default:
-		}
-
-		// Set accept deadline so we can check context periodically.
-		// The underlying listener is a *net.TCPListener wrapped by tls.NewListener.
-		// We use the deadline on the raw TCP accept via the Listener interface.
-		if tcpLn, ok := s.listener.(*net.TCPListener); ok {
-			tcpLn.SetDeadline(time.Now().Add(1 * time.Second))
 		}
 
 		conn, err := s.listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
-			}
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
 			}
 			s.logger.Error("dot accept error", "error", err)
 			continue

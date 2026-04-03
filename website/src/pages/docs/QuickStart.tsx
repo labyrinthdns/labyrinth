@@ -32,39 +32,37 @@ export default function QuickStart({ dark }: Props) {
       <h2 className={h2}>Step 2: Create a Config File</h2>
 
       <p className={p}>
-        Create a minimal <code className={ic}>config.yaml</code> file. Labyrinth will use sensible defaults
+        Create a minimal <code className={ic}>labyrinth.yaml</code> file. Labyrinth will use sensible defaults
         for anything not specified:
       </p>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# config.yaml - minimal configuration
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# labyrinth.yaml - minimal configuration
 server:
-  address: "0.0.0.0"
-  port: 53
+  listen_addr: "0.0.0.0:53"
 
 resolver:
-  enable_qname_minimization: true
+  qname_minimization: true
 
 cache:
-  max_entries_per_shard: 10000
+  max_entries: 100000
   serve_stale: true
 
 web:
   enabled: true
-  address: "0.0.0.0"
-  port: 9153`}</code></pre>
+  addr: "0.0.0.0:9153"`}</code></pre>
 
       <h2 className={h2}>Step 3: Start Labyrinth</h2>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Start in the foreground (use --daemon for background mode)
-sudo labyrinth --config config.yaml`}</code></pre>
+sudo labyrinth --config labyrinth.yaml`}</code></pre>
 
       <p className={p}>
         You should see output like:
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`[INFO] Labyrinth DNS v1.3.0 starting
-[INFO] Loading configuration from config.yaml
-[INFO] Cache initialized: 256 shards, 10000 entries per shard
+[INFO] Loading configuration from labyrinth.yaml
+[INFO] Cache initialized: max_entries=100000
 [INFO] DNS listener started on 0.0.0.0:53 (UDP+TCP)
 [INFO] Web dashboard listening on http://0.0.0.0:9153
 [INFO] Ready to resolve queries`}</code></pre>
@@ -113,7 +111,7 @@ dig @127.0.0.1 example.com A
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# You can also create credentials from the command line:
-labyrinth hash --password "your-secure-password"
+labyrinth hash "your-secure-password"
 
 # Output:
 $2a$10$K7L/FqkZ...hashed...password`}</code></pre>
@@ -131,12 +129,12 @@ dig @127.0.0.1 google.com MX
 dig @127.0.0.1 cloudflare.com NS
 
 # Check health endpoint
-curl -s http://localhost:9153/health
+curl -s http://localhost:9153/api/system/health
 # {"status":"ok"}
 
-# Check readiness
-curl -s http://localhost:9153/ready
-# {"status":"ready"}`}</code></pre>
+# Check version endpoint
+curl -s http://localhost:9153/api/system/version
+# {"version":"...","build_time":"...","go_version":"..."}`}</code></pre>
 
       <p className={p}>
         The dashboard should show live queries streaming in as you run <code className={ic}>dig</code> commands.

@@ -3,13 +3,19 @@ package web
 import (
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/dns"
 )
+
+const clusterFanoutHeader = "X-Labyrinth-Cluster-Fanout"
 
 // formatRData converts raw DNS RDATA bytes to a human-readable string.
 func formatRData(rr dns.ResourceRecord) string {
@@ -191,6 +197,69 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func normalizePeerBase(base string) string {
+	base = strings.TrimSpace(base)
+	base = strings.TrimRight(base, "/")
+	return base
+}
+
+func cacheFlushURL(peer config.ClusterPeerConfig) string {
+	base := normalizePeerBase(peer.APIBase)
+	if base == "" {
+		return ""
+	}
+	if _, err := url.ParseRequestURI(base); err != nil {
+		return ""
+	}
+	return base + "/api/cache/flush"
+}
+
+func (s *AdminServer) fanoutCacheFlush() (int, int) {
+	okCount, failCount := 0, 0
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	for _, peer := range s.config.Cluster.Peers {
+		if !peer.Enabled {
+			continue
+		}
+		target := cacheFlushURL(peer)
+		if target == "" {
+			failCount++
+			s.logger.Warn("cluster peer has invalid api_base", "peer", peer.Name, "api_base", peer.APIBase)
+			continue
+		}
+
+		req, err := http.NewRequest(http.MethodPost, target, nil)
+		if err != nil {
+			failCount++
+			s.logger.Warn("failed to build cluster cache flush request", "peer", peer.Name, "error", err)
+			continue
+		}
+		req.Header.Set(clusterFanoutHeader, "1")
+		if strings.TrimSpace(peer.APIToken) != "" {
+			req.Header.Set("Authorization", "Bearer "+peer.APIToken)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			failCount++
+			s.logger.Warn("cluster cache flush request failed", "peer", peer.Name, "error", err)
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			okCount++
+		} else {
+			failCount++
+			s.logger.Warn("cluster cache flush returned non-2xx", "peer", peer.Name, "status", resp.StatusCode)
+		}
+	}
+
+	return okCount, failCount
+}
+
 // handleCacheFlush handles POST /api/cache/flush.
 func (s *AdminServer) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -200,8 +269,22 @@ func (s *AdminServer) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 
 	s.cache.Flush()
 	s.logger.Info("cache flushed via admin API")
+	fromPeer := r.Header.Get(clusterFanoutHeader) == "1"
+	fanoutOK, fanoutFailed := 0, 0
+	if !fromPeer && s.config.Cluster.Enabled && s.config.Cluster.Actions.FanoutCacheFlush {
+		fanoutOK, fanoutFailed = s.fanoutCacheFlush()
+		s.logger.Info("cluster cache flush fanout completed", "ok", fanoutOK, "failed", fanoutFailed)
+	}
 
-	jsonResponse(w, http.StatusOK, map[string]string{"status": "flushed"})
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"status": "flushed",
+		"cluster_fanout": map[string]interface{}{
+			"attempted": fanoutOK + fanoutFailed,
+			"ok":        fanoutOK,
+			"failed":    fanoutFailed,
+			"skipped":   fromPeer || !s.config.Cluster.Enabled || !s.config.Cluster.Actions.FanoutCacheFlush,
+		},
+	})
 }
 
 // handleCacheDelete handles DELETE /api/cache/entry?name=X&type=A.

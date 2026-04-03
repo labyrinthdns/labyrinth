@@ -52,7 +52,7 @@ echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf`}</code></pre>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Use an alternative port
 server:
-  port: 5353
+  listen_addr: "0.0.0.0:5353"
 
 # Then configure macOS to use it:
 sudo networksetup -setdnsservers "Wi-Fi" 127.0.0.1`}</code></pre>
@@ -129,8 +129,8 @@ kill -USR2 $(cat /var/run/labyrinth.pid)`}</code></pre>
       </p>
 
       <ul className={ul}>
-        <li><code className={ic}>max_entries_per_shard</code> set to 0 or very low</li>
-        <li>Cache is being evicted due to size limits (increase <code className={ic}>max_entries_per_shard</code>)</li>
+        <li><code className={ic}>cache.max_entries</code> set to 0 or very low</li>
+        <li>Cache is being evicted due to size limits (increase <code className={ic}>cache.max_entries</code>)</li>
         <li>Upstream responses have very low TTLs (check <code className={ic}>cache.min_ttl</code>)</li>
       </ul>
 
@@ -141,7 +141,7 @@ kill -USR2 $(cat /var/run/labyrinth.pid)`}</code></pre>
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# 1. Verify the web server is running
-curl -v http://localhost:9153/health
+curl -v http://localhost:9153/api/system/health
 # Should return {"status":"ok"}
 
 # 2. Check if web is enabled in config
@@ -190,7 +190,7 @@ sysctl -w net.netfilter.nf_conntrack_max=1048576`}</code></pre>
       </p>
 
       <ul className={ul}>
-        <li>Increase <code className={ic}>resolver.query_timeout</code> if the upstream is slow but reachable</li>
+        <li>Increase <code className={ic}>resolver.upstream_timeout</code> if the upstream is slow but reachable</li>
         <li>Enable <code className={ic}>cache.serve_stale</code> to serve cached answers during upstream outages</li>
         <li>Check if a firewall or IDS is dropping outbound DNS</li>
         <li>Ensure conntrack table is not exhausted (see above)</li>
@@ -204,7 +204,7 @@ curl -s http://localhost:9153/api/stats -H "Authorization: Bearer $TOKEN" | jq '
 # If memory_alloc_mb is much higher than expected:
 # 1. Reduce cache size
 cache:
-  max_entries_per_shard: 5000    # reduce from default 10000
+  max_entries: 50000
 
 # 2. Set Go memory limit
 GOMEMLIMIT=2GiB labyrinth --config config.yaml

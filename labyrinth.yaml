@@ -48,6 +48,14 @@ logging:
 web:
   enabled: true
   addr: "127.0.0.1:9153"
+  # DNS-over-HTTPS over HTTP/2 (and HTTP/1.1 for compatibility)
+  doh_enabled: false
+  # DNS-over-HTTPS over HTTP/3 (QUIC). Requires web.tls_enabled + cert/key.
+  doh3_enabled: false
+  # Serve dashboard/API over HTTPS directly
+  tls_enabled: false
+  # tls_cert_file: "/etc/labyrinth/certs/web.crt"
+  # tls_key_file: "/etc/labyrinth/certs/web.key"
   query_log_buffer: 1000
   # Maximum number of entries for top clients/domains leaderboards
   top_clients_limit: 20
@@ -68,6 +76,26 @@ blocklist:
   # custom_ip: "0.0.0.0"
   # whitelist: example.com, another.com
 
-# access_control:
-#   allow: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-#   deny:
+cluster:
+  enabled: false
+  role: standalone  # standalone, master, secondary
+  node_id: dns-1
+  # Comma-separated top-level keys/paths considered common
+  # shared_fields: access_control, blocklist, security.rate_limit
+  actions:
+    fanout_cache_flush: false
+    fanout_blocklist_refresh: false
+  sync:
+    mode: off        # off, manual_push, auto_push
+    push_on_save: false
+    pull_interval: 30s
+  # peers:
+  #   dns-2:
+  #     enabled: true
+  #     api_base: "http://10.0.0.2:9153"
+  #     api_token: "CHANGE_ME"
+  #     sync_fields: access_control, blocklist
+
+access_control:
+  allow: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  deny:

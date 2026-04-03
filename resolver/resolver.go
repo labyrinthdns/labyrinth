@@ -61,6 +61,16 @@ type Resolver struct {
 	localZones      *LocalZoneTable
 	forwardTable    *ForwardTable
 	infraCache      *InfraCache
+
+	// activeECS holds the ECS option to include in upstream queries.
+	// Set per-query when ECS forwarding is enabled; nil otherwise.
+	activeECS *dns.ECSOption
+}
+
+// SetActiveECS sets the EDNS Client Subnet option for the next query.
+// Pass nil to clear.
+func (r *Resolver) SetActiveECS(ecs *dns.ECSOption) {
+	r.activeECS = ecs
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.

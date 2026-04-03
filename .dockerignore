@@ -11,3 +11,5 @@ web/ui/vite.config.ts
 web/ui/eslint.config.js
 web/ui/index.html
 *.md
+
+cov*.html

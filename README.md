@@ -16,7 +16,7 @@
 - **Web dashboard** — Real-time DNS monitoring, cache management, live query stream, dark/light theme
 - **Zero-config start** — Interactive setup wizard on first run, sane defaults for everything
 - **Recursive only** — Navigates root → TLD → authoritative, caches results
-- **RFC compliant** — RFC 1035, 2308, 3596, 4033-4035, 6891, 8767, 9156
+- **RFC compliant** — RFC 1035, 2308, 3596, 4033-4035, 6891, 7858, 8484, 8767, 9114, 9156
 - **DNSSEC validation** — Full signature verification (RSA, ECDSA, ED25519), trust chain from root KSK
 - **DNS blocklist** — Pi-hole style domain blocking with hosts/domain/AdBlock Plus list formats
 - **Secure** — JWT auth, bcrypt passwords, bailiwick enforcement, rate limiting, ACL
@@ -43,7 +43,7 @@ The installer downloads the latest release, installs the binary, creates a defau
 curl -sSL .../install.sh | bash -s -- --no-service
 
 # Install specific version
-curl -sSL .../install.sh | bash -s -- --version v0.3.0
+curl -sSL .../install.sh | bash -s -- --version vX.Y.Z
 
 # Uninstall
 curl -sSL .../uninstall.sh | bash
@@ -96,6 +96,14 @@ On first run (no config file), the dashboard shows an interactive setup wizard:
 - Passwords stored as bcrypt hashes
 - Generate a password hash: `labyrinth hash <password>`
 
+### Encrypted DNS Transports (DoH / DoT / DoH3)
+
+- **DoH (RFC 8484)** is exposed on the web server at `GET/POST /dns-query` when `web.doh_enabled: true`.
+- **DoH over HTTP/3 (RFC 9114 transport)** is available when `web.doh3_enabled: true` and web TLS is enabled.
+- **DoT (RFC 7858)** listens on `server.dot_listen_addr` (default `:853`) when `server.dot_enabled: true`.
+- DoT requires `server.tls_cert_file` and `server.tls_key_file`.
+- For DoH/DoH3, run the web server with TLS (`web.tls_enabled: true`) or terminate TLS at a reverse proxy (DoH3 requires direct TLS in Labyrinth).
+
 ## Configuration
 
 Labyrinth works with zero configuration. For customization, create `labyrinth.yaml`:
@@ -105,6 +113,11 @@ server:
   listen_addr: "0.0.0.0:53"
   metrics_addr: "127.0.0.1:9153"
   tcp_timeout: 10s
+  # DNS-over-TLS (DoT, RFC 7858)
+  dot_enabled: true
+  dot_listen_addr: ":853"
+  tls_cert_file: "/etc/labyrinth/certs/dot.crt"
+  tls_key_file: "/etc/labyrinth/certs/dot.key"
 
 resolver:
   max_depth: 30
@@ -135,6 +148,11 @@ logging:
 web:
   enabled: true
   addr: "127.0.0.1:9153"
+  doh_enabled: true
+  doh3_enabled: false
+  tls_enabled: true
+  tls_cert_file: "/etc/labyrinth/certs/web.crt"
+  tls_key_file: "/etc/labyrinth/certs/web.key"
   auto_update: true
   update_check_interval: 24h
   auth:
@@ -197,7 +215,8 @@ LABYRINTH_RESOLVER_MAX_DEPTH=30
 
 ## REST API
 
-All endpoints (except auth/setup/health) require JWT authentication via `Authorization: Bearer <token>` header.
+Most `/api/*` endpoints require JWT authentication via `Authorization: Bearer <token>`.
+Public endpoints include auth/setup/system health/version, `/metrics`, and `/dns-query` (when enabled).
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -228,6 +247,7 @@ All endpoints (except auth/setup/health) require JWT authentication via `Authori
 | GET | `/api/zabbix/items` | Zabbix metric key discovery |
 | GET | `/api/zabbix/item?key=X` | Single Zabbix metric value |
 | GET | `/metrics` | Prometheus metrics |
+| GET/POST | `/dns-query` | DNS-over-HTTPS endpoint (RFC 8484) |
 
 ## Monitoring
 

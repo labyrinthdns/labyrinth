@@ -17,7 +17,7 @@ export default function Monitoring({ dark }: Props) {
       <h1 className={h1}>Monitoring</h1>
 
       <p className={p}>
-        Labyrinth provides comprehensive monitoring through Prometheus metrics, health/ready probes,
+        Labyrinth provides comprehensive monitoring through Prometheus metrics, health endpoints,
         and structured logging. This page documents every available metric and how to integrate with
         common monitoring stacks.
       </p>
@@ -47,21 +47,20 @@ scrape_configs:
         <tbody>
           {[
             ['labyrinth_queries_total', 'counter', 'Total DNS queries received, labeled by type (A, AAAA, MX, etc.)'],
-            ['labyrinth_queries_per_second', 'gauge', 'Current queries per second (1-minute rolling average)'],
             ['labyrinth_responses_total', 'counter', 'Total responses sent, labeled by rcode (NOERROR, NXDOMAIN, SERVFAIL)'],
             ['labyrinth_query_duration_seconds', 'histogram', 'Query processing duration in seconds'],
             ['labyrinth_cache_hits_total', 'counter', 'Total cache hits'],
             ['labyrinth_cache_misses_total', 'counter', 'Total cache misses'],
-            ['labyrinth_cache_entries', 'gauge', 'Current number of cache entries'],
             ['labyrinth_cache_evictions_total', 'counter', 'Total cache evictions due to shard capacity'],
-            ['labyrinth_cache_stale_served_total', 'counter', 'Total stale entries served (RFC 8767)'],
             ['labyrinth_upstream_queries_total', 'counter', 'Total queries sent to upstream servers'],
-            ['labyrinth_upstream_duration_seconds', 'histogram', 'Upstream query round-trip time'],
             ['labyrinth_upstream_errors_total', 'counter', 'Total upstream query failures'],
             ['labyrinth_rate_limited_total', 'counter', 'Total queries rate-limited'],
-            ['labyrinth_rrl_truncated_total', 'counter', 'Total responses truncated by RRL'],
-            ['labyrinth_acl_denied_total', 'counter', 'Total queries denied by ACL'],
-            ['labyrinth_coalesced_queries_total', 'counter', 'Total queries served by request coalescing'],
+            ['labyrinth_dnssec_secure_total', 'counter', 'Total DNSSEC secure validation outcomes'],
+            ['labyrinth_dnssec_insecure_total', 'counter', 'Total DNSSEC insecure validation outcomes'],
+            ['labyrinth_dnssec_bogus_total', 'counter', 'Total DNSSEC bogus validation outcomes'],
+            ['labyrinth_blocked_queries_total', 'counter', 'Total blocked queries'],
+            ['labyrinth_uptime_seconds', 'gauge', 'Resolver uptime in seconds'],
+            ['labyrinth_goroutines', 'gauge', 'Current goroutine count'],
           ].map(([metric, type, desc]) => (
             <tr key={metric} className={td}>
               <td className="py-2 pr-4"><code className="text-xs font-mono text-gold-500">{metric}</code></td>
@@ -122,24 +121,23 @@ scrape_configs:
         </p>
       </div>
 
-      <h2 className={h2}>Health & Readiness Endpoints</h2>
+      <h2 className={h2}>Health Endpoints</h2>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Health check (is the process alive?)
-curl -s http://localhost:9153/health
+curl -s http://localhost:9153/api/system/health
 # {"status":"ok"}
 
-# Readiness check (is the resolver ready for queries?)
-curl -s http://localhost:9153/ready
-# {"status":"ready","cache_initialized":true,"listener_active":true}`}</code></pre>
+# Version check
+curl -s http://localhost:9153/api/system/version
+# {"version":"...","build_time":"...","go_version":"..."}`}</code></pre>
 
       <p className={p}>
-        Use <code className={ic}>/health</code> for container liveness probes and <code className={ic}>/ready</code> for
-        readiness probes in Kubernetes or Docker health checks:
+        In web mode, use <code className={ic}>/api/system/health</code> for container liveness probes:
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Docker health check
 HEALTHCHECK --interval=30s --timeout=3s \\
-  CMD curl -f http://localhost:9153/health || exit 1`}</code></pre>
+  CMD curl -f http://localhost:9153/api/system/health || exit 1`}</code></pre>
 
       <h2 className={h2}>Structured Logging</h2>
 
@@ -151,8 +149,6 @@ HEALTHCHECK --interval=30s --timeout=3s \\
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`logging:
   level: "info"       # debug, info, warn, error
   format: "json"      # json or text
-  output: "stderr"    # stderr, stdout, or /path/to/file
-  log_queries: false  # log every DNS query (verbose)
 
 # Example JSON log output:
 {"level":"info","ts":"2025-01-15T14:32:01Z","msg":"query resolved","name":"example.com.","type":"A","rcode":"NOERROR","latency_ms":2.34,"cached":true}

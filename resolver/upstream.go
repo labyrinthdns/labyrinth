@@ -76,8 +76,19 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		}},
 	}
 	if withEDNS0 {
-		query.Additional = []dns.ResourceRecord{
-			dns.BuildOPT(4096, r.config.DNSSECEnabled),
+		// If ECS is enabled and there's an active ECS option, include it
+		var ecsOptions []dns.EDNSOption
+		if r.config.ECSEnabled && r.activeECS != nil {
+			ecsOptions = append(ecsOptions, dns.BuildECS(r.activeECS))
+		}
+		if len(ecsOptions) > 0 {
+			query.Additional = []dns.ResourceRecord{
+				dns.BuildOPTWithOptions(4096, r.config.DNSSECEnabled, ecsOptions),
+			}
+		} else {
+			query.Additional = []dns.ResourceRecord{
+				dns.BuildOPT(4096, r.config.DNSSECEnabled),
+			}
 		}
 	}
 

@@ -82,7 +82,7 @@ Read at T=3601: expired → cache miss → re-resolve`}</code></pre>
       <p className={p}>
         Labyrinth caches negative responses (NXDOMAIN and NODATA) as specified by RFC 2308. The TTL for
         negative cache entries is derived from the SOA record's minimum TTL field in the authority section,
-        capped by <code className={ic}>cache.negative_ttl</code>.
+        capped by <code className={ic}>cache.negative_max_ttl</code>.
       </p>
 
       <table className={tc}>
@@ -107,14 +107,15 @@ Read at T=3601: expired → cache miss → re-resolve`}</code></pre>
   Client query → Cache HIT (TTL > 0) → Return cached answer
 
 Stale serving flow:
-  Client query → Cache entry expired (TTL = 0, stale_ttl > 0)
+  Client query → Cache entry expired (TTL = 0, serve_stale = true)
     ├── Return stale answer immediately (TTL set to 30s)
     └── Background goroutine re-resolves and updates cache`}</code></pre>
 
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
           <strong className="text-gold-500">Availability:</strong> Serve-stale means your DNS resolution stays
-          functional even during upstream outages. Stale entries are served for up to <code className={ic}>cache.stale_ttl</code> (default: 24 hours)
+          functional even during upstream outages. Stale responses are returned with TTL
+          <code className={ic}> cache.serve_stale_ttl </code> (default: 30 seconds)
           past their original expiration.
         </p>
       </div>
@@ -122,7 +123,7 @@ Stale serving flow:
       <h2 className={h2}>Eviction Strategy</h2>
 
       <p className={p}>
-        When a shard reaches its <code className={ic}>max_entries_per_shard</code> limit, Labyrinth uses the following
+        When cache reaches its <code className={ic}>cache.max_entries</code> limit, Labyrinth uses the following
         eviction strategy:
       </p>
 
@@ -140,20 +141,20 @@ Stale serving flow:
       </p>
 
       <table className={tc}>
-        <thead><tr className={th}><th className="text-left py-2 pr-4 font-semibold">Deployment</th><th className="text-left py-2 pr-4 font-semibold">max_entries_per_shard</th><th className="text-left py-2 pr-4 font-semibold">Total Entries</th><th className="text-left py-2 font-semibold">Est. Memory</th></tr></thead>
+        <thead><tr className={th}><th className="text-left py-2 pr-4 font-semibold">Deployment</th><th className="text-left py-2 pr-4 font-semibold">cache.max_entries</th><th className="text-left py-2 pr-4 font-semibold">Total Entries</th><th className="text-left py-2 font-semibold">Est. Memory</th></tr></thead>
         <tbody>
-          <tr className={td}><td className="py-2 pr-4">Home / small office</td><td className="py-2 pr-4">5,000</td><td className="py-2 pr-4">1.28M</td><td className="py-2">~250 MB</td></tr>
-          <tr className={td}><td className="py-2 pr-4">Medium network</td><td className="py-2 pr-4">10,000</td><td className="py-2 pr-4">2.56M</td><td className="py-2">~500 MB</td></tr>
-          <tr className={td}><td className="py-2 pr-4">Large ISP / enterprise</td><td className="py-2 pr-4">50,000</td><td className="py-2 pr-4">12.8M</td><td className="py-2">~2.5 GB</td></tr>
-          <tr className={td}><td className="py-2 pr-4">Massive deployment</td><td className="py-2 pr-4">100,000</td><td className="py-2 pr-4">25.6M</td><td className="py-2">~5 GB</td></tr>
+          <tr className={td}><td className="py-2 pr-4">Home / small office</td><td className="py-2 pr-4">25,000</td><td className="py-2 pr-4">25,000</td><td className="py-2">~5-15 MB</td></tr>
+          <tr className={td}><td className="py-2 pr-4">Medium network</td><td className="py-2 pr-4">100,000</td><td className="py-2 pr-4">100,000</td><td className="py-2">~20-60 MB</td></tr>
+          <tr className={td}><td className="py-2 pr-4">Large enterprise</td><td className="py-2 pr-4">500,000</td><td className="py-2 pr-4">500,000</td><td className="py-2">~100-300 MB</td></tr>
+          <tr className={td}><td className="py-2 pr-4">Very high volume</td><td className="py-2 pr-4">1,000,000</td><td className="py-2 pr-4">1,000,000</td><td className="py-2">~200-600 MB</td></tr>
         </tbody>
       </table>
 
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
-          <strong className="text-gold-500">Rule of thumb:</strong> Start with 10,000 entries per shard and
+          <strong className="text-gold-500">Rule of thumb:</strong> Start with <code className={ic}>cache.max_entries: 100000</code> and
           monitor the <code className={ic}>labyrinth_cache_evictions_total</code> Prometheus metric. If evictions
-          are frequent, increase the shard size.
+          are frequent, increase <code className={ic}>cache.max_entries</code>.
         </p>
       </div>
     </div>

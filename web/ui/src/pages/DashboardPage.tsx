@@ -16,6 +16,8 @@ import { api } from '@/api/client'
 import type { StatsResponse, TimeSeriesBucket, TopEntry } from '@/api/types'
 import { formatNumber, formatUptime } from '@/lib/utils'
 
+const QUERY_TYPE_COUNTERS = ['A', 'AAAA', 'MX', 'NS', 'PTR', 'SRV', 'CNAME', 'TXT'] as const
+
 const RCODE_COLORS: Record<string, string> = {
   NOERROR: '#22c55e',
   NXDOMAIN: '#eab308',
@@ -92,9 +94,16 @@ export default function DashboardPage() {
   }, [])
 
   useEffect(() => {
-    fetchData()
-    const interval = setInterval(fetchData, 5000)
-    return () => clearInterval(interval)
+    const initialFetch = setTimeout(() => {
+      void fetchData()
+    }, 0)
+    const interval = setInterval(() => {
+      void fetchData()
+    }, 5000)
+    return () => {
+      clearTimeout(initialFetch)
+      clearInterval(interval)
+    }
   }, [fetchData])
 
   // Compute total queries (guard against null/undefined)
@@ -115,6 +124,11 @@ export default function DashboardPage() {
     queries: b.queries || 0,
     cacheHits: b.cache_hits || 0,
     cacheMisses: b.cache_misses || 0,
+  }))
+
+  const queryTypeCounts = QUERY_TYPE_COUNTERS.map((type) => ({
+    type,
+    count: stats?.queries_by_type?.[type] || 0,
   }))
 
   return (
@@ -174,6 +188,28 @@ export default function DashboardPage() {
             iconColor="bg-teal-100 dark:bg-teal-900/40 text-teal-600 dark:text-teal-400"
           />
         )}
+      </div>
+
+      {/* Query Type Counters */}
+      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 shadow-sm">
+        <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-4">
+          Query Type Counters
+        </h2>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+          {queryTypeCounts.map((item) => (
+            <div
+              key={item.type}
+              className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 bg-slate-50 dark:bg-slate-900/40"
+            >
+              <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
+                {item.type}
+              </div>
+              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100 font-mono">
+                {formatNumber(item.count)}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Charts row */}

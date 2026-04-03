@@ -31,43 +31,42 @@ export default function PerformanceTuning({ dark }: Props) {
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Start with this and monitor evictions
 cache:
-  max_entries_per_shard: 10000   # 256 * 10,000 = 2.56M total entries
+  max_entries: 100000
 
 # If labyrinth_cache_evictions_total is growing fast, increase:
 cache:
-  max_entries_per_shard: 50000   # 12.8M total entries, ~2.5 GB RAM`}</code></pre>
+  max_entries: 500000`}</code></pre>
 
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
           <strong className="text-gold-500">Key metric:</strong> Watch <code className={ic}>labyrinth_cache_evictions_total</code>.
-          If this counter is growing, you are losing cached entries prematurely. Increase <code className={ic}>max_entries_per_shard</code>.
+          If this counter is growing, you are losing cached entries prematurely. Increase <code className={ic}>cache.max_entries</code>.
         </p>
       </div>
 
       <h2 className={h2}>Worker Configuration</h2>
 
       <p className={p}>
-        The <code className={ic}>server.workers</code> setting controls the number of UDP listener goroutines.
-        By default (0), Labyrinth uses <code className={ic}>GOMAXPROCS</code> workers (typically equal to the
-        number of CPU cores).
+        The <code className={ic}>server.max_udp_workers</code> setting controls maximum UDP handler concurrency.
+        The default is conservative for high-throughput setups and can be lowered on smaller systems.
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Auto (recommended for most cases)
 server:
-  workers: 0           # = number of CPU cores
+  max_udp_workers: 10000
 
 # Manual override for specific hardware
 server:
-  workers: 16          # e.g., 16-core machine with hyperthreading`}</code></pre>
+  max_udp_workers: 2000`}</code></pre>
 
       <p className={p}>
         Guidelines:
       </p>
 
       <ul className={ul}>
-        <li>For most deployments, leave at 0 (auto)</li>
-        <li>On NUMA systems, set workers equal to the number of cores on a single NUMA node</li>
-        <li>More workers does not always mean better performance &mdash; beyond the CPU core count, contention increases</li>
+        <li>Start with defaults and load test before tuning</li>
+        <li>Lower values can reduce memory pressure on small VMs</li>
+        <li>Excessively high values can increase context-switch overhead</li>
       </ul>
 
       <h2 className={h2}>OS Tuning (Linux)</h2>
