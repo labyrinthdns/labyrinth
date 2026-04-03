@@ -12,25 +12,37 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	if len(os.Args) < 2 {
 		printUsage()
-		os.Exit(1)
+		return 1
 	}
 
+	var err error
 	switch os.Args[1] {
 	case "run":
-		cmdRun(os.Args[2:])
+		err = cmdRun(os.Args[2:])
 	case "serve":
-		cmdServe(os.Args[2:])
+		err = cmdServe(os.Args[2:])
 	case "quick":
-		cmdQuick(os.Args[2:])
+		err = cmdQuick(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
+		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", os.Args[1])
 		printUsage()
-		os.Exit(1)
+		return 1
 	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func printUsage() {
@@ -96,15 +108,14 @@ func buildRunConfig(target string, qps int, durationStr string, workers int, dom
 	}, nil
 }
 
-func cmdRun(args []string) {
+func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	target, qps, duration, workers, domains, types, report, name := addRunFlags(fs)
 	fs.Parse(args)
 
 	cfg, err := buildRunConfig(*target, *qps, *duration, *workers, *domains, *types, *report, *name)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	fmt.Printf("Labyrinth DNS Benchmark - Runner Mode\n")
@@ -127,29 +138,29 @@ func cmdRun(args []string) {
 	result := RunBenchmark(cfg, onSnapshot)
 	fmt.Println()
 	PrintQuickResult(result)
+	return nil
 }
 
-func cmdServe(args []string) {
+func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", ":8080", "Listen address for coordinator web UI")
 	fs.Parse(args)
 
 	coordinator := NewCoordinator()
 	if err := coordinator.Serve(*addr); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }
 
-func cmdQuick(args []string) {
+func cmdQuick(args []string) error {
 	fs := flag.NewFlagSet("quick", flag.ExitOnError)
 	target, qps, duration, workers, domains, types, _, name := addRunFlags(fs)
 	fs.Parse(args)
 
 	cfg, err := buildRunConfig(*target, *qps, *duration, *workers, *domains, *types, "", *name)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	fmt.Printf("Labyrinth DNS Benchmark - Quick Mode\n")
@@ -169,6 +180,7 @@ func cmdQuick(args []string) {
 	result := RunBenchmark(cfg, onSnapshot)
 	fmt.Println()
 	PrintQuickResult(result)
+	return nil
 }
 
 func loadDomains(source string) ([]string, error) {

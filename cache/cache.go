@@ -11,6 +11,11 @@ import (
 
 const shardCount = 256
 
+const (
+	defaultShardMapCapacity = 512
+	negativeTTLFallback     = 60
+)
+
 // Cache is a sharded in-memory DNS cache with TTL-based expiration.
 type Cache struct {
 	shards     [shardCount]shard
@@ -36,6 +41,7 @@ type Cache struct {
 type shard struct {
 	mu      sync.RWMutex
 	entries map[cacheKey]*Entry
+	evictQ  evictionQueue
 }
 
 type cacheKey struct {
@@ -62,7 +68,7 @@ func NewCacheWithStale(maxEntries int, minTTL, maxTTL, negMaxTTL uint32, serveSt
 		metrics:    m,
 	}
 	for i := range c.shards {
-		c.shards[i].entries = make(map[cacheKey]*Entry, 512)
+		c.shards[i].resetEntries()
 	}
 	return c
 }
@@ -239,6 +245,7 @@ func (c *Cache) Store(name string, qtype uint16, class uint16, answers []dns.Res
 	s := &c.shards[idx]
 	s.mu.Lock()
 	s.entries[key] = entry
+	s.pushEvictionEntry(key, entry)
 	c.enforceMaxEntriesLocked(s)
 	s.mu.Unlock()
 }
@@ -314,7 +321,7 @@ func (c *Cache) extractNegativeTTL(authority []dns.ResourceRecord) uint32 {
 			return rr.TTL
 		}
 	}
-	return 60 // fallback: 1 minute
+	return negativeTTLFallback // fallback: 1 minute
 }
 
 func (c *Cache) clampTTL(ttl uint32) uint32 {
@@ -342,19 +349,7 @@ func (c *Cache) enforceMaxEntriesLocked(s *shard) {
 		return
 	}
 	for len(s.entries) > c.maxEntries/shardCount+1 {
-		// Evict entry closest to expiry
-		var evictKey cacheKey
-		var minRemaining uint32 = ^uint32(0)
-		found := false
-
-		for k, e := range s.entries {
-			rem := e.RemainingTTL()
-			if rem < minRemaining {
-				minRemaining = rem
-				evictKey = k
-				found = true
-			}
-		}
+		evictKey, found := s.nextEvictionKeyLocked()
 		if !found {
 			break // unreachable: loop only entered when entries exist
 		}
@@ -440,11 +435,11 @@ type ResourceRecordInfo struct {
 
 // NegativeEntryInfo holds information about a negative cache entry.
 type NegativeEntryInfo struct {
-	Name         string             `json:"name"`
-	QType        string             `json:"qtype"`
-	NegType      string             `json:"neg_type"`
-	RCODE        string             `json:"rcode"`
-	RemainingTTL uint32             `json:"remaining_ttl"`
+	Name         string               `json:"name"`
+	QType        string               `json:"qtype"`
+	NegType      string               `json:"neg_type"`
+	RCODE        string               `json:"rcode"`
+	RemainingTTL uint32               `json:"remaining_ttl"`
 	Authority    []ResourceRecordInfo `json:"authority"`
 }
 
@@ -591,6 +586,7 @@ func (c *Cache) StoreWithECS(name string, qtype uint16, class uint16, ecsPrefix 
 	s := &c.shards[idx]
 	s.mu.Lock()
 	s.entries[key] = entry
+	s.pushEvictionEntry(key, entry)
 	c.enforceMaxEntriesLocked(s)
 	s.mu.Unlock()
 }

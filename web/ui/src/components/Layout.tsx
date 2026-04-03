@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -6,6 +6,7 @@ import {
   Database,
   Shield,
   Settings,
+  Info,
   Sun,
   Moon,
   LogOut,
@@ -14,56 +15,35 @@ import {
   User,
   Menu,
   X,
-  ArrowUpCircle,
   ExternalLink,
-  Loader2,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { useTheme } from '@/hooks/useTheme'
-import { cn } from '@/lib/utils'
+import { cn, formatVersion, normalizeVersion } from '@/lib/utils'
 import { api } from '@/api/client'
-import type { UpdateInfo } from '@/api/types'
 
-const navItems = [
+const mainNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/queries', icon: Activity, label: 'Queries' },
   { to: '/cache', icon: Database, label: 'Cache' },
   { to: '/blocklist', icon: Shield, label: 'Blocklist' },
   { to: '/config', icon: Settings, label: 'Config' },
 ]
+const aboutNavItem = { to: '/about', icon: Info, label: 'About & Updates' }
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [currentVersion, setCurrentVersion] = useState('')
-  const [updating, setUpdating] = useState(false)
-  const [updateConfirm, setUpdateConfirm] = useState(false)
+  const [updateAvailable, setUpdateAvailable] = useState(false)
   const { username, logout } = useAuth()
   const { dark, toggle } = useTheme()
   const navigate = useNavigate()
 
   useEffect(() => {
-    api.checkUpdate().then(setUpdateInfo).catch(() => {})
-    api.version().then((v) => setCurrentVersion(v.version)).catch(() => {})
-    // Re-check every hour
-    const interval = setInterval(() => {
-      api.checkUpdate().then(setUpdateInfo).catch(() => {})
-    }, 60 * 60 * 1000)
-    return () => clearInterval(interval)
-  }, [])
-
-  const handleApplyUpdate = useCallback(async () => {
-    setUpdating(true)
-    try {
-      await api.applyUpdate()
-      setTimeout(() => {
-        window.location.reload()
-      }, 5000)
-    } catch {
-      setUpdating(false)
-    }
+    api.version().then((v) => setCurrentVersion(normalizeVersion(v.version))).catch(() => {})
+    api.checkUpdate().then((u) => setUpdateAvailable(Boolean(u.update_available))).catch(() => {})
   }, [])
 
   function handleLogout() {
@@ -71,9 +51,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     navigate('/login')
   }
 
+  const versionLabel = formatVersion(currentVersion)
+
   return (
     <div className="flex h-screen overflow-hidden bg-slate-100 dark:bg-slate-950">
-      {/* Mobile overlay */}
       {mobileOpen && (
         <div
           className="fixed inset-0 bg-black/50 z-40 lg:hidden"
@@ -81,7 +62,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         />
       )}
 
-      {/* Sidebar */}
       <aside
         className={cn(
           'fixed lg:static inset-y-0 left-0 z-50 flex flex-col transition-all duration-300',
@@ -92,7 +72,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
         )}
       >
-        {/* Sidebar header */}
         <div className="flex items-center justify-between h-14 px-4 border-b border-slate-200 dark:border-slate-800">
           {!collapsed && (
             <span className="font-bold text-lg text-amber-600 tracking-tight">
@@ -115,9 +94,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </div>
 
-        {/* Nav links */}
         <nav className="flex-1 py-4 space-y-1 px-2">
-          {navItems.map(({ to, icon: Icon, label }) => (
+          {mainNavItems.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}
@@ -139,47 +117,39 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        {/* Version info & links */}
-        <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800">
-          {currentVersion && (
-            !collapsed ? (
-              <p className="text-xs text-slate-400 dark:text-slate-500">
-                v{currentVersion}
-              </p>
-            ) : (
-              <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center" title={`v${currentVersion}`}>
-                v{currentVersion.split('.').slice(0, 2).join('.')}
-              </p>
-            )
-          )}
-          {!collapsed && (
-            <div className="mt-2 space-y-1">
-              <a
-                href="https://labyrinthdns.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
-              >
-                <ExternalLink size={10} />
-                Website
-              </a>
-              <a
-                href="https://github.com/labyrinthdns/labyrinth"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
-              >
-                <ExternalLink size={10} />
-                GitHub
-              </a>
-            </div>
-          )}
+        <div className="px-2 pb-3 border-t border-slate-200 dark:border-slate-800">
+          <NavLink
+            to={aboutNavItem.to}
+            onClick={() => setMobileOpen(false)}
+            className={({ isActive }) =>
+              cn(
+                'mt-3 relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                collapsed && 'justify-center',
+                isActive
+                  ? 'bg-amber-600/10 text-amber-600 dark:text-amber-500'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100',
+              )
+            }
+          >
+            <aboutNavItem.icon size={20} />
+            {!collapsed && (
+              <>
+                <span>{aboutNavItem.label}</span>
+                {updateAvailable && (
+                  <span className="ml-auto inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-900/40 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                    Update
+                  </span>
+                )}
+              </>
+            )}
+            {collapsed && updateAvailable && (
+              <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-slate-900 lg:ring-slate-50 dark:lg:ring-slate-900" />
+            )}
+          </NavLink>
         </div>
       </aside>
 
-      {/* Main area */}
       <div className="flex flex-col flex-1 min-w-0">
-        {/* Top header */}
         <header className="flex items-center justify-between h-14 px-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shrink-0">
           <div className="flex items-center gap-3">
             <button
@@ -195,7 +165,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Theme toggle */}
             <button
               onClick={toggle}
               className="flex items-center justify-center w-9 h-9 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition-colors"
@@ -204,7 +173,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               {dark ? <Sun size={18} /> : <Moon size={18} />}
             </button>
 
-            {/* User dropdown */}
             <div className="relative">
               <button
                 onClick={() => setUserMenuOpen(!userMenuOpen)}
@@ -219,14 +187,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                     className="fixed inset-0 z-30"
                     onClick={() => setUserMenuOpen(false)}
                   />
-                  <div className="absolute right-0 mt-1 w-44 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-lg z-40 py-1">
+                  <div className="absolute right-0 mt-1 w-52 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-lg z-40 py-1">
                     <div className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700">
                       Signed in as <span className="font-medium text-slate-700 dark:text-slate-200">{username}</span>
                     </div>
                     <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700">
-                      <p className="text-xs font-medium text-slate-700 dark:text-slate-200">Labyrinth {currentVersion ? `v${currentVersion}` : ''}</p>
+                      <p className="text-xs font-medium text-slate-700 dark:text-slate-200">Labyrinth {versionLabel}</p>
                       <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">Pure Go Recursive DNS Resolver</p>
-                      <div className="flex items-center gap-3 mt-1.5">
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false)
+                          navigate('/about')
+                        }}
+                        className="mt-2 w-full px-2 py-1.5 rounded-md text-left text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                      >
+                        About and Updates
+                      </button>
+                      <div className="flex items-center gap-3 mt-2">
                         <a
                           href="https://labyrinthdns.com"
                           target="_blank"
@@ -261,61 +238,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        {/* Update banner */}
-        {updateInfo?.update_available && !updating && (
-          <div className="bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 px-4 py-2.5 flex items-center justify-between gap-3 shrink-0">
-            <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-400">
-              <ArrowUpCircle size={16} />
-              <span>
-                Update available: <span className="font-semibold">v{updateInfo.latest_version}</span>
-              </span>
-              {updateInfo.release_url && (
-                <a
-                  href={updateInfo.release_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400 hover:underline"
-                >
-                  Release notes <ExternalLink size={12} />
-                </a>
-              )}
-            </div>
-            {!updateConfirm ? (
-              <button
-                onClick={() => setUpdateConfirm(true)}
-                className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded-lg text-sm font-medium transition-colors shrink-0"
-              >
-                Update Now
-              </button>
-            ) : (
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-xs text-amber-600 dark:text-amber-400">Are you sure?</span>
-                <button
-                  onClick={handleApplyUpdate}
-                  className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded-lg text-sm font-medium transition-colors"
-                >
-                  Confirm
-                </button>
-                <button
-                  onClick={() => setUpdateConfirm(false)}
-                  className="bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-3 py-1 rounded-lg text-sm font-medium hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Updating banner */}
-        {updating && (
-          <div className="bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 px-4 py-3 flex items-center gap-2 text-sm text-blue-700 dark:text-blue-400 shrink-0">
-            <Loader2 size={16} className="animate-spin" />
-            Restarting... the page will refresh automatically.
-          </div>
-        )}
-
-        {/* Page content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6">
           {children}
         </main>

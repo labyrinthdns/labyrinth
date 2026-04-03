@@ -4,12 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
-	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/blocklist"
@@ -30,7 +25,16 @@ var (
 	goVersion = "unknown"
 )
 
+const (
+	infraCleanupInterval = 10 * time.Minute
+	infraEntryMaxAge     = time.Hour
+)
+
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	// Set version info for web package
 	web.Version = version
 	web.BuildTime = buildTime
@@ -50,7 +54,7 @@ func main() {
 
 	if *showVersion {
 		printVersion()
-		os.Exit(0)
+		return 0
 	}
 
 	// Subcommands
@@ -58,15 +62,15 @@ func main() {
 		switch args[0] {
 		case "version":
 			printVersion()
-			os.Exit(0)
+			return 0
 		case "check":
 			_, err := config.Load(*configPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-				os.Exit(1)
+				return 1
 			}
 			fmt.Println("configuration is valid")
-			os.Exit(0)
+			return 0
 		case "hash":
 			if len(args) < 2 {
 				fmt.Fprintln(os.Stderr, "usage: labyrinth hash <password>")
@@ -79,21 +83,20 @@ func main() {
 				fmt.Fprintf(os.Stderr, "    auth:\n")
 				fmt.Fprintf(os.Stderr, "      username: admin\n")
 				fmt.Fprintf(os.Stderr, "      password_hash: <paste hash here>\n")
-				os.Exit(1)
+				return 1
 			}
 			hash, err := web.HashPassword(args[1])
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return 1
 			}
 			fmt.Println(hash)
-			os.Exit(0)
+			return 0
 		case "daemon":
-			handleDaemonCommand(args[1:], *configPath)
-			os.Exit(0)
+			return handleDaemonCommand(args[1:], *configPath)
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command: %s\nUsage: labyrinth [flags] [check|version|hash|daemon]\n", args[0])
-			os.Exit(1)
+			return 1
 		}
 	}
 
@@ -102,7 +105,7 @@ func main() {
 		cfg, err := config.Load(*configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "config load error in daemon mode: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 		pidFile := "/var/run/labyrinth.pid"
 		if cfg != nil && cfg.Daemon.PIDFile != "" {
@@ -111,10 +114,10 @@ func main() {
 		isDaemon, err := daemon.Daemonize(pidFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 		if !isDaemon {
-			os.Exit(0) // parent exits
+			return 0 // parent exits
 		}
 		// child continues
 	}
@@ -123,7 +126,7 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Apply CLI overrides
@@ -175,7 +178,7 @@ func main() {
 		acl, err = security.NewACL(cfg.ACL.Allow, cfg.ACL.Deny)
 		if err != nil {
 			logger.Error("failed to parse ACL", "error", err)
-			os.Exit(1)
+			return 1
 		}
 		for _, zc := range cfg.ACL.Zones {
 			if err := acl.AddZoneACL(security.ZoneACLConfig{
@@ -184,7 +187,7 @@ func main() {
 				Deny:  zc.Deny,
 			}); err != nil {
 				logger.Error("failed to parse zone ACL", "zone", zc.Zone, "error", err)
-				os.Exit(1)
+				return 1
 			}
 		}
 	}
@@ -203,7 +206,7 @@ func main() {
 		prefix, prefixErr := resolver.ParseDNS64Prefix(cfg.Resolver.DNS64Prefix)
 		if prefixErr != nil {
 			logger.Error("invalid dns64 prefix", "prefix", cfg.Resolver.DNS64Prefix, "error", prefixErr)
-			os.Exit(1)
+			return 1
 		}
 		resCfg.DNS64Prefix = prefix
 		logger.Info("DNS64 enabled", "prefix", cfg.Resolver.DNS64Prefix)
@@ -263,7 +266,7 @@ func main() {
 	}
 
 	// Infra cache cleanup (stale NS RTT entries)
-	go res.InfraCache().StartCleanup(ctx, 10*time.Minute, 1*time.Hour)
+	go res.InfraCache().StartCleanup(ctx, infraCleanupInterval, infraEntryMaxAge)
 
 	// Root hint priming
 	go func() {
@@ -280,121 +283,13 @@ func main() {
 		}
 	}()
 
-	// Start web dashboard (replaces standalone metrics server when enabled)
-	if cfg.Web.Enabled {
-		adminServer, err := web.NewAdminServer(cfg, c, m, res, logger, blocklistMgr)
-		if err != nil {
-			logger.Error("failed to create admin server", "error", err)
-			os.Exit(1)
-		}
-		adminServer.SetConfigPath(*configPath)
-
-		// Enable DoH endpoint if any DoH transport is configured.
-		if cfg.Web.DoHEnabled || cfg.Web.DoH3Enabled {
-			adminServer.SetDoHHandler(handler)
-			adminServer.SetDoHEnabled(true)
-			logger.Info("DoH endpoint enabled on web dashboard",
-				"path", "/dns-query",
-				"http", cfg.Web.DoHEnabled,
-				"http3", cfg.Web.DoH3Enabled,
-			)
-			if !cfg.Web.TLSEnabled {
-				logger.Warn("DoH is enabled without web TLS; terminate TLS at reverse proxy or enable web.tls_* settings")
-			}
-			if cfg.Web.DoH3Enabled {
-				logger.Info("DoH/HTTP3 requested; web server will advertise Alt-Svc and accept QUIC connections")
-			}
-		}
-
-		// Wire query log hook
-		handler.OnQuery = func(client, qname, qtype, rcode string, cached bool, durationMs float64) {
-			adminServer.RecordQuery(client, qname, qtype, rcode, cached, durationMs)
-		}
-
-		go func() {
-			logger.Info("web dashboard starting", "addr", cfg.Web.Addr)
-			if err := adminServer.Start(ctx); err != nil && ctx.Err() == nil {
-				logger.Error("web dashboard error", "error", err)
-			}
-		}()
-
-		// Background update checker
-		go adminServer.StartUpdateChecker(ctx)
-
-		// Start Zabbix agent if enabled
-		if cfg.Zabbix.Enabled && cfg.Zabbix.Addr != "" {
-			go func() {
-				logger.Info("zabbix agent starting", "addr", cfg.Zabbix.Addr)
-				web.StartZabbixAgent(ctx, cfg.Zabbix.Addr, m, c, logger)
-			}()
-		}
-	} else {
-		// Standalone metrics server (legacy mode)
-		go func() {
-			mux := http.NewServeMux()
-			mux.Handle("/metrics", m)
-			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-				stats := c.Stats()
-				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprintf(w, `{"status":"healthy","cache_entries":%d,"uptime":"%s"}`,
-					stats.Entries, time.Since(m.StartTime()).Round(time.Second))
-			})
-			mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-				if res.IsReady() {
-					w.Header().Set("Content-Type", "application/json")
-					fmt.Fprint(w, `{"status":"ready"}`)
-				} else {
-					w.WriteHeader(http.StatusServiceUnavailable)
-					fmt.Fprint(w, `{"status":"not ready"}`)
-				}
-			})
-			logger.Info("metrics server starting", "addr", cfg.Server.MetricsAddr)
-			if err := http.ListenAndServe(cfg.Server.MetricsAddr, mux); err != nil {
-				logger.Error("metrics server error", "error", err)
-			}
-		}()
+	if err := startHTTPServices(ctx, cfg, c, m, res, handler, logger, blocklistMgr, *configPath); err != nil {
+		return 1
 	}
 
-	// Start DNS servers
-	errCh := make(chan error, 4)
-
-	udpServer, err := server.NewUDPServer(cfg.Server.ListenAddr, handler, cfg.Server.MaxUDPWorkers, logger)
+	errCh, err := startDNSServers(ctx, cfg, handler, logger)
 	if err != nil {
-		logger.Error("failed to start UDP server", "error", err)
-		os.Exit(1)
-	}
-	go func() { errCh <- udpServer.Serve(ctx) }()
-
-	tcpServer, err := server.NewTCPServer(cfg.Server.ListenAddr, handler, cfg.Server.TCPTimeout, cfg.Server.MaxTCPConns, logger,
-		server.WithPipelineMax(cfg.Server.TCPPipelineMax),
-		server.WithIdleTimeout(cfg.Server.TCPIdleTimeout),
-	)
-	if err != nil {
-		logger.Error("failed to start TCP server", "error", err)
-		os.Exit(1)
-	}
-	go func() { errCh <- tcpServer.Serve(ctx) }()
-
-	// Start DoT server if enabled
-	if cfg.Server.DoTEnabled && cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "" {
-		dotServer, dotErr := server.NewDoTServer(
-			cfg.Server.DoTListenAddr,
-			handler,
-			cfg.Server.TLSCertFile,
-			cfg.Server.TLSKeyFile,
-			cfg.Server.TCPTimeout,
-			cfg.Server.MaxTCPConns,
-			logger,
-		)
-		if dotErr != nil {
-			logger.Error("failed to start DoT server", "error", dotErr)
-			os.Exit(1)
-		}
-		go func() { errCh <- dotServer.Serve(ctx) }()
-		logger.Info("DoT server started", "addr", cfg.Server.DoTListenAddr)
-	} else if cfg.Server.DoTEnabled {
-		logger.Error("DoT enabled but TLS certificate/key is missing", "tls_cert_file", cfg.Server.TLSCertFile, "tls_key_file", cfg.Server.TLSKeyFile)
-		os.Exit(1)
+		return 1
 	}
 
 	// Setup SIGUSR1/SIGUSR2 handlers (Unix only, no-op on Windows)
@@ -408,168 +303,5 @@ func main() {
 		"qmin", cfg.Resolver.QMinEnabled,
 	)
 
-	// Signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	for {
-		select {
-		case sig := <-sigCh:
-			switch sig {
-			case syscall.SIGINT, syscall.SIGTERM:
-				logger.Info("shutting down", "signal", sig)
-				cancel()
-				time.Sleep(cfg.Server.GracefulPeriod)
-				stats := c.Stats()
-				logger.Info("final stats", "cache_entries", stats.Entries)
-				// Clean up PID file if running as daemon
-				if *daemonMode && cfg.Daemon.PIDFile != "" {
-					daemon.RemovePID(cfg.Daemon.PIDFile)
-				}
-				os.Exit(0)
-			}
-
-		case err := <-errCh:
-			if ctx.Err() != nil {
-				continue
-			}
-			logger.Error("server error", "error", err)
-			cancel()
-			os.Exit(1)
-		}
-	}
-}
-
-func printVersion() {
-	fmt.Printf("Labyrinth %s\nPure Go Recursive DNS Resolver\nBuilt: %s\nGo: %s\nOS/Arch: %s/%s\nWebsite: https://labyrinthdns.com\nGitHub: https://github.com/labyrinthdns/labyrinth\n",
-		version, buildTime, goVersion, runtime.GOOS, runtime.GOARCH)
-}
-
-func handleDaemonCommand(args []string, configPath string) {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "config load error: %v\n", err)
-		os.Exit(1)
-	}
-	pidFile := "/var/run/labyrinth.pid"
-	if cfg != nil && cfg.Daemon.PIDFile != "" {
-		pidFile = cfg.Daemon.PIDFile
-	}
-
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: labyrinth daemon [start|stop|status]")
-		os.Exit(1)
-	}
-
-	switch args[0] {
-	case "start":
-		isDaemon, err := daemon.Daemonize(pidFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		if !isDaemon {
-			os.Exit(0)
-		}
-	case "stop":
-		if err := daemon.StopDaemon(pidFile); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-	case "status":
-		running, pid, err := daemon.StatusDaemon(pidFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "not running (no PID file)\n")
-			os.Exit(1)
-		}
-		if running {
-			fmt.Printf("running (PID %d)\n", pid)
-		} else {
-			fmt.Printf("not running (stale PID %d)\n", pid)
-			os.Exit(1)
-		}
-	default:
-		fmt.Fprintf(os.Stderr, "unknown daemon command: %s\n", args[0])
-		os.Exit(1)
-	}
-}
-
-func convertBlocklistEntries(entries []config.BlocklistEntry) []blocklist.ListEntry {
-	result := make([]blocklist.ListEntry, len(entries))
-	for i, e := range entries {
-		result[i] = blocklist.ListEntry{URL: e.URL, Format: e.Format}
-	}
-	return result
-}
-
-// buildLocalZones constructs a LocalZoneTable from config, always including the
-// default localhost zone (localhost → 127.0.0.1 / ::1).
-func buildLocalZones(cfg *config.Config, logger *slog.Logger) *resolver.LocalZoneTable {
-	var zones []resolver.LocalZone
-
-	// Default localhost zone
-	localhostZone := resolver.LocalZone{
-		Name: "localhost",
-		Type: resolver.LocalStatic,
-	}
-	defaultRecords := []string{
-		"localhost. A 127.0.0.1",
-		"localhost. AAAA ::1",
-	}
-	for _, s := range defaultRecords {
-		rec, err := resolver.ParseLocalRecord(s)
-		if err != nil {
-			logger.Error("failed to parse default local record", "record", s, "error", err)
-			continue
-		}
-		localhostZone.Records = append(localhostZone.Records, *rec)
-	}
-	zones = append(zones, localhostZone)
-
-	// Config-defined zones
-	for _, zc := range cfg.LocalZones {
-		zt, ok := resolver.ParseLocalZoneType(zc.Type)
-		if !ok {
-			logger.Warn("unknown local zone type, skipping", "zone", zc.Name, "type", zc.Type)
-			continue
-		}
-		zone := resolver.LocalZone{
-			Name: zc.Name,
-			Type: zt,
-		}
-		for _, s := range zc.Data {
-			rec, err := resolver.ParseLocalRecord(s)
-			if err != nil {
-				logger.Warn("failed to parse local record", "zone", zc.Name, "record", s, "error", err)
-				continue
-			}
-			zone.Records = append(zone.Records, *rec)
-		}
-		zones = append(zones, zone)
-	}
-
-	return resolver.NewLocalZoneTable(zones)
-}
-
-func buildForwardTable(cfg *config.Config, logger *slog.Logger) *resolver.ForwardTable {
-	var zones []resolver.ForwardZone
-
-	for _, fz := range cfg.ForwardZones {
-		zones = append(zones, resolver.ForwardZone{
-			Name:  fz.Name,
-			Addrs: fz.Addrs,
-		})
-		logger.Info("forward zone configured", "zone", fz.Name, "addrs", fz.Addrs)
-	}
-
-	for _, sz := range cfg.StubZones {
-		zones = append(zones, resolver.ForwardZone{
-			Name:   sz.Name,
-			Addrs:  sz.Addrs,
-			IsStub: true,
-		})
-		logger.Info("stub zone configured", "zone", sz.Name, "addrs", sz.Addrs)
-	}
-
-	return resolver.NewForwardTable(zones)
+	return waitForShutdown(ctx, cancel, cfg, c, *daemonMode, errCh, logger)
 }

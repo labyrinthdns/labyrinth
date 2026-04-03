@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-03
+
+### Added
+- New Web UI About page with project overview, build metadata, release links, and integrated update controls.
+- Server profile API endpoint (`/api/system/profile`) with runtime, CPU, memory, disk, network, and traffic snapshot data.
+- Dashboard server profile card with host/IP/runtime insights and resource usage bars.
+
+### Changed
+- Dashboard "Queries Over Time" visualization redesigned with smoother trend line, clearer overlays, and selectable time windows.
+- Sidebar navigation refined to include a dedicated `About & Updates` entry.
+- Application startup flow refactored by splitting large `main.go` responsibilities into focused modules.
+
+### Fixed
+- Version rendering now normalizes prefixed values (`vX.Y.Z`) to prevent duplicated prefixes like `vv0.4.1`.
+- Cache eviction behavior improved with heap-based selection to avoid linear scans on larger cache sizes.
+- Web UI footer/sidebar clutter reduced for cleaner navigation and more consistent information hierarchy.
+
 ## [0.4.1] - 2026-04-03
 
 ### Added

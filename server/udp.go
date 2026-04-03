@@ -74,6 +74,12 @@ func (s *UDPServer) Serve(ctx context.Context) error {
 }
 
 func (s *UDPServer) handleUDP(query []byte, clientAddr net.Addr) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("panic in UDP handler", "client", clientAddr, "panic", r)
+		}
+	}()
+
 	response, err := s.handler.Handle(query, clientAddr)
 	if err != nil {
 		s.logger.Debug("handler error", "client", clientAddr, "error", err)

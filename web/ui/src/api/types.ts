@@ -35,12 +35,63 @@ export interface StatsResponse {
 }
 
 export interface TimeSeriesBucket {
-  ts: string
+  ts?: string
+  timestamp?: string
   queries: number
   cache_hits: number
   cache_misses: number
   errors: number
   avg_latency_ms: number
+}
+
+export interface SystemProfileResponse {
+  hostname: string
+  network: {
+    ip_addresses: string[]
+    interfaces: {
+      name: string
+      mtu: number
+      hardware_addr?: string
+      flags?: string[]
+      addrs?: string[]
+    }[]
+  }
+  runtime: {
+    version: string
+    build_time: string
+    go_version: string
+    os: string
+    arch: string
+    cpu_cores: number
+    go_maxprocs: number
+    goroutines: number
+  }
+  cpu: {
+    process_cpu_seconds_total: number
+  }
+  memory: {
+    process_alloc_bytes: number
+    process_heap_bytes: number
+    process_sys_bytes: number
+    system_total_bytes: number
+    gc_cycles: number
+  }
+  disk: {
+    path: string
+    total_bytes: number
+    free_bytes: number
+    used_bytes: number
+    used_pct: number
+  }
+  traffic: {
+    dns_queries_total: number
+    upstream_queries_total: number
+    blocked_queries_total: number
+    rate_limited_total: number
+    last_minute_qps_avg: number
+    last_minute_qps_peak: number
+    last_minute_error_total: number
+  }
 }
 
 export interface QueryEntry {

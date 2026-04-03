@@ -10,6 +10,7 @@ import QueriesPage from '@/pages/QueriesPage'
 import CachePage from '@/pages/CachePage'
 import ConfigPage from '@/pages/ConfigPage'
 import BlocklistPage from '@/pages/BlocklistPage'
+import AboutPage from '@/pages/AboutPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = getToken()
@@ -132,6 +133,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <ConfigPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/about"
+            element={
+              <ProtectedRoute>
+                <AboutPage />
               </ProtectedRoute>
             }
           />

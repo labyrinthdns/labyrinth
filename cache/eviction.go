@@ -47,7 +47,7 @@ func (c *Cache) Flush() {
 	for i := range c.shards {
 		s := &c.shards[i]
 		s.mu.Lock()
-		s.entries = make(map[cacheKey]*Entry, 512)
+		s.resetEntries()
 		s.mu.Unlock()
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/internal/pool"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
 	"github.com/labyrinthdns/labyrinth/security"
@@ -315,7 +316,9 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 					staleResp, parseErr := dns.Unpack(resp)
 					if parseErr == nil {
 						addEDEToResponse(staleResp, dns.EDECodeStaleAnswer, "serve-stale")
-						buf := make([]byte, 4096)
+						bufPtr := pool.GetBuffer()
+						defer pool.PutBuffer(bufPtr)
+						buf := *bufPtr
 						if packed, packErr := dns.Pack(staleResp, buf); packErr == nil {
 							resp = packed
 						}
@@ -414,7 +417,9 @@ func (h *MainHandler) buildError(query []byte, rcode uint8) ([]byte, error) {
 		return buf, nil
 	}
 
-	buf := make([]byte, 4096)
+	bufPtr := pool.GetBuffer()
+	defer pool.PutBuffer(bufPtr)
+	buf := *bufPtr
 	copy(buf, query[:12])
 
 	// Set flags: QR=1, RA=1, RCODE
@@ -483,8 +488,12 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry)
 		resp.Additional = append(resp.Additional, dns.BuildOPT(4096, query.EDNS0.DOFlag))
 	}
 
-	buf := make([]byte, 4096)
-	return dns.Pack(resp, buf)
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
+	packed, err := dns.Pack(resp, buf)
+	// Return buffer to pool regardless of result
+	pool.PutBuffer(bufPtr)
+	return packed, err
 }
 
 // buildMinimalANYResponse returns a synthetic HINFO response per RFC 8482,
@@ -523,8 +532,11 @@ func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question
 		resp.Additional = append(resp.Additional, dns.BuildOPT(4096, query.EDNS0.DOFlag))
 	}
 
-	buf := make([]byte, 4096)
-	return dns.Pack(resp, buf)
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
+	packed, err := dns.Pack(resp, buf)
+	pool.PutBuffer(bufPtr)
+	return packed, err
 }
 
 func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.ResolveResult) ([]byte, error) {
@@ -555,8 +567,10 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 		resp.Additional = append(resp.Additional, dns.BuildOPT(4096, query.EDNS0.DOFlag))
 	}
 
-	buf := make([]byte, 4096)
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
 	packed, err := dns.Pack(resp, buf)
+	pool.PutBuffer(bufPtr)
 	if err != nil {
 		return nil, err
 	}
@@ -637,8 +651,11 @@ func (h *MainHandler) buildBlockedResponse(query *dns.Message, q dns.Question) (
 	}
 	// default: nxdomain - already set
 
-	buf := make([]byte, 4096)
-	return dns.Pack(resp, buf)
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
+	packed, err := dns.Pack(resp, buf)
+	pool.PutBuffer(bufPtr)
+	return packed, err
 }
 
 // buildErrorWithEDE creates an error response with an Extended DNS Error option.
@@ -654,8 +671,10 @@ func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint1
 		return resp, nil // fallback to plain error
 	}
 	addEDEToResponse(msg, edeCode, edeText)
-	buf := make([]byte, 4096)
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
 	packed, packErr := dns.Pack(msg, buf)
+	pool.PutBuffer(bufPtr)
 	if packErr != nil {
 		return resp, nil
 	}
@@ -709,8 +728,10 @@ func (h *MainHandler) addCookieToResponse(resp []byte, edns *dns.EDNS0, clientIP
 		msg.Additional = append(msg.Additional, dns.BuildOPTWithOptions(4096, false, []dns.EDNSOption{cookieOpt}))
 	}
 
-	buf := make([]byte, 4096)
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
 	packed, packErr := dns.Pack(msg, buf)
+	pool.PutBuffer(bufPtr)
 	if packErr != nil {
 		return resp
 	}
