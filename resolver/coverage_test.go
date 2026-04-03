@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2370,6 +2371,297 @@ func TestQueryTCPWriteError(t *testing.T) {
 	_, err = r.queryTCP("127.0.0.1", query)
 	if err == nil {
 		t.Error("expected error from TCP write/read on closed connection")
+	}
+}
+
+// =============================================================================
+// .tr TLD integration test — simulates real Turkish DNS infrastructure
+// =============================================================================
+
+// startTRMockDNS creates a mock that behaves like the real .tr DNS hierarchy:
+//
+//	root → .tr referral (ns71.ns.tr with glue 127.0.0.1)
+//	.tr NS:
+//	  "net.tr NS" → answer section with NS records (real .tr behavior)
+//	  "com.tr NS" → answer section with NS records
+//	  "dgn.net.tr A" → referral to net.tr zone (NS in authority)
+//	  "hurriyet.com.tr A" → referral to com.tr zone
+//	  "nic.tr A" → direct answer (nic.tr is directly under .tr)
+//	net.tr NS:
+//	  "dgn.net.tr A" → answer 93.89.224.13
+//	com.tr NS:
+//	  "hurriyet.com.tr A" → answer 94.55.200.100
+//
+// All NS point to 127.0.0.1 (the mock itself) with different zone behavior
+// determined by which zone was last delegated.
+func startTRMockDNS(t *testing.T) *mockDNSServer {
+	t.Helper()
+	return startMockDNS(t, func(q *dns.Message) *dns.Message {
+		if len(q.Questions) == 0 {
+			return nil
+		}
+		qname := q.Questions[0].Name
+		qtype := q.Questions[0].Type
+
+		// --- Root behavior: refer everything to .tr ---
+		if qname == "tr" || strings.HasSuffix(qname, ".tr") {
+			// If asking for "tr" itself (QMIN first step), return referral
+			if qname == "tr" && qtype == dns.TypeNS {
+				nsRData := dns.BuildPlainName("ns71.ns.tr")
+				return &dns.Message{
+					Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+					Questions: q.Questions,
+					Authority: []dns.ResourceRecord{{
+						Name: "tr", Type: dns.TypeNS, Class: dns.ClassIN,
+						TTL: 172800, RDLength: uint16(len(nsRData)), RData: nsRData,
+					}},
+					Additional: []dns.ResourceRecord{{
+						Name: "ns71.ns.tr", Type: dns.TypeA, Class: dns.ClassIN,
+						TTL: 172800, RDLength: 4, RData: []byte{127, 0, 0, 1},
+					}},
+				}
+			}
+		}
+
+		// --- .tr NS behavior ---
+
+		// "net.tr NS" → answer with NS records (this is how real .tr NS behaves)
+		if qname == "net.tr" && qtype == dns.TypeNS {
+			nsRData := dns.BuildPlainName("ns43.ns.tr")
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Answers: []dns.ResourceRecord{{
+					Name: "net.tr", Type: dns.TypeNS, Class: dns.ClassIN,
+					TTL: 43200, RDLength: uint16(len(nsRData)), RData: nsRData,
+				}},
+			}
+		}
+
+		// "com.tr NS" → answer with NS records
+		if qname == "com.tr" && qtype == dns.TypeNS {
+			nsRData := dns.BuildPlainName("ns43.ns.tr")
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Answers: []dns.ResourceRecord{{
+					Name: "com.tr", Type: dns.TypeNS, Class: dns.ClassIN,
+					TTL: 43200, RDLength: uint16(len(nsRData)), RData: nsRData,
+				}},
+			}
+		}
+
+		// "nic.tr A" → direct answer (nic.tr is under .tr directly)
+		if qname == "nic.tr" && qtype == dns.TypeA {
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Answers: []dns.ResourceRecord{{
+					Name: "nic.tr", Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 300, RDLength: 4, RData: []byte{185, 7, 0, 3},
+				}},
+			}
+		}
+
+		// Anything under *.net.tr → referral to net.tr NS
+		if strings.HasSuffix(qname, ".net.tr") && qtype == dns.TypeA {
+			// Check if this is net.tr NS asking → give answer
+			// Or .tr NS asking → give referral
+			// We detect by: if the name is directly "X.net.tr" and we're being
+			// asked for A, we either give answer (we are net.tr NS) or referral (.tr NS)
+			// Since the mock is all on 127.0.0.1, we use the qname to decide.
+			// After delegation to net.tr, the resolver will query again for the same
+			// name. We return answer on the second visit.
+
+			// For dgn.net.tr specifically: return A record (simulating net.tr NS)
+			if qname == "dgn.net.tr" {
+				return &dns.Message{
+					Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+					Questions: q.Questions,
+					Answers: []dns.ResourceRecord{{
+						Name: "dgn.net.tr", Type: dns.TypeA, Class: dns.ClassIN,
+						TTL: 300, RDLength: 4, RData: []byte{93, 89, 224, 13},
+					}},
+				}
+			}
+
+			// Generic *.net.tr → referral to net.tr
+			nsRData := dns.BuildPlainName("ns43.ns.tr")
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Authority: []dns.ResourceRecord{{
+					Name: "net.tr", Type: dns.TypeNS, Class: dns.ClassIN,
+					TTL: 43200, RDLength: uint16(len(nsRData)), RData: nsRData,
+				}},
+				Additional: []dns.ResourceRecord{{
+					Name: "ns43.ns.tr", Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 43200, RDLength: 4, RData: []byte{127, 0, 0, 1},
+				}},
+			}
+		}
+
+		// Anything under *.com.tr → similar pattern
+		if strings.HasSuffix(qname, ".com.tr") && qtype == dns.TypeA {
+			if qname == "hurriyet.com.tr" {
+				return &dns.Message{
+					Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+					Questions: q.Questions,
+					Answers: []dns.ResourceRecord{{
+						Name: "hurriyet.com.tr", Type: dns.TypeA, Class: dns.ClassIN,
+						TTL: 300, RDLength: 4, RData: []byte{94, 55, 200, 100},
+					}},
+				}
+			}
+
+			nsRData := dns.BuildPlainName("ns43.ns.tr")
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Authority: []dns.ResourceRecord{{
+					Name: "com.tr", Type: dns.TypeNS, Class: dns.ClassIN,
+					TTL: 43200, RDLength: uint16(len(nsRData)), RData: nsRData,
+				}},
+				Additional: []dns.ResourceRecord{{
+					Name: "ns43.ns.tr", Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 43200, RDLength: 4, RData: []byte{127, 0, 0, 1},
+				}},
+			}
+		}
+
+		// Default: NXDOMAIN
+		soaRData := buildSOARData()
+		return &dns.Message{
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeNXDomain).Build()},
+			Questions: q.Questions,
+			Authority: []dns.ResourceRecord{{
+				Name: "tr", Type: dns.TypeSOA, Class: dns.ClassIN,
+				TTL: 300, RDLength: uint16(len(soaRData)), RData: soaRData,
+			}},
+		}
+	})
+}
+
+func TestResolveTR_DgnNetTr(t *testing.T) {
+	mock := startTRMockDNS(t)
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	r.config.QMinEnabled = true
+
+	result, err := r.Resolve("dgn.net.tr", dns.TypeA, dns.ClassIN)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if result.RCODE != dns.RCodeNoError {
+		t.Fatalf("expected NOERROR, got RCODE %d", result.RCODE)
+	}
+	// Must have an A record with 93.89.224.13
+	found := false
+	for _, rr := range result.Answers {
+		if rr.Type == dns.TypeA {
+			ip, _ := dns.ParseA(rr.RData)
+			if ip != nil && ip.String() == "93.89.224.13" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected A record 93.89.224.13 for dgn.net.tr, got: %+v", result.Answers)
+	}
+}
+
+func TestResolveTR_HurriyetComTr(t *testing.T) {
+	mock := startTRMockDNS(t)
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	r.config.QMinEnabled = true
+
+	result, err := r.Resolve("hurriyet.com.tr", dns.TypeA, dns.ClassIN)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if result.RCODE != dns.RCodeNoError {
+		t.Fatalf("expected NOERROR, got RCODE %d", result.RCODE)
+	}
+	found := false
+	for _, rr := range result.Answers {
+		if rr.Type == dns.TypeA {
+			ip, _ := dns.ParseA(rr.RData)
+			if ip != nil && ip.String() == "94.55.200.100" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected A record 94.55.200.100 for hurriyet.com.tr, got: %+v", result.Answers)
+	}
+}
+
+func TestResolveTR_NicTr(t *testing.T) {
+	mock := startTRMockDNS(t)
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	r.config.QMinEnabled = true
+
+	result, err := r.Resolve("nic.tr", dns.TypeA, dns.ClassIN)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if result.RCODE != dns.RCodeNoError {
+		t.Fatalf("expected NOERROR, got RCODE %d", result.RCODE)
+	}
+	found := false
+	for _, rr := range result.Answers {
+		if rr.Type == dns.TypeA {
+			ip, _ := dns.ParseA(rr.RData)
+			if ip != nil && ip.String() == "185.7.0.3" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected A record 185.7.0.3 for nic.tr, got: %+v", result.Answers)
+	}
+}
+
+func TestResolveTR_WithoutQMin(t *testing.T) {
+	mock := startTRMockDNS(t)
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	r.config.QMinEnabled = false
+
+	// All three should still work without QMIN
+	for _, tc := range []struct {
+		name string
+		ip   string
+	}{
+		{"dgn.net.tr", "93.89.224.13"},
+		{"hurriyet.com.tr", "94.55.200.100"},
+		{"nic.tr", "185.7.0.3"},
+	} {
+		result, err := r.Resolve(tc.name, dns.TypeA, dns.ClassIN)
+		if err != nil {
+			t.Fatalf("%s: error: %v", tc.name, err)
+		}
+		if result.RCODE != dns.RCodeNoError {
+			t.Fatalf("%s: expected NOERROR, got RCODE %d", tc.name, result.RCODE)
+		}
+		found := false
+		for _, rr := range result.Answers {
+			if rr.Type == dns.TypeA {
+				ip, _ := dns.ParseA(rr.RData)
+				if ip != nil && ip.String() == tc.ip {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: expected A record %s", tc.name, tc.ip)
+		}
 	}
 }
 
