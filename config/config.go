@@ -14,16 +14,40 @@ var yamlParser = parseYAML
 
 // Config holds the complete application configuration.
 type Config struct {
-	Server    ServerConfig
-	Resolver  ResolverConfig
-	Cache     CacheConfig
-	Security  SecurityConfig
-	Logging   LoggingConfig
-	ACL       ACLConfig
-	Web       WebConfig
-	Daemon    DaemonConfig
-	Zabbix    ZabbixConfig
-	Blocklist BlocklistConfig
+	Server     ServerConfig
+	Resolver   ResolverConfig
+	Cache      CacheConfig
+	Security   SecurityConfig
+	Logging    LoggingConfig
+	ACL        ACLConfig
+	Web        WebConfig
+	Daemon     DaemonConfig
+	Zabbix     ZabbixConfig
+	Blocklist  BlocklistConfig
+	LocalZones   []LocalZoneConfig
+	ForwardZones []ForwardZoneConfig
+	StubZones    []StubZoneConfig
+}
+
+// ForwardZoneConfig holds a single forward zone: queries matching the zone
+// name are forwarded (RD=1) to the configured upstream addresses.
+type ForwardZoneConfig struct {
+	Name  string
+	Addrs []string
+}
+
+// StubZoneConfig holds a single stub zone: the resolver starts iterative
+// resolution (RD=0) from the configured nameserver addresses instead of roots.
+type StubZoneConfig struct {
+	Name  string
+	Addrs []string
+}
+
+// LocalZoneConfig holds a local zone's definition from the config file.
+type LocalZoneConfig struct {
+	Name string
+	Type string
+	Data []string
 }
 
 // BlocklistConfig holds blocklist filtering settings.
@@ -81,6 +105,8 @@ type ServerConfig struct {
 	MaxTCPConns    int
 	MaxUDPWorkers  int
 	GracefulPeriod time.Duration
+	TCPPipelineMax int
+	TCPIdleTimeout time.Duration
 }
 
 // ResolverConfig holds resolver settings.
@@ -189,6 +215,16 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["server.graceful_shutdown"]; ok {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Server.GracefulPeriod = d
+		}
+	}
+	if v, ok := values["server.tcp_pipeline_max"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Server.TCPPipelineMax = n
+		}
+	}
+	if v, ok := values["server.tcp_idle_timeout"]; ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Server.TCPIdleTimeout = d
 		}
 	}
 
@@ -389,6 +425,15 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["blocklist.whitelist"]; ok && v != "" {
 		cfg.Blocklist.Whitelist = parseCSVList(v)
 	}
+
+	// Local zones: parsed from "local_zones.<name>.type" and "local_zones.<name>.data"
+	cfg.LocalZones = parseLocalZones(values)
+
+	// Forward zones: parsed from "forward_zones.<name>.addrs"
+	cfg.ForwardZones = parseForwardZones(values)
+
+	// Stub zones: parsed from "stub_zones.<name>.addrs"
+	cfg.StubZones = parseStubZones(values)
 }
 
 func applyEnv(cfg *Config) {
@@ -460,6 +505,117 @@ func parseBlocklistEntries(s string) []BlocklistEntry {
 				URL:    strings.TrimSpace(parts[0]),
 				Format: strings.TrimSpace(parts[1]),
 			})
+		}
+	}
+	return result
+}
+
+// parseLocalZones extracts local zone configs from the flat YAML key map.
+// Expected keys: "local_zones.<zonename>.type" and "local_zones.<zonename>.data"
+// The data value is a comma-separated list of record strings.
+func parseLocalZones(values map[string]string) []LocalZoneConfig {
+	// Collect zone names from keys like "local_zones.localhost.type"
+	zones := make(map[string]*LocalZoneConfig)
+	const prefix = "local_zones."
+	for key, val := range values {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		rest := key[len(prefix):]
+		// rest = "<zonename>.type" or "<zonename>.data"
+		dotIdx := strings.LastIndex(rest, ".")
+		if dotIdx < 0 {
+			continue
+		}
+		zoneName := rest[:dotIdx]
+		field := rest[dotIdx+1:]
+
+		zc, ok := zones[zoneName]
+		if !ok {
+			zc = &LocalZoneConfig{Name: zoneName}
+			zones[zoneName] = zc
+		}
+		switch field {
+		case "type":
+			zc.Type = val
+		case "data":
+			if val != "" {
+				for _, item := range strings.Split(val, ",") {
+					item = strings.TrimSpace(item)
+					if item != "" {
+						zc.Data = append(zc.Data, item)
+					}
+				}
+			}
+		}
+	}
+
+	var result []LocalZoneConfig
+	for _, zc := range zones {
+		if zc.Type != "" {
+			result = append(result, *zc)
+		}
+	}
+	return result
+}
+
+// parseForwardZones extracts forward zone configs from the flat YAML key map.
+// Expected keys: "forward_zones.<zonename>.addrs" (comma-separated IPs).
+func parseForwardZones(values map[string]string) []ForwardZoneConfig {
+	return parseZoneAddrs(values, "forward_zones.")
+}
+
+// parseStubZones extracts stub zone configs from the flat YAML key map.
+// Expected keys: "stub_zones.<zonename>.addrs" (comma-separated IPs).
+func parseStubZones(values map[string]string) []StubZoneConfig {
+	zones := parseZoneAddrs(values, "stub_zones.")
+	result := make([]StubZoneConfig, len(zones))
+	for i, z := range zones {
+		result[i] = StubZoneConfig{Name: z.Name, Addrs: z.Addrs}
+	}
+	return result
+}
+
+// parseZoneAddrs is a helper that extracts zone name + addrs from keys with
+// the given prefix (e.g. "forward_zones." or "stub_zones.").
+func parseZoneAddrs(values map[string]string, prefix string) []ForwardZoneConfig {
+	zones := make(map[string]*ForwardZoneConfig)
+	for key, val := range values {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		rest := key[len(prefix):]
+		// rest = "<zonename>.addrs" or just "<zonename>"
+		dotIdx := strings.LastIndex(rest, ".")
+		if dotIdx < 0 {
+			continue
+		}
+		zoneName := rest[:dotIdx]
+		field := rest[dotIdx+1:]
+
+		if field != "addrs" {
+			continue
+		}
+
+		zc, ok := zones[zoneName]
+		if !ok {
+			zc = &ForwardZoneConfig{Name: zoneName}
+			zones[zoneName] = zc
+		}
+		if val != "" {
+			for _, item := range strings.Split(val, ",") {
+				item = strings.TrimSpace(item)
+				if item != "" {
+					zc.Addrs = append(zc.Addrs, item)
+				}
+			}
+		}
+	}
+
+	var result []ForwardZoneConfig
+	for _, zc := range zones {
+		if len(zc.Addrs) > 0 {
+			result = append(result, *zc)
 		}
 	}
 	return result
