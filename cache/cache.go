@@ -263,13 +263,12 @@ func (c *Cache) enforceMaxEntriesLocked(s *shard) {
 				found = true
 			}
 		}
-		if found {
-			delete(s.entries, evictKey)
-			if c.metrics != nil {
-				c.metrics.IncCacheEvictions("capacity")
-			}
-		} else {
-			break
+		if !found {
+			break // unreachable: loop only entered when entries exist
+		}
+		delete(s.entries, evictKey)
+		if c.metrics != nil {
+			c.metrics.IncCacheEvictions("capacity")
 		}
 	}
 }

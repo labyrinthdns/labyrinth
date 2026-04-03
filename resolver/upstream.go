@@ -32,8 +32,12 @@ func (r *Resolver) queryUpstream(nsIP string, name string, qtype uint16, qclass 
 	return nil, lastErr
 }
 
+// randTXIDFunc is the function used to generate transaction IDs.
+// Overridden in tests to simulate crypto/rand failures.
+var randTXIDFunc = randomTXID
+
 func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qclass uint16) (*dns.Message, error) {
-	txID, err := randomTXID()
+	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
 	}
