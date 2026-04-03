@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"log/slog"
 	"strings"
 
 	"github.com/labyrinthdns/labyrinth/dns"
@@ -72,4 +73,58 @@ func extractDelegation(msg *dns.Message) ([]DelegationNS, string) {
 	}
 
 	return result, zone
+}
+
+// validateReferralNS checks whether NS hostnames are plausibly related to
+// the delegated zone. This is a harden-referral-path soft check: suspicious
+// NS names are logged but not rejected, since some legitimate setups use
+// external nameservers.
+func validateReferralNS(delegations []DelegationNS, zone string, logger *slog.Logger) {
+	if logger == nil || zone == "" {
+		return
+	}
+
+	zone = strings.ToLower(strings.TrimSuffix(zone, "."))
+
+	// Build the parent hierarchy for the zone.
+	// For "example.com", hierarchy is ["example.com", "com", ""]
+	var hierarchy []string
+	parts := strings.Split(zone, ".")
+	for i := 0; i < len(parts); i++ {
+		hierarchy = append(hierarchy, strings.Join(parts[i:], "."))
+	}
+
+	for _, ns := range delegations {
+		hostname := strings.ToLower(strings.TrimSuffix(ns.Hostname, "."))
+		if hostname == "" {
+			continue
+		}
+
+		related := false
+
+		// Check if NS hostname is within the delegated zone
+		if hostname == zone || strings.HasSuffix(hostname, "."+zone) {
+			related = true
+		}
+
+		// Check if NS hostname is within any parent of the zone
+		if !related {
+			for _, parent := range hierarchy {
+				if parent == "" {
+					continue
+				}
+				if hostname == parent || strings.HasSuffix(hostname, "."+parent) {
+					related = true
+					break
+				}
+			}
+		}
+
+		if !related {
+			logger.Warn("suspicious NS in referral: NS hostname unrelated to delegated zone",
+				"zone", zone,
+				"ns_hostname", ns.Hostname,
+			)
+		}
+	}
 }

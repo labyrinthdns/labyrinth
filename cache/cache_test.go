@@ -535,10 +535,10 @@ func TestPrefetchTriggersNearExpiry(t *testing.T) {
 		prefetched.Store(name, true)
 	})
 
-	// Store with TTL=10 so threshold is 1 second (10/10=1)
+	// Store with TTL=100 so threshold is 10 seconds (100/10=10)
 	answers := []dns.ResourceRecord{{
 		Name: "prefetch.com", Type: dns.TypeA, Class: dns.ClassIN,
-		TTL: 10, RDLength: 4, RData: []byte{1, 2, 3, 4},
+		TTL: 100, RDLength: 4, RData: []byte{1, 2, 3, 4},
 	}}
 	c.Store("prefetch.com", dns.TypeA, dns.ClassIN, answers, nil)
 
@@ -549,8 +549,12 @@ func TestPrefetchTriggersNearExpiry(t *testing.T) {
 		t.Error("prefetch should not trigger when TTL is high")
 	}
 
-	// Wait until remaining TTL drops below 10% (< 1 second = wait ~9.5s)
-	// For testing, use a short TTL entry instead
+	// For testing near-expiry, use a separate cache with minTTL=1 and a
+	// short-lived entry. TTL=20, threshold=20/10=2. After 19s remaining=1
+	// which is < 2 → prefetch triggers. But 19s is too long for a test.
+	//
+	// Instead, directly construct an entry with OrigTTL large but InsertedAt
+	// in the past so remaining is small.
 	c2 := NewCache(1000, 1, 86400, 3600, m)
 	c2.SetPrefetchEnabled(true)
 
@@ -559,26 +563,31 @@ func TestPrefetchTriggersNearExpiry(t *testing.T) {
 		prefetched2.Store(name, true)
 	})
 
-	// TTL=3, threshold=0 (3/10=0, clamped to 1), so prefetch fires when remaining < 1s
-	shortAnswers := []dns.ResourceRecord{{
-		Name: "short.com", Type: dns.TypeA, Class: dns.ClassIN,
-		TTL: 3, RDLength: 4, RData: []byte{1, 2, 3, 4},
-	}}
-	c2.Store("short.com", dns.TypeA, dns.ClassIN, shortAnswers, nil)
-
-	// Wait 2.5 seconds so remaining is ~0.5s (< threshold of 1)
-	time.Sleep(2500 * time.Millisecond)
-
-	entry, ok := c2.Get("short.com", dns.TypeA, dns.ClassIN)
-	if !ok {
-		t.Fatal("expected cache hit")
+	// Manually inject an entry that is near expiry: OrigTTL=100, inserted 99s ago → remaining=1, threshold=10
+	nearExpiryEntry := &Entry{
+		Records: []dns.ResourceRecord{{
+			Name: "near.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 100, RDLength: 4, RData: []byte{1, 2, 3, 4},
+		}},
+		InsertedAt: time.Now().Add(-99 * time.Second),
+		OrigTTL:    100,
 	}
-	_ = entry
+	name := "near.com"
+	idx := c2.shardIndex(name)
+	s := &c2.shards[idx]
+	s.mu.Lock()
+	s.entries[cacheKey{name: name, qtype: dns.TypeA, class: dns.ClassIN}] = nearExpiryEntry
+	s.mu.Unlock()
+
+	_, ok := c2.Get("near.com", dns.TypeA, dns.ClassIN)
+	if !ok {
+		t.Fatal("expected cache hit for near-expiry entry")
+	}
 
 	// Give the async prefetch goroutine time to execute
 	time.Sleep(100 * time.Millisecond)
 
-	if _, ok := prefetched2.Load("short.com"); !ok {
+	if _, ok := prefetched2.Load("near.com"); !ok {
 		t.Error("prefetch should have been triggered near expiry")
 	}
 }
@@ -596,14 +605,21 @@ func TestPrefetchOnlyTriggersOnce(t *testing.T) {
 		mu.Unlock()
 	})
 
-	answers := []dns.ResourceRecord{{
-		Name: "once.com", Type: dns.TypeA, Class: dns.ClassIN,
-		TTL: 3, RDLength: 4, RData: []byte{1, 2, 3, 4},
-	}}
-	c.Store("once.com", dns.TypeA, dns.ClassIN, answers, nil)
-
-	// Wait until near expiry
-	time.Sleep(2500 * time.Millisecond)
+	// Manually inject near-expiry entry: OrigTTL=100, inserted 99s ago → remaining=1, threshold=10
+	nearExpiryEntry := &Entry{
+		Records: []dns.ResourceRecord{{
+			Name: "once.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 100, RDLength: 4, RData: []byte{1, 2, 3, 4},
+		}},
+		InsertedAt: time.Now().Add(-99 * time.Second),
+		OrigTTL:    100,
+	}
+	name := "once.com"
+	idx := c.shardIndex(name)
+	s := &c.shards[idx]
+	s.mu.Lock()
+	s.entries[cacheKey{name: name, qtype: dns.TypeA, class: dns.ClassIN}] = nearExpiryEntry
+	s.mu.Unlock()
 
 	// Multiple Gets should only trigger prefetch once
 	for i := 0; i < 5; i++ {
@@ -629,17 +645,100 @@ func TestPrefetchDisabled(t *testing.T) {
 		triggered = true
 	})
 
-	answers := []dns.ResourceRecord{{
-		Name: "noprefetch.com", Type: dns.TypeA, Class: dns.ClassIN,
-		TTL: 3, RDLength: 4, RData: []byte{1, 2, 3, 4},
-	}}
-	c.Store("noprefetch.com", dns.TypeA, dns.ClassIN, answers, nil)
+	// Manually inject near-expiry entry
+	nearExpiryEntry := &Entry{
+		Records: []dns.ResourceRecord{{
+			Name: "noprefetch.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 100, RDLength: 4, RData: []byte{1, 2, 3, 4},
+		}},
+		InsertedAt: time.Now().Add(-99 * time.Second),
+		OrigTTL:    100,
+	}
+	name := "noprefetch.com"
+	idx := c.shardIndex(name)
+	s := &c.shards[idx]
+	s.mu.Lock()
+	s.entries[cacheKey{name: name, qtype: dns.TypeA, class: dns.ClassIN}] = nearExpiryEntry
+	s.mu.Unlock()
 
-	time.Sleep(2500 * time.Millisecond)
 	c.Get("noprefetch.com", dns.TypeA, dns.ClassIN)
 	time.Sleep(100 * time.Millisecond)
 
 	if triggered {
 		t.Error("prefetch should not trigger when disabled")
+	}
+}
+
+func TestGetWithECS(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+
+	answers := []dns.ResourceRecord{{
+		Name: "geo.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 300, RDLength: 4, RData: []byte{1, 2, 3, 4},
+	}}
+
+	// Store with ECS prefix
+	c.StoreWithECS("geo.example.com", dns.TypeA, dns.ClassIN, "192.168.1.0/24", answers, nil)
+
+	// Get with matching ECS prefix
+	entry, ok := c.GetWithECS("geo.example.com", dns.TypeA, dns.ClassIN, "192.168.1.0/24")
+	if !ok {
+		t.Fatal("expected ECS cache hit")
+	}
+	if len(entry.Records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(entry.Records))
+	}
+
+	// Get with different ECS prefix should miss
+	_, ok = c.GetWithECS("geo.example.com", dns.TypeA, dns.ClassIN, "10.0.0.0/24")
+	if ok {
+		t.Error("expected ECS cache miss for different prefix")
+	}
+
+	// Get without ECS should miss (different key)
+	_, ok = c.Get("geo.example.com", dns.TypeA, dns.ClassIN)
+	if ok {
+		t.Error("expected cache miss without ECS prefix")
+	}
+}
+
+func TestStoreWithECS_EmptyPrefix(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+
+	answers := []dns.ResourceRecord{{
+		Name: "noecs.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 300, RDLength: 4, RData: []byte{5, 6, 7, 8},
+	}}
+
+	// Store with empty ECS prefix should use normal cache
+	c.StoreWithECS("noecs.example.com", dns.TypeA, dns.ClassIN, "", answers, nil)
+
+	// Should be retrievable via normal Get
+	_, ok := c.Get("noecs.example.com", dns.TypeA, dns.ClassIN)
+	if !ok {
+		t.Fatal("expected normal cache hit for empty ECS prefix")
+	}
+}
+
+func TestGetWithECS_EmptyPrefix(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+
+	answers := []dns.ResourceRecord{{
+		Name: "normal.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 300, RDLength: 4, RData: []byte{9, 10, 11, 12},
+	}}
+
+	c.Store("normal.example.com", dns.TypeA, dns.ClassIN, answers, nil)
+
+	// GetWithECS with empty prefix should behave like Get
+	entry, ok := c.GetWithECS("normal.example.com", dns.TypeA, dns.ClassIN, "")
+	if !ok {
+		t.Fatal("expected cache hit with empty ECS prefix")
+	}
+	if len(entry.Records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(entry.Records))
 	}
 }
