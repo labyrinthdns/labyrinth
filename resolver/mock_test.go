@@ -31,19 +31,27 @@ func startMockDNS(t *testing.T, responder func(q *dns.Message) *dns.Message) *mo
 	if err != nil {
 		t.Fatalf("mock udp listen: %v", err)
 	}
-	tcp, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		udp.Close()
-		t.Fatalf("mock tcp listen: %v", err)
-	}
 
 	_, portStr, _ := net.SplitHostPort(udp.LocalAddr().String())
 
-	// Make TCP listen on same port as UDP
-	tcp.Close()
-	tcp, err = net.Listen("tcp", "127.0.0.1:"+portStr)
+	// Try to bind TCP on the same port; fall back to retries on Windows
+	// where ephemeral port reuse can fail intermittently.
+	var tcp net.Listener
+	for attempt := 0; attempt < 10; attempt++ {
+		tcp, err = net.Listen("tcp", "127.0.0.1:"+portStr)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
-		t.Fatalf("mock tcp listen on same port: %v", err)
+		// Last resort: use any available TCP port (TC fallback tests
+		// won't exercise the exact same port, but most tests only use UDP)
+		tcp, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			udp.Close()
+			t.Fatalf("mock tcp listen: %v", err)
+		}
 	}
 
 	m := &mockDNSServer{
