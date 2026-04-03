@@ -24,7 +24,7 @@ func formatRData(rr dns.ResourceRecord) string {
 		if err == nil {
 			return ip.String()
 		}
-	case dns.TypeNS, dns.TypeCNAME, dns.TypePTR:
+	case dns.TypeNS, dns.TypeCNAME, dns.TypePTR, dns.TypeDNAME:
 		name, _, err := dns.DecodeName(rr.RData, 0)
 		if err == nil {
 			return name
@@ -66,6 +66,7 @@ var stringToType = map[string]uint16{
 	"TXT":   dns.TypeTXT,
 	"AAAA":  dns.TypeAAAA,
 	"SRV":   dns.TypeSRV,
+	"DNAME": dns.TypeDNAME,
 }
 
 // handleCacheStats handles GET /api/cache/stats.

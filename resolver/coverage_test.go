@@ -2665,3 +2665,167 @@ func TestResolveTR_WithoutQMin(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Reverse DNS (PTR) integration test
+// =============================================================================
+
+func startRDNSMockDNS(t *testing.T) *mockDNSServer {
+	t.Helper()
+	return startMockDNS(t, func(q *dns.Message) *dns.Message {
+		if len(q.Questions) == 0 {
+			return nil
+		}
+		qname := q.Questions[0].Name
+		qtype := q.Questions[0].Type
+
+		// Root → arpa referral
+		if qname == "arpa" && qtype == dns.TypeNS {
+			nsRData := dns.BuildPlainName("a.ns.arpa")
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Authority: []dns.ResourceRecord{{
+					Name: "arpa", Type: dns.TypeNS, Class: dns.ClassIN,
+					TTL: 172800, RDLength: uint16(len(nsRData)), RData: nsRData,
+				}},
+				Additional: []dns.ResourceRecord{{
+					Name: "a.ns.arpa", Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 172800, RDLength: 4, RData: []byte{127, 0, 0, 1},
+				}},
+			}
+		}
+
+		// arpa → in-addr.arpa referral
+		if qname == "in-addr.arpa" && qtype == dns.TypeNS {
+			nsRData := dns.BuildPlainName("b.ns.arpa")
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Authority: []dns.ResourceRecord{{
+					Name: "in-addr.arpa", Type: dns.TypeNS, Class: dns.ClassIN,
+					TTL: 172800, RDLength: uint16(len(nsRData)), RData: nsRData,
+				}},
+				Additional: []dns.ResourceRecord{{
+					Name: "b.ns.arpa", Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 172800, RDLength: 4, RData: []byte{127, 0, 0, 1},
+				}},
+			}
+		}
+
+		// Anything under in-addr.arpa: referral down, or final PTR answer
+		if strings.HasSuffix(qname, ".in-addr.arpa") {
+			// Final PTR query
+			if qname == "1.1.20.46.in-addr.arpa" && qtype == dns.TypePTR {
+				ptrRData := dns.BuildPlainName("host-46-20-1-1.example.com")
+				return &dns.Message{
+					Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+					Questions: q.Questions,
+					Answers: []dns.ResourceRecord{{
+						Name: qname, Type: dns.TypePTR, Class: dns.ClassIN,
+						TTL: 3600, RDLength: uint16(len(ptrRData)), RData: ptrRData,
+					}},
+				}
+			}
+
+			// QMIN NS queries or full-name queries: return referral
+			// Count labels to decide delegation level
+			labels := strings.Split(qname, ".")
+			// e.g. "46.in-addr.arpa" = 3 labels → referral from in-addr.arpa
+			// e.g. "20.46.in-addr.arpa" = 4 labels → referral from 46.in-addr.arpa
+			// Final answer for 5+ labels that match the PTR name
+			nsZone := strings.Join(labels[1:], ".") // parent zone
+			nsRData := dns.BuildPlainName("ns." + nsZone)
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Authority: []dns.ResourceRecord{{
+					Name: qname, Type: dns.TypeNS, Class: dns.ClassIN,
+					TTL: 86400, RDLength: uint16(len(nsRData)), RData: nsRData,
+				}},
+				Additional: []dns.ResourceRecord{{
+					Name: "ns." + nsZone, Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 86400, RDLength: 4, RData: []byte{127, 0, 0, 1},
+				}},
+			}
+		}
+
+		// Default answer for NS resolution of mock nameservers
+		if qtype == dns.TypeA {
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+				Questions: q.Questions,
+				Answers: []dns.ResourceRecord{{
+					Name: qname, Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 300, RDLength: 4, RData: []byte{127, 0, 0, 1},
+				}},
+			}
+		}
+
+		// NXDOMAIN fallback
+		soaRData := buildSOARData()
+		return &dns.Message{
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeNXDomain).Build()},
+			Questions: q.Questions,
+			Authority: []dns.ResourceRecord{{
+				Name: "in-addr.arpa", Type: dns.TypeSOA, Class: dns.ClassIN,
+				TTL: 300, RDLength: uint16(len(soaRData)), RData: soaRData,
+			}},
+		}
+	})
+}
+
+func TestResolveReverseDNS_WithQMin(t *testing.T) {
+	mock := startRDNSMockDNS(t)
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	r.config.QMinEnabled = true
+
+	result, err := r.Resolve("1.1.20.46.in-addr.arpa", dns.TypePTR, dns.ClassIN)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if result.RCODE != dns.RCodeNoError {
+		t.Fatalf("expected NOERROR, got RCODE %d", result.RCODE)
+	}
+
+	found := false
+	for _, rr := range result.Answers {
+		if rr.Type == dns.TypePTR {
+			name, _, err := dns.DecodeName(rr.RData, 0)
+			if err == nil && name == "host-46-20-1-1.example.com" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected PTR host-46-20-1-1.example.com, got: %+v", result.Answers)
+	}
+}
+
+func TestResolveReverseDNS_WithoutQMin(t *testing.T) {
+	mock := startRDNSMockDNS(t)
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	r.config.QMinEnabled = false
+
+	result, err := r.Resolve("1.1.20.46.in-addr.arpa", dns.TypePTR, dns.ClassIN)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if result.RCODE != dns.RCodeNoError {
+		t.Fatalf("expected NOERROR, got RCODE %d", result.RCODE)
+	}
+
+	found := false
+	for _, rr := range result.Answers {
+		if rr.Type == dns.TypePTR {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected PTR record, got: %+v", result.Answers)
+	}
+}
+

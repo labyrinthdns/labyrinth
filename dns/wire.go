@@ -242,7 +242,7 @@ func packRData(w *wireWriter, rr ResourceRecord) error {
 	}
 
 	switch rr.Type {
-	case TypeNS, TypeCNAME, TypePTR:
+	case TypeNS, TypeCNAME, TypePTR, TypeDNAME:
 		// Single domain name — decompress from RData, re-encode with compression
 		name, _, nameErr := DecodeName(rr.RData, 0)
 		if nameErr != nil {

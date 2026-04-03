@@ -44,6 +44,12 @@ func ParsePTR(msg []byte, rdataOffset int) (string, error) {
 	return name, err
 }
 
+// ParseDNAME extracts the delegation name from DNAME record RDATA (RFC 6672).
+func ParseDNAME(msg []byte, rdataOffset int) (string, error) {
+	name, _, err := DecodeName(msg, rdataOffset)
+	return name, err
+}
+
 // SOARecord holds parsed SOA RDATA fields.
 type SOARecord struct {
 	MName   string

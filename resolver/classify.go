@@ -11,6 +11,7 @@ type responseType int
 const (
 	responseAnswer responseType = iota
 	responseCNAME
+	responseDNAME
 	responseReferral
 	responseNXDomain
 	responseNoData
@@ -34,6 +35,7 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 	if msg.Header.ANCount > 0 {
 		hasRequestedType := false
 		hasCNAME := false
+		hasDNAME := false
 
 		for _, rr := range msg.Answers {
 			rrName := strings.ToLower(rr.Name)
@@ -43,6 +45,10 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 			if rrName == qname && rr.Type == dns.TypeCNAME {
 				hasCNAME = true
 			}
+			// DNAME: owner is a parent of qname (RFC 6672)
+			if rr.Type == dns.TypeDNAME && strings.HasSuffix(qname, "."+rrName) {
+				hasDNAME = true
+			}
 		}
 
 		if hasRequestedType {
@@ -50,6 +56,9 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 		}
 		if hasCNAME {
 			return responseCNAME
+		}
+		if hasDNAME {
+			return responseDNAME
 		}
 
 		// Answer section has records that don't match the question.

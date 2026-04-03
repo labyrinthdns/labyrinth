@@ -41,7 +41,7 @@ func UnpackRR(msg []byte, offset int) (ResourceRecord, int, error) {
 
 	// Decompress name-bearing RDATA types so stored RData is self-contained
 	switch rr.Type {
-	case TypeNS, TypeCNAME, TypePTR:
+	case TypeNS, TypeCNAME, TypePTR, TypeDNAME:
 		name, _, nameErr := DecodeName(msg, rdataStart)
 		if nameErr == nil {
 			rr.RData = encodePlainName(name)

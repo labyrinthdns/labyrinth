@@ -100,7 +100,7 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 
 	// Validate transaction ID
 	if msg.Header.ID != txID {
-		return nil, errors.New("transaction ID mismatch")
+		return nil, errTXIDMismatch
 	}
 	// Validate question section matches what we asked
 	if err := validateResponseQuestion(msg, name, qtype, qclass); err != nil {
@@ -118,7 +118,7 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 			return nil, err
 		}
 		if msg.Header.ID != txID {
-			return nil, errors.New("transaction ID mismatch")
+			return nil, errTXIDMismatch
 		}
 		if err := validateResponseQuestion(msg, name, qtype, qclass); err != nil {
 			return nil, err

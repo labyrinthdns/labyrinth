@@ -49,6 +49,13 @@ type Resolver struct {
 	ready           bool
 	inflight        *inflight
 	dnssecValidator *dnssec.Validator
+	localZones      *LocalZoneTable
+	forwardTable    *ForwardTable
+}
+
+// SetForwardTable configures forward and stub zones for the resolver.
+func (r *Resolver) SetForwardTable(ft *ForwardTable) {
+	r.forwardTable = ft
 }
 
 // NewResolver creates a new recursive resolver.
@@ -112,10 +119,38 @@ func (r *Resolver) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.M
 	return r.queryUpstream(r.rootServers[idx].IPv4, name, qtype, qclass)
 }
 
+// SetLocalZones configures the resolver's local zone table. Queries
+// matching a local zone are answered immediately without recursion.
+func (r *Resolver) SetLocalZones(lz *LocalZoneTable) {
+	r.localZones = lz
+}
+
 // Resolve performs recursive resolution for the given query.
 // Concurrent requests for the same name+type are coalesced.
 func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveResult, error) {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
+
+	// Check local zones before going recursive.
+	if r.localZones != nil {
+		if result := r.localZones.Lookup(name, qtype, qclass); result != nil {
+			return result, nil
+		}
+	}
+
+	// Check forward/stub zones before normal recursive resolution.
+	if fz := r.forwardTable.Match(name); fz != nil {
+		if !fz.IsStub {
+			// Forward zone: send directly to configured upstreams with RD=1.
+			r.logger.Debug("forward zone match", "name", name, "zone", fz.Name)
+			return r.queryForward(fz.Addrs, name, qtype, qclass)
+		}
+		// Stub zone: start iterative resolution using configured addrs as initial NS.
+		r.logger.Debug("stub zone match", "name", name, "zone", fz.Name)
+		key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
+		return r.inflight.do(key, func() (*ResolveResult, error) {
+			return r.resolveStub(name, qtype, qclass, fz)
+		})
+	}
 
 	key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
 	return r.inflight.do(key, func() (*ResolveResult, error) {
@@ -130,14 +165,25 @@ func (r *Resolver) resolveIterative(
 	cnameDepth int,
 	visited *visitedSet,
 ) (*ResolveResult, error) {
+	return r.resolveIterativeFrom(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "")
+}
+
+func (r *Resolver) resolveIterativeFrom(
+	name string,
+	qtype uint16,
+	qclass uint16,
+	cnameDepth int,
+	visited *visitedSet,
+	initialNS []nsEntry,
+	initialZone string,
+) (*ResolveResult, error) {
 
 	if cnameDepth > r.config.MaxCNAMEDepth {
 		return nil, errors.New("CNAME chain too long")
 	}
 
-	// Start with root servers
-	nameservers := toNameServerList(r.rootServers)
-	var currentZone string
+	nameservers := initialNS
+	currentZone := initialZone
 
 	for depth := 0; depth < r.config.MaxDepth; depth++ {
 		// Pick a nameserver
@@ -254,6 +300,33 @@ func (r *Resolver) resolveIterative(
 
 			cnameRRs := extractCNAMERecords(response, name)
 			result.Answers = append(cnameRRs, result.Answers...)
+			return result, nil
+
+		case responseDNAME:
+			// RFC 6672: DNAME redirection — substitute the DNAME owner with target
+			target := extractDNAMETarget(response, name)
+			if target == "" {
+				return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+			}
+
+			if visited.HasCNAME(target) {
+				return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+			}
+			visited.AddCNAME(target)
+
+			result, err := r.resolveIterative(target, qtype, qclass, cnameDepth+1, visited)
+			if err != nil {
+				return nil, err
+			}
+
+			// Prepend DNAME + synthesized CNAME records
+			var dnameRRs []dns.ResourceRecord
+			for _, rr := range response.Answers {
+				if rr.Type == dns.TypeDNAME || rr.Type == dns.TypeCNAME {
+					dnameRRs = append(dnameRRs, rr)
+				}
+			}
+			result.Answers = append(dnameRRs, result.Answers...)
 			return result, nil
 
 		case responseReferral:
