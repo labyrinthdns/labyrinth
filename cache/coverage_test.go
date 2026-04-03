@@ -64,8 +64,8 @@ func TestNegativeEntriesBasic(t *testing.T) {
 	if e.Name != "nxtest.example.com" {
 		t.Errorf("expected name 'nxtest.example.com', got '%s'", e.Name)
 	}
-	if e.QType != "A" {
-		t.Errorf("expected qtype 'A', got '%s'", e.QType)
+	if e.QType != "*" {
+		t.Errorf("expected qtype '*' (NXDOMAIN covers all types), got '%s'", e.QType)
 	}
 	if e.NegType != "NXDOMAIN" {
 		t.Errorf("expected neg_type 'NXDOMAIN', got '%s'", e.NegType)
@@ -197,9 +197,10 @@ func TestNegativeEntriesSkipsExpired(t *testing.T) {
 	// Store a negative entry, then directly manipulate it to be expired
 	c.StoreNegative("expired-neg.com", dns.TypeA, dns.ClassIN, NegNXDomain, dns.RCodeNXDomain, nil)
 
-	// Directly set InsertedAt far in the past to force expiry
+	// Directly set InsertedAt far in the past to force expiry.
+	// NXDOMAIN is stored with sentinel qtype=0 (RFC 2308).
 	name := "expired-neg.com"
-	key := cacheKey{name: name, qtype: dns.TypeA, class: dns.ClassIN}
+	key := cacheKey{name: name, qtype: 0, class: dns.ClassIN}
 	idx := c.shardIndex(name)
 	s := &c.shards[idx]
 	s.mu.Lock()
@@ -255,8 +256,8 @@ func TestNegativeEntriesUnknownQType(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := NewCache(1000, 5, 86400, 3600, m)
 
-	// Use a qtype that's not in TypeToString (e.g., 999)
-	c.StoreNegative("unknown-qtype.com", 999, dns.ClassIN, NegNXDomain, dns.RCodeNXDomain, nil)
+	// Use NODATA (type-specific) with a qtype not in TypeToString (e.g., 999)
+	c.StoreNegative("unknown-qtype.com", 999, dns.ClassIN, NegNoData, dns.RCodeNoError, nil)
 
 	entries := c.NegativeEntries(10)
 	if len(entries) != 1 {

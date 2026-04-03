@@ -82,7 +82,16 @@ func (c *Cache) Get(name string, qtype uint16, class uint16) (*Entry, bool) {
 	s.mu.RUnlock()
 
 	if !ok {
-		return nil, false
+		// RFC 2308 §3: NXDOMAIN covers all types — check sentinel (qtype=0)
+		if qtype != 0 {
+			nxKey := cacheKey{name: name, qtype: 0, class: class}
+			s.mu.RLock()
+			entry, ok = s.entries[nxKey]
+			s.mu.RUnlock()
+		}
+		if !ok {
+			return nil, false
+		}
 	}
 
 	remaining := entry.RemainingTTL()
@@ -158,9 +167,15 @@ func (c *Cache) Store(name string, qtype uint16, class uint16, answers []dns.Res
 }
 
 // StoreNegative caches a negative DNS result (NXDOMAIN/NODATA).
+// NXDOMAIN applies to the entire name (RFC 2308 §3) so it is stored
+// with qtype=0 as a sentinel. NODATA is type-specific.
 func (c *Cache) StoreNegative(name string, qtype uint16, class uint16, negType NegativeType, rcode uint8, authority []dns.ResourceRecord) {
 	name = strings.ToLower(name)
-	key := cacheKey{name: name, qtype: qtype, class: class}
+	storeType := qtype
+	if negType == NegNXDomain {
+		storeType = 0 // sentinel: NXDOMAIN covers all types for this name
+	}
+	key := cacheKey{name: name, qtype: storeType, class: class}
 	idx := c.shardIndex(name)
 
 	ttl := c.extractNegativeTTL(authority)
@@ -387,7 +402,11 @@ func (c *Cache) NegativeEntries(limit int) []NegativeEntryInfo {
 
 			qtypeStr := dns.TypeToString[key.qtype]
 			if qtypeStr == "" {
-				qtypeStr = "UNKNOWN"
+				if key.qtype == 0 && entry.NegType == NegNXDomain {
+					qtypeStr = "*" // NXDOMAIN covers all types (RFC 2308)
+				} else {
+					qtypeStr = "UNKNOWN"
+				}
 			}
 
 			auth := make([]ResourceRecordInfo, 0, len(entry.Authority))
