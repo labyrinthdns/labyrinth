@@ -41,6 +41,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Cache.StaleTTL != 30 {
 		t.Errorf("stale ttl: expected 30, got %d", cfg.Cache.StaleTTL)
 	}
+	if cfg.Web.DoH3Enabled {
+		t.Error("web.doh3_enabled should be disabled by default")
+	}
 }
 
 func TestParseYAML(t *testing.T) {
@@ -69,16 +72,16 @@ logging:
 	}
 
 	tests := map[string]string{
-		"server.listen_addr":        "0.0.0.0:5353",
-		"server.metrics_addr":       "0.0.0.0:9153",
-		"resolver.max_depth":        "20",
+		"server.listen_addr":          "0.0.0.0:5353",
+		"server.metrics_addr":         "0.0.0.0:9153",
+		"resolver.max_depth":          "20",
 		"resolver.qname_minimization": "false",
-		"cache.max_entries":          "50000",
-		"cache.min_ttl":             "10",
-		"cache.serve_stale":         "true",
-		"cache.serve_stale_ttl":     "60",
-		"logging.level":             "debug",
-		"logging.format":            "text",
+		"cache.max_entries":           "50000",
+		"cache.min_ttl":               "10",
+		"cache.serve_stale":           "true",
+		"cache.serve_stale_ttl":       "60",
+		"logging.level":               "debug",
+		"logging.format":              "text",
 	}
 
 	for key, expected := range tests {
@@ -129,18 +132,32 @@ logging:
 	}
 }
 
+func TestParseYAMLUTF8BOM(t *testing.T) {
+	yaml := "\ufeffserver:\n  listen_addr: \"127.0.0.1:5353\"\n"
+	values, err := parseYAML([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseYAML error: %v", err)
+	}
+	if v := values["server.listen_addr"]; v != "127.0.0.1:5353" {
+		t.Errorf("expected BOM-prefixed YAML to parse listen_addr, got %q", v)
+	}
+}
+
 func TestApplyYAML(t *testing.T) {
 	cfg := defaultConfig()
 	values := map[string]string{
-		"server.listen_addr":     "0.0.0.0:5353",
-		"resolver.max_depth":     "15",
+		"server.listen_addr":          "0.0.0.0:5353",
+		"server.max_tcp_conns":        "123",
+		"server.max_udp_workers":      "4096",
+		"server.graceful_period":      "9s",
+		"resolver.max_depth":          "15",
 		"resolver.qname_minimization": "false",
-		"cache.max_entries":      "200000",
-		"cache.min_ttl":         "10",
-		"cache.max_ttl":         "43200",
-		"cache.sweep_interval":  "30s",
-		"cache.serve_stale":     "true",
-		"cache.serve_stale_ttl": "45",
+		"cache.max_entries":           "200000",
+		"cache.min_ttl":               "10",
+		"cache.max_ttl":               "43200",
+		"cache.sweep_interval":        "30s",
+		"cache.serve_stale":           "true",
+		"cache.stale_ttl":             "45",
 		"security.rate_limit.enabled": "false",
 		"security.rate_limit.rate":    "100",
 		"security.rate_limit.burst":   "200",
@@ -148,12 +165,22 @@ func TestApplyYAML(t *testing.T) {
 		"security.rrl.ipv6_prefix":    "48",
 		"logging.level":               "debug",
 		"access_control.allow":        "10.0.0.0/8, 192.168.0.0/16",
+		"web.doh3_enabled":            "true",
 	}
 
 	applyYAML(cfg, values)
 
 	if cfg.Server.ListenAddr != "0.0.0.0:5353" {
 		t.Errorf("listen addr: got %q", cfg.Server.ListenAddr)
+	}
+	if cfg.Server.MaxTCPConns != 123 {
+		t.Errorf("max tcp conns: got %d", cfg.Server.MaxTCPConns)
+	}
+	if cfg.Server.MaxUDPWorkers != 4096 {
+		t.Errorf("max udp workers: got %d", cfg.Server.MaxUDPWorkers)
+	}
+	if cfg.Server.GracefulPeriod != 9*time.Second {
+		t.Errorf("graceful period: got %v", cfg.Server.GracefulPeriod)
 	}
 	if cfg.Resolver.MaxDepth != 15 {
 		t.Errorf("max depth: got %d", cfg.Resolver.MaxDepth)
@@ -196,6 +223,9 @@ func TestApplyYAML(t *testing.T) {
 	}
 	if cfg.Logging.Level != "debug" {
 		t.Errorf("log level: got %q", cfg.Logging.Level)
+	}
+	if !cfg.Web.DoH3Enabled {
+		t.Error("web.doh3_enabled should be true")
 	}
 	if len(cfg.ACL.Allow) != 2 {
 		t.Fatalf("acl allow: expected 2, got %d", len(cfg.ACL.Allow))
@@ -249,6 +279,68 @@ func TestValidateInvalid(t *testing.T) {
 	cfg.Security.RateLimit.Rate = 0
 	if err := validate(cfg); err == nil {
 		t.Error("rate=0 with enabled=true should fail validation")
+	}
+
+	cfg = defaultConfig()
+	cfg.Server.DoTEnabled = true
+	cfg.Server.TLSCertFile = ""
+	cfg.Server.TLSKeyFile = ""
+	if err := validate(cfg); err == nil {
+		t.Error("dot_enabled=true without cert/key should fail validation")
+	}
+
+	cfg = defaultConfig()
+	cfg.Web.TLSEnabled = true
+	cfg.Web.TLSCertFile = ""
+	cfg.Web.TLSKeyFile = ""
+	if err := validate(cfg); err == nil {
+		t.Error("web.tls_enabled=true without cert/key should fail validation")
+	}
+
+	cfg = defaultConfig()
+	cfg.Web.DoH3Enabled = true
+	cfg.Web.TLSEnabled = false
+	if err := validate(cfg); err == nil {
+		t.Error("web.doh3_enabled=true without web.tls_enabled should fail validation")
+	}
+
+	cfg = defaultConfig()
+	cfg.Web.Enabled = false
+	cfg.Web.DoH3Enabled = true
+	cfg.Web.TLSEnabled = true
+	cfg.Web.TLSCertFile = "cert.pem"
+	cfg.Web.TLSKeyFile = "key.pem"
+	if err := validate(cfg); err == nil {
+		t.Error("web.doh3_enabled=true with web.enabled=false should fail validation")
+	}
+
+	cfg = defaultConfig()
+	cfg.Web.DoH3Enabled = true
+	cfg.Web.TLSEnabled = true
+	cfg.Web.TLSCertFile = ""
+	cfg.Web.TLSKeyFile = ""
+	if err := validate(cfg); err == nil {
+		t.Error("web.doh3_enabled=true without cert/key should fail validation")
+	}
+}
+
+func TestParse(t *testing.T) {
+	cfg, err := Parse([]byte("resolver:\n  max_depth: 25\n"))
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.Resolver.MaxDepth != 25 {
+		t.Fatalf("resolver.max_depth mismatch: got %d", cfg.Resolver.MaxDepth)
+	}
+}
+
+func TestParseValidationError(t *testing.T) {
+	_, err := Parse([]byte("resolver:\n  max_depth: 0\n"))
+	if err == nil {
+		t.Fatal("expected validation error for max_depth=0")
+	}
+	if !strings.Contains(err.Error(), "resolver.max_depth") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -359,12 +451,12 @@ security:
 	}
 
 	tests := map[string]string{
-		"security.rate_limit.enabled":            "true",
-		"security.rate_limit.rate":               "50",
-		"security.rate_limit.burst":              "100",
-		"security.rrl.enabled":                   "false",
-		"security.rrl.responses_per_second":      "10",
-		"security.rrl.ipv4_prefix":               "24",
+		"security.rate_limit.enabled":       "true",
+		"security.rate_limit.rate":          "50",
+		"security.rate_limit.burst":         "100",
+		"security.rrl.enabled":              "false",
+		"security.rrl.responses_per_second": "10",
+		"security.rrl.ipv4_prefix":          "24",
 	}
 
 	for key, expected := range tests {
@@ -528,6 +620,64 @@ func TestParseBool(t *testing.T) {
 		if parseBool(v) {
 			t.Errorf("parseBool(%q) should be false", v)
 		}
+	}
+}
+
+func TestApplyYAMLCluster(t *testing.T) {
+	cfg := defaultConfig()
+	values := map[string]string{
+		"cluster.enabled":                    "true",
+		"cluster.role":                       "master",
+		"cluster.node_id":                    "dns-1",
+		"cluster.shared_fields":              "access_control, blocklist",
+		"cluster.actions.fanout_cache_flush": "true",
+		"cluster.sync.mode":                  "manual_push",
+		"cluster.sync.push_on_save":          "true",
+		"cluster.sync.pull_interval":         "45s",
+		"cluster.peers.dns-2.enabled":        "true",
+		"cluster.peers.dns-2.api_base":       "http://10.0.0.2:9153",
+		"cluster.peers.dns-2.api_token":      "abc123",
+		"cluster.peers.dns-2.sync_fields":    "access_control,blocklist",
+	}
+
+	applyYAML(cfg, values)
+
+	if !cfg.Cluster.Enabled {
+		t.Fatal("cluster should be enabled")
+	}
+	if cfg.Cluster.Role != "master" {
+		t.Fatalf("role mismatch: %q", cfg.Cluster.Role)
+	}
+	if cfg.Cluster.NodeID != "dns-1" {
+		t.Fatalf("node id mismatch: %q", cfg.Cluster.NodeID)
+	}
+	if !cfg.Cluster.Actions.FanoutCacheFlush {
+		t.Fatal("fanout_cache_flush should be enabled")
+	}
+	if cfg.Cluster.Sync.Mode != "manual_push" {
+		t.Fatalf("sync mode mismatch: %q", cfg.Cluster.Sync.Mode)
+	}
+	if !cfg.Cluster.Sync.PushOnSave {
+		t.Fatal("sync.push_on_save should be true")
+	}
+	if cfg.Cluster.Sync.PullInterval != 45*time.Second {
+		t.Fatalf("sync.pull_interval mismatch: %v", cfg.Cluster.Sync.PullInterval)
+	}
+	if len(cfg.Cluster.Peers) != 1 {
+		t.Fatalf("expected 1 cluster peer, got %d", len(cfg.Cluster.Peers))
+	}
+	peer := cfg.Cluster.Peers[0]
+	if peer.Name != "dns-2" || peer.APIBase != "http://10.0.0.2:9153" || peer.APIToken != "abc123" {
+		t.Fatalf("peer mismatch: %+v", peer)
+	}
+}
+
+func TestValidateClusterRole(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.Role = "invalid"
+	if err := validate(cfg); err == nil {
+		t.Fatal("expected cluster.role validation error")
 	}
 }
 

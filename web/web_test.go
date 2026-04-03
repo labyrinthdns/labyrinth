@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/metrics"
+	"github.com/quic-go/quic-go/http3"
 	"nhooyr.io/websocket"
 )
 
@@ -42,7 +45,11 @@ func testAdminServer(t *testing.T) *AdminServer {
 			QueryLogBuffer: 100,
 		},
 	}
-	return NewAdminServer(cfg, c, m, nil, logger, nil)
+	srv, err := NewAdminServer(cfg, c, m, nil, logger, nil)
+	if err != nil {
+		t.Fatalf("failed to create admin server: %v", err)
+	}
+	return srv
 }
 
 func testAdminServerWithAuth(t *testing.T) (*AdminServer, string) {
@@ -67,7 +74,11 @@ func testAdminServerWithAuth(t *testing.T) (*AdminServer, string) {
 			},
 		},
 	}
-	return NewAdminServer(cfg, c, m, nil, logger, nil), password
+	srv, err := NewAdminServer(cfg, c, m, nil, logger, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv, password
 }
 
 func decodeJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]interface{} {
@@ -748,6 +759,87 @@ func TestHandleCacheFlush(t *testing.T) {
 	}
 }
 
+func TestHandleCacheFlush_FanoutToPeer(t *testing.T) {
+	srv := testAdminServer(t)
+	var called int32
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/cache/flush" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(clusterFanoutHeader) != "1" {
+			t.Fatalf("expected %s header", clusterFanoutHeader)
+		}
+		if r.Header.Get("Authorization") != "Bearer token-1" {
+			t.Fatalf("unexpected auth header: %q", r.Header.Get("Authorization"))
+		}
+		atomic.AddInt32(&called, 1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "flushed"})
+	}))
+	defer peer.Close()
+
+	srv.config.Cluster.Enabled = true
+	srv.config.Cluster.Actions.FanoutCacheFlush = true
+	srv.config.Cluster.Peers = []config.ClusterPeerConfig{
+		{
+			Name:     "dns-2",
+			Enabled:  true,
+			APIBase:  peer.URL,
+			APIToken: "token-1",
+		},
+	}
+
+	req := httptest.NewRequest("POST", "/api/cache/flush", nil)
+	w := httptest.NewRecorder()
+	srv.handleCacheFlush(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if atomic.LoadInt32(&called) != 1 {
+		t.Fatalf("expected peer to be called once, got %d", atomic.LoadInt32(&called))
+	}
+
+	body := decodeJSON(t, w)
+	fanout, ok := body["cluster_fanout"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing cluster_fanout in response: %v", body)
+	}
+	if int(fanout["ok"].(float64)) != 1 {
+		t.Fatalf("expected fanout ok=1, got %v", fanout["ok"])
+	}
+}
+
+func TestHandleCacheFlush_NoFanoutOnForwardedRequest(t *testing.T) {
+	srv := testAdminServer(t)
+	srv.config.Cluster.Enabled = true
+	srv.config.Cluster.Actions.FanoutCacheFlush = true
+	srv.config.Cluster.Peers = []config.ClusterPeerConfig{
+		{
+			Name:    "dns-2",
+			Enabled: true,
+			APIBase: "http://127.0.0.1:1", // should never be called for forwarded request
+		},
+	}
+
+	req := httptest.NewRequest("POST", "/api/cache/flush", nil)
+	req.Header.Set(clusterFanoutHeader, "1")
+	w := httptest.NewRecorder()
+	srv.handleCacheFlush(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := decodeJSON(t, w)
+	fanout, ok := body["cluster_fanout"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing cluster_fanout in response: %v", body)
+	}
+	if int(fanout["attempted"].(float64)) != 0 {
+		t.Fatalf("expected attempted=0, got %v", fanout["attempted"])
+	}
+}
+
 func TestHandleCacheFlush_MethodNotAllowed(t *testing.T) {
 	srv := testAdminServer(t)
 	req := httptest.NewRequest("GET", "/api/cache/flush", nil)
@@ -878,6 +970,136 @@ func TestHandleGetConfig_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("want 405, got %d", w.Code)
+	}
+}
+
+func TestHandleConfigRawGet(t *testing.T) {
+	srv := testAdminServer(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "labyrinth.yaml")
+	content := "resolver:\n  max_depth: 31\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	srv.SetConfigPath(path)
+
+	req := httptest.NewRequest("GET", "/api/config/raw", nil)
+	w := httptest.NewRecorder()
+	srv.handleConfigRaw(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := decodeJSON(t, w)
+	if body["path"] != path {
+		t.Fatalf("path mismatch: got %v", body["path"])
+	}
+	if body["content"] != content {
+		t.Fatalf("content mismatch: got %q", body["content"])
+	}
+}
+
+func TestHandleValidateConfig_Invalid(t *testing.T) {
+	srv := testAdminServer(t)
+	payload, _ := json.Marshal(map[string]string{
+		"content": "resolver:\n  max_depth: 0\n",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/config/validate", strings.NewReader(string(payload)))
+	w := httptest.NewRecorder()
+	srv.handleValidateConfig(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", w.Code)
+	}
+	body := decodeJSON(t, w)
+	valid, ok := body["valid"].(bool)
+	if !ok {
+		t.Fatalf("missing valid field: %v", body)
+	}
+	if valid {
+		t.Fatalf("expected valid=false, got true")
+	}
+}
+
+func TestHandleValidateConfig_RejectsPasswordHashChange(t *testing.T) {
+	srv, _ := testAdminServerWithAuth(t)
+	payload, _ := json.Marshal(map[string]string{
+		"content": "web:\n  auth:\n    username: admin\n    password_hash: changed\n",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/config/validate", strings.NewReader(string(payload)))
+	w := httptest.NewRecorder()
+	srv.handleValidateConfig(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", w.Code)
+	}
+	body := decodeJSON(t, w)
+	errText := fmt.Sprintf("%v", body["error"])
+	if !strings.Contains(strings.ToLower(errText), "change password") {
+		t.Fatalf("expected change-password guidance, got: %v", body["error"])
+	}
+}
+
+func TestHandleConfigRawPut_SavesValidatedConfig(t *testing.T) {
+	srv := testAdminServer(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "labyrinth.yaml")
+	original := "resolver:\n  max_depth: 30\n"
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("write original config: %v", err)
+	}
+	srv.SetConfigPath(path)
+
+	updated := "resolver:\n  max_depth: 42\n"
+	payload, _ := json.Marshal(map[string]string{"content": updated})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/config/raw", strings.NewReader(string(payload)))
+	w := httptest.NewRecorder()
+	srv.handleConfigRaw(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+	if string(raw) != updated {
+		t.Fatalf("file not updated.\nwant:\n%s\ngot:\n%s", updated, string(raw))
+	}
+
+	if srv.config.Resolver.MaxDepth != 42 {
+		t.Fatalf("in-memory config not updated, max_depth=%d", srv.config.Resolver.MaxDepth)
+	}
+
+	backupPath := path + ".bak"
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("expected backup file %s: %v", backupPath, err)
+	}
+}
+
+func TestHandleConfigRawPut_RejectsPasswordHashChange(t *testing.T) {
+	srv, _ := testAdminServerWithAuth(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "labyrinth.yaml")
+	original := fmt.Sprintf("web:\n  auth:\n    username: admin\n    password_hash: %s\nresolver:\n  max_depth: 30\n", srv.config.Web.Auth.PasswordHash)
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("write original config: %v", err)
+	}
+	srv.SetConfigPath(path)
+
+	updated := "web:\n  auth:\n    username: admin\n    password_hash: changed\nresolver:\n  max_depth: 30\n"
+	payload, _ := json.Marshal(map[string]string{"content": updated})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/config/raw", strings.NewReader(string(payload)))
+	w := httptest.NewRecorder()
+	srv.handleConfigRaw(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -1361,7 +1583,10 @@ func TestNewAdminServer_DefaultQueryLogBuffer(t *testing.T) {
 			QueryLogBuffer: 0,
 		},
 	}
-	srv := NewAdminServer(cfg, c, m, nil, logger, nil)
+	srv, err := NewAdminServer(cfg, c, m, nil, logger, nil)
+	if err != nil {
+		t.Fatalf("NewAdminServer failed: %v", err)
+	}
 	if srv.queryLog.capacity != 1000 {
 		t.Fatalf("want default capacity 1000, got %d", srv.queryLog.capacity)
 	}
@@ -1987,6 +2212,32 @@ func TestAdminServerStart(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Start did not return after context cancel")
+	}
+}
+
+func TestWithQUICHeadersAddsAltSvc(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h3 := &http3.Server{
+		Addr:      "127.0.0.1:443",
+		Port:      443,
+		TLSConfig: &tls.Config{NextProtos: []string{"h3"}},
+	}
+
+	called := false
+	handler := withQUICHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}), h3, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if !called {
+		t.Fatal("expected wrapped handler to be called")
+	}
+	if w.Header().Get("Alt-Svc") == "" {
+		t.Fatal("expected Alt-Svc header to be set for HTTP/3 advertisement")
 	}
 }
 

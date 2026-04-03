@@ -13,7 +13,7 @@ export function useQueryStream(maxEntries = 200) {
 
   pausedRef.current = paused
 
-  const connect = useCallback(() => {
+  const connect = useCallback(function connectImpl() {
     if (unmountedRef.current) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
@@ -27,7 +27,9 @@ export function useQueryStream(maxEntries = 200) {
       if (unmountedRef.current) return
       setConnected(false)
       // Auto-reconnect after 3 seconds
-      reconnectTimerRef.current = setTimeout(connect, 3000)
+      reconnectTimerRef.current = setTimeout(() => {
+        connectImpl()
+      }, 3000)
     }
     ws.onerror = () => ws.close()
     ws.onmessage = (event) => {

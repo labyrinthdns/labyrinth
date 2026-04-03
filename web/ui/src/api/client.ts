@@ -1,4 +1,13 @@
-import type { TopEntry, NegativeCacheEntry, UpdateInfo, BlocklistStats, BlocklistListEntry } from '@/api/types'
+import type {
+  TopEntry,
+  NegativeCacheEntry,
+  UpdateInfo,
+  BlocklistStats,
+  BlocklistListEntry,
+  ConfigRawResponse,
+  ConfigValidateResponse,
+  ConfigSaveResponse,
+} from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
 
@@ -69,6 +78,17 @@ export const api = {
     request<{ ok: boolean }>(`/api/cache/entry?name=${name}&type=${type}`, { method: 'DELETE' }),
 
   config: () => request<Record<string, unknown>>('/api/config'),
+  configRaw: () => request<ConfigRawResponse>('/api/config/raw'),
+  validateConfig: (content: string) =>
+    request<ConfigValidateResponse>('/api/config/validate', {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    }),
+  saveConfig: (content: string) =>
+    request<ConfigSaveResponse>('/api/config/raw', {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
 
   setupStatus: () => request<{ setup_required: boolean; version: string }>('/api/setup/status'),
 

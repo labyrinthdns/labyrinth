@@ -218,7 +218,7 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	s.config.Web.Auth.PasswordHash = newHash
 
 	// Update YAML config file on disk
-	if err := updatePasswordInConfig(newHash); err != nil {
+	if err := updatePasswordInConfigAtPath(s.configFilePath(), newHash); err != nil {
 		s.logger.Error("failed to update password in config file", "error", err)
 		// Password is still updated in memory for this session
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
@@ -232,22 +232,27 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// updatePasswordInConfig reads the YAML config, updates the password_hash line, and writes it back.
+// updatePasswordInConfig reads the default YAML config locations, updates the
+// password_hash line, and writes it back.
 func updatePasswordInConfig(newHash string) error {
 	paths := []string{"labyrinth.yaml", "/etc/labyrinth/labyrinth.yaml"}
-	var configPath string
-	var data []byte
-
 	for _, p := range paths {
-		d, err := os.ReadFile(p)
-		if err == nil {
-			configPath = p
-			data = d
-			break
+		if _, err := os.Stat(p); err == nil {
+			return updatePasswordInConfigAtPath(p, newHash)
 		}
 	}
-	if configPath == "" {
-		return fmt.Errorf("config file not found")
+	return fmt.Errorf("config file not found")
+}
+
+// updatePasswordInConfigAtPath reads the YAML config at path, updates the
+// password_hash line, and writes it back atomically.
+func updatePasswordInConfigAtPath(configPath, newHash string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("config file not found")
+		}
+		return fmt.Errorf("read config file: %w", err)
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -267,5 +272,17 @@ func updatePasswordInConfig(newHash string) error {
 		return fmt.Errorf("password_hash field not found in config file")
 	}
 
-	return os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644)
+	updated := strings.Join(lines, "\n")
+	if !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+
+	// writeFileAtomically is shared with config raw save path.
+	if err := writeFileAtomically(configPath, []byte(updated)); err != nil {
+		return err
+	}
+
+	// Preserve existing permissive mode behavior expected by tests/deployments.
+	_ = os.Chmod(configPath, 0644)
+	return nil
 }

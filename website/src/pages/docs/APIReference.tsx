@@ -1,52 +1,40 @@
 interface Props { dark: boolean }
 
-function Endpoint({ method, path, auth, description, request, response, dark }: {
+function Endpoint({
+  dark,
+  method,
+  path,
+  auth,
+  description,
+}: {
+  dark: boolean
   method: string
   path: string
-  auth: boolean
+  auth: 'public' | 'jwt'
   description: string
-  request?: string
-  response: string
-  dark: boolean
 }) {
-  const methodColors: Record<string, string> = {
-    GET: 'bg-green-500/20 text-green-400 border-green-500/30',
-    POST: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-    DELETE: 'bg-red-500/20 text-red-400 border-red-500/30',
-  }
-  const ic = 'px-1.5 py-0.5 rounded text-sm font-mono bg-navy-800 text-gold-500'
+  const methodStyle = dark ? 'bg-navy-700 text-gold-400 border-navy-600' : 'bg-mist-100 text-navy-800 border-mist-300'
+  const authStyle = auth === 'jwt'
+    ? 'bg-gold-500/10 text-gold-500 border-gold-500/20'
+    : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
 
   return (
-    <div className={`rounded-xl border mb-8 overflow-hidden ${dark ? 'border-navy-700 bg-navy-800/30' : 'border-mist-200 bg-white'}`}>
-      <div className={`flex items-center gap-3 px-5 py-3 border-b ${dark ? 'border-navy-700' : 'border-mist-200'}`}>
-        <span className={`px-2.5 py-1 rounded text-xs font-bold border ${methodColors[method] || ''}`}>
-          {method}
-        </span>
+    <div className={`rounded-xl border mb-3 px-4 py-3 ${dark ? 'border-navy-700 bg-navy-800/30' : 'border-mist-200 bg-white'}`}>
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`px-2 py-0.5 rounded text-xs font-bold border ${methodStyle}`}>{method}</span>
         <code className={`text-sm font-mono ${dark ? 'text-white' : 'text-navy-900'}`}>{path}</code>
-        {auth && (
-          <span className="ml-auto px-2 py-0.5 rounded text-xs font-medium bg-gold-500/10 text-gold-500 border border-gold-500/20">
-            Auth Required
-          </span>
-        )}
+        <span className={`ml-auto px-2 py-0.5 rounded text-xs font-medium border ${authStyle}`}>
+          {auth === 'jwt' ? 'JWT Required' : 'Public'}
+        </span>
       </div>
-      <div className="px-5 py-3">
-        <p className={`text-sm mb-3 ${dark ? 'text-gray-300' : 'text-navy-700'}`}>{description}</p>
-        {request && (
-          <>
-            <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${dark ? 'text-gray-500' : 'text-navy-400'}`}>Request Body</p>
-            <pre className="code-block p-3 mb-3"><code className="text-xs text-gray-300 font-mono">{request}</code></pre>
-          </>
-        )}
-        <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${dark ? 'text-gray-500' : 'text-navy-400'}`}>Response <code className={ic}>200</code></p>
-        <pre className="code-block p-3"><code className="text-xs text-gray-300 font-mono">{response}</code></pre>
-      </div>
+      <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>{description}</p>
     </div>
   )
 }
 
 export default function APIReference({ dark }: Props) {
   const h1 = `text-3xl font-bold mb-6 ${dark ? 'text-white' : 'text-navy-900'}`
-  const h2 = `text-xl font-semibold mt-10 mb-4 ${dark ? 'text-white' : 'text-navy-900'}`
+  const h2 = `text-xl font-semibold mt-8 mb-4 ${dark ? 'text-white' : 'text-navy-900'}`
   const p = `mb-4 leading-relaxed ${dark ? 'text-gray-300' : 'text-navy-700'}`
   const info = `p-4 rounded-lg border-l-4 border-gold-500 mb-6 ${dark ? 'bg-navy-800/50' : 'bg-gold-500/5'}`
   const ic = 'px-1.5 py-0.5 rounded text-sm font-mono bg-navy-800 text-gold-500'
@@ -56,388 +44,51 @@ export default function APIReference({ dark }: Props) {
       <h1 className={h1}>API Reference</h1>
 
       <p className={p}>
-        Labyrinth exposes a RESTful JSON API on the same port as the web dashboard (default: 9153).
-        All endpoints under <code className={ic}>/api/</code> return JSON. Authenticated endpoints
-        require a valid JWT in the <code className={ic}>Authorization: Bearer {'<token>'}</code> header.
+        The web API is served on the same address as the dashboard (default <code className={ic}>127.0.0.1:9153</code>).
+        Most <code className={ic}>/api/*</code> routes require <code className={ic}>Authorization: Bearer &lt;jwt&gt;</code>.
       </p>
 
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
-          <strong className="text-gold-500">Base URL:</strong> <code className={ic}>http://localhost:9153</code>
-          {' '}&mdash; all paths below are relative to this.
+          When web mode is enabled, use <code className={ic}>/api/system/health</code> for liveness.
+          The legacy <code className={ic}>/health</code> and <code className={ic}>/ready</code> endpoints are only available in standalone metrics mode.
         </p>
       </div>
 
-      <h2 className={h2}>Health & Readiness</h2>
+      <h2 className={h2}>Public Endpoints</h2>
+      <Endpoint dark={dark} method="POST" path="/api/auth/login" auth="public" description="Authenticate and receive JWT." />
+      <Endpoint dark={dark} method="GET" path="/api/setup/status" auth="public" description="Check setup wizard state." />
+      <Endpoint dark={dark} method="POST" path="/api/setup/complete" auth="public" description="Complete first-time setup." />
+      <Endpoint dark={dark} method="GET" path="/api/system/health" auth="public" description="Health endpoint in web mode." />
+      <Endpoint dark={dark} method="GET" path="/api/system/version" auth="public" description="Build/runtime version info." />
+      <Endpoint dark={dark} method="GET" path="/metrics" auth="public" description="Prometheus metrics output." />
+      <Endpoint dark={dark} method="GET/POST" path="/dns-query" auth="public" description="DoH endpoint (RFC 8484), available only when web.doh_enabled=true." />
 
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/health"
-        auth={false}
-        description="Returns the health status. Always returns 200 if the process is running."
-        response={`{
-  "status": "ok"
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/ready"
-        auth={false}
-        description="Returns readiness status. Returns 200 when the resolver is ready to accept queries."
-        response={`{
-  "status": "ready",
-  "cache_initialized": true,
-  "listener_active": true
-}`}
-      />
-
-      <h2 className={h2}>Authentication</h2>
-
-      <Endpoint
-        dark={dark}
-        method="POST"
-        path="/api/auth/login"
-        auth={false}
-        description="Authenticate with username and password. Returns a JWT token."
-        request={`{
-  "username": "admin",
-  "password": "your-password"
-}`}
-        response={`{
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "expires_at": "2025-01-02T15:04:05Z"
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="POST"
-        path="/api/auth/setup"
-        auth={false}
-        description="Create the initial admin account (only works when no account exists)."
-        request={`{
-  "username": "admin",
-  "password": "your-password"
-}`}
-        response={`{
-  "message": "Admin account created",
-  "token": "eyJhbGciOiJIUzI1NiIs..."
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="POST"
-        path="/api/auth/change-password"
-        auth={true}
-        description="Change the password for the authenticated user."
-        request={`{
-  "current_password": "old-password",
-  "new_password": "new-password"
-}`}
-        response={`{
-  "message": "Password changed successfully"
-}`}
-      />
-
-      <h2 className={h2}>Statistics</h2>
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/api/stats"
-        auth={true}
-        description="Returns current resolver statistics including query counts, cache metrics, and system info."
-        response={`{
-  "uptime_seconds": 86400,
-  "queries": {
-    "total": 1247832,
-    "per_second": 14.4,
-    "by_type": {
-      "A": 892341,
-      "AAAA": 234567,
-      "MX": 45678,
-      "NS": 12345,
-      "OTHER": 62901
-    },
-    "by_rcode": {
-      "NOERROR": 1100234,
-      "NXDOMAIN": 134567,
-      "SERVFAIL": 13031
-    }
-  },
-  "cache": {
-    "entries": 45678,
-    "hit_rate": 0.942,
-    "hits": 1175460,
-    "misses": 72372,
-    "evictions": 1234
-  },
-  "system": {
-    "goroutines": 142,
-    "memory_alloc_mb": 128.5,
-    "memory_sys_mb": 256.0,
-    "num_cpu": 16
-  }
-}`}
-      />
-
-      <h2 className={h2}>Cache Management</h2>
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/api/cache/entries?prefix=example&limit=50"
-        auth={true}
-        description="List cache entries. Supports filtering by name prefix and pagination with limit/offset."
-        response={`{
-  "entries": [
-    {
-      "name": "example.com.",
-      "type": "A",
-      "ttl": 2847,
-      "rdata": "93.184.216.34",
-      "inserted_at": "2025-01-01T12:00:00Z",
-      "is_negative": false
-    },
-    {
-      "name": "example.com.",
-      "type": "AAAA",
-      "ttl": 1523,
-      "rdata": "2606:2800:220:1:248:1893:25c8:1946",
-      "inserted_at": "2025-01-01T12:22:00Z",
-      "is_negative": false
-    }
-  ],
-  "total": 2,
-  "has_more": false
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="POST"
-        path="/api/cache/flush"
-        auth={true}
-        description="Flush the entire cache. Returns the number of entries removed."
-        response={`{
-  "flushed": 45678,
-  "message": "Cache flushed"
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="DELETE"
-        path="/api/cache/entry?name=example.com.&type=A"
-        auth={true}
-        description="Remove a specific cache entry by name and type."
-        response={`{
-  "deleted": true,
-  "name": "example.com.",
-  "type": "A"
-}`}
-      />
-
-      <h2 className={h2}>Blocklist</h2>
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/api/blocklist/stats"
-        auth={true}
-        description="Returns blocklist statistics including total blocked domains and hit counts."
-        response={`{
-  "enabled": true,
-  "total_domains": 145832,
-  "lists_count": 2,
-  "blocked_queries_total": 4521,
-  "last_refresh": "2025-06-01T03:00:00Z"
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/api/blocklist/lists"
-        auth={true}
-        description="Returns all configured blocklist sources and their status."
-        response={`{
-  "lists": [
-    {
-      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-      "domains": 120456,
-      "last_updated": "2025-06-01T03:00:00Z",
-      "status": "ok"
-    },
-    {
-      "url": "https://adaway.org/hosts.txt",
-      "domains": 25376,
-      "last_updated": "2025-06-01T03:00:00Z",
-      "status": "ok"
-    }
-  ]
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="POST"
-        path="/api/blocklist/refresh"
-        auth={true}
-        description="Trigger an immediate refresh of all blocklist sources."
-        response={`{
-  "message": "Blocklist refresh started",
-  "lists_count": 2
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="POST"
-        path="/api/blocklist/block"
-        auth={true}
-        description="Add a domain to the custom blocklist."
-        request={`{
-  "domain": "ads.example.com"
-}`}
-        response={`{
-  "blocked": true,
-  "domain": "ads.example.com"
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="POST"
-        path="/api/blocklist/unblock"
-        auth={true}
-        description="Remove a domain from the blocklist (adds to the whitelist if from an external list)."
-        request={`{
-  "domain": "ads.example.com"
-}`}
-        response={`{
-  "unblocked": true,
-  "domain": "ads.example.com"
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/api/blocklist/check?domain=ads.example.com"
-        auth={true}
-        description="Check if a domain is currently blocked."
-        response={`{
-  "domain": "ads.example.com",
-  "blocked": true,
-  "source": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
-}`}
-      />
-
-      <h2 className={h2}>System Update</h2>
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/api/system/update/check"
-        auth={true}
-        description="Check if a newer version of Labyrinth is available."
-        response={`{
-  "current_version": "v0.3.0",
-  "latest_version": "v0.3.1",
-  "update_available": true,
-  "release_url": "https://github.com/labyrinthdns/labyrinth/releases/tag/v0.3.1"
-}`}
-      />
-
-      <Endpoint
-        dark={dark}
-        method="POST"
-        path="/api/system/update/apply"
-        auth={true}
-        description="Download and apply the latest update. The server will restart automatically after a successful update."
-        response={`{
-  "message": "Update to v0.3.1 applied successfully, restarting...",
-  "previous_version": "v0.3.0",
-  "new_version": "v0.3.1"
-}`}
-      />
-
-      <h2 className={h2}>Configuration</h2>
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/api/config"
-        auth={true}
-        description="Returns the active configuration (sensitive fields like jwt_secret are redacted)."
-        response={`{
-  "server": {
-    "address": "0.0.0.0",
-    "port": 53,
-    "tcp_enabled": true,
-    "workers": 8
-  },
-  "resolver": {
-    "enable_qname_minimization": true,
-    "max_depth": 30
-  },
-  "cache": {
-    "max_entries_per_shard": 10000,
-    "serve_stale": true
-  },
-  "web": {
-    "enabled": true,
-    "port": 9153,
-    "jwt_secret": "[REDACTED]"
-  }
-}`}
-      />
-
-      <h2 className={h2}>Metrics</h2>
-
-      <Endpoint
-        dark={dark}
-        method="GET"
-        path="/metrics"
-        auth={false}
-        description="Prometheus metrics endpoint. Returns metrics in Prometheus exposition format."
-        response={`# HELP labyrinth_queries_total Total DNS queries received
-# TYPE labyrinth_queries_total counter
-labyrinth_queries_total{type="A"} 892341
-labyrinth_queries_total{type="AAAA"} 234567
-...`}
-      />
-
-      <h2 className={h2}>Error Responses</h2>
-
-      <p className={p}>
-        All error responses follow a consistent format:
-      </p>
-
-      <pre className="code-block p-4 mb-6"><code className="text-sm text-gray-300 font-mono">{`// 401 Unauthorized
-{
-  "error": "invalid or expired token"
-}
-
-// 400 Bad Request
-{
-  "error": "missing required field: username"
-}
-
-// 404 Not Found
-{
-  "error": "cache entry not found"
-}
-
-// 409 Conflict (setup already complete)
-{
-  "error": "admin account already exists"
-}`}</code></pre>
+      <h2 className={h2}>Authenticated Endpoints</h2>
+      <Endpoint dark={dark} method="GET" path="/api/auth/me" auth="jwt" description="Current authenticated user info." />
+      <Endpoint dark={dark} method="POST" path="/api/auth/change-password" auth="jwt" description="Change dashboard password." />
+      <Endpoint dark={dark} method="GET" path="/api/stats" auth="jwt" description="Current resolver + cache stats." />
+      <Endpoint dark={dark} method="GET" path="/api/stats/timeseries?window=5m" auth="jwt" description="Time-series stats for charts." />
+      <Endpoint dark={dark} method="GET" path="/api/stats/top-clients?limit=10" auth="jwt" description="Top clients by query volume." />
+      <Endpoint dark={dark} method="GET" path="/api/stats/top-domains?limit=10" auth="jwt" description="Top domains by query volume." />
+      <Endpoint dark={dark} method="WS" path="/api/queries/stream" auth="jwt" description="Live query stream over WebSocket." />
+      <Endpoint dark={dark} method="GET" path="/api/queries/recent?limit=50" auth="jwt" description="Recent query list." />
+      <Endpoint dark={dark} method="GET" path="/api/cache/stats" auth="jwt" description="Cache counters and size." />
+      <Endpoint dark={dark} method="GET" path="/api/cache/lookup?name=X&type=A" auth="jwt" description="Lookup specific cache entry." />
+      <Endpoint dark={dark} method="GET" path="/api/cache/negative" auth="jwt" description="Inspect negative cache entries." />
+      <Endpoint dark={dark} method="POST" path="/api/cache/flush" auth="jwt" description="Flush all cache entries." />
+      <Endpoint dark={dark} method="DELETE" path="/api/cache/entry?name=X&type=A" auth="jwt" description="Delete one cache entry." />
+      <Endpoint dark={dark} method="GET" path="/api/config" auth="jwt" description="Return active runtime config (sensitive fields redacted)." />
+      <Endpoint dark={dark} method="GET" path="/api/system/update/check" auth="jwt" description="Check if update is available." />
+      <Endpoint dark={dark} method="POST" path="/api/system/update/apply" auth="jwt" description="Apply update and restart." />
+      <Endpoint dark={dark} method="GET" path="/api/blocklist/stats" auth="jwt" description="Blocklist statistics." />
+      <Endpoint dark={dark} method="GET" path="/api/blocklist/lists" auth="jwt" description="Configured blocklist sources." />
+      <Endpoint dark={dark} method="POST" path="/api/blocklist/refresh" auth="jwt" description="Refresh all blocklist sources now." />
+      <Endpoint dark={dark} method="POST" path="/api/blocklist/block" auth="jwt" description="Quick-block a domain." />
+      <Endpoint dark={dark} method="POST" path="/api/blocklist/unblock" auth="jwt" description="Quick-unblock a domain." />
+      <Endpoint dark={dark} method="GET" path="/api/blocklist/check?domain=X" auth="jwt" description="Check if a domain is blocked." />
+      <Endpoint dark={dark} method="GET" path="/api/zabbix/items" auth="jwt" description="List Zabbix metric keys." />
+      <Endpoint dark={dark} method="GET" path="/api/zabbix/item?key=X" auth="jwt" description="Get one Zabbix metric value." />
     </div>
   )
 }

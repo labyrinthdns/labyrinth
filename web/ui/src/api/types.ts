@@ -154,3 +154,19 @@ export interface BlocklistListEntry {
   rule_count: number
   error?: string
 }
+
+export interface ConfigRawResponse {
+  path: string
+  content: string
+}
+
+export interface ConfigValidateResponse {
+  valid: boolean
+  error?: string
+}
+
+export interface ConfigSaveResponse {
+  status: string
+  path: string
+  restart_required: boolean
+}

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,16 +15,17 @@ var yamlParser = parseYAML
 
 // Config holds the complete application configuration.
 type Config struct {
-	Server     ServerConfig
-	Resolver   ResolverConfig
-	Cache      CacheConfig
-	Security   SecurityConfig
-	Logging    LoggingConfig
-	ACL        ACLConfig
-	Web        WebConfig
-	Daemon     DaemonConfig
-	Zabbix     ZabbixConfig
-	Blocklist  BlocklistConfig
+	Server       ServerConfig
+	Resolver     ResolverConfig
+	Cache        CacheConfig
+	Security     SecurityConfig
+	Logging      LoggingConfig
+	ACL          ACLConfig
+	Web          WebConfig
+	Daemon       DaemonConfig
+	Zabbix       ZabbixConfig
+	Blocklist    BlocklistConfig
+	Cluster      ClusterConfig
 	LocalZones   []LocalZoneConfig
 	ForwardZones []ForwardZoneConfig
 	StubZones    []StubZoneConfig
@@ -77,6 +79,7 @@ type WebConfig struct {
 	UpdateCheckInterval time.Duration
 	Auth                WebAuthConfig
 	DoHEnabled          bool
+	DoH3Enabled         bool
 	TLSEnabled          bool
 	TLSCertFile         string
 	TLSKeyFile          string
@@ -191,17 +194,65 @@ type ACLZoneConfig struct {
 	Deny  []string
 }
 
+// ClusterConfig holds optional multi-node cluster settings.
+type ClusterConfig struct {
+	Enabled      bool
+	Role         string
+	NodeID       string
+	SharedFields []string
+	Peers        []ClusterPeerConfig
+	Actions      ClusterActionConfig
+	Sync         ClusterSyncConfig
+}
+
+// ClusterPeerConfig defines a peer node accessible via admin API.
+type ClusterPeerConfig struct {
+	Name       string
+	Enabled    bool
+	APIBase    string
+	APIToken   string
+	SyncFields []string
+}
+
+// ClusterActionConfig controls cluster fanout behavior for admin actions.
+type ClusterActionConfig struct {
+	FanoutCacheFlush       bool
+	FanoutBlocklistRefresh bool
+}
+
+// ClusterSyncConfig controls configuration synchronization behavior.
+type ClusterSyncConfig struct {
+	Mode         string
+	PushOnSave   bool
+	PullInterval time.Duration
+}
+
+// Parse builds a config from YAML bytes using defaults and validation.
+// Environment variables are not applied in this helper.
+func Parse(data []byte) (*Config, error) {
+	cfg := defaultConfig()
+	values, err := yamlParser(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	applyYAML(cfg, values)
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
 // Load loads configuration from file, environment, and defaults.
 func Load(path string) (*Config, error) {
 	cfg := defaultConfig()
 
 	// 1. Try config file
 	if data, err := os.ReadFile(path); err == nil {
-		values, err := yamlParser(data)
+		fileCfg, err := Parse(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse config: %w", err)
+			return nil, err
 		}
-		applyYAML(cfg, values)
+		cfg = fileCfg
 	}
 
 	// 2. Override with environment variables
@@ -236,8 +287,21 @@ func applyYAML(cfg *Config, values map[string]string) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Server.MaxTCPConns = n
 		}
+	} else if v, ok := values["server.max_tcp_conns"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Server.MaxTCPConns = n
+		}
+	}
+	if v, ok := values["server.max_udp_workers"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Server.MaxUDPWorkers = n
+		}
 	}
 	if v, ok := values["server.graceful_shutdown"]; ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Server.GracefulPeriod = d
+		}
+	} else if v, ok := values["server.graceful_period"]; ok {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Server.GracefulPeriod = d
 		}
@@ -351,6 +415,10 @@ func applyYAML(cfg *Config, values map[string]string) {
 		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
 			cfg.Cache.StaleTTL = uint32(n)
 		}
+	} else if v, ok := values["cache.stale_ttl"]; ok {
+		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
+			cfg.Cache.StaleTTL = uint32(n)
+		}
 	}
 	if v, ok := values["cache.no_cache_clients"]; ok && v != "" {
 		cfg.Cache.NoCacheClients = parseCSVList(v)
@@ -455,6 +523,9 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["web.doh_enabled"]; ok {
 		cfg.Web.DoHEnabled = parseBool(v)
 	}
+	if v, ok := values["web.doh3_enabled"]; ok {
+		cfg.Web.DoH3Enabled = parseBool(v)
+	}
 	if v, ok := values["web.tls_enabled"]; ok {
 		cfg.Web.TLSEnabled = parseBool(v)
 	}
@@ -509,6 +580,38 @@ func applyYAML(cfg *Config, values map[string]string) {
 		cfg.Blocklist.Whitelist = parseCSVList(v)
 	}
 
+	// Cluster
+	if v, ok := values["cluster.enabled"]; ok {
+		cfg.Cluster.Enabled = parseBool(v)
+	}
+	if v, ok := values["cluster.role"]; ok {
+		cfg.Cluster.Role = v
+	}
+	if v, ok := values["cluster.node_id"]; ok {
+		cfg.Cluster.NodeID = v
+	}
+	if v, ok := values["cluster.shared_fields"]; ok && v != "" {
+		cfg.Cluster.SharedFields = parseCSVList(v)
+	}
+	if v, ok := values["cluster.actions.fanout_cache_flush"]; ok {
+		cfg.Cluster.Actions.FanoutCacheFlush = parseBool(v)
+	}
+	if v, ok := values["cluster.actions.fanout_blocklist_refresh"]; ok {
+		cfg.Cluster.Actions.FanoutBlocklistRefresh = parseBool(v)
+	}
+	if v, ok := values["cluster.sync.mode"]; ok {
+		cfg.Cluster.Sync.Mode = v
+	}
+	if v, ok := values["cluster.sync.push_on_save"]; ok {
+		cfg.Cluster.Sync.PushOnSave = parseBool(v)
+	}
+	if v, ok := values["cluster.sync.pull_interval"]; ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Cluster.Sync.PullInterval = d
+		}
+	}
+	cfg.Cluster.Peers = parseClusterPeers(values)
+
 	// Local zones: parsed from "local_zones.<name>.type" and "local_zones.<name>.data"
 	cfg.LocalZones = parseLocalZones(values)
 
@@ -553,6 +656,44 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Security.RateLimit.Enabled && cfg.Security.RateLimit.Rate <= 0 {
 		return fmt.Errorf("security.rate_limit.rate must be > 0")
+	}
+	if cfg.Server.DoTEnabled {
+		if cfg.Server.TLSCertFile == "" || cfg.Server.TLSKeyFile == "" {
+			return fmt.Errorf("server.dot_enabled=true requires server.tls_cert_file and server.tls_key_file")
+		}
+	}
+	if cfg.Web.TLSEnabled {
+		if cfg.Web.TLSCertFile == "" || cfg.Web.TLSKeyFile == "" {
+			return fmt.Errorf("web.tls_enabled=true requires web.tls_cert_file and web.tls_key_file")
+		}
+	}
+	if cfg.Web.DoH3Enabled {
+		if !cfg.Web.Enabled {
+			return fmt.Errorf("web.doh3_enabled=true requires web.enabled=true")
+		}
+		if !cfg.Web.TLSEnabled {
+			return fmt.Errorf("web.doh3_enabled=true requires web.tls_enabled=true")
+		}
+		if cfg.Web.TLSCertFile == "" || cfg.Web.TLSKeyFile == "" {
+			return fmt.Errorf("web.doh3_enabled=true requires web.tls_cert_file and web.tls_key_file")
+		}
+	}
+	if cfg.Cluster.Enabled {
+		switch cfg.Cluster.Role {
+		case "", "standalone", "master", "secondary":
+		default:
+			return fmt.Errorf("cluster.role must be one of standalone|master|secondary")
+		}
+		switch cfg.Cluster.Sync.Mode {
+		case "", "off", "manual_push", "auto_push":
+		default:
+			return fmt.Errorf("cluster.sync.mode must be one of off|manual_push|auto_push")
+		}
+		for _, p := range cfg.Cluster.Peers {
+			if p.Enabled && strings.TrimSpace(p.APIBase) == "" {
+				return fmt.Errorf("cluster.peers.%s.api_base must be set when peer is enabled", p.Name)
+			}
+		}
 	}
 	return nil
 }
@@ -744,6 +885,73 @@ func parseZoneAddrs(values map[string]string, prefix string) []ForwardZoneConfig
 		if len(zc.Addrs) > 0 {
 			result = append(result, *zc)
 		}
+	}
+	return result
+}
+
+// parseClusterPeers extracts peer configs from keys:
+// "cluster.peers.<name>.api_base", ".api_token", ".enabled", ".sync_fields".
+func parseClusterPeers(values map[string]string) []ClusterPeerConfig {
+	const prefix = "cluster.peers."
+
+	type peerBuild struct {
+		cfg ClusterPeerConfig
+	}
+	peers := make(map[string]*peerBuild)
+
+	for key, val := range values {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		rest := key[len(prefix):]
+		dotIdx := strings.LastIndex(rest, ".")
+		if dotIdx < 0 {
+			continue
+		}
+		name := rest[:dotIdx]
+		field := rest[dotIdx+1:]
+		if name == "" {
+			continue
+		}
+
+		p, ok := peers[name]
+		if !ok {
+			p = &peerBuild{
+				cfg: ClusterPeerConfig{
+					Name:    name,
+					Enabled: true,
+				},
+			}
+			peers[name] = p
+		}
+
+		switch field {
+		case "enabled":
+			p.cfg.Enabled = parseBool(val)
+		case "api_base":
+			p.cfg.APIBase = strings.TrimSpace(val)
+		case "api_token":
+			p.cfg.APIToken = val
+		case "sync_fields":
+			if val != "" {
+				p.cfg.SyncFields = parseCSVList(val)
+			}
+		}
+	}
+
+	names := make([]string, 0, len(peers))
+	for name := range peers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	result := make([]ClusterPeerConfig, 0, len(names))
+	for _, name := range names {
+		p := peers[name].cfg
+		if p.APIBase == "" && p.APIToken == "" && len(p.SyncFields) == 0 {
+			continue
+		}
+		result = append(result, p)
 	}
 	return result
 }

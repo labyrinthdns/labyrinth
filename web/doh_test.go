@@ -27,9 +27,9 @@ func (h *echoHandler) Handle(query []byte, addr net.Addr) ([]byte, error) {
 func buildDNSQuery(id uint16) []byte {
 	// Header (12 bytes) + Question for "example.com" A
 	buf := make([]byte, 29)
-	binary.BigEndian.PutUint16(buf[0:2], id)    // ID
+	binary.BigEndian.PutUint16(buf[0:2], id)     // ID
 	binary.BigEndian.PutUint16(buf[2:4], 0x0100) // Flags: RD=1
-	binary.BigEndian.PutUint16(buf[4:6], 1)       // QDCOUNT=1
+	binary.BigEndian.PutUint16(buf[4:6], 1)      // QDCOUNT=1
 	// QNAME: \x07example\x03com\x00
 	copy(buf[12:], []byte{7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0})
 	binary.BigEndian.PutUint16(buf[25:27], 1) // QTYPE=A
@@ -43,8 +43,8 @@ func buildDNSResponseWithTTL(id uint16, ttl uint32) []byte {
 	buf := make([]byte, 29+16) // header + question + answer
 	binary.BigEndian.PutUint16(buf[0:2], id)
 	binary.BigEndian.PutUint16(buf[2:4], 0x8180) // QR=1, RD=1, RA=1
-	binary.BigEndian.PutUint16(buf[4:6], 1)       // QDCOUNT=1
-	binary.BigEndian.PutUint16(buf[6:8], 1)       // ANCOUNT=1
+	binary.BigEndian.PutUint16(buf[4:6], 1)      // QDCOUNT=1
+	binary.BigEndian.PutUint16(buf[6:8], 1)      // ANCOUNT=1
 	// Question section
 	copy(buf[12:], []byte{7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0})
 	binary.BigEndian.PutUint16(buf[25:27], 1) // QTYPE=A
@@ -76,7 +76,10 @@ func testDoHServer(t *testing.T) *AdminServer {
 			QueryLogBuffer: 100,
 		},
 	}
-	srv := NewAdminServer(cfg, c, m, nil, logger, nil)
+	srv, err := NewAdminServer(cfg, c, m, nil, logger, nil)
+	if err != nil {
+		t.Fatalf("NewAdminServer failed: %v", err)
+	}
 	srv.SetDoHHandler(&echoHandler{})
 	srv.SetDoHEnabled(true)
 	return srv
@@ -245,7 +248,10 @@ func TestDoHCacheControl(t *testing.T) {
 			QueryLogBuffer: 100,
 		},
 	}
-	srv := NewAdminServer(cfg, c, m, nil, logger, nil)
+	srv, err := NewAdminServer(cfg, c, m, nil, logger, nil)
+	if err != nil {
+		t.Fatalf("NewAdminServer failed: %v", err)
+	}
 
 	// Custom handler that returns a response with TTL=300
 	handler := &ttlHandler{ttl: 300}
@@ -282,7 +288,10 @@ func TestDoHNotEnabled(t *testing.T) {
 			QueryLogBuffer: 100,
 		},
 	}
-	srv := NewAdminServer(cfg, c, m, nil, logger, nil)
+	srv, err := NewAdminServer(cfg, c, m, nil, logger, nil)
+	if err != nil {
+		t.Fatalf("NewAdminServer failed: %v", err)
+	}
 	// dohHandler is nil — DoH is not enabled
 
 	query := buildDNSQuery(0x4444)

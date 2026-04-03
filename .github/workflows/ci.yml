@@ -19,14 +19,6 @@ jobs:
         with:
           go-version: '1.26'
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Build dashboard frontend
-        working-directory: web/ui
-        run: npm ci && npm run build
-
       - name: Go vet
         run: go vet ./...
 
@@ -36,6 +28,18 @@ jobs:
       - name: Go test (race detector)
         if: runner.os == 'Linux'
         run: go test ./... -race -count=1 -timeout 180s
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Lint dashboard frontend
+        working-directory: web/ui
+        run: npm ci && npm run lint
+
+      - name: Build dashboard frontend
+        working-directory: web/ui
+        run: npm run build
 
       - name: Build labyrinth
         run: go build -ldflags="-s -w" -o labyrinth${{ runner.os == 'Windows' && '.exe' || '' }} .
@@ -66,9 +70,13 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Lint website
+        working-directory: website
+        run: npm ci && npm run lint
+
       - name: Build website
         working-directory: website
-        run: npm ci && npm run build
+        run: npm run build
 
       - name: Verify build output
         run: test -f website/dist/index.html

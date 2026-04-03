@@ -53,37 +53,30 @@ Timeline:
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Hash a password
-labyrinth hash --password "my-secure-password"
+labyrinth hash "my-secure-password"
 # Output: $2a$10$K7L/FqkZxJ2b...
-
-# Verify a password against a hash
-labyrinth hash --verify --password "my-secure-password" --hash '$2a$10$K7L/FqkZxJ2b...'
-# Output: Password matches`}</code></pre>
+`}</code></pre>
 
       <h2 className={h2}>Token Lifetime</h2>
 
       <p className={p}>
-        JWT tokens expire after the configured <code className={ic}>web.token_lifetime</code> (default: 24 hours).
-        After expiration, the client must re-authenticate.
+        JWT tokens currently expire after 24 hours. After expiration, the client must re-authenticate.
       </p>
-
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`web:
-  token_lifetime: "24h"    # token valid for 24 hours
-  jwt_secret: ""           # auto-generated if empty (changes on restart)`}</code></pre>
 
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
-          <strong className="text-gold-500">Important:</strong> If <code className={ic}>jwt_secret</code> is left empty,
-          Labyrinth generates a random secret on startup. This means all tokens are invalidated on restart.
-          Set a fixed secret in production to persist sessions across restarts.
+          <strong className="text-gold-500">Important:</strong> Labyrinth generates an in-memory JWT signing secret
+          on startup. Existing tokens are invalidated after process restart.
         </p>
       </div>
 
       <h2 className={h2}>API Authentication</h2>
 
       <p className={p}>
-        All API endpoints (except <code className={ic}>/health</code>, <code className={ic}>/ready</code>, and
-        {' '}<code className={ic}>/api/auth/login</code>) require a valid JWT token. Include it in the
+        Most <code className={ic}>/api/*</code> endpoints require a valid JWT token. Public endpoints include
+        <code className={ic}> /api/auth/login </code>, <code className={ic}>/api/setup/*</code>,
+        <code className={ic}> /api/system/health </code>, <code className={ic}>/api/system/version</code>,
+        and <code className={ic}>/metrics</code>. Include JWT in the
         {' '}<code className={ic}>Authorization</code> header:
       </p>
 
@@ -103,11 +96,11 @@ curl -s -X POST http://localhost:9153/api/cache/flush \\
       <h2 className={h2}>WebSocket Authentication</h2>
 
       <p className={p}>
-        The WebSocket endpoint (<code className={ic}>/ws/queries</code>) accepts the JWT token as a query parameter
-        since the WebSocket protocol does not support custom headers during the handshake:
+        The live query stream endpoint is <code className={ic}>/api/queries/stream</code>.
+        It accepts JWT via <code className={ic}>Authorization: Bearer</code> or <code className={ic}>?token=...</code>:
       </p>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`ws://localhost:9153/ws/queries?token=eyJhbGciOiJIUzI1NiIs...`}</code></pre>
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`wss://localhost:9153/api/queries/stream?token=eyJhbGciOiJIUzI1NiIs...`}</code></pre>
 
       <h2 className={h2}>JWT Token Structure</h2>
 
@@ -118,18 +111,15 @@ curl -s -X POST http://localhost:9153/api/cache/flush \\
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`{
   "sub": "admin",           // username
   "iat": 1700000000,        // issued at (Unix timestamp)
-  "exp": 1700086400,        // expires at (issued + token_lifetime)
-  "iss": "labyrinth"        // issuer
+  "exp": 1700086400         // expires at (issued + 24h)
 }`}</code></pre>
 
       <h2 className={h2}>Security Recommendations</h2>
 
       <ul className={ul}>
-        <li>Set a strong, fixed <code className={ic}>jwt_secret</code> in production (at least 32 characters)</li>
         <li>Use HTTPS (via reverse proxy) to protect tokens in transit</li>
-        <li>Set <code className={ic}>token_lifetime</code> appropriately (shorter is more secure, longer is more convenient)</li>
         <li>The dashboard stores the JWT in <code className={ic}>localStorage</code>; use HTTPS to prevent XSS token theft</li>
-        <li>Rotate the <code className={ic}>jwt_secret</code> periodically to invalidate all existing tokens</li>
+        <li>Restarting Labyrinth invalidates all existing tokens</li>
       </ul>
     </div>
   )
