@@ -60,7 +60,7 @@ web:
     password_hash: "$2a$10$nS.tf.v7HRdqyChSmP9nBeJKXESl/J2bn8OnCEHCe5UYugbygOCjO"
 
 blocklist:
-  enabled: false
+  enabled: true
   # Pipe-separated URL|format pairs
   # lists: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|hosts"
   refresh_interval: 24h
