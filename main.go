@@ -167,15 +167,25 @@ func main() {
 	}
 
 	var acl *security.ACL
-	if len(cfg.ACL.Allow) > 0 || len(cfg.ACL.Deny) > 0 {
+	if len(cfg.ACL.Allow) > 0 || len(cfg.ACL.Deny) > 0 || len(cfg.ACL.Zones) > 0 {
 		acl, err = security.NewACL(cfg.ACL.Allow, cfg.ACL.Deny)
 		if err != nil {
 			logger.Error("failed to parse ACL", "error", err)
 			os.Exit(1)
 		}
+		for _, zc := range cfg.ACL.Zones {
+			if err := acl.AddZoneACL(security.ZoneACLConfig{
+				Zone:  zc.Zone,
+				Allow: zc.Allow,
+				Deny:  zc.Deny,
+			}); err != nil {
+				logger.Error("failed to parse zone ACL", "zone", zc.Zone, "error", err)
+				os.Exit(1)
+			}
+		}
 	}
 
-	res := resolver.NewResolver(c, resolver.ResolverConfig{
+	resCfg := resolver.ResolverConfig{
 		MaxDepth:        cfg.Resolver.MaxDepth,
 		MaxCNAMEDepth:   cfg.Resolver.MaxCNAMEDepth,
 		UpstreamTimeout: cfg.Resolver.UpstreamTimeout,
@@ -183,7 +193,18 @@ func main() {
 		QMinEnabled:     cfg.Resolver.QMinEnabled,
 		PreferIPv4:      cfg.Resolver.PreferIPv4,
 		DNSSECEnabled:   cfg.Resolver.DNSSECEnabled,
-	}, m, logger)
+		DNS64Enabled:    cfg.Resolver.DNS64Enabled,
+	}
+	if cfg.Resolver.DNS64Enabled {
+		prefix, prefixErr := resolver.ParseDNS64Prefix(cfg.Resolver.DNS64Prefix)
+		if prefixErr != nil {
+			logger.Error("invalid dns64 prefix", "prefix", cfg.Resolver.DNS64Prefix, "error", prefixErr)
+			os.Exit(1)
+		}
+		resCfg.DNS64Prefix = prefix
+		logger.Info("DNS64 enabled", "prefix", cfg.Resolver.DNS64Prefix)
+	}
+	res := resolver.NewResolver(c, resCfg, m, logger)
 
 	// Build local zones from config + default localhost zone
 	res.SetLocalZones(buildLocalZones(cfg, logger))

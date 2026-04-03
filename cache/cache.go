@@ -39,9 +39,10 @@ type shard struct {
 }
 
 type cacheKey struct {
-	name  string
-	qtype uint16
-	class uint16
+	name      string
+	qtype     uint16
+	class     uint16
+	ecsPrefix string // ECS source prefix (e.g. "192.168.1.0/24"), empty if no ECS
 }
 
 // NewCache creates a new sharded DNS cache.
@@ -534,6 +535,64 @@ func formatAuthorityRData(rr dns.ResourceRecord) string {
 		}
 	}
 	return ""
+}
+
+// GetWithECS retrieves a cache entry using an ECS-aware key.
+// If ecsPrefix is empty, it behaves like Get.
+func (c *Cache) GetWithECS(name string, qtype uint16, class uint16, ecsPrefix string) (*Entry, bool) {
+	if ecsPrefix == "" {
+		return c.Get(name, qtype, class)
+	}
+
+	name = strings.ToLower(name)
+	key := cacheKey{name: name, qtype: qtype, class: class, ecsPrefix: ecsPrefix}
+	idx := c.shardIndex(name)
+
+	s := &c.shards[idx]
+	s.mu.RLock()
+	entry, ok := s.entries[key]
+	s.mu.RUnlock()
+
+	if !ok {
+		return nil, false
+	}
+
+	remaining := entry.RemainingTTL()
+	if remaining == 0 {
+		return nil, false
+	}
+
+	decayed := entry.WithDecayedTTL(remaining)
+	return decayed, true
+}
+
+// StoreWithECS caches a positive DNS result with an ECS prefix key.
+// If ecsPrefix is empty, it behaves like Store.
+func (c *Cache) StoreWithECS(name string, qtype uint16, class uint16, ecsPrefix string, answers []dns.ResourceRecord, authority []dns.ResourceRecord) {
+	if ecsPrefix == "" {
+		c.Store(name, qtype, class, answers, authority)
+		return
+	}
+
+	name = strings.ToLower(name)
+	key := cacheKey{name: name, qtype: qtype, class: class, ecsPrefix: ecsPrefix}
+	idx := c.shardIndex(name)
+
+	ttl := c.extractTTL(answers)
+	ttl = c.clampTTL(ttl)
+
+	entry := &Entry{
+		Records:    cloneRRs(answers),
+		Authority:  cloneRRs(authority),
+		InsertedAt: time.Now(),
+		OrigTTL:    ttl,
+	}
+
+	s := &c.shards[idx]
+	s.mu.Lock()
+	s.entries[key] = entry
+	c.enforceMaxEntriesLocked(s)
+	s.mu.Unlock()
 }
 
 func cloneRRs(rrs []dns.ResourceRecord) []dns.ResourceRecord {

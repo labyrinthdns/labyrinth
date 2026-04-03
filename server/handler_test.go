@@ -203,6 +203,157 @@ func BenchmarkResolveCached(b *testing.B) {
 	})
 }
 
+func TestAddEDEToResponse(t *testing.T) {
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID: 0x1234,
+			Flags: dns.NewFlagBuilder().
+				SetQR(true).
+				SetRA(true).
+				SetRCODE(dns.RCodeServFail).
+				Build(),
+		},
+		Questions: []dns.Question{{
+			Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		}},
+	}
+
+	// Add OPT first
+	resp.Additional = append(resp.Additional, dns.BuildOPT(4096, false))
+
+	addEDEToResponse(resp, dns.EDECodeDNSSECBogus, "DNSSEC validation failure")
+
+	// Check that the OPT record now has EDE data
+	if len(resp.Additional) != 1 {
+		t.Fatalf("expected 1 additional record, got %d", len(resp.Additional))
+	}
+	opt := resp.Additional[0]
+	if opt.Type != dns.TypeOPT {
+		t.Fatalf("expected OPT type, got %d", opt.Type)
+	}
+	if len(opt.RData) == 0 {
+		t.Fatal("expected non-empty OPT RDATA after adding EDE")
+	}
+
+	// Parse the OPT to verify
+	edns, err := dns.ParseOPT(&opt)
+	if err != nil {
+		t.Fatalf("ParseOPT error: %v", err)
+	}
+	if len(edns.Options) == 0 {
+		t.Fatal("expected at least one EDNS option")
+	}
+	if edns.Options[0].Code != dns.EDNSOptionCodeEDE {
+		t.Errorf("expected EDE option code %d, got %d", dns.EDNSOptionCodeEDE, edns.Options[0].Code)
+	}
+	code, text, err := dns.ParseEDEOption(edns.Options[0].Data)
+	if err != nil {
+		t.Fatalf("ParseEDEOption error: %v", err)
+	}
+	if code != dns.EDECodeDNSSECBogus {
+		t.Errorf("EDE code: expected %d, got %d", dns.EDECodeDNSSECBogus, code)
+	}
+	if text != "DNSSEC validation failure" {
+		t.Errorf("EDE text: expected 'DNSSEC validation failure', got %q", text)
+	}
+}
+
+func TestAddEDEToResponse_NoOPT(t *testing.T) {
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID: 0x1234,
+			Flags: dns.NewFlagBuilder().
+				SetQR(true).
+				SetRCODE(dns.RCodeServFail).
+				Build(),
+		},
+	}
+
+	addEDEToResponse(resp, dns.EDECodeStaleAnswer, "serve-stale")
+
+	// Should create an OPT record
+	if len(resp.Additional) != 1 {
+		t.Fatalf("expected 1 additional record, got %d", len(resp.Additional))
+	}
+	if resp.Additional[0].Type != dns.TypeOPT {
+		t.Fatal("expected OPT record to be created")
+	}
+}
+
+func TestGenerateServerCookie(t *testing.T) {
+	h := testHandler()
+	h.cookiesEnabled = true
+	h.cookieSecret = []byte("test-secret-1234")
+
+	clientCookie := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+
+	cookie1 := h.generateServerCookie(clientCookie, "192.168.1.1")
+	if len(cookie1) != 8 {
+		t.Fatalf("expected 8-byte server cookie, got %d", len(cookie1))
+	}
+
+	// Same inputs produce same cookie
+	cookie2 := h.generateServerCookie(clientCookie, "192.168.1.1")
+	for i := range cookie1 {
+		if cookie1[i] != cookie2[i] {
+			t.Fatal("same inputs should produce same cookie")
+		}
+	}
+
+	// Different client IP produces different cookie
+	cookie3 := h.generateServerCookie(clientCookie, "10.0.0.1")
+	same := true
+	for i := range cookie1 {
+		if cookie1[i] != cookie3[i] {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Error("different client IPs should produce different cookies")
+	}
+}
+
+func TestBuildErrorWithEDE(t *testing.T) {
+	h := testHandler()
+	query := buildTestQuery("example.com", dns.TypeA)
+
+	resp, err := h.buildErrorWithEDE(query, dns.RCodeServFail, dns.EDECodeDNSSECBogus, "bogus")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(resp) < 12 {
+		t.Fatal("response too short")
+	}
+
+	// Check RCODE is SERVFAIL
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if uint8(flags&0xF) != dns.RCodeServFail {
+		t.Errorf("expected SERVFAIL, got %d", flags&0xF)
+	}
+
+	// Parse and check EDE
+	msg, parseErr := dns.Unpack(resp)
+	if parseErr != nil {
+		t.Fatalf("unpack error: %v", parseErr)
+	}
+	if msg.EDNS0 == nil {
+		t.Fatal("expected EDNS0 in response")
+	}
+	found := false
+	for _, opt := range msg.EDNS0.Options {
+		if opt.Code == dns.EDNSOptionCodeEDE {
+			code, _, _ := dns.ParseEDEOption(opt.Data)
+			if code == dns.EDECodeDNSSECBogus {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected EDE option with DNSSEC Bogus code in response")
+	}
+}
+
 func buildTestQuery(name string, qtype uint16) []byte {
 	msg := &dns.Message{
 		Header: dns.Header{

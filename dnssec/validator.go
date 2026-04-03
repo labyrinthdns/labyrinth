@@ -82,8 +82,19 @@ func NewValidator(querier Querier, logger *slog.Logger) *Validator {
 // ValidateResponse validates DNSSEC signatures in a DNS response.
 // It checks RRSIG records in the answer section and validates the
 // trust chain from the signer back to the root trust anchors.
+// For NXDOMAIN/NODATA responses, it also validates NSEC3 proofs.
 func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype uint16) ValidationResult {
-	if response == nil || len(response.Answers) == 0 {
+	if response == nil {
+		return Insecure
+	}
+
+	// Handle NXDOMAIN/NODATA: validate NSEC3 proofs in authority section
+	rcode := response.Header.RCODE()
+	if rcode == dns.RCodeNXDomain || (rcode == dns.RCodeNoError && len(response.Answers) == 0) {
+		return v.validateDenialResponse(response, qname, qtype)
+	}
+
+	if len(response.Answers) == 0 {
 		return Insecure
 	}
 
@@ -389,4 +400,107 @@ func normalizeName(name string) string {
 		return name + "."
 	}
 	return name
+}
+
+// validateDenialResponse validates NSEC3 proofs in NXDOMAIN/NODATA responses.
+// It first checks for RRSIG signatures in the authority section, then validates
+// NSEC3 records to prove the queried name does not exist or the type is absent.
+func (v *Validator) validateDenialResponse(response *dns.Message, qname string, qtype uint16) ValidationResult {
+	// Collect RRSIG and NSEC3 records from authority section
+	var rrsigs []*dns.RRSIGRecord
+	var nsec3Records []*dns.NSEC3Record
+	var authorityRRs []dns.ResourceRecord
+
+	for _, rr := range response.Authority {
+		switch rr.Type {
+		case dns.TypeRRSIG:
+			parsed, err := dns.ParseRRSIG(rr.RData, 0)
+			if err != nil {
+				v.logger.Debug("failed to parse authority RRSIG", "error", err)
+				continue
+			}
+			rrsigs = append(rrsigs, parsed)
+		case dns.TypeNSEC3:
+			parsed, err := dns.ParseNSEC3(rr.RData)
+			if err != nil {
+				v.logger.Debug("failed to parse NSEC3", "error", err)
+				continue
+			}
+			nsec3Records = append(nsec3Records, parsed)
+		default:
+			authorityRRs = append(authorityRRs, rr)
+		}
+	}
+
+	// No RRSIG in authority means unsigned (insecure)
+	if len(rrsigs) == 0 {
+		return Insecure
+	}
+
+	// Validate RRSIG signatures over NSEC3 records
+	for _, rrsig := range rrsigs {
+		if rrsig.TypeCovered != dns.TypeNSEC3 && rrsig.TypeCovered != dns.TypeSOA {
+			continue
+		}
+
+		rrset := filterRRSet(response.Authority, rrsig.TypeCovered)
+		if len(rrset) == 0 {
+			continue
+		}
+
+		// Check time validity
+		now := uint32(time.Now().Unix())
+		if now < rrsig.Inception || now > rrsig.Expiration {
+			v.logger.Debug("authority RRSIG time invalid",
+				"inception", rrsig.Inception,
+				"expiration", rrsig.Expiration)
+			return Bogus
+		}
+
+		signerZone := normalizeName(rrsig.SignerName)
+		dnskeys, err := v.fetchDNSKEYs(signerZone)
+		if err != nil {
+			v.logger.Debug("failed to fetch DNSKEYs for denial validation",
+				"zone", signerZone, "error", err)
+			return Indeterminate
+		}
+
+		matchingKey, err := findMatchingDNSKEY(dnskeys, rrsig.KeyTag, rrsig.Algorithm)
+		if err != nil {
+			v.logger.Debug("no matching DNSKEY for authority RRSIG",
+				"key_tag", rrsig.KeyTag, "zone", signerZone)
+			return Indeterminate
+		}
+
+		if err := VerifyRRSIG(rrset, rrsig, matchingKey); err != nil {
+			v.logger.Debug("authority RRSIG verification failed",
+				"key_tag", rrsig.KeyTag, "zone", signerZone, "error", err)
+			return Bogus
+		}
+	}
+
+	// Validate NSEC3 denial proof
+	if len(nsec3Records) > 0 {
+		denied, err := VerifyNSEC3Denial(qname, nsec3Records)
+		if err != nil {
+			v.logger.Debug("NSEC3 denial verification error",
+				"qname", qname, "error", err)
+			return Indeterminate
+		}
+		if denied {
+			v.logger.Debug("NSEC3 denial proof valid", "qname", qname)
+			return Secure
+		}
+		v.logger.Debug("NSEC3 denial proof inconclusive", "qname", qname)
+	}
+
+	// RRSIG validated but no NSEC3 proof — the signed authority section is enough
+	// for a basic Secure result on NXDOMAIN/NODATA with SOA+RRSIG.
+	for _, rrsig := range rrsigs {
+		if rrsig.TypeCovered == dns.TypeSOA {
+			return Secure
+		}
+	}
+
+	return Insecure
 }

@@ -27,6 +27,10 @@ func defaultConfig() *Config {
 			DNSSECEnabled:       true,
 			HardenBelowNXDomain: true,
 			RootHintsRefresh:    12 * time.Hour,
+			ECSEnabled:          false,
+			ECSMaxPrefix:        24,
+			DNS64Enabled:        false,
+			DNS64Prefix:         "64:ff9b::/96",
 		},
 		Cache: CacheConfig{
 			MaxEntries:    100000,
@@ -40,6 +44,7 @@ func defaultConfig() *Config {
 		},
 		Security: SecurityConfig{
 			PrivateAddressFilter: true,
+			DNSCookies:           false,
 			RateLimit: RateLimitConfig{
 				Enabled: true,
 				Rate:    50,

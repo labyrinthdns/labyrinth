@@ -128,6 +128,10 @@ type ResolverConfig struct {
 	DNSSECEnabled       bool
 	HardenBelowNXDomain bool
 	RootHintsRefresh    time.Duration
+	ECSEnabled          bool
+	ECSMaxPrefix        int
+	DNS64Enabled        bool
+	DNS64Prefix         string
 }
 
 // CacheConfig holds cache settings.
@@ -148,6 +152,7 @@ type SecurityConfig struct {
 	RateLimit            RateLimitConfig
 	RRL                  RRLConfig
 	PrivateAddressFilter bool
+	DNSCookies           bool
 }
 
 // RateLimitConfig holds rate limiter settings.
@@ -174,6 +179,14 @@ type LoggingConfig struct {
 
 // ACLConfig holds access control list settings.
 type ACLConfig struct {
+	Allow []string
+	Deny  []string
+	Zones []ACLZoneConfig
+}
+
+// ACLZoneConfig holds per-zone ACL settings.
+type ACLZoneConfig struct {
+	Zone  string
 	Allow []string
 	Deny  []string
 }
@@ -290,6 +303,20 @@ func applyYAML(cfg *Config, values map[string]string) {
 			cfg.Resolver.RootHintsRefresh = d
 		}
 	}
+	if v, ok := values["resolver.ecs_enabled"]; ok {
+		cfg.Resolver.ECSEnabled = parseBool(v)
+	}
+	if v, ok := values["resolver.ecs_max_prefix"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Resolver.ECSMaxPrefix = n
+		}
+	}
+	if v, ok := values["resolver.dns64_enabled"]; ok {
+		cfg.Resolver.DNS64Enabled = parseBool(v)
+	}
+	if v, ok := values["resolver.dns64_prefix"]; ok {
+		cfg.Resolver.DNS64Prefix = v
+	}
 
 	// Cache
 	if v, ok := values["cache.max_entries"]; ok {
@@ -336,6 +363,9 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["security.private_address_filter"]; ok {
 		cfg.Security.PrivateAddressFilter = parseBool(v)
 	}
+	if v, ok := values["security.dns_cookies"]; ok {
+		cfg.Security.DNSCookies = parseBool(v)
+	}
 	if v, ok := values["security.rate_limit.enabled"]; ok {
 		cfg.Security.RateLimit.Enabled = parseBool(v)
 	}
@@ -380,6 +410,9 @@ func applyYAML(cfg *Config, values map[string]string) {
 	if v, ok := values["access_control.deny"]; ok && v != "" {
 		cfg.ACL.Deny = parseCSVList(v)
 	}
+
+	// Per-zone ACL: "access_control.zones.<zone>.allow" and ".deny"
+	cfg.ACL.Zones = parseACLZones(values)
 
 	// Logging
 	if v, ok := values["logging.level"]; ok {
@@ -555,6 +588,50 @@ func parseBlocklistEntries(s string) []BlocklistEntry {
 				URL:    strings.TrimSpace(parts[0]),
 				Format: strings.TrimSpace(parts[1]),
 			})
+		}
+	}
+	return result
+}
+
+// parseACLZones extracts per-zone ACL configs from the flat YAML key map.
+// Expected keys: "access_control.zones.<zone>.allow" and "access_control.zones.<zone>.deny"
+func parseACLZones(values map[string]string) []ACLZoneConfig {
+	zones := make(map[string]*ACLZoneConfig)
+	const prefix = "access_control.zones."
+	for key, val := range values {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		rest := key[len(prefix):]
+		// rest = "<zone>.allow" or "<zone>.deny"
+		dotIdx := strings.LastIndex(rest, ".")
+		if dotIdx < 0 {
+			continue
+		}
+		zoneName := rest[:dotIdx]
+		field := rest[dotIdx+1:]
+
+		zc, ok := zones[zoneName]
+		if !ok {
+			zc = &ACLZoneConfig{Zone: zoneName}
+			zones[zoneName] = zc
+		}
+		switch field {
+		case "allow":
+			if val != "" {
+				zc.Allow = parseCSVList(val)
+			}
+		case "deny":
+			if val != "" {
+				zc.Deny = parseCSVList(val)
+			}
+		}
+	}
+
+	var result []ACLZoneConfig
+	for _, zc := range zones {
+		if len(zc.Allow) > 0 || len(zc.Deny) > 0 {
+			result = append(result, *zc)
 		}
 	}
 	return result
