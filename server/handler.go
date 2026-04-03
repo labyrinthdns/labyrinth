@@ -22,15 +22,16 @@ type Handler interface {
 
 // MainHandler ties together parsing, resolution, and response assembly.
 type MainHandler struct {
-	resolver    *resolver.Resolver
-	cache       *cache.Cache
-	limiter     *security.RateLimiter
-	rrl         *security.RRL
-	acl         *security.ACL
-	metrics     *metrics.Metrics
-	logger      *slog.Logger
-	noCacheNets []*net.IPNet
-	blocklist   interface {
+	resolver      *resolver.Resolver
+	cache         *cache.Cache
+	limiter       *security.RateLimiter
+	rrl           *security.RRL
+	acl           *security.ACL
+	metrics       *metrics.Metrics
+	logger        *slog.Logger
+	noCacheNets   []*net.IPNet
+	privateFilter bool
+	blocklist     interface {
 		IsBlocked(string) bool
 		BlockingMode() string
 		CustomIP() string
@@ -39,6 +40,11 @@ type MainHandler struct {
 	// OnQuery is an optional callback invoked after each query is resolved.
 	// Parameters: client IP, qname, qtype, rcode (may be "BLOCKED"), whether served from cache, duration in ms.
 	OnQuery func(client, qname, qtype, rcode string, cached bool, durationMs float64)
+}
+
+// SetPrivateFilter enables or disables private address filtering.
+func (h *MainHandler) SetPrivateFilter(enabled bool) {
+	h.privateFilter = enabled
 }
 
 // SetBlocklist configures an optional blocklist for the handler.
@@ -164,6 +170,24 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		h.logger.Debug("query_blocked", "client", clientIP, "qname", q.Name, "qtype", qtypeStr)
 		if h.OnQuery != nil {
 			h.OnQuery(clientIP, q.Name, qtypeStr, "BLOCKED", true, durationMs)
+		}
+		return resp, nil
+	}
+
+	// 2.6 Minimal ANY response (RFC 8482): return synthetic HINFO instead
+	// of resolving, to prevent DNS amplification via ANY queries.
+	if q.Type == dns.TypeANY {
+		resp, err := h.buildMinimalANYResponse(msg, q)
+		if err != nil {
+			return nil, err
+		}
+		duration := time.Since(start)
+		h.metrics.ObserveQueryDuration(duration)
+		h.metrics.IncResponses("NOERROR")
+		durationMs := float64(duration.Microseconds()) / 1000.0
+		h.logger.Debug("minimal_any_response", "client", clientIP, "qname", q.Name)
+		if h.OnQuery != nil {
+			h.OnQuery(clientIP, q.Name, qtypeStr, "NOERROR", false, durationMs)
 		}
 		return resp, nil
 	}
@@ -363,7 +387,53 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry)
 	return dns.Pack(resp, buf)
 }
 
+// buildMinimalANYResponse returns a synthetic HINFO response per RFC 8482,
+// preventing DNS amplification attacks via ANY queries.
+func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question) ([]byte, error) {
+	// HINFO RDATA: <CPU-length> <CPU-string> <OS-length> <OS-string>
+	// CPU = "RFC8482", OS = ""
+	cpu := []byte("RFC8482")
+	rdata := make([]byte, 1+len(cpu)+1)
+	rdata[0] = byte(len(cpu))
+	copy(rdata[1:], cpu)
+	rdata[1+len(cpu)] = 0 // empty OS string
+
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID: query.Header.ID,
+			Flags: dns.NewFlagBuilder().
+				SetQR(true).
+				SetRD(query.Header.RD()).
+				SetRA(true).
+				SetRCODE(dns.RCodeNoError).
+				Build(),
+		},
+		Questions: query.Questions,
+		Answers: []dns.ResourceRecord{{
+			Name:     q.Name,
+			Type:     dns.TypeHINFO,
+			Class:    dns.ClassIN,
+			TTL:      0,
+			RDLength: uint16(len(rdata)),
+			RData:    rdata,
+		}},
+	}
+
+	if query.EDNS0 != nil {
+		resp.Additional = append(resp.Additional, dns.BuildOPT(4096, query.EDNS0.DOFlag))
+	}
+
+	buf := make([]byte, 4096)
+	return dns.Pack(resp, buf)
+}
+
 func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.ResolveResult) ([]byte, error) {
+	// Apply private address filtering before building the response
+	answers := result.Answers
+	if h.privateFilter {
+		answers = security.FilterPrivateAddresses(answers)
+	}
+
 	resp := &dns.Message{
 		Header: dns.Header{
 			ID: query.Header.ID,
@@ -375,7 +445,7 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 				Build(),
 		},
 		Questions:  query.Questions,
-		Answers:    result.Answers,
+		Answers:    answers,
 		Authority:  result.Authority,
 		Additional: result.Additional,
 	}

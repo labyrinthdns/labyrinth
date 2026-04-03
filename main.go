@@ -195,6 +195,20 @@ func main() {
 
 	handler := server.NewMainHandler(res, c, rl, rrl, acl, m, logger)
 
+	// Security: private address filtering
+	handler.SetPrivateFilter(cfg.Security.PrivateAddressFilter)
+
+	// Cache: harden-below-nxdomain (RFC 8020)
+	c.SetHardenBelowNX(cfg.Resolver.HardenBelowNXDomain)
+
+	// Cache: prefetch
+	c.SetPrefetchEnabled(cfg.Cache.Prefetch)
+	if cfg.Cache.Prefetch {
+		c.SetPrefetchFunc(func(name string, qtype, qclass uint16) {
+			_, _ = res.Resolve(name, qtype, qclass)
+		})
+	}
+
 	if len(cfg.Cache.NoCacheClients) > 0 {
 		handler.SetNoCacheClients(cfg.Cache.NoCacheClients)
 	}
@@ -223,6 +237,9 @@ func main() {
 		go rl.StartCleanup(ctx)
 	}
 
+	// Infra cache cleanup (stale NS RTT entries)
+	go res.InfraCache().StartCleanup(ctx, 10*time.Minute, 1*time.Hour)
+
 	// Root hint priming
 	go func() {
 		if err := res.PrimeRootHints(); err != nil {
@@ -232,11 +249,22 @@ func main() {
 			res.EnableDNSSEC(logger)
 			logger.Info("DNSSEC validation enabled")
 		}
+		// Root hints auto-refresh (RFC 8109)
+		if cfg.Resolver.RootHintsRefresh > 0 {
+			go res.StartRootRefresh(ctx, cfg.Resolver.RootHintsRefresh)
+		}
 	}()
 
 	// Start web dashboard (replaces standalone metrics server when enabled)
 	if cfg.Web.Enabled {
 		adminServer := web.NewAdminServer(cfg, c, m, res, logger, blocklistMgr)
+
+		// Enable DoH if configured
+		if cfg.Web.DoHEnabled {
+			adminServer.SetDoHHandler(handler)
+			adminServer.SetDoHEnabled(true)
+			logger.Info("DoH enabled on web dashboard", "path", "/dns-query")
+		}
 
 		// Wire query log hook
 		handler.OnQuery = func(client, qname, qtype, rcode string, cached bool, durationMs float64) {
@@ -288,7 +316,7 @@ func main() {
 	}
 
 	// Start DNS servers
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 4)
 
 	udpServer, err := server.NewUDPServer(cfg.Server.ListenAddr, handler, cfg.Server.MaxUDPWorkers, logger)
 	if err != nil {
@@ -306,6 +334,25 @@ func main() {
 		os.Exit(1)
 	}
 	go func() { errCh <- tcpServer.Serve(ctx) }()
+
+	// Start DoT server if enabled
+	if cfg.Server.DoTEnabled && cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "" {
+		dotServer, dotErr := server.NewDoTServer(
+			cfg.Server.DoTListenAddr,
+			handler,
+			cfg.Server.TLSCertFile,
+			cfg.Server.TLSKeyFile,
+			cfg.Server.TCPTimeout,
+			cfg.Server.MaxTCPConns,
+			logger,
+		)
+		if dotErr != nil {
+			logger.Error("failed to start DoT server", "error", dotErr)
+			os.Exit(1)
+		}
+		go func() { errCh <- dotServer.Serve(ctx) }()
+		logger.Info("DoT server started", "addr", cfg.Server.DoTListenAddr)
+	}
 
 	// Setup SIGUSR1/SIGUSR2 handlers (Unix only, no-op on Windows)
 	setupUnixSignals(logger, c)
