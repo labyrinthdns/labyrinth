@@ -25,6 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Blocklist enabled by default in example configuration (`labyrinth.yaml`)
 
+### Tests
+- Comprehensive coverage boost across all core packages:
+  security 100%, config 100%, dns 99.8%, cache 99.6%, dnssec 99.1%,
+  metrics 98.9%, blocklist 98.8%, resolver 97.4%
+- 100+ new test functions covering DNSSEC validation trust chain, blocklist
+  manager lifecycle, cache negative entries, RRSIG/NSEC/NSEC3 pack/unpack,
+  resolver edge cases (CNAME loops, ServFail retry, in-bailiwick NS, QMIN)
+
 ## [0.2.0] - 2026-04-03
 
 ### Added

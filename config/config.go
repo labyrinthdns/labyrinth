@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// yamlParser is the function used to parse YAML data.
+// It defaults to parseYAML and can be overridden in tests.
+var yamlParser = parseYAML
+
 // Config holds the complete application configuration.
 type Config struct {
 	Server    ServerConfig
@@ -142,7 +146,7 @@ func Load(path string) (*Config, error) {
 
 	// 1. Try config file
 	if data, err := os.ReadFile(path); err == nil {
-		values, err := parseYAML(data)
+		values, err := yamlParser(data)
 		if err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
