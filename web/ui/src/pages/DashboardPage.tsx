@@ -25,7 +25,7 @@ import {
   CartesianGrid,
 } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse, CacheEntry, TopListResponse } from '@/api/types'
+import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse, CacheEntry, TopListResponse, TimeSeriesResponse } from '@/api/types'
 import { formatBytes, formatNumber, formatUptime, formatVersion } from '@/lib/utils'
 import { useQueryStream } from '@/hooks/useWebSocket'
 
@@ -58,6 +58,8 @@ const CHART_SERIES_LABELS: Record<ChartSeriesKey, string> = {
 const CHART_SERIES_STORAGE_KEY = 'labyrinth.dashboard.chart_series_visibility'
 const TOP_PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const
 const TOP_WINDOW_LIMIT = 2000
+const CHART_HEARTBEAT_MS = 1000
+const TIMESERIES_POLL_MS = 5000
 
 function movingAverage(values: number[], windowSize = 4): number[] {
   if (values.length === 0) return []
@@ -77,10 +79,6 @@ function ema(values: number[], alpha = 0.35): number[] {
     out.push(alpha * values[i] + (1 - alpha) * out[i - 1])
   }
   return out
-}
-
-function toTenSecondBucket(tsMs: number): number {
-  return Math.floor(tsMs / 10_000) * 10_000
 }
 
 function defaultChartSeriesVisibility(): Record<ChartSeriesKey, boolean> {
@@ -138,10 +136,12 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [profile, setProfile] = useState<SystemProfileResponse | null>(null)
   const [timeseries, setTimeseries] = useState<TimeSeriesBucket[]>([])
+  const [bucketSeconds, setBucketSeconds] = useState(10)
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('15m')
   const [topClients, setTopClients] = useState<TopEntry[]>([])
   const [topDomains, setTopDomains] = useState<TopEntry[]>([])
   const [statsSnapshotAtMs, setStatsSnapshotAtMs] = useState(0)
+  const [chartHeartbeatAtMs, setChartHeartbeatAtMs] = useState(() => Date.now())
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshMs, setRefreshMs] = useState(15000)
@@ -277,12 +277,22 @@ export default function DashboardPage() {
   }, [])
 
   useEffect(() => {
+    const tick = setInterval(() => {
+      if (document.hidden) return
+      setChartHeartbeatAtMs(Date.now())
+    }, CHART_HEARTBEAT_MS)
+    return () => clearInterval(tick)
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
     const fetchTimeseries = async () => {
       try {
-        const tsData = await api.timeseries(timeWindow) as { buckets?: TimeSeriesBucket[] }
+        const tsData = await api.timeseries(timeWindow) as TimeSeriesResponse
         if (cancelled) return
         setTimeseries(tsData?.buckets || [])
+        const secs = Number(tsData?.bucket_seconds)
+        setBucketSeconds(Number.isFinite(secs) && secs > 0 ? secs : 10)
       } catch {
         // keep last timeseries on transient errors
       }
@@ -292,7 +302,7 @@ export default function DashboardPage() {
     const interval = setInterval(() => {
       if (!autoRefresh || document.hidden) return
       void fetchTimeseries()
-    }, 1000)
+    }, TIMESERIES_POLL_MS)
     return () => {
       cancelled = true
       clearInterval(interval)
@@ -332,6 +342,27 @@ export default function DashboardPage() {
       errors10s: errors,
     }
   }, [streamQueries])
+
+  const liveSecondStats = useMemo(() => {
+    const now = chartHeartbeatAtMs
+    const cutoff = now - 1_000
+    let queries = 0
+    let errors = 0
+    let latencyTotal = 0
+    for (const q of streamQueries) {
+      const ts = Date.parse(q.ts || '')
+      if (!Number.isFinite(ts) || ts < cutoff || ts > now) continue
+      queries++
+      latencyTotal += Number(q.duration_ms || 0)
+      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) errors++
+    }
+    return {
+      bucketMs: Math.floor(now / 1000) * 1000,
+      queries,
+      errors,
+      avgLatencyMs: queries > 0 ? latencyTotal / queries : 0,
+    }
+  }, [streamQueries, chartHeartbeatAtMs])
 
   const streamDelta = useMemo(() => {
     const queryTypeDelta: Record<string, number> = {}
@@ -384,34 +415,70 @@ export default function DashboardPage() {
     : 0
 
   const chartDataRaw = useMemo(() => {
-    return (timeseries || [])
+    const perBucketSeconds = Math.max(1, bucketSeconds)
+    const rows = (timeseries || [])
       .map((b) => {
         const ts = b.timestamp || b.ts || ''
         const tsMs = Date.parse(ts)
-        const bucketMs = Number.isFinite(tsMs) ? toTenSecondBucket(tsMs) : 0
+        const bucketMs = Number.isFinite(tsMs) ? tsMs : 0
         const queryCount = b.queries || 0
+        const qpsRaw = queryCount / perBucketSeconds
         return {
           ts,
           bucketMs,
-          time: ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+          time: ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
           queries: queryCount,
           cacheHits: b.cache_hits || 0,
           cacheMisses: b.cache_misses || 0,
           errors: b.errors || 0,
           avgLatencyMs: b.avg_latency_ms || 0,
-          qps: Number((queryCount / 10).toFixed(2)),
+          qpsRaw,
         }
       })
       .filter((row) => row.ts)
       .sort((a, b) => a.bucketMs - b.bucketMs)
-  }, [timeseries])
+    if (streamConnected) {
+      const liveRow = {
+        ts: new Date(liveSecondStats.bucketMs).toISOString(),
+        bucketMs: liveSecondStats.bucketMs,
+        time: new Date(liveSecondStats.bucketMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        queries: liveSecondStats.queries,
+        cacheHits: 0,
+        cacheMisses: 0,
+        errors: liveSecondStats.errors,
+        avgLatencyMs: liveSecondStats.avgLatencyMs,
+        qpsRaw: liveSecondStats.queries,
+      }
+      if (rows.length === 0) {
+        rows.push(liveRow)
+      } else {
+        const lastIdx = rows.length - 1
+        const last = rows[lastIdx]
+        if (liveRow.bucketMs <= last.bucketMs+perBucketSeconds*1000) {
+          rows[lastIdx] = { ...last, ...liveRow }
+        } else {
+          rows.push(liveRow)
+        }
+      }
+    }
+    const maxPoints = timeWindow === '5m' ? 300 : timeWindow === '15m' ? 900 : 1200
+    if (rows.length <= maxPoints) return rows
+    const stride = Math.ceil(rows.length / maxPoints)
+    const sampled = rows.filter((_, idx) => idx % stride === 0)
+    const last = rows[rows.length - 1]
+    if (sampled[sampled.length - 1]?.bucketMs !== last.bucketMs) sampled.push(last)
+    return sampled
+  }, [timeseries, bucketSeconds, liveSecondStats, streamConnected, timeWindow])
   const trendWindow = timeWindow === '5m' ? 4 : timeWindow === '15m' ? 6 : 8
   const queryTrend = movingAverage(chartDataRaw.map((x) => x.queries), trendWindow)
   const queryEMA = ema(chartDataRaw.map((x) => x.queries), 0.35)
+  const qpsWindowPoints = Math.max(1, Math.round(10 / Math.max(1, bucketSeconds)))
+  const qpsTrend = movingAverage(chartDataRaw.map((x) => x.qpsRaw), qpsWindowPoints)
   const chartData = chartDataRaw.map((x, i) => ({
     ...x,
     queriesTrend: Number((queryTrend[i] || 0).toFixed(2)),
     queriesEMA: Number((queryEMA[i] || 0).toFixed(2)),
+    qps: Number((qpsTrend[i] || 0).toFixed(2)),
   }))
 
   const windowQueries = chartData.reduce((sum, row) => sum + row.queries, 0)
@@ -811,19 +878,19 @@ export default function DashboardPage() {
                       }}
                     />
                     {chartSeriesVisibility.queries && (
-                      <Area yAxisId="q" type="monotone" dataKey="queries" fill="url(#queriesAreaGrad)" stroke="#22d3ee" strokeWidth={1.8} name="Queries" />
+                      <Area yAxisId="q" type="monotone" dataKey="queries" fill="url(#queriesAreaGrad)" stroke="#22d3ee" strokeWidth={1.8} name="Queries" isAnimationActive={false} />
                     )}
                     {chartSeriesVisibility.moving_avg && (
-                      <Line yAxisId="q" type="linear" dataKey="queriesTrend" stroke="#f59e0b" strokeWidth={2.3} dot={false} name="Moving Avg" />
+                      <Line yAxisId="q" type="linear" dataKey="queriesTrend" stroke="#f59e0b" strokeWidth={2.3} dot={false} name="Moving Avg" isAnimationActive={false} connectNulls />
                     )}
                     {chartSeriesVisibility.ema && (
-                      <Line yAxisId="q" type="linear" dataKey="queriesEMA" stroke="#60a5fa" strokeWidth={2} dot={false} strokeDasharray="4 4" name="EMA" />
+                      <Line yAxisId="q" type="linear" dataKey="queriesEMA" stroke="#60a5fa" strokeWidth={2} dot={false} strokeDasharray="4 4" name="EMA" isAnimationActive={false} connectNulls />
                     )}
                     {chartSeriesVisibility.errors && (
-                      <Line yAxisId="q" type="linear" dataKey="errors" stroke="#ef4444" strokeWidth={1.8} dot={false} name="Errors" />
+                      <Line yAxisId="q" type="linear" dataKey="errors" stroke="#ef4444" strokeWidth={1.8} dot={false} name="Errors" isAnimationActive={false} connectNulls />
                     )}
                     {chartSeriesVisibility.qps && (
-                      <Line yAxisId="qps" type="linear" dataKey="qps" stroke="#14b8a6" strokeWidth={2} dot={false} name="QPS" />
+                      <Line yAxisId="qps" type="linear" dataKey="qps" stroke="#14b8a6" strokeWidth={2} dot={false} name="QPS" isAnimationActive={false} connectNulls />
                     )}
                   </ComposedChart>
                 </ResponsiveContainer>

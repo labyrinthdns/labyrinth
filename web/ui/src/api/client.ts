@@ -2,7 +2,7 @@ import type {
   TopListResponse,
   NegativeCacheEntry,
   QueryEntry,
-  TimeSeriesBucket,
+  TimeSeriesResponse,
   UpdateInfo,
   BlocklistStats,
   BlocklistListEntry,
@@ -128,7 +128,7 @@ export const api = {
   stats: () => request<Record<string, unknown>>('/api/stats'),
 
   timeseries: (window = '5m') =>
-    request<{ buckets: TimeSeriesBucket[] }>(`/api/stats/timeseries?window=${window}`),
+    request<TimeSeriesResponse>(`/api/stats/timeseries?window=${window}`),
 
   recentQueries: (limit = 50) =>
     request<{ entries: QueryEntry[]; count: number }>(`/api/queries/recent?limit=${limit}`),

@@ -16,9 +16,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `DNS Resolver Matrix` is now streamlined into a high-signal default view (4 core cards) with optional expand/collapse for secondary metrics.
 - `Query Type Counters` redesigned into a compact footprint to reduce visual noise while preserving quick type distribution visibility.
 - Dashboard control toolbar (refresh/auto/ws chips) is hidden by default and can be toggled from the title area.
+- `Traffic Stability & QPS Over Time` now renders on a 1-second UI heartbeat while keeping backend polling lightweight, reducing chart freeze during high-variance traffic spikes.
 
 ### Performance
 - Default top tracker retention increased to `2000` for clients/domains (`web.top_clients_limit`, `web.top_domains_limit`) to match high-cardinality operational monitoring needs.
+- Time-series aggregation interval moved from 10s to 1s for smoother and more responsive dashboard trend lines.
+
+### Fixed
+- Web update endpoint now handles read-only filesystem installs gracefully and returns a clear operator hint instead of a generic temp-file failure.
 
 ## [0.4.7] - 2026-04-04
 

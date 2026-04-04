@@ -15,6 +15,7 @@
 - **Single binary** — DNS resolver + web dashboard + auth, everything in one 6.8 MB executable
 - **Web dashboard** — Real-time DNS monitoring, cache management, live query stream, dark/light theme
 - **Operator-first dashboard** — Compact high-signal matrix, expandable secondary metrics, and inline cache query modal from top domains
+- **Smooth live charts** — Dashboard trend charts redraw every second to stay responsive during bursty traffic changes
 - **Zero-config start** — Interactive setup wizard on first run, sane defaults for everything
 - **Recursive only** — Navigates root → TLD → authoritative, caches results
 - **RFC compliant** — RFC 1035, 2308, 3596, 4033-4035, 6891, 7858, 8484, 8767, 9114, 9156
@@ -22,7 +23,7 @@
 - **DNS blocklist** — Pi-hole style domain blocking with hosts/domain/AdBlock Plus list formats
 - **Secure** — JWT auth, bcrypt passwords, bailiwick enforcement, rate limiting, ACL
 - **Observable** — Prometheus metrics, Zabbix agent, structured logging, WebSocket query stream
-- **Self-updating** — Automatic version check + one-click update from web dashboard
+- **Self-updating** — Automatic version check + one-click update from web dashboard (read-only installs require host-level update/redeploy)
 - **Fast** — Sharded cache, >22M cache reads/sec, <50µs cache hit latency, request coalescing
 
 ## Quick Install
@@ -85,7 +86,7 @@ On first run (no config file), the dashboard shows an interactive setup wizard:
 
 | Page | Description |
 |------|-------------|
-| **Dashboard** | Real-time DNS stats with compact matrix view, expandable secondary metrics, paged Top Clients/Top Domains (up to 2000), and inline domain cache-query modal |
+| **Dashboard** | Real-time DNS stats with compact matrix view, expandable secondary metrics, 1-second chart redraw cadence, paged Top Clients/Top Domains (up to 2000), and inline domain cache-query modal |
 | **Queries** | Live DNS query stream via WebSocket — filterable, pausable, DNSSEC badges, blocked indicators |
 | **Cache** | Cache stats, lookup tool, flush, delete individual entries, negative cache view |
 | **Blocklist** | List management, quick block/unblock, domain check, source stats |
