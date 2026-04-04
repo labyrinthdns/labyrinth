@@ -13,7 +13,7 @@ type TopEntry struct {
 
 // TopTracker is a concurrent top-N tracker that counts occurrences of string keys.
 type TopTracker struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	counts map[string]int64
 	limit  int
 }
@@ -78,12 +78,12 @@ func (t *TopTracker) TopPage(limit, offset int) ([]TopEntry, int) {
 		offset = 0
 	}
 
-	t.mu.Lock()
+	t.mu.RLock()
 	entries := make([]TopEntry, 0, len(t.counts))
 	for k, v := range t.counts {
 		entries = append(entries, TopEntry{Key: k, Count: v})
 	}
-	t.mu.Unlock()
+	t.mu.RUnlock()
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Count > entries[j].Count

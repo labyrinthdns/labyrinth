@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthContext } from '@/hooks/useAuth'
 import { api, getToken, setToken, clearToken } from '@/api/client'
 import Layout from '@/components/Layout'
+import ErrorBoundary from '@/components/ErrorBoundary'
 
 const LoginPage = lazy(() => import('@/pages/LoginPage'))
 const SetupWizard = lazy(() => import('@/pages/SetupWizard'))
@@ -105,6 +106,7 @@ export default function App() {
   }
 
   return (
+    <ErrorBoundary>
     <AuthContext.Provider value={{ isAuthenticated, username, login, logout }}>
       <BrowserRouter>
         <Suspense fallback={<RouteFallback />}>
@@ -180,5 +182,6 @@ export default function App() {
         </Suspense>
       </BrowserRouter>
     </AuthContext.Provider>
+    </ErrorBoundary>
   )
 }
