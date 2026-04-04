@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Pre-commit hook: validates that Go and frontend build succeed locally
+# Install: cp .github/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+echo "==> Building dashboard frontend..."
+cd "$ROOT/web/ui"
+npm ci --silent 2>/dev/null
+npm run build --silent
+
+echo "==> Running go vet..."
+cd "$ROOT"
+go vet ./...
+
+echo "==> All checks passed."
