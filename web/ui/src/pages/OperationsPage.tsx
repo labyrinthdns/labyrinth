@@ -29,6 +29,7 @@ export default function OperationsPage() {
   const [errorThresholdPct, setErrorThresholdPct] = useState(2)
   const [latencyThresholdMs, setLatencyThresholdMs] = useState(80)
   const [error, setError] = useState('')
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const fetchingRef = useRef(false)
   const healthFetchedAtRef = useRef(0)
 
@@ -66,6 +67,7 @@ export default function OperationsPage() {
         setBuckets(data.buckets || [])
       }
 
+      setUpdatedAt(new Date())
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load operations data')
@@ -137,6 +139,18 @@ export default function OperationsPage() {
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Live service health, reliability and throughput signals.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <span className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800">
+            Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
+          </span>
+          <span className={`px-2.5 py-1 rounded-lg border text-xs ${
+            severity === 'critical'
+              ? 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'
+              : severity === 'warning'
+                ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+                : 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
+          }`}>
+            {severity.toUpperCase()}
+          </span>
           <div className="inline-flex items-center gap-1 rounded-lg border border-slate-300 dark:border-slate-600 px-2 py-1 text-xs bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300">
             <span>Auto</span>
             <select

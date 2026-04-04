@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-04-04
+
+### Changed
+- Web UI dashboard redesigned to restore the high-density telemetry layout with improved top status chips, richer runtime blocks, and network throughput visibility.
+- Dashboard traffic visualization improved with smoothing layers (moving average + EMA) to reduce noisy spikes while preserving real-time signal.
+- Operations page received UX polish with clearer state chips and explicit last-refresh visibility.
+- Reports page improved with faster snapshot feedback and clearer export context.
+
+### Fixed
+- `update.sh` now supports forced reinstall behavior even when the installed version matches the target release.
+- `install.sh` messaging now clearly reflects same-version reinstall support.
+
 ## [0.4.3] - 2026-04-04
 
 ### Added
