@@ -124,12 +124,10 @@ func (ts *TimeSeriesAggregator) Snapshot(window time.Duration) []Bucket {
 	cutoff := now.Add(-window)
 
 	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
 	// Rotate to flush current bucket if needed
 	ts.rotateLocked(now)
-	ts.mu.Unlock()
-
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
 
 	var result []Bucket
 	for _, b := range ts.buckets {
