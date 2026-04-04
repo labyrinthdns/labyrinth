@@ -116,9 +116,10 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "missing name parameter"})
 		return
 	}
-	if !strings.HasSuffix(name, ".") {
-		name += "."
-	}
+	// Normalize: try without trailing dot first (resolver convention), then with dot.
+	name = strings.ToLower(name)
+	nameNoDot := strings.TrimSuffix(name, ".")
+	nameDot := nameNoDot + "."
 	if typeStr == "" {
 		typeStr = "A"
 	}
@@ -127,7 +128,13 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 
 	// ALL: return all cached types for this name
 	if typeUpper == "ALL" {
-		entries := s.cache.LookupAll(name, dns.ClassIN)
+		entries := s.cache.LookupAll(nameNoDot, dns.ClassIN)
+		if len(entries) == 0 {
+			entries = s.cache.LookupAll(nameDot, dns.ClassIN)
+		}
+		if len(entries) == 0 {
+			entries = s.cache.LookupAll(name, dns.ClassIN)
+		}
 		if len(entries) == 0 {
 			jsonResponse(w, http.StatusNotFound, map[string]string{"error": "no entries found"})
 			return
@@ -174,7 +181,13 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	entry, found := s.cache.Lookup(name, qtype, dns.ClassIN)
+	entry, found := s.cache.Lookup(nameNoDot, qtype, dns.ClassIN)
+	if !found {
+		entry, found = s.cache.Lookup(nameDot, qtype, dns.ClassIN)
+	}
+	if !found {
+		entry, found = s.cache.Lookup(name, qtype, dns.ClassIN)
+	}
 	if !found {
 		jsonResponse(w, http.StatusNotFound, map[string]string{"error": "entry not found"})
 		return
@@ -304,9 +317,9 @@ func (s *AdminServer) handleCacheDelete(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "missing name parameter"})
 		return
 	}
-	if !strings.HasSuffix(name, ".") {
-		name += "."
-	}
+	name = strings.ToLower(name)
+	nameNoDot := strings.TrimSuffix(name, ".")
+	nameDot := nameNoDot + "."
 	if typeStr == "" {
 		typeStr = "A"
 	}
@@ -317,7 +330,13 @@ func (s *AdminServer) handleCacheDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	deleted := s.cache.Delete(name, qtype, dns.ClassIN)
+	deleted := s.cache.Delete(nameNoDot, qtype, dns.ClassIN)
+	if !deleted {
+		deleted = s.cache.Delete(nameDot, qtype, dns.ClassIN)
+	}
+	if !deleted {
+		deleted = s.cache.Delete(name, qtype, dns.ClassIN)
+	}
 	if !deleted {
 		jsonResponse(w, http.StatusNotFound, map[string]string{"error": "entry not found"})
 		return

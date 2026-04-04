@@ -564,7 +564,7 @@ export default function DashboardPage() {
   }, [domainTotal, domainPageSize, domainPage])
 
   const runCacheLookupForDomain = useCallback(async (domain: string) => {
-    const qname = domain.endsWith('.') ? domain : `${domain}.`
+    const qname = domain.endsWith('.') ? domain.slice(0, -1) : domain
     setLookupDomain(qname)
     setLookupLoading(true)
     setLookupError('')
