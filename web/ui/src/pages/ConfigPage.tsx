@@ -12,7 +12,17 @@ type FormState = {
   resolver: { maxDepth: number; maxCnameDepth: number; qmin: boolean; dnssec: boolean; upstreamTimeout: string; upstreamRetries: number }
   cache: { maxEntries: number; minTTL: number; maxTTL: number; negMaxTTL: number; sweep: string; serveStale: boolean; staleTTL: number; noCacheClients: string[] }
   security: { rateEnabled: boolean; rate: number; burst: number; rrlEnabled: boolean; rrlRPS: number; rrlSlip: number; rrlV4: number; rrlV6: number }
-  web: { enabled: boolean; addr: string; doh: boolean; doh3: boolean; tls: boolean; authUser: string; authHash: string }
+  web: {
+    enabled: boolean
+    addr: string
+    doh: boolean
+    doh3: boolean
+    tls: boolean
+    authUser: string
+    authHash: string
+    alertErrorThresholdPct: number
+    alertLatencyThresholdMs: number
+  }
   logging: { level: string; format: string }
   daemon: { enabled: boolean; pidFile: string }
   zabbix: { enabled: boolean; addr: string }
@@ -76,6 +86,8 @@ function mapForm(cfg: Record<string, unknown>, authHash: string): FormState {
       tls: boo(web.tls_enabled, false),
       authUser: str(auth.username, 'admin'),
       authHash,
+      alertErrorThresholdPct: num(web.alert_error_threshold_pct, 5),
+      alertLatencyThresholdMs: num(web.alert_latency_threshold_ms, 250),
     },
     logging: { level: str(obj(cfg.logging).level, 'info'), format: str(obj(cfg.logging).format, 'json') },
     daemon: { enabled: boo(obj(cfg.daemon).enabled, false), pidFile: str(obj(cfg.daemon).pid_file, '/var/run/labyrinth.pid') },
@@ -169,6 +181,8 @@ function buildYAML(f: FormState): string {
   L.push(`  doh_enabled: ${f.web.doh}`)
   L.push(`  doh3_enabled: ${f.web.doh3}`)
   L.push(`  tls_enabled: ${f.web.tls}`)
+  L.push(`  alert_error_threshold_pct: ${f.web.alertErrorThresholdPct}`)
+  L.push(`  alert_latency_threshold_ms: ${f.web.alertLatencyThresholdMs}`)
   L.push('  auth:')
   L.push(`    username: ${y(f.web.authUser)}`)
   if (f.web.authHash) L.push(`    password_hash: ${y(f.web.authHash)}`)
@@ -469,6 +483,11 @@ export default function ConfigPage() {
             <label className="text-xs font-medium">Max Depth<div className={keyClass}>resolver.max_depth</div><input type="number" className={inputClass} disabled={readonly} value={form.resolver.maxDepth} onChange={(e) => patch((p) => ({ ...p, resolver: { ...p.resolver, maxDepth: Number(e.target.value || 0) } }))} /></label>
             <label className="text-xs font-medium">Cache Entries<div className={keyClass}>cache.max_entries</div><input type="number" className={inputClass} disabled={readonly} value={form.cache.maxEntries} onChange={(e) => patch((p) => ({ ...p, cache: { ...p.cache, maxEntries: Number(e.target.value || 0) } }))} /></label>
           </div>
+          <div className="grid grid-cols-3 gap-2">
+            <label className="text-xs font-medium">Cache Min TTL<div className={keyClass}>cache.min_ttl</div><input type="number" min={0} className={inputClass} disabled={readonly} value={form.cache.minTTL} onChange={(e) => patch((p) => ({ ...p, cache: { ...p.cache, minTTL: Number(e.target.value || 0) } }))} /></label>
+            <label className="text-xs font-medium">Cache Max TTL<div className={keyClass}>cache.max_ttl</div><input type="number" min={0} className={inputClass} disabled={readonly} value={form.cache.maxTTL} onChange={(e) => patch((p) => ({ ...p, cache: { ...p.cache, maxTTL: Number(e.target.value || 0) } }))} /></label>
+            <label className="text-xs font-medium">Negative Max TTL<div className={keyClass}>cache.negative_max_ttl</div><input type="number" min={0} className={inputClass} disabled={readonly} value={form.cache.negMaxTTL} onChange={(e) => patch((p) => ({ ...p, cache: { ...p.cache, negMaxTTL: Number(e.target.value || 0) } }))} /></label>
+          </div>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={readonly} checked={form.resolver.qmin} onChange={(e) => patch((p) => ({ ...p, resolver: { ...p.resolver, qmin: e.target.checked } }))} />QNAME Minimization</label>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={readonly} checked={form.resolver.dnssec} onChange={(e) => patch((p) => ({ ...p, resolver: { ...p.resolver, dnssec: e.target.checked } }))} />DNSSEC</label>
           <StringList title="No Cache Clients" path="cache.no_cache_clients" values={form.cache.noCacheClients} onChange={(next) => patch((p) => ({ ...p, cache: { ...p.cache, noCacheClients: next } }))} disabled={readonly} placeholder="192.168.1.0/24" />
@@ -477,6 +496,10 @@ export default function ConfigPage() {
         <Section title="Web + Auth">
           <label className="text-xs font-medium">Web Address<div className={keyClass}>web.addr</div><input className={inputClass} disabled={readonly} value={form.web.addr} onChange={(e) => patch((p) => ({ ...p, web: { ...p.web, addr: e.target.value } }))} /></label>
           <label className="text-xs font-medium">Admin Username<div className={keyClass}>web.auth.username</div><input className={inputClass} disabled={readonly} value={form.web.authUser} onChange={(e) => patch((p) => ({ ...p, web: { ...p.web, authUser: e.target.value } }))} /></label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-xs font-medium">Error Threshold %<div className={keyClass}>web.alert_error_threshold_pct</div><input type="number" min={0.1} step={0.1} className={inputClass} disabled={readonly} value={form.web.alertErrorThresholdPct} onChange={(e) => patch((p) => ({ ...p, web: { ...p.web, alertErrorThresholdPct: Number(e.target.value || 0) } }))} /></label>
+            <label className="text-xs font-medium">Latency Threshold ms<div className={keyClass}>web.alert_latency_threshold_ms</div><input type="number" min={1} step={1} className={inputClass} disabled={readonly} value={form.web.alertLatencyThresholdMs} onChange={(e) => patch((p) => ({ ...p, web: { ...p.web, alertLatencyThresholdMs: Number(e.target.value || 0) } }))} /></label>
+          </div>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={readonly} checked={form.web.enabled} onChange={(e) => patch((p) => ({ ...p, web: { ...p.web, enabled: e.target.checked } }))} />Web Enabled</label>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={readonly} checked={form.web.doh} onChange={(e) => patch((p) => ({ ...p, web: { ...p.web, doh: e.target.checked } }))} />DoH Enabled (HTTP/1.1+2)</label>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={readonly} checked={form.web.doh3} onChange={(e) => patch((p) => ({ ...p, web: { ...p.web, doh3: e.target.checked } }))} />DoH Enabled (HTTP/3)</label>

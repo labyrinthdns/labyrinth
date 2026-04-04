@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-04-04
+
+### Added
+- Dashboard top list panels now support server-side pagination with larger inspection windows, so operators can browse up to 2000 ranked clients/domains directly from the UI.
+- `Top Domains` rows now include inline cache query actions that open a modal and show per-type cache results without leaving the dashboard.
+
+### Changed
+- `DNS Resolver Matrix` is now streamlined into a high-signal default view (4 core cards) with optional expand/collapse for secondary metrics.
+- `Query Type Counters` redesigned into a compact footprint to reduce visual noise while preserving quick type distribution visibility.
+- Dashboard control toolbar (refresh/auto/ws chips) is hidden by default and can be toggled from the title area.
+
+### Performance
+- Default top tracker retention increased to `2000` for clients/domains (`web.top_clients_limit`, `web.top_domains_limit`) to match high-cardinality operational monitoring needs.
+
 ## [0.4.7] - 2026-04-04
 
 ### Added

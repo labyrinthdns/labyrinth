@@ -26,8 +26,8 @@ export default function OperationsPage() {
   const [timeWindow, setTimeWindow] = useState<OpsWindow>('1h')
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshMs, setRefreshMs] = useState(15000)
-  const [errorThresholdPct, setErrorThresholdPct] = useState(2)
-  const [latencyThresholdMs, setLatencyThresholdMs] = useState(80)
+  const [errorThresholdPct, setErrorThresholdPct] = useState(5)
+  const [latencyThresholdMs, setLatencyThresholdMs] = useState(250)
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const fetchingRef = useRef(false)
@@ -87,6 +87,25 @@ export default function OperationsPage() {
     }, refreshMs)
     return () => clearInterval(interval)
   }, [fetchData, autoRefresh, refreshMs])
+
+  useEffect(() => {
+    let cancelled = false
+    void api.config()
+      .then((cfg) => {
+        if (cancelled) return
+        const web = (cfg?.web && typeof cfg.web === 'object') ? (cfg.web as Record<string, unknown>) : {}
+        const errThreshold = Number(web.alert_error_threshold_pct)
+        const latencyThreshold = Number(web.alert_latency_threshold_ms)
+        if (Number.isFinite(errThreshold) && errThreshold > 0) setErrorThresholdPct(errThreshold)
+        if (Number.isFinite(latencyThreshold) && latencyThreshold > 0) setLatencyThresholdMs(latencyThreshold)
+      })
+      .catch(() => {
+        // keep defaults
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const chartData = useMemo(() => {
     return (buckets || [])

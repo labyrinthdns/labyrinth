@@ -68,6 +68,39 @@ func TestCacheTTLClamping(t *testing.T) {
 	}
 }
 
+func TestCacheTTLClampMinAndMaxAppliedOnStore(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 30, 300, 120, m)
+
+	tooLow := []dns.ResourceRecord{{
+		Name: "min.example", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 1, RDLength: 4, RData: []byte{1, 1, 1, 1},
+	}}
+	tooHigh := []dns.ResourceRecord{{
+		Name: "max.example", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 99999, RDLength: 4, RData: []byte{2, 2, 2, 2},
+	}}
+
+	c.Store("min.example", dns.TypeA, dns.ClassIN, tooLow, nil)
+	c.Store("max.example", dns.TypeA, dns.ClassIN, tooHigh, nil)
+
+	minEntry, ok := c.Lookup("min.example", dns.TypeA, dns.ClassIN)
+	if !ok {
+		t.Fatal("expected min.example cache hit")
+	}
+	if minEntry.OrigTTL != 30 {
+		t.Fatalf("expected min.example OrigTTL=30 (min clamp), got %d", minEntry.OrigTTL)
+	}
+
+	maxEntry, ok := c.Lookup("max.example", dns.TypeA, dns.ClassIN)
+	if !ok {
+		t.Fatal("expected max.example cache hit")
+	}
+	if maxEntry.OrigTTL != 300 {
+		t.Fatalf("expected max.example OrigTTL=300 (max clamp), got %d", maxEntry.OrigTTL)
+	}
+}
+
 func TestCaseInsensitive(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := NewCache(1000, 5, 86400, 3600, m)

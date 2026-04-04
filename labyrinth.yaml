@@ -58,8 +58,10 @@ web:
   # tls_key_file: "/etc/labyrinth/certs/web.key"
   query_log_buffer: 1000
   # Maximum number of entries for top clients/domains leaderboards
-  top_clients_limit: 20
-  top_domains_limit: 20
+  top_clients_limit: 2000
+  top_domains_limit: 2000
+  alert_error_threshold_pct: 5
+  alert_latency_threshold_ms: 250
   # Automatic update check — queries GitHub Releases periodically
   auto_update: true
   update_check_interval: 24h
