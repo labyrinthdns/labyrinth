@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-04
+
+### Fixed
+- Race condition in time-series aggregator: `Snapshot()` used a TOCTOU unlock-relock pattern that could miss or duplicate buckets under concurrent writes; replaced with a single held lock.
+- Timer memory leaks in `AboutPage` and `ReportsPage` where `setTimeout` handles were not cleaned up on component unmount.
+- `TopTracker` used an exclusive `sync.Mutex` for read-heavy paginated queries; switched to `sync.RWMutex` so concurrent top-list reads no longer block each other.
+
+### Changed
+- Dashboard chart computations (`useMemo`) now skip redundant re-renders when the underlying data has not changed.
+- Operations page health polling uses a ref-based callback to break a stale-closure dependency cycle that could cause unnecessary re-fetches.
+- React `ErrorBoundary` component wraps the entire application, catching render-time crashes with a user-friendly reload prompt instead of a blank screen.
+
+### Internal
+- Comprehensive code audit across all Go backend and React frontend modules; verified production-readiness of resolver, cache, security, server, and web subsystems.
+- All frontend pages reviewed for hook correctness, cleanup, and dependency arrays.
+
 ## [0.4.8] - 2026-04-04
 
 ### Added

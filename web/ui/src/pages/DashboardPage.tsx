@@ -483,7 +483,7 @@ export default function DashboardPage() {
     }))
   }, [chartDataRaw, timeWindow, bucketSeconds])
 
-  const { windowQueries, windowErrors, windowErrorRate, windowAvgLatency } = useMemo(() => {
+  const { windowErrors, windowErrorRate, windowAvgLatency } = useMemo(() => {
     const wq = chartData.reduce((sum, row) => sum + row.queries, 0)
     const we = chartData.reduce((sum, row) => sum + row.errors, 0)
     const wl = chartData.reduce((sum, row) => sum + row.avgLatencyMs * row.queries, 0)

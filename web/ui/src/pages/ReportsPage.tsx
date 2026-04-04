@@ -42,7 +42,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false)
   const [copyDone, setCopyDone] = useState(false)
   const [error, setError] = useState('')
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const refreshSnapshot = useCallback(async () => {
     setLoading(true)
