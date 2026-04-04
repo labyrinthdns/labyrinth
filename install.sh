@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Labyrinth DNS Resolver — Install Script
 # Usage: curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash
-# Or:    bash install.sh [--no-service] [--version v0.4.3]
+# Or:    bash install.sh [--no-service] [--version v0.4.4]
 
 REPO="labyrinthdns/labyrinth"
 INSTALL_DIR="/usr/local/bin"
@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Examples:"
       echo "  curl -sSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash"
-      echo "  bash install.sh --version v0.4.3"
+      echo "  bash install.sh --version v0.4.4"
       echo "  bash install.sh --no-service"
       exit 0
       ;;
@@ -89,7 +89,7 @@ info "Installing Labyrinth ${VERSION}..."
 if command -v labyrinth &>/dev/null; then
   CURRENT=$("${INSTALL_DIR}/labyrinth" version 2>&1 | head -1 || echo "unknown")
   warn "Labyrinth already installed: ${CURRENT}"
-  warn "Use update.sh for upgrades. Continuing with fresh install..."
+  warn "Continuing with forced reinstall (same version is allowed)."
 fi
 
 # Download binaries
