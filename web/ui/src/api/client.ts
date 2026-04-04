@@ -1,5 +1,5 @@
 import type {
-  TopEntry,
+  TopListResponse,
   NegativeCacheEntry,
   QueryEntry,
   UpdateInfo,
@@ -179,11 +179,21 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  topClients: (limit?: number) =>
-    request<{ entries: TopEntry[] }>(`/api/stats/top-clients${limit ? `?limit=${limit}` : ''}`),
+  topClients: (limit?: number, offset?: number) => {
+    const params = new URLSearchParams()
+    if (typeof limit === 'number' && limit > 0) params.set('limit', String(limit))
+    if (typeof offset === 'number' && offset >= 0) params.set('offset', String(offset))
+    const qs = params.toString()
+    return request<TopListResponse>(`/api/stats/top-clients${qs ? `?${qs}` : ''}`)
+  },
 
-  topDomains: (limit?: number) =>
-    request<{ entries: TopEntry[] }>(`/api/stats/top-domains${limit ? `?limit=${limit}` : ''}`),
+  topDomains: (limit?: number, offset?: number) => {
+    const params = new URLSearchParams()
+    if (typeof limit === 'number' && limit > 0) params.set('limit', String(limit))
+    if (typeof offset === 'number' && offset >= 0) params.set('offset', String(offset))
+    const qs = params.toString()
+    return request<TopListResponse>(`/api/stats/top-domains${qs ? `?${qs}` : ''}`)
+  },
 
   cacheNegative: (limit = 100) =>
     request<{ entries: NegativeCacheEntry[] }>(`/api/cache/negative?limit=${limit}`),

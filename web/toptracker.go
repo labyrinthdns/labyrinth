@@ -65,6 +65,19 @@ func (t *TopTracker) prune() {
 
 // Top returns the top N entries sorted descending by count.
 func (t *TopTracker) Top(n int) []TopEntry {
+	entries, _ := t.TopPage(n, 0)
+	return entries
+}
+
+// TopPage returns a paginated top list sorted descending by count.
+func (t *TopTracker) TopPage(limit, offset int) ([]TopEntry, int) {
+	if limit <= 0 {
+		limit = t.limit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
 	t.mu.Lock()
 	entries := make([]TopEntry, 0, len(t.counts))
 	for k, v := range t.counts {
@@ -76,8 +89,13 @@ func (t *TopTracker) Top(n int) []TopEntry {
 		return entries[i].Count > entries[j].Count
 	})
 
-	if n > len(entries) {
-		n = len(entries)
+	total := len(entries)
+	if offset >= total {
+		return []TopEntry{}, total
 	}
-	return entries[:n]
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return entries[offset:end], total
 }

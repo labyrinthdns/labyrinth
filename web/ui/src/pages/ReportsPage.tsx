@@ -7,14 +7,18 @@ import { copyTextToClipboard } from '@/lib/utils'
 type Snapshot = {
   at: string
   window: string
+  topLimit: number
   stats: Record<string, unknown>
   profile: Record<string, unknown>
   topClients: TopEntry[]
+  topClientsTotal: number
   topDomains: TopEntry[]
+  topDomainsTotal: number
   timeseries: Record<string, unknown>[]
 }
 
 const SNAPSHOT_WINDOWS = ['5m', '15m', '1h'] as const
+const TOP_LIMIT_OPTIONS = [50, 100, 250, 500, 1000] as const
 type SnapshotWindow = (typeof SNAPSHOT_WINDOWS)[number]
 
 function downloadFile(filename: string, content: string, type: string) {
@@ -32,6 +36,9 @@ function downloadFile(filename: string, content: string, type: string) {
 export default function ReportsPage() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [windowSize, setWindowSize] = useState<SnapshotWindow>('1h')
+  const [topLimit, setTopLimit] = useState<number>(250)
+  const [topClientFilter, setTopClientFilter] = useState('')
+  const [topDomainFilter, setTopDomainFilter] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyDone, setCopyDone] = useState(false)
   const [error, setError] = useState('')
@@ -44,18 +51,21 @@ export default function ReportsPage() {
       const [statsRes, profileRes, clientsRes, domainsRes, tsRes] = await Promise.all([
         api.stats(),
         api.systemProfile(),
-        api.topClients(50),
-        api.topDomains(50),
+        api.topClients(topLimit, 0),
+        api.topDomains(topLimit, 0),
         api.timeseries(windowSize),
       ])
 
       setSnapshot({
         at: new Date().toISOString(),
         window: windowSize,
+        topLimit,
         stats: statsRes as Record<string, unknown>,
         profile: profileRes as unknown as Record<string, unknown>,
         topClients: (clientsRes as { entries?: TopEntry[] }).entries || [],
+        topClientsTotal: Number((clientsRes as { total?: number }).total || 0),
         topDomains: (domainsRes as { entries?: TopEntry[] }).entries || [],
+        topDomainsTotal: Number((domainsRes as { total?: number }).total || 0),
         timeseries: (tsRes as { buckets?: Record<string, unknown>[] }).buckets || [],
       })
     } catch (err) {
@@ -63,7 +73,7 @@ export default function ReportsPage() {
     } finally {
       setLoading(false)
     }
-  }, [windowSize])
+  }, [windowSize, topLimit])
 
   useEffect(() => {
     void refreshSnapshot()
@@ -80,8 +90,8 @@ export default function ReportsPage() {
     const incidentPoints = timeseries.filter((row) => Number((row.errors as number) || 0) > 0).length
     return {
       totalQueries: totalQueriesByType,
-      topClientCount: snapshot.topClients.length,
-      topDomainCount: snapshot.topDomains.length,
+      topClientCount: snapshot.topClientsTotal || snapshot.topClients.length,
+      topDomainCount: snapshot.topDomainsTotal || snapshot.topDomains.length,
       tsPoints: snapshot.timeseries.length,
       totalWindowErrors,
       peakQueries,
@@ -90,8 +100,19 @@ export default function ReportsPage() {
     }
   }, [snapshot])
 
-  const topClientsPreview = useMemo(() => (snapshot?.topClients || []).slice(0, 5), [snapshot])
-  const topDomainsPreview = useMemo(() => (snapshot?.topDomains || []).slice(0, 5), [snapshot])
+  const topClientsFiltered = useMemo(() => {
+    const list = snapshot?.topClients || []
+    const needle = topClientFilter.trim().toLowerCase()
+    if (!needle) return list
+    return list.filter((item) => item.key.toLowerCase().includes(needle))
+  }, [snapshot, topClientFilter])
+
+  const topDomainsFiltered = useMemo(() => {
+    const list = snapshot?.topDomains || []
+    const needle = topDomainFilter.trim().toLowerCase()
+    if (!needle) return list
+    return list.filter((item) => item.key.toLowerCase().includes(needle))
+  }, [snapshot, topDomainFilter])
 
   const exportJSON = useCallback(() => {
     if (!snapshot) return
@@ -207,8 +228,22 @@ export default function ReportsPage() {
             Generated {snapshot ? new Date(snapshot.at).toLocaleTimeString() : '-'}
           </span>
           <span className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800">
-            Clients {summary?.topClientCount || 0} / Domains {summary?.topDomainCount || 0}
+            Clients {snapshot?.topClients.length || 0}/{summary?.topClientCount || 0} / Domains {snapshot?.topDomains.length || 0}/{summary?.topDomainCount || 0}
           </span>
+          <div className="inline-flex items-center gap-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-1">
+            <span className="text-xs text-slate-500 dark:text-slate-400">Top limit</span>
+            <select
+              value={topLimit}
+              onChange={(e) => setTopLimit(Number(e.target.value))}
+              className="bg-transparent text-xs text-slate-700 dark:text-slate-200 outline-none"
+            >
+              {TOP_LIMIT_OPTIONS.map((value) => (
+                <option key={value} value={value} className="text-slate-900">
+                  {value}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="inline-flex rounded-lg border border-slate-300 dark:border-slate-600 overflow-hidden">
             {SNAPSHOT_WINDOWS.map((w) => (
               <button
@@ -311,12 +346,12 @@ export default function ReportsPage() {
               </button>
               <span className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 ml-1">
                 <Download size={12} />
-                Includes stats, top clients/domains and {snapshot.window} time series
+                Includes stats, top {snapshot.topLimit} clients/domains and {snapshot.window} time series
               </span>
             </div>
 
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              Top lists: {summary?.topClientCount || 0} clients / {summary?.topDomainCount || 0} domains
+              Top lists loaded: {snapshot.topClients.length} clients / {snapshot.topDomains.length} domains (total distinct: {summary?.topClientCount || 0} / {summary?.topDomainCount || 0})
             </div>
           </>
         ) : (
@@ -329,15 +364,35 @@ export default function ReportsPage() {
       {snapshot && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-            <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Top Clients Preview</h2>
-            {topClientsPreview.length > 0 ? (
-              <div className="space-y-1.5">
-                {topClientsPreview.map((row, idx) => (
-                  <div key={`${row.key}-${idx}`} className="flex items-center justify-between text-sm">
-                    <span className="text-slate-600 dark:text-slate-300 font-mono text-xs truncate">{row.key}</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{row.count}</span>
-                  </div>
-                ))}
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Top Clients (loaded {snapshot.topClients.length})</h2>
+              <input
+                value={topClientFilter}
+                onChange={(e) => setTopClientFilter(e.target.value)}
+                placeholder="Filter client..."
+                className="h-8 w-40 rounded-md border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/40 px-2 text-xs text-slate-700 dark:text-slate-200"
+              />
+            </div>
+            {topClientsFiltered.length > 0 ? (
+              <div className="max-h-[460px] overflow-auto rounded-md border border-slate-200 dark:border-slate-700">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-100 dark:bg-slate-900 z-10">
+                    <tr className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      <th className="text-left px-2 py-2 w-8">#</th>
+                      <th className="text-left px-2 py-2">Client</th>
+                      <th className="text-right px-2 py-2 w-20">Queries</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                    {topClientsFiltered.map((row, idx) => (
+                      <tr key={`${row.key}-${idx}`}>
+                        <td className="px-2 py-1.5 text-xs text-slate-500">{idx + 1}</td>
+                        <td className="px-2 py-1.5 text-xs font-mono text-slate-700 dark:text-slate-200 break-all">{row.key}</td>
+                        <td className="px-2 py-1.5 text-right text-xs font-semibold text-slate-900 dark:text-slate-100">{row.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             ) : (
               <div className="text-sm text-slate-500 dark:text-slate-400">No client data in current snapshot.</div>
@@ -345,15 +400,35 @@ export default function ReportsPage() {
           </div>
 
           <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-            <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Top Domains Preview</h2>
-            {topDomainsPreview.length > 0 ? (
-              <div className="space-y-1.5">
-                {topDomainsPreview.map((row, idx) => (
-                  <div key={`${row.key}-${idx}`} className="flex items-center justify-between text-sm">
-                    <span className="text-slate-600 dark:text-slate-300 text-xs truncate">{row.key}</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{row.count}</span>
-                  </div>
-                ))}
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Top Domains (loaded {snapshot.topDomains.length})</h2>
+              <input
+                value={topDomainFilter}
+                onChange={(e) => setTopDomainFilter(e.target.value)}
+                placeholder="Filter domain..."
+                className="h-8 w-40 rounded-md border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/40 px-2 text-xs text-slate-700 dark:text-slate-200"
+              />
+            </div>
+            {topDomainsFiltered.length > 0 ? (
+              <div className="max-h-[460px] overflow-auto rounded-md border border-slate-200 dark:border-slate-700">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-100 dark:bg-slate-900 z-10">
+                    <tr className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      <th className="text-left px-2 py-2 w-8">#</th>
+                      <th className="text-left px-2 py-2">Domain</th>
+                      <th className="text-right px-2 py-2 w-20">Queries</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                    {topDomainsFiltered.map((row, idx) => (
+                      <tr key={`${row.key}-${idx}`}>
+                        <td className="px-2 py-1.5 text-xs text-slate-500">{idx + 1}</td>
+                        <td className="px-2 py-1.5 text-xs text-slate-700 dark:text-slate-200 break-all">{row.key}</td>
+                        <td className="px-2 py-1.5 text-right text-xs font-semibold text-slate-900 dark:text-slate-100">{row.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             ) : (
               <div className="text-sm text-slate-500 dark:text-slate-400">No domain data in current snapshot.</div>
