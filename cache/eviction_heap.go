@@ -70,3 +70,39 @@ func (s *shard) nextEvictionKeyLocked() (cacheKey, bool) {
 	}
 	return evictKey, found
 }
+
+func (s *shard) evictExpiredLocked(now time.Time) int {
+	evicted := 0
+
+	for s.evictQ.Len() > 0 {
+		item := s.evictQ[0]
+		if item.expiresAt.After(now) {
+			break
+		}
+
+		item = heap.Pop(&s.evictQ).(evictionItem)
+		current, ok := s.entries[item.key]
+		if !ok || current != item.entry {
+			continue
+		}
+		if current.RemainingTTL() > 0 {
+			continue
+		}
+
+		delete(s.entries, item.key)
+		evicted++
+	}
+
+	return evicted
+}
+
+func (s *shard) evictExpiredFallbackLocked() int {
+	evicted := 0
+	for key, entry := range s.entries {
+		if entry.RemainingTTL() == 0 {
+			delete(s.entries, key)
+			evicted++
+		}
+	}
+	return evicted
+}

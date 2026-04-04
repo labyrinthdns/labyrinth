@@ -22,16 +22,15 @@ func (c *Cache) StartSweeper(ctx context.Context, interval time.Duration) {
 
 func (c *Cache) sweep() {
 	evicted := 0
+	now := time.Now()
 
 	for i := range c.shards {
 		s := &c.shards[i]
 		s.mu.Lock()
-
-		for key, entry := range s.entries {
-			if entry.RemainingTTL() == 0 {
-				delete(s.entries, key)
-				evicted++
-			}
+		evicted += s.evictExpiredLocked(now)
+		if len(s.entries) > 0 && s.evictQ.Len() == 0 {
+			// Compatibility path for entries inserted without queue metadata.
+			evicted += s.evictExpiredFallbackLocked()
 		}
 
 		s.mu.Unlock()

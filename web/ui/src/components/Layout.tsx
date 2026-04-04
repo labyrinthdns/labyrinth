@@ -69,8 +69,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <aside
         className={cn(
           'fixed lg:static inset-y-0 left-0 z-50 flex flex-col transition-all duration-300',
-          'bg-slate-900 text-slate-200 dark:bg-slate-900 dark:text-slate-200',
-          'lg:bg-slate-50 lg:text-slate-800 lg:dark:bg-slate-900 lg:dark:text-slate-200',
+          'bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-200',
           'border-r border-slate-200 dark:border-slate-800',
           collapsed ? 'w-16' : 'w-60',
           mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
@@ -91,7 +90,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </button>
           <button
             onClick={() => setMobileOpen(false)}
-            className="lg:hidden flex items-center justify-center w-8 h-8 rounded-md hover:bg-slate-800 text-slate-400"
+            className="lg:hidden flex items-center justify-center w-8 h-8 rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400"
             aria-label="Close sidebar"
           >
             <X size={18} />

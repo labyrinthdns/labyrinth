@@ -58,6 +58,9 @@ func TestHandleSystemProfile_OK(t *testing.T) {
 	if _, ok := networkObj["interfaces"].([]interface{}); !ok {
 		t.Fatalf("network.interfaces should be array")
 	}
+	if _, ok := networkObj["dns_listen_addresses"].([]interface{}); !ok {
+		t.Fatalf("network.dns_listen_addresses should be array")
+	}
 
 	trafficObj, ok := body["traffic"].(map[string]interface{})
 	if !ok {
@@ -154,6 +157,54 @@ func TestReadTrafficSummary_EmptyAndWithBuckets(t *testing.T) {
 	if withBuckets.lastMinuteErrors < 1 {
 		t.Fatalf("expected at least 1 error, got %d", withBuckets.lastMinuteErrors)
 	}
+}
+
+func TestResolveListenIPs(t *testing.T) {
+	discovered := []string{"10.0.0.2", "2001:db8::2"}
+
+	tests := []struct {
+		name     string
+		listen   string
+		expected []string
+	}{
+		{name: "empty listen address", listen: "", expected: []string{}},
+		{name: "wildcard empty host", listen: ":53", expected: discovered},
+		{name: "wildcard ipv4", listen: "0.0.0.0:53", expected: discovered},
+		{name: "wildcard ipv6", listen: "[::]:53", expected: discovered},
+		{name: "wildcard star", listen: "*:53", expected: discovered},
+		{name: "specific ipv4", listen: "127.0.0.1:53", expected: []string{"127.0.0.1"}},
+		{name: "specific ipv6", listen: "[2001:db8::10]:53", expected: []string{"2001:db8::10"}},
+		{name: "specific without port", listen: "127.0.0.1", expected: []string{"127.0.0.1"}},
+		{name: "hostname", listen: "localhost:53", expected: []string{"localhost"}},
+		{name: "hostname trimmed brackets", listen: "[localhost]:53", expected: []string{"localhost"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveListenIPs(tt.listen, discovered)
+			if len(got) != len(tt.expected) {
+				t.Fatalf("expected %d listen IPs, got %d (%v)", len(tt.expected), len(got), got)
+			}
+			for i := range got {
+				if got[i] != tt.expected[i] {
+					t.Fatalf("expected[%d]=%q, got=%q", i, tt.expected[i], got[i])
+				}
+			}
+		})
+	}
+
+	t.Run("wildcard deduplicates discovered addresses", func(t *testing.T) {
+		got := resolveListenIPs("0.0.0.0:53", []string{"10.0.0.2", "10.0.0.2", "2001:db8::2"})
+		expected := []string{"10.0.0.2", "2001:db8::2"}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d deduplicated entries, got %d (%v)", len(expected), len(got), got)
+		}
+		for i := range got {
+			if got[i] != expected[i] {
+				t.Fatalf("expected[%d]=%q, got=%q", i, expected[i], got[i])
+			}
+		}
+	})
 }
 
 func TestSetConfigPath_EmptyIgnored(t *testing.T) {
