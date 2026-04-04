@@ -584,6 +584,78 @@ func TestHandleCheckUpdate_StaleCacheFallbackDeterministic(t *testing.T) {
 	}
 }
 
+func TestHandleCheckUpdate_ForceBypassesFreshCache(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	srv.updateMu.Lock()
+	srv.updateCache = &UpdateInfo{
+		CurrentVersion:  "v0.4.1",
+		LatestVersion:   "v0.4.2",
+		UpdateAvailable: true,
+	}
+	srv.updateCheckedAt = time.Now()
+	srv.config.Web.UpdateCheckInterval = time.Hour
+	srv.updateMu.Unlock()
+
+	calls := int32(0)
+	updateHTTPGet = func(string) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return jsonHTTP(http.StatusOK, `{
+			"tag_name":"v0.4.3",
+			"html_url":"https://example/release",
+			"body":"notes",
+			"assets":[]
+		}`), nil
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/update/check?force=1", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for force refresh, got %d", rec.Code)
+	}
+
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("expected exactly 1 upstream call, got %d", atomic.LoadInt32(&calls))
+	}
+
+	body := decodeJSON(t, rec)
+	if body["latest_version"] != "v0.4.3" {
+		t.Fatalf("expected latest_version v0.4.3, got %#v", body["latest_version"])
+	}
+}
+
+func TestHandleCheckUpdate_ForceDoesNotFallbackToStaleCache(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	srv.updateMu.Lock()
+	srv.updateCache = &UpdateInfo{
+		CurrentVersion:  "v0.4.1",
+		LatestVersion:   "v0.4.2",
+		UpdateAvailable: true,
+	}
+	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour)
+	srv.config.Web.UpdateCheckInterval = time.Minute
+	srv.updateMu.Unlock()
+
+	updateHTTPGet = func(string) (*http.Response, error) {
+		return nil, errors.New("upstream unavailable")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/update/check?force=1", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for forced fetch failure, got %d", rec.Code)
+	}
+}
+
 func TestHandleCheckUpdate_NoCacheFetchErrorDeterministic(t *testing.T) {
 	srv := testAdminServer(t)
 	withUpdateHooksReset(t)
