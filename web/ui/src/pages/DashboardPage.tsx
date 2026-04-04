@@ -24,7 +24,6 @@ import {
 import {
   ComposedChart,
   Area,
-  Bar,
   Line,
   XAxis,
   YAxis,
@@ -37,8 +36,9 @@ import {
   CartesianGrid,
 } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse, QueryEntry } from '@/api/types'
+import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse } from '@/api/types'
 import { formatNumber, formatUptime, formatBytes, formatVersion } from '@/lib/utils'
+import { useQueryStream } from '@/hooks/useWebSocket'
 
 const QUERY_TYPE_COUNTERS = ['A', 'AAAA', 'MX', 'NS', 'PTR', 'SRV', 'CNAME', 'TXT'] as const
 const TIME_WINDOWS = ['5m', '15m', '1h'] as const
@@ -49,6 +49,16 @@ const REFRESH_INTERVALS = [
   { label: '15s', value: 15000 },
   { label: '30s', value: 30000 },
 ] as const
+const CHART_SERIES_KEYS = ['queries', 'moving_avg', 'ema', 'qps', 'errors'] as const
+type ChartSeriesKey = (typeof CHART_SERIES_KEYS)[number]
+const CHART_SERIES_LABELS: Record<ChartSeriesKey, string> = {
+  queries: 'Queries',
+  moving_avg: 'Moving Avg',
+  ema: 'EMA',
+  qps: 'QPS',
+  errors: 'Errors',
+}
+const CHART_SERIES_STORAGE_KEY = 'labyrinth.dashboard.chart_series_visibility'
 const DASHBOARD_SECTION_IDS = ['query_types', 'network_security', 'top_lists'] as const
 type DashboardSectionID = (typeof DASHBOARD_SECTION_IDS)[number]
 const DEFAULT_SECTION_ORDER: DashboardSectionID[] = ['query_types', 'network_security', 'top_lists']
@@ -99,6 +109,31 @@ function normalizeSectionOrder(input: string[] | undefined): DashboardSectionID[
     if (!unique.includes(id)) unique.push(id)
   }
   return unique
+}
+
+function defaultChartSeriesVisibility(): Record<ChartSeriesKey, boolean> {
+  return {
+    queries: true,
+    moving_avg: true,
+    ema: true,
+    qps: true,
+    errors: true,
+  }
+}
+
+function normalizeChartSeriesVisibility(input: unknown): Record<ChartSeriesKey, boolean> {
+  const defaults = defaultChartSeriesVisibility()
+  if (!input || typeof input !== 'object') {
+    return defaults
+  }
+  const raw = input as Record<string, unknown>
+  const next = { ...defaults }
+  CHART_SERIES_KEYS.forEach((key) => {
+    if (typeof raw[key] === 'boolean') {
+      next[key] = raw[key] as boolean
+    }
+  })
+  return next
 }
 
 function StatCard({
@@ -170,8 +205,7 @@ export default function DashboardPage() {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('15m')
   const [topClients, setTopClients] = useState<TopEntry[]>([])
   const [topDomains, setTopDomains] = useState<TopEntry[]>([])
-  const [recentQueries, setRecentQueries] = useState<QueryEntry[]>([])
-  const [recentPaused, setRecentPaused] = useState(false)
+  const [statsSnapshotAtMs, setStatsSnapshotAtMs] = useState(0)
   const [networkHistory, setNetworkHistory] = useState<ThroughputPoint[]>([])
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
@@ -185,24 +219,34 @@ export default function DashboardPage() {
   const [draggingSection, setDraggingSection] = useState<DashboardSectionID | null>(null)
   const [layoutPanelOpen, setLayoutPanelOpen] = useState(false)
   const [layoutStatus, setLayoutStatus] = useState('')
+  const [chartSeriesVisibility, setChartSeriesVisibility] = useState<Record<ChartSeriesKey, boolean>>(defaultChartSeriesVisibility())
   const [error, setError] = useState('')
 
   const cpuSampleRef = useRef<{ sec: number; atMs: number } | null>(null)
   const netSampleRef = useRef<{ rx: number; tx: number; atMs: number } | null>(null)
   const layoutHydratedRef = useRef(false)
+  const {
+    queries: streamQueries,
+    connected: streamConnected,
+    paused: streamPaused,
+    setPaused: setStreamPaused,
+  } = useQueryStream(400)
+  const recentQueries = useMemo(() => streamQueries.slice(0, 10), [streamQueries])
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, tsRes, clientsRes, domainsRes, profileRes, recentRes] = await Promise.allSettled([
+      const [statsRes, tsRes, clientsRes, domainsRes, profileRes] = await Promise.allSettled([
         api.stats(),
         api.timeseries(timeWindow),
         api.topClients(20),
         api.topDomains(20),
         api.systemProfile(),
-        api.recentQueries(10),
       ])
 
-      if (statsRes.status === 'fulfilled') setStats(statsRes.value as unknown as StatsResponse)
+      if (statsRes.status === 'fulfilled') {
+        setStats(statsRes.value as unknown as StatsResponse)
+        setStatsSnapshotAtMs(Date.now())
+      }
 
       if (tsRes.status === 'fulfilled') {
         const tsData = tsRes.value as unknown as { buckets: TimeSeriesBucket[] }
@@ -257,16 +301,12 @@ export default function DashboardPage() {
         netSampleRef.current = { rx: rxTotal, tx: txTotal, atMs: nowMs }
       }
 
-      if (recentRes.status === 'fulfilled' && !recentPaused) {
-        setRecentQueries(recentRes.value.entries || [])
-      }
-
       setUpdatedAt(new Date())
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch stats')
     }
-  }, [timeWindow, recentPaused])
+  }, [timeWindow])
 
   useEffect(() => {
     void fetchData()
@@ -281,12 +321,80 @@ export default function DashboardPage() {
     return () => clearInterval(interval)
   }, [autoRefresh, refreshMs, fetchData])
 
-  const totalQueries = stats?.queries_by_type
-    ? Object.values(stats.queries_by_type).reduce((a, b) => a + b, 0)
+  const liveWindowStats = useMemo(() => {
+    const cutoff = Date.now() - 10_000
+    let count = 0
+    let errors = 0
+    for (const q of streamQueries) {
+      const ts = Date.parse(q.ts || '')
+      if (!Number.isFinite(ts) || ts < cutoff) continue
+      count++
+      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) {
+        errors++
+      }
+    }
+    return {
+      queries10s: count,
+      qps10s: count / 10,
+      errors10s: errors,
+    }
+  }, [streamQueries])
+
+  const streamDelta = useMemo(() => {
+    const queryTypeDelta: Record<string, number> = {}
+    const rcodeDelta: Record<string, number> = {}
+    let hits = 0
+    let misses = 0
+    let blocked = 0
+    let total = 0
+    for (const q of streamQueries) {
+      const ts = Date.parse(q.ts || '')
+      if (!Number.isFinite(ts) || ts <= statsSnapshotAtMs) continue
+      total++
+      const qt = (q.qtype || '').toUpperCase()
+      if (qt) queryTypeDelta[qt] = (queryTypeDelta[qt] || 0) + 1
+      const rc = (q.rcode || '').toUpperCase() || 'UNKNOWN'
+      rcodeDelta[rc] = (rcodeDelta[rc] || 0) + 1
+      if (q.cached) hits++
+      else misses++
+      if (q.blocked) blocked++
+    }
+    return { queryTypeDelta, rcodeDelta, hits, misses, blocked, total }
+  }, [streamQueries, statsSnapshotAtMs])
+
+  const statsView = useMemo<StatsResponse | null>(() => {
+    if (!stats) return null
+    const nextQueriesByType: Record<string, number> = { ...stats.queries_by_type }
+    for (const [k, v] of Object.entries(streamDelta.queryTypeDelta)) {
+      nextQueriesByType[k] = (nextQueriesByType[k] || 0) + v
+    }
+    const nextRcodes: Record<string, number> = { ...stats.responses_by_rcode }
+    for (const [k, v] of Object.entries(streamDelta.rcodeDelta)) {
+      nextRcodes[k] = (nextRcodes[k] || 0) + v
+    }
+
+    const cacheHits = (stats.cache_hits || 0) + streamDelta.hits
+    const cacheMisses = (stats.cache_misses || 0) + streamDelta.misses
+    const totalForHit = cacheHits + cacheMisses
+    const cacheHitRatio = totalForHit > 0 ? cacheHits / totalForHit : 0
+
+    return {
+      ...stats,
+      queries_by_type: nextQueriesByType,
+      responses_by_rcode: nextRcodes,
+      cache_hits: cacheHits,
+      cache_misses: cacheMisses,
+      cache_hit_ratio: cacheHitRatio,
+      blocked_queries: (stats.blocked_queries || 0) + streamDelta.blocked,
+    }
+  }, [stats, streamDelta])
+
+  const totalQueries = statsView?.queries_by_type
+    ? Object.values(statsView.queries_by_type).reduce((a, b) => a + b, 0)
     : 0
 
-  const rcodeData = stats?.responses_by_rcode
-    ? Object.entries(stats.responses_by_rcode)
+  const rcodeData = statsView?.responses_by_rcode
+    ? Object.entries(statsView.responses_by_rcode)
         .filter(([, count]) => count > 0)
         .map(([name, value]) => ({ name, value }))
     : []
@@ -305,6 +413,7 @@ export default function DashboardPage() {
         cacheMisses,
         errors: b.errors || 0,
         avgLatencyMs: b.avg_latency_ms || 0,
+        qps: Number((queryCount / 10).toFixed(2)),
         hitRate: queryCount > 0 ? (cacheHits / queryCount) * 100 : 0,
       }
     })
@@ -321,7 +430,7 @@ export default function DashboardPage() {
 
   const queryTypeCounts = QUERY_TYPE_COUNTERS.map((type) => ({
     type,
-    count: stats?.queries_by_type?.[type] || 0,
+    count: statsView?.queries_by_type?.[type] || 0,
   }))
 
   const memTotal = profile?.memory?.system_total_bytes || 0
@@ -343,10 +452,10 @@ export default function DashboardPage() {
     ? profile.network.dns_listen_addresses
     : (profile?.network.ip_addresses || [])
   const upInterfaces = (profile?.network.interfaces || []).filter((iface) => iface.flags?.includes('up')).length
-  const securityTotalDNSSEC = (stats?.dnssec_secure || 0) + (stats?.dnssec_insecure || 0) + (stats?.dnssec_bogus || 0)
-  const dnssecSecureRatio = securityTotalDNSSEC > 0 ? ((stats?.dnssec_secure || 0) / securityTotalDNSSEC) * 100 : 0
-  const dnssecBogusRatio = securityTotalDNSSEC > 0 ? ((stats?.dnssec_bogus || 0) / securityTotalDNSSEC) * 100 : 0
-  const securityNeedsAttention = Boolean((stats?.upstream_errors || 0) > 0 || (stats?.rate_limited || 0) > 0 || (stats?.dnssec_bogus || 0) > 0)
+  const securityTotalDNSSEC = (statsView?.dnssec_secure || 0) + (statsView?.dnssec_insecure || 0) + (statsView?.dnssec_bogus || 0)
+  const dnssecSecureRatio = securityTotalDNSSEC > 0 ? ((statsView?.dnssec_secure || 0) / securityTotalDNSSEC) * 100 : 0
+  const dnssecBogusRatio = securityTotalDNSSEC > 0 ? ((statsView?.dnssec_bogus || 0) / securityTotalDNSSEC) * 100 : 0
+  const securityNeedsAttention = Boolean((statsView?.upstream_errors || 0) > 0 || (statsView?.rate_limited || 0) > 0 || (statsView?.dnssec_bogus || 0) > 0)
   const filteredClients = useMemo(() => {
     const key = clientFilter.trim().toLowerCase()
     const filtered = topClients.filter((entry) => !key || entry.key.toLowerCase().includes(key))
@@ -400,6 +509,25 @@ export default function DashboardPage() {
     return () => window.clearTimeout(timer)
   }, [sectionOrder, hiddenSections])
 
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CHART_SERIES_STORAGE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as unknown
+      setChartSeriesVisibility(normalizeChartSeriesVisibility(parsed))
+    } catch {
+      // keep defaults
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHART_SERIES_STORAGE_KEY, JSON.stringify(chartSeriesVisibility))
+    } catch {
+      // ignore storage failures
+    }
+  }, [chartSeriesVisibility])
+
   const moveSection = useCallback((source: DashboardSectionID, target: DashboardSectionID) => {
     setSectionOrder((prev) => {
       if (source === target) return prev
@@ -419,6 +547,14 @@ export default function DashboardPage() {
 
   const showSection = useCallback((id: DashboardSectionID) => {
     setHiddenSections((prev) => prev.filter((v) => v !== id))
+  }, [])
+
+  const toggleChartSeries = useCallback((key: ChartSeriesKey) => {
+    setChartSeriesVisibility((prev) => {
+      const activeCount = CHART_SERIES_KEYS.reduce((sum, k) => sum + (prev[k] ? 1 : 0), 0)
+      if (prev[key] && activeCount <= 1) return prev
+      return { ...prev, [key]: !prev[key] }
+    })
   }, [])
 
   const visibleSections = sectionOrder.filter((id) => !hiddenSections.includes(id))
@@ -502,12 +638,12 @@ export default function DashboardPage() {
             </h2>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Status</span><span className={`font-semibold ${securityNeedsAttention ? 'text-amber-300' : 'text-emerald-300'}`}>{securityNeedsAttention ? 'Needs Attention' : 'Healthy'}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Blocked Queries</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.blocked_queries || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Rate Limited</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.rate_limited || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Upstream Errors</span><span className="font-semibold text-rose-300">{formatNumber(stats?.upstream_errors || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Secure</span><span className="font-semibold text-emerald-300">{formatNumber(stats?.dnssec_secure || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Insecure</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.dnssec_insecure || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Bogus</span><span className="font-semibold text-rose-300">{formatNumber(stats?.dnssec_bogus || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Blocked Queries</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.blocked_queries || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Rate Limited</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.rate_limited || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Upstream Errors</span><span className="font-semibold text-rose-300">{formatNumber(statsView?.upstream_errors || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Secure</span><span className="font-semibold text-emerald-300">{formatNumber(statsView?.dnssec_secure || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Insecure</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.dnssec_insecure || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Bogus</span><span className="font-semibold text-rose-300">{formatNumber(statsView?.dnssec_bogus || 0)}</span></div>
               <div className="pt-2">
                 <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Secure Ratio</span><span>{dnssecSecureRatio.toFixed(1)}%</span></div>
                 <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
@@ -621,7 +757,7 @@ export default function DashboardPage() {
     profile,
     listenIPs,
     securityNeedsAttention,
-    stats,
+    statsView,
     dnssecSecureRatio,
     dnssecBogusRatio,
     filteredClients,
@@ -690,14 +826,20 @@ export default function DashboardPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className={`px-2.5 py-1 rounded-md text-xs border ${stats?.resolver_ready ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/30'}`}>
-            {stats?.resolver_ready ? 'Resolver Ready' : 'Resolver Not Ready'}
+          <span className={`px-2.5 py-1 rounded-md text-xs border ${statsView?.resolver_ready ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/30'}`}>
+            {statsView?.resolver_ready ? 'Resolver Ready' : 'Resolver Not Ready'}
+          </span>
+          <span className={`px-2.5 py-1 rounded-md text-xs border ${streamConnected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
+            WS: {streamConnected ? 'Live' : 'Offline'}
+          </span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
+            Live QPS 10s: {liveWindowStats.qps10s.toFixed(2)}
           </span>
           <span className="px-2.5 py-1 rounded-md text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">Avg QPS 1m: {(profile?.traffic.last_minute_qps_avg || 0).toFixed(2)}</span>
           <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">Errors 1m: {formatNumber(profile?.traffic.last_minute_error_total || 0)}</span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">Cache Hit: {((stats?.cache_hit_ratio || 0) * 100).toFixed(1)}%</span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30">Blocked: {formatNumber(stats?.blocked_queries || 0)}</span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-rose-500/10 text-rose-300 border border-rose-500/30">Upstream Errors: {formatNumber(stats?.upstream_errors || 0)}</span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">Cache Hit: {((statsView?.cache_hit_ratio || 0) * 100).toFixed(1)}%</span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30">Blocked: {formatNumber(statsView?.blocked_queries || 0)}</span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-rose-500/10 text-rose-300 border border-rose-500/30">Upstream Errors: {formatNumber(statsView?.upstream_errors || 0)}</span>
         </div>
 
         {layoutPanelOpen && (
@@ -753,16 +895,16 @@ export default function DashboardPage() {
           <div>
             <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Live Query Pulse</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Last 10 queries on dashboard, full stream in Queries page.
+              WebSocket stream preview (last 10 queries). Full stream in Queries page.
             </p>
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setRecentPaused((v) => !v)}
+              onClick={() => setStreamPaused(!streamPaused)}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
             >
-              {recentPaused ? <Play size={12} /> : <Pause size={12} />}
-              {recentPaused ? 'Resume List' : 'Pause List'}
+              {streamPaused ? <Play size={12} /> : <Pause size={12} />}
+              {streamPaused ? 'Resume Stream' : 'Pause Stream'}
             </button>
             <a
               href="/queries"
@@ -778,16 +920,16 @@ export default function DashboardPage() {
             <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</p>
           </div>
           <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
-            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Window Queries</p>
-            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{formatNumber(windowQueries)}</p>
+            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Live Queries (10s)</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{formatNumber(liveWindowStats.queries10s)}</p>
           </div>
           <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
             <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Avg QPS (1m)</p>
             <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{(profile?.traffic.last_minute_qps_avg || 0).toFixed(2)}</p>
           </div>
           <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
-            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Errors (1m)</p>
-            <p className="text-sm font-semibold text-rose-300">{formatNumber(profile?.traffic.last_minute_error_total || 0)}</p>
+            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Live Errors (10s)</p>
+            <p className="text-sm font-semibold text-rose-300">{formatNumber(liveWindowStats.errors10s)}</p>
           </div>
         </div>
         <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
@@ -833,10 +975,10 @@ export default function DashboardPage() {
           <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
             <div>
               <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">
-                Traffic Stability Over Time
+                Traffic Stability & QPS Over Time
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Raw area + moving average + EMA trend to reduce sudden spikes
+                Raw queries + moving average + EMA + QPS line
               </p>
             </div>
             <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
@@ -854,6 +996,24 @@ export default function DashboardPage() {
                 </button>
               ))}
             </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 mb-3">
+            {CHART_SERIES_KEYS.map((key) => {
+              const visible = chartSeriesVisibility[key]
+              return (
+                <button
+                  key={key}
+                  onClick={() => toggleChartSeries(key)}
+                  className={`px-2 py-1 rounded-md text-[11px] border ${
+                    visible
+                      ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-600'
+                  }`}
+                >
+                  {visible ? 'Hide' : 'Show'} {CHART_SERIES_LABELS[key]}
+                </button>
+              )
+            })}
           </div>
           <div className="h-72">
             {chartData.length > 0 ? (
@@ -880,15 +1040,16 @@ export default function DashboardPage() {
                     tick={{ fontSize: 11, fill: '#94a3b8' }}
                     width={40}
                   />
-                  <YAxis
-                    yAxisId="pct"
-                    orientation="right"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: '#94a3b8' }}
-                    width={36}
-                    domain={[0, 100]}
-                  />
+                  {chartSeriesVisibility.qps && (
+                    <YAxis
+                      yAxisId="qps"
+                      orientation="right"
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fontSize: 11, fill: '#94a3b8' }}
+                      width={42}
+                    />
+                  )}
                   <Tooltip
                     contentStyle={{
                       backgroundColor: '#0f172a',
@@ -898,11 +1059,21 @@ export default function DashboardPage() {
                       fontSize: '12px',
                     }}
                   />
-                  <Area yAxisId="q" type="monotone" dataKey="queries" fill="url(#queriesBarGrad)" stroke="#22d3ee" strokeWidth={1.8} name="Queries" />
-                  <Line yAxisId="q" type="linear" dataKey="queriesTrend" stroke="#f59e0b" strokeWidth={2.3} dot={false} name="Moving Avg" />
-                  <Line yAxisId="q" type="linear" dataKey="queriesEMA" stroke="#60a5fa" strokeWidth={2} dot={false} strokeDasharray="4 4" name="EMA" />
-                  <Line yAxisId="q" type="linear" dataKey="errors" stroke="#ef4444" strokeWidth={1.8} dot={false} name="Errors" />
-                  <Bar yAxisId="pct" dataKey="hitRate" fill="#22c55e22" name="Hit Rate %" />
+                  {chartSeriesVisibility.queries && (
+                    <Area yAxisId="q" type="monotone" dataKey="queries" fill="url(#queriesBarGrad)" stroke="#22d3ee" strokeWidth={1.8} name="Queries" />
+                  )}
+                  {chartSeriesVisibility.moving_avg && (
+                    <Line yAxisId="q" type="linear" dataKey="queriesTrend" stroke="#f59e0b" strokeWidth={2.3} dot={false} name="Moving Avg" />
+                  )}
+                  {chartSeriesVisibility.ema && (
+                    <Line yAxisId="q" type="linear" dataKey="queriesEMA" stroke="#60a5fa" strokeWidth={2} dot={false} strokeDasharray="4 4" name="EMA" />
+                  )}
+                  {chartSeriesVisibility.errors && (
+                    <Line yAxisId="q" type="linear" dataKey="errors" stroke="#ef4444" strokeWidth={1.8} dot={false} name="Errors" />
+                  )}
+                  {chartSeriesVisibility.qps && (
+                    <Line yAxisId="qps" type="linear" dataKey="qps" stroke="#14b8a6" strokeWidth={2} dot={false} name="QPS" />
+                  )}
                 </ComposedChart>
               </ResponsiveContainer>
             ) : (
@@ -1075,21 +1246,21 @@ export default function DashboardPage() {
                 <StatCard
                   icon={Zap}
                   label="Cache Hit Ratio"
-                  value={stats ? `${((stats.cache_hit_ratio || 0) * 100).toFixed(1)}%` : '0%'}
-                  sub={stats ? `${formatNumber(stats.cache_hits || 0)} hits / ${formatNumber(stats.cache_misses || 0)} misses` : undefined}
+                  value={statsView ? `${((statsView.cache_hit_ratio || 0) * 100).toFixed(1)}%` : '0%'}
+                  sub={statsView ? `${formatNumber(statsView.cache_hits || 0)} hits / ${formatNumber(statsView.cache_misses || 0)} misses` : undefined}
                   iconColor="bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
                 />
                 <StatCard
                   icon={Database}
                   label="Cache Entries"
-                  value={stats ? formatNumber(stats.cache_entries || 0) : '0'}
-                  sub={stats ? `${formatNumber(stats.cache_positive || 0)} positive / ${formatNumber(stats.cache_negative || 0)} negative` : undefined}
+                  value={statsView ? formatNumber(statsView.cache_entries || 0) : '0'}
+                  sub={statsView ? `${formatNumber(statsView.cache_positive || 0)} positive / ${formatNumber(statsView.cache_negative || 0)} negative` : undefined}
                   iconColor="bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
                 />
                 <StatCard
                   icon={Clock}
                   label="Uptime"
-                  value={stats ? formatUptime(stats.uptime_seconds) : '0m'}
+                  value={statsView ? formatUptime(statsView.uptime_seconds) : '0m'}
                   iconColor="bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400"
                 />
               </div>
@@ -1214,7 +1385,7 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {stats && stats.rate_limited > 0 && (
+      {statsView && statsView.rate_limited > 0 && (
         <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 shadow-sm">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-orange-100 dark:bg-orange-900/40 text-orange-600 dark:text-orange-400">
@@ -1226,7 +1397,7 @@ export default function DashboardPage() {
               </h2>
               <p className="text-sm text-slate-500 dark:text-slate-400">
                 <span className="font-mono font-bold text-orange-600 dark:text-orange-400">
-                  {formatNumber(stats.rate_limited)}
+                  {formatNumber(statsView.rate_limited)}
                 </span>{' '}
                 queries rate limited
               </p>
