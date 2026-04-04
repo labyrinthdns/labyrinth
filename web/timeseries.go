@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	bucketInterval = 10 * time.Second
-	maxBuckets     = 360 // 1 hour at 10s intervals
+	bucketInterval = 1 * time.Second
+	maxBuckets     = 3600 // 1 hour at 1s intervals
 )
 
 // Bucket represents an aggregated time-series data point.
@@ -30,7 +30,7 @@ type activeBucket struct {
 	totalLatency float64
 }
 
-// TimeSeriesAggregator collects rolling 1-hour bucketed counters at 10-second intervals.
+// TimeSeriesAggregator collects rolling 1-hour bucketed counters at 1-second intervals.
 type TimeSeriesAggregator struct {
 	mu      sync.Mutex
 	buckets []Bucket

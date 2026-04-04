@@ -79,7 +79,8 @@ func (s *AdminServer) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"window":  windowStr,
-		"buckets": buckets,
+		"window":         windowStr,
+		"bucket_seconds": int(bucketInterval.Seconds()),
+		"buckets":        buckets,
 	})
 }
