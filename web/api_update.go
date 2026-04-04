@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -40,20 +42,34 @@ type githubAsset struct {
 const githubReleasesURL = "https://api.github.com/repos/labyrinthdns/labyrinth/releases/latest"
 
 var (
-	updateInitialDelay = 30 * time.Second
+	updateInitialDelay  = 30 * time.Second
 	updateTickerFactory = func(d time.Duration) *time.Ticker {
 		return time.NewTicker(d)
 	}
-	updateHTTPGet = http.Get
-	updateExecutable = os.Executable
+	updateHTTPGet      = http.Get
+	updateExecutable   = os.Executable
 	updateEvalSymlinks = filepath.EvalSymlinks
-	updateCreateTemp = os.CreateTemp
-	updateChmod = os.Chmod
-	updateRename = os.Rename
-	updateRemove = os.Remove
-	updateSleep = time.Sleep
-	updateRestartSelf = restartSelf
+	updateCreateTemp   = os.CreateTemp
+	updateChmod        = os.Chmod
+	updateRename       = os.Rename
+	updateRemove       = os.Remove
+	updateSleep        = time.Sleep
+	updateRestartSelf  = restartSelf
 )
+
+func isReadOnlyFS(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EROFS) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "read-only file system")
+}
+
+func updateReadOnlyHint(exePath string) string {
+	return fmt.Sprintf("self-update is disabled because the install path is read-only (%s); use install/update script on the host or redeploy your container image", filepath.Dir(exePath))
+}
 
 // handleCheckUpdate handles GET /api/system/update/check — returns cached update info or fetches fresh.
 func (s *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +221,12 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 
 	tmpFile, err := updateCreateTemp(filepath.Dir(exePath), "labyrinth-update-*")
 	if err != nil {
+		if isReadOnlyFS(err) {
+			jsonResponse(w, http.StatusConflict, map[string]string{
+				"error": updateReadOnlyHint(exePath),
+			})
+			return
+		}
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to create temp file: %v", err)})
 		return
 	}
@@ -234,6 +256,12 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 		updateRemove(oldPath) // clean up previous .old if exists
 		if err := updateRename(exePath, oldPath); err != nil {
 			updateRemove(tmpPath)
+			if isReadOnlyFS(err) {
+				jsonResponse(w, http.StatusConflict, map[string]string{
+					"error": updateReadOnlyHint(exePath),
+				})
+				return
+			}
 			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to move current executable: %v", err)})
 			return
 		}
@@ -241,6 +269,12 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 
 	if err := updateRename(tmpPath, exePath); err != nil {
 		updateRemove(tmpPath)
+		if isReadOnlyFS(err) {
+			jsonResponse(w, http.StatusConflict, map[string]string{
+				"error": updateReadOnlyHint(exePath),
+			})
+			return
+		}
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to replace executable: %v", err)})
 		return
 	}
