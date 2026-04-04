@@ -75,6 +75,8 @@ type WebConfig struct {
 	QueryLogBuffer      int
 	TopClientsLimit     int
 	TopDomainsLimit     int
+	AlertErrorThreshold float64
+	AlertLatencyMs      int
 	AutoUpdate          bool
 	UpdateCheckInterval time.Duration
 	Dashboard           WebDashboardConfig
@@ -386,6 +388,8 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setInt(&cfg.Web.QueryLogBuffer, "web.query_log_buffer")
 	setInt(&cfg.Web.TopClientsLimit, "web.top_clients_limit")
 	setInt(&cfg.Web.TopDomainsLimit, "web.top_domains_limit")
+	setFloat64(&cfg.Web.AlertErrorThreshold, "web.alert_error_threshold_pct", "web.error_threshold_pct")
+	setInt(&cfg.Web.AlertLatencyMs, "web.alert_latency_threshold_ms", "web.latency_threshold_ms")
 	setBool(&cfg.Web.AutoUpdate, "web.auto_update")
 	setDuration(&cfg.Web.UpdateCheckInterval, "web.update_check_interval")
 	setCSV(&cfg.Web.Dashboard.PanelOrder, "web.dashboard.panel_order")
@@ -501,6 +505,12 @@ func validate(cfg *Config) error {
 		if cfg.Web.TLSCertFile == "" || cfg.Web.TLSKeyFile == "" {
 			return fmt.Errorf("web.doh3_enabled=true requires web.tls_cert_file and web.tls_key_file")
 		}
+	}
+	if cfg.Web.AlertErrorThreshold <= 0 {
+		return fmt.Errorf("web.alert_error_threshold_pct must be > 0")
+	}
+	if cfg.Web.AlertLatencyMs <= 0 {
+		return fmt.Errorf("web.alert_latency_threshold_ms must be > 0")
 	}
 	if cfg.Cluster.Enabled {
 		switch cfg.Cluster.Role {

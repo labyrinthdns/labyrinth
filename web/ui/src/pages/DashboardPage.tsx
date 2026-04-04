@@ -1,17 +1,15 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
-  Activity,
   AlertTriangle,
-  Ban,
+  ChevronDown,
   CheckCircle2,
   Cpu,
-  Globe,
   HardDrive,
   MemoryStick,
   Network,
   RefreshCw,
-  Shield,
-  Zap,
+  SlidersHorizontal,
+  X,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -27,7 +25,7 @@ import {
   CartesianGrid,
 } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse } from '@/api/types'
+import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse, CacheEntry, TopListResponse } from '@/api/types'
 import { formatBytes, formatNumber, formatUptime, formatVersion } from '@/lib/utils'
 import { useQueryStream } from '@/hooks/useWebSocket'
 
@@ -42,17 +40,6 @@ const REFRESH_INTERVALS = [
 const CHART_SERIES_KEYS = ['queries', 'moving_avg', 'ema', 'qps', 'errors'] as const
 
 type ChartSeriesKey = (typeof CHART_SERIES_KEYS)[number]
-type TelemetryPoint = {
-  ts: string
-  bucketMs: number
-  time: string
-  queries: number
-  cacheHits: number
-  cacheMisses: number
-  errors: number
-  avgLatencyMs: number
-  qps: number
-}
 
 type VersionState = {
   current: string
@@ -69,6 +56,8 @@ const CHART_SERIES_LABELS: Record<ChartSeriesKey, string> = {
   errors: 'Errors',
 }
 const CHART_SERIES_STORAGE_KEY = 'labyrinth.dashboard.chart_series_visibility'
+const TOP_PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const
+const TOP_WINDOW_LIMIT = 2000
 
 function movingAverage(values: number[], windowSize = 4): number[] {
   if (values.length === 0) return []
@@ -115,53 +104,6 @@ function normalizeChartSeriesVisibility(input: unknown): Record<ChartSeriesKey, 
   return next
 }
 
-function SummaryCard({
-  icon: Icon,
-  label,
-  value,
-  sub,
-  tone = 'default',
-  href,
-}: {
-  icon: typeof Globe
-  label: string
-  value: string
-  sub?: string
-  tone?: 'default' | 'good' | 'warn' | 'danger' | 'info'
-  href?: string
-}) {
-  const toneClasses = {
-    default: 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100',
-    good: 'border-emerald-300/60 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300',
-    warn: 'border-amber-300/60 dark:border-amber-500/40 bg-amber-50/70 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300',
-    danger: 'border-rose-300/70 dark:border-rose-500/40 bg-rose-50/80 dark:bg-rose-900/25 text-rose-700 dark:text-rose-300',
-    info: 'border-cyan-300/60 dark:border-cyan-500/40 bg-cyan-50/70 dark:bg-cyan-900/20 text-cyan-700 dark:text-cyan-300',
-  }[tone]
-
-  const content = (
-    <div className={`rounded-md border px-2.5 py-2 ${toneClasses}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-[10px] uppercase tracking-wider opacity-75">{label}</p>
-          <p className="text-sm font-semibold mt-0.5 leading-none">{value}</p>
-          {sub && <p className="text-[10px] mt-1 opacity-75 line-clamp-1">{sub}</p>}
-        </div>
-        <Icon size={13} className="opacity-70 mt-0.5" />
-      </div>
-    </div>
-  )
-
-  if (href) {
-    return (
-      <a href={href} className="block hover:opacity-95 transition-opacity">
-        {content}
-      </a>
-    )
-  }
-
-  return content
-}
-
 function MeterRow({
   icon: Icon,
   label,
@@ -203,10 +145,26 @@ export default function DashboardPage() {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshMs, setRefreshMs] = useState(15000)
+  const [showControls, setShowControls] = useState(false)
+  const [showMatrixExtras, setShowMatrixExtras] = useState(false)
+  const [errorThresholdPct, setErrorThresholdPct] = useState(5)
+  const [latencyThresholdMs, setLatencyThresholdMs] = useState(250)
   const [clientFilter, setClientFilter] = useState('')
   const [domainFilter, setDomainFilter] = useState('')
   const [clientSortDesc, setClientSortDesc] = useState(true)
   const [domainSortDesc, setDomainSortDesc] = useState(true)
+  const [clientPage, setClientPage] = useState(0)
+  const [domainPage, setDomainPage] = useState(0)
+  const [clientPageSize, setClientPageSize] = useState<number>(50)
+  const [domainPageSize, setDomainPageSize] = useState<number>(50)
+  const [clientTotal, setClientTotal] = useState(0)
+  const [domainTotal, setDomainTotal] = useState(0)
+  const [clientLoading, setClientLoading] = useState(false)
+  const [domainLoading, setDomainLoading] = useState(false)
+  const [lookupDomain, setLookupDomain] = useState<string | null>(null)
+  const [lookupLoading, setLookupLoading] = useState(false)
+  const [lookupError, setLookupError] = useState('')
+  const [lookupResults, setLookupResults] = useState<CacheEntry[]>([])
   const [chartSeriesVisibility, setChartSeriesVisibility] = useState<Record<ChartSeriesKey, boolean>>(defaultChartSeriesVisibility())
   const [versionState, setVersionState] = useState<VersionState>({
     current: 'unknown',
@@ -217,14 +175,17 @@ export default function DashboardPage() {
   const [error, setError] = useState('')
 
   const { queries: streamQueries, connected: streamConnected } = useQueryStream(300)
+  const clientOffset = clientPage * clientPageSize
+  const domainOffset = domainPage * domainPageSize
 
   const fetchData = useCallback(async () => {
+    setClientLoading(true)
+    setDomainLoading(true)
     try {
-      const [statsRes, tsRes, clientsRes, domainsRes, profileRes] = await Promise.allSettled([
+      const [statsRes, clientsRes, domainsRes, profileRes] = await Promise.allSettled([
         api.stats(),
-        api.timeseries(timeWindow),
-        api.topClients(20),
-        api.topDomains(20),
+        api.topClients(clientPageSize, clientOffset),
+        api.topDomains(domainPageSize, domainOffset),
         api.systemProfile(),
       ])
 
@@ -232,17 +193,15 @@ export default function DashboardPage() {
         setStats(statsRes.value as unknown as StatsResponse)
         setStatsSnapshotAtMs(Date.now())
       }
-      if (tsRes.status === 'fulfilled') {
-        const tsData = tsRes.value as unknown as { buckets: TimeSeriesBucket[] }
-        setTimeseries(tsData?.buckets || [])
-      }
       if (clientsRes.status === 'fulfilled') {
-        const data = clientsRes.value as unknown as { entries?: TopEntry[] }
+        const data = clientsRes.value as TopListResponse
         setTopClients(data?.entries || [])
+        setClientTotal(Math.min(TOP_WINDOW_LIMIT, data?.total || 0))
       }
       if (domainsRes.status === 'fulfilled') {
-        const data = domainsRes.value as unknown as { entries?: TopEntry[] }
+        const data = domainsRes.value as TopListResponse
         setTopDomains(data?.entries || [])
+        setDomainTotal(Math.min(TOP_WINDOW_LIMIT, data?.total || 0))
       }
       if (profileRes.status === 'fulfilled') {
         setProfile(profileRes.value as unknown as SystemProfileResponse)
@@ -252,8 +211,11 @@ export default function DashboardPage() {
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch stats')
+    } finally {
+      setClientLoading(false)
+      setDomainLoading(false)
     }
-  }, [timeWindow])
+  }, [clientPageSize, clientOffset, domainPageSize, domainOffset])
 
   useEffect(() => {
     void fetchData()
@@ -294,6 +256,48 @@ export default function DashboardPage() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void api.config()
+      .then((cfg) => {
+        if (cancelled) return
+        const web = (cfg?.web && typeof cfg.web === 'object') ? (cfg.web as Record<string, unknown>) : {}
+        const errThreshold = Number(web.alert_error_threshold_pct)
+        const latencyThreshold = Number(web.alert_latency_threshold_ms)
+        if (Number.isFinite(errThreshold) && errThreshold > 0) setErrorThresholdPct(errThreshold)
+        if (Number.isFinite(latencyThreshold) && latencyThreshold > 0) setLatencyThresholdMs(latencyThreshold)
+      })
+      .catch(() => {
+        // keep defaults
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchTimeseries = async () => {
+      try {
+        const tsData = await api.timeseries(timeWindow) as { buckets?: TimeSeriesBucket[] }
+        if (cancelled) return
+        setTimeseries(tsData?.buckets || [])
+      } catch {
+        // keep last timeseries on transient errors
+      }
+    }
+
+    void fetchTimeseries()
+    const interval = setInterval(() => {
+      if (!autoRefresh || document.hidden) return
+      void fetchTimeseries()
+    }, 1000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [timeWindow, autoRefresh])
 
   useEffect(() => {
     try {
@@ -379,42 +383,8 @@ export default function DashboardPage() {
     ? Object.values(statsView.queries_by_type).reduce((a, b) => a + b, 0)
     : 0
 
-  const liveChartPoint = useMemo<TelemetryPoint>(() => {
-    const nowMs = Date.now()
-    const bucketStartMs = toTenSecondBucket(nowMs)
-    const bucketEndMs = bucketStartMs + 10_000
-    let queries = 0
-    let cacheHits = 0
-    let cacheMisses = 0
-    let errors = 0
-    let totalLatencyMs = 0
-
-    for (const q of streamQueries) {
-      const tsMs = Date.parse(q.ts || '')
-      if (!Number.isFinite(tsMs) || tsMs < bucketStartMs || tsMs >= bucketEndMs) continue
-      queries++
-      if (q.cached) cacheHits++
-      else cacheMisses++
-      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) errors++
-      totalLatencyMs += q.duration_ms || 0
-    }
-
-    const ts = new Date(bucketStartMs).toISOString()
-    return {
-      ts,
-      bucketMs: bucketStartMs,
-      time: new Date(bucketStartMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      queries,
-      cacheHits,
-      cacheMisses,
-      errors,
-      avgLatencyMs: queries > 0 ? totalLatencyMs / queries : 0,
-      qps: Number((queries / 10).toFixed(2)),
-    }
-  }, [streamQueries])
-
   const chartDataRaw = useMemo(() => {
-    const base: TelemetryPoint[] = (timeseries || [])
+    return (timeseries || [])
       .map((b) => {
         const ts = b.timestamp || b.ts || ''
         const tsMs = Date.parse(ts)
@@ -434,13 +404,7 @@ export default function DashboardPage() {
       })
       .filter((row) => row.ts)
       .sort((a, b) => a.bucketMs - b.bucketMs)
-
-    const idx = base.findIndex((row) => row.bucketMs === liveChartPoint.bucketMs)
-    if (idx >= 0) base[idx] = liveChartPoint
-    else if (base.length === 0 || liveChartPoint.bucketMs >= base[base.length - 1].bucketMs) base.push(liveChartPoint)
-
-    return base.sort((a, b) => a.bucketMs - b.bucketMs)
-  }, [timeseries, liveChartPoint])
+  }, [timeseries])
   const trendWindow = timeWindow === '5m' ? 4 : timeWindow === '15m' ? 6 : 8
   const queryTrend = movingAverage(chartDataRaw.map((x) => x.queries), trendWindow)
   const queryEMA = ema(chartDataRaw.map((x) => x.queries), 0.35)
@@ -462,23 +426,24 @@ export default function DashboardPage() {
   const noErrorRatio = totalRcodes > 0 ? (noErrorCount / totalRcodes) * 100 : 0
   const uptimeText = statsView ? formatUptime(statsView.uptime_seconds) : '0m'
   const hasChartActivity = chartData.some((row) => row.queries > 0 || row.errors > 0 || row.qps > 0)
-  const upstreamDnsRatio = (() => {
-    const dns = profile?.traffic?.dns_queries_total || 0
-    const upstream = profile?.traffic?.upstream_queries_total || 0
-    if (dns <= 0) return 0
-    return (upstream / dns) * 100
-  })()
 
   const statusReasons = useMemo(() => {
     const reasons: string[] = []
     if (!statsView?.resolver_ready) reasons.push('Resolver is not ready')
+    if (windowErrorRate >= errorThresholdPct) reasons.push(`Error rate high: ${windowErrorRate.toFixed(2)}% (>= ${errorThresholdPct.toFixed(2)}%)`)
+    if (windowAvgLatency >= latencyThresholdMs) reasons.push(`Latency high: ${windowAvgLatency.toFixed(1)}ms (>= ${latencyThresholdMs}ms)`)
     if ((statsView?.upstream_errors || 0) > 0) reasons.push(`Upstream errors: ${formatNumber(statsView?.upstream_errors || 0)}`)
-    if (windowErrorRate >= 2) reasons.push(`Error rate high: ${windowErrorRate.toFixed(2)}%`)
     if ((statsView?.rate_limited || 0) > 0) reasons.push(`Rate limited: ${formatNumber(statsView?.rate_limited || 0)}`)
     return reasons
-  }, [statsView, windowErrorRate])
+  }, [statsView, windowErrorRate, windowAvgLatency, errorThresholdPct, latencyThresholdMs])
 
-  const isCritical = statusReasons.length > 0
+  const statusLevel = useMemo<'normal' | 'warning' | 'critical'>(() => {
+    if (!statsView?.resolver_ready) return 'critical'
+    if (windowErrorRate >= errorThresholdPct * 2 || windowAvgLatency >= latencyThresholdMs * 2) return 'critical'
+    if (statusReasons.length > 0) return 'warning'
+    return 'normal'
+  }, [statsView, windowErrorRate, windowAvgLatency, errorThresholdPct, latencyThresholdMs, statusReasons])
+
   const qpsLive = liveWindowStats.qps10s
   const queryTypeCounts = QUERY_TYPE_COUNTERS.map((type) => ({
     type,
@@ -512,6 +477,42 @@ export default function DashboardPage() {
     const filtered = topDomains.filter((entry) => !key || entry.key.toLowerCase().includes(key))
     return [...filtered].sort((a, b) => (domainSortDesc ? b.count - a.count : a.count - b.count))
   }, [topDomains, domainFilter, domainSortDesc])
+
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(Math.max(0, clientTotal) / clientPageSize) - 1)
+    if (clientPage > maxPage) setClientPage(maxPage)
+  }, [clientTotal, clientPageSize, clientPage])
+
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(Math.max(0, domainTotal) / domainPageSize) - 1)
+    if (domainPage > maxPage) setDomainPage(maxPage)
+  }, [domainTotal, domainPageSize, domainPage])
+
+  const runCacheLookupForDomain = useCallback(async (domain: string) => {
+    const qname = domain.endsWith('.') ? domain : `${domain}.`
+    setLookupDomain(qname)
+    setLookupLoading(true)
+    setLookupError('')
+    setLookupResults([])
+    try {
+      const res = await api.cacheLookup(qname, 'ALL')
+      if (res && (res as Record<string, unknown>).entries) {
+        const allRes = res as unknown as { entries: CacheEntry[] }
+        setLookupResults(allRes.entries || [])
+      } else {
+        setLookupResults([res as unknown as CacheEntry])
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Lookup failed'
+      if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
+        setLookupError(`"${qname}" is not in cache yet. Try running a query first, then check again.`)
+      } else {
+        setLookupError(msg)
+      }
+    } finally {
+      setLookupLoading(false)
+    }
+  }, [])
 
   const toggleChartSeries = useCallback((key: ChartSeriesKey) => {
     setChartSeriesVisibility((prev) => {
@@ -554,7 +555,17 @@ export default function DashboardPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Dashboard</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Dashboard</h1>
+            <button
+              onClick={() => setShowControls((v) => !v)}
+              className="inline-flex items-center gap-1 px-2.5 h-7 rounded-md text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              title="Toggle dashboard controls"
+            >
+              <SlidersHorizontal size={12} />
+              {showControls ? 'Hide Controls' : 'Controls'}
+            </button>
+          </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Live resolver and system telemetry</p>
         </div>
         {versionState.updateAvailable ? (
@@ -570,51 +581,51 @@ export default function DashboardPage() {
         ) : (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs">
             <span>Version {formatVersion(versionState.current)}</span>
-            <span className="opacity-60">|</span>
             <CheckCircle2 size={12} />
-            <span>Up to date</span>
           </span>
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
-        <button
-          onClick={() => void fetchData()}
-          className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
-        >
-          <RefreshCw size={12} /> Refresh
-        </button>
-        <div className="inline-flex items-center gap-1 rounded-md px-2 h-8 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300">
-          <span>Auto</span>
-          <select
-            value={refreshMs}
-            onChange={(e) => setRefreshMs(Number(e.target.value))}
-            className="bg-transparent outline-none"
+      {showControls && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
+          <button
+            onClick={() => void fetchData()}
+            className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
           >
-            {REFRESH_INTERVALS.map((item) => (
-              <option key={item.value} value={item.value} className="text-slate-900">
-                {item.label}
-              </option>
-            ))}
-          </select>
+            <RefreshCw size={12} /> Refresh
+          </button>
+          <div className="inline-flex items-center gap-1 rounded-md px-2 h-8 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300">
+            <span>Auto</span>
+            <select
+              value={refreshMs}
+              onChange={(e) => setRefreshMs(Number(e.target.value))}
+              className="bg-transparent outline-none"
+            >
+              {REFRESH_INTERVALS.map((item) => (
+                <option key={item.value} value={item.value} className="text-slate-900">
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={() => setAutoRefresh((v) => !v)}
+            className={`inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs font-semibold border ${
+              autoRefresh
+                ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+                : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+            }`}
+          >
+            {autoRefresh ? 'Pause Auto' : 'Resume Auto'}
+          </button>
+          <span className="px-2.5 h-8 inline-flex items-center rounded-md text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+            Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
+          </span>
+          <span className={`px-2.5 h-8 inline-flex items-center rounded-md text-xs border ${streamConnected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
+            WS: {streamConnected ? 'Live' : 'Offline'}
+          </span>
         </div>
-        <button
-          onClick={() => setAutoRefresh((v) => !v)}
-          className={`inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs font-semibold border ${
-            autoRefresh
-              ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
-              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
-          }`}
-        >
-          {autoRefresh ? 'Pause Auto' : 'Resume Auto'}
-        </button>
-        <span className="px-2.5 h-8 inline-flex items-center rounded-md text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
-          Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
-        </span>
-        <span className={`px-2.5 h-8 inline-flex items-center rounded-md text-xs border ${streamConnected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
-          WS: {streamConnected ? 'Live' : 'Offline'}
-        </span>
-      </div>
+      )}
 
       {error && (
         <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 text-sm rounded-lg px-4 py-3">
@@ -622,27 +633,114 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <div className="sticky top-2 z-20 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-white/90 dark:bg-slate-900/90 backdrop-blur p-2.5 shadow-sm">
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5">
-          <SummaryCard
-            icon={Shield}
-            label="Status"
-            value={isCritical ? 'ALARM' : 'NORMAL'}
-            sub={isCritical ? 'Open Operations for active alert details' : 'No immediate operational alerts'}
-            tone={isCritical ? 'danger' : 'good'}
-            href={isCritical ? '/operations' : undefined}
-          />
-          <SummaryCard icon={Activity} label="Queries/sec" value={qpsLive.toFixed(2)} sub="Live 10s window" tone="info" />
-          <SummaryCard icon={AlertTriangle} label="Error Rate" value={`${windowErrorRate.toFixed(2)}%`} sub={`${formatNumber(windowErrors)} errors`} tone={windowErrorRate >= 2 ? 'danger' : 'default'} />
-          <SummaryCard icon={Zap} label="Cache Hit Ratio" value={`${((statsView?.cache_hit_ratio || 0) * 100).toFixed(1)}%`} sub={`${formatNumber(statsView?.cache_hits || 0)} hits / ${formatNumber(statsView?.cache_misses || 0)} misses`} tone="good" />
-          <SummaryCard icon={Ban} label="Blocked" value={formatNumber(statsView?.blocked_queries || 0)} sub="Blocked queries total" tone={(statsView?.blocked_queries || 0) > 0 ? 'warn' : 'default'} />
-          <SummaryCard icon={Globe} label="Upstream Errors" value={formatNumber(statsView?.upstream_errors || 0)} sub="Resolver upstream failures" tone={(statsView?.upstream_errors || 0) > 0 ? 'danger' : 'default'} />
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">DNS Resolver Matrix</h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowMatrixExtras((v) => !v)}
+              className="inline-flex items-center gap-1 px-2.5 h-7 rounded-md text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+            >
+              {showMatrixExtras ? 'Hide More' : 'Show More'}
+              <ChevronDown size={12} className={`transition-transform ${showMatrixExtras ? 'rotate-180' : ''}`} />
+            </button>
+            {statusLevel !== 'normal' && (
+              <a
+                href="/operations"
+                className="inline-flex items-center gap-1 text-xs font-semibold text-amber-300 hover:text-amber-200"
+              >
+                <AlertTriangle size={12} />
+                Open Operations
+              </a>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className={`rounded-md border px-3 py-2 ${
+            statusLevel === 'critical'
+              ? 'border-rose-500/40 bg-rose-500/10'
+              : statusLevel === 'warning'
+                ? 'border-amber-500/40 bg-amber-500/10'
+                : 'border-emerald-500/40 bg-emerald-500/10'
+          }`}>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</div>
+            <div className={`mt-1 text-lg font-bold ${
+              statusLevel === 'critical' ? 'text-rose-300' : statusLevel === 'warning' ? 'text-amber-300' : 'text-emerald-300'
+            }`}>
+              {statusLevel === 'critical' ? 'CRITICAL' : statusLevel === 'warning' ? 'WARNING' : 'NORMAL'}
+            </div>
+            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
+              {statusLevel === 'normal' ? 'No immediate operational alerts' : statusReasons[0]}
+            </div>
+          </div>
+          <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Queries/sec</div>
+            <div className="mt-1 text-lg font-bold text-cyan-300">{qpsLive.toFixed(2)}</div>
+            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Live 10s window</div>
+          </div>
+          <div className={`rounded-md border px-3 py-2 ${windowErrorRate >= errorThresholdPct ? 'border-rose-500/40 bg-rose-500/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'}`}>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Error Rate</div>
+            <div className={`mt-1 text-lg font-bold ${windowErrorRate >= errorThresholdPct ? 'text-rose-300' : 'text-slate-900 dark:text-slate-100'}`}>{windowErrorRate.toFixed(2)}%</div>
+            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">{formatNumber(windowErrors)} errors</div>
+          </div>
+          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Hit Ratio</div>
+            <div className="mt-1 text-lg font-bold text-emerald-300">{((statsView?.cache_hit_ratio || 0) * 100).toFixed(1)}%</div>
+            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">{formatNumber(statsView?.cache_hits || 0)} hits / {formatNumber(statsView?.cache_misses || 0)} misses</div>
+          </div>
+        </div>
+        {showMatrixExtras && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+            <div className={`rounded-md border px-3 py-2 ${(statsView?.blocked_queries || 0) > 0 ? 'border-amber-500/40 bg-amber-500/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'}`}>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Blocked</div>
+              <div className={`mt-1 text-lg font-bold ${(statsView?.blocked_queries || 0) > 0 ? 'text-amber-300' : 'text-slate-900 dark:text-slate-100'}`}>{formatNumber(statsView?.blocked_queries || 0)}</div>
+              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Blocked queries total</div>
+            </div>
+            <div className={`rounded-md border px-3 py-2 ${(statsView?.upstream_errors || 0) > 0 ? 'border-rose-500/40 bg-rose-500/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'}`}>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Upstream Errors</div>
+              <div className={`mt-1 text-lg font-bold ${(statsView?.upstream_errors || 0) > 0 ? 'text-rose-300' : 'text-slate-900 dark:text-slate-100'}`}>{formatNumber(statsView?.upstream_errors || 0)}</div>
+              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Resolver upstream failures</div>
+            </div>
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Queries</div>
+              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</div>
+              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">All-time counter</div>
+            </div>
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Uptime</div>
+              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{uptimeText}</div>
+              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Resolver process uptime</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Query Type Counters</h2>
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">Compact view</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+          {queryTypeCounts.map((item) => (
+            <div key={item.type} className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50/80 dark:bg-slate-800/60">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">{item.type}</div>
+                <div className="text-sm font-bold text-slate-900 dark:text-slate-100 font-mono">{formatNumber(item.count)}</div>
+              </div>
+              <div className="mt-1.5 h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500"
+                  style={{ width: `${Math.max(4, Math.min(100, (item.count / maxQueryTypeCount) * 100))}%` }}
+                />
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
-        <div className="lg:col-span-2 space-y-4">
-          <div className="relative overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
+        <div className="lg:col-span-2">
+          <div className="relative overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6 h-full lg:h-[560px] flex flex-col">
             <div className="pointer-events-none absolute -top-24 -left-24 h-64 w-64 rounded-full bg-cyan-500/10 blur-3xl" />
             <div className="pointer-events-none absolute -bottom-28 right-0 h-64 w-64 rounded-full bg-amber-500/10 blur-3xl" />
 
@@ -687,7 +785,7 @@ export default function DashboardPage() {
               })}
             </div>
 
-            <div className="relative h-80">
+            <div className="relative flex-1 min-h-[320px]">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart data={chartData} margin={{ top: 10, right: 12, left: 4, bottom: 6 }}>
@@ -740,115 +838,96 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Queries</div>
-              <div className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</div>
-            </div>
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Uptime</div>
-              <div className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">{uptimeText}</div>
-            </div>
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">NOERROR Ratio</div>
-              <div className="mt-1 text-xl font-bold text-emerald-400">{noErrorRatio.toFixed(1)}%</div>
-            </div>
-            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Window Latency</div>
-              <div className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">{windowAvgLatency.toFixed(1)} ms</div>
-            </div>
-          </div>
         </div>
 
-        <div className="space-y-4">
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+        <div className="flex flex-col gap-4 lg:h-[560px]">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6 flex-1">
             <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">Resolver Snapshot</h2>
             <div className="space-y-2.5 text-sm">
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Live Queries (10s)</span><span className="font-semibold text-cyan-300">{formatNumber(liveWindowStats.queries10s)}</span></div>
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Live Errors (10s)</span><span className="font-semibold text-rose-300">{formatNumber(liveWindowStats.errors10s)}</span></div>
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Peak QPS (1m)</span><span className="font-semibold text-slate-900 dark:text-slate-100">{(profile?.traffic.last_minute_qps_peak || 0).toFixed(2)}</span></div>
-              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Window Queries ({timeWindow})</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(windowQueries)}</span></div>
-              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Errors (1m)</span><span className="font-semibold text-rose-300">{formatNumber(profile?.traffic.last_minute_error_total || 0)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Window Latency</span><span className="font-semibold text-slate-900 dark:text-slate-100">{windowAvgLatency.toFixed(1)} ms</span></div>
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">NOERROR Ratio</span><span className="font-semibold text-emerald-300">{noErrorRatio.toFixed(1)}%</span></div>
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">NXDOMAIN + SERVFAIL</span><span className="font-semibold text-rose-300">{formatNumber(nxdomainCount + servfailCount)}</span></div>
             </div>
-            <div className="mt-4 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 px-3 py-2">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Latest Reason</div>
-              <div className="mt-1 text-xs font-semibold text-slate-900 dark:text-slate-100 break-words">{isCritical ? statusReasons[0] : 'All clear'}</div>
-            </div>
           </div>
 
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5">
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-3">System Glance</h2>
-            <div className="space-y-3">
-              <MeterRow
-                icon={Cpu}
-                label="CPU"
-                value={profile?.runtime?.os === 'windows' ? `load ${loadAvgText}` : `${cpuLoadPct.toFixed(1)}%`}
-                percent={cpuLoadPct}
-                barClass="bg-gradient-to-r from-sky-500 via-blue-500 to-indigo-500 shadow-[0_0_12px_rgba(59,130,246,0.35)]"
-              />
-              <MeterRow
-                icon={MemoryStick}
-                label="RAM"
-                value={`proc ${processMemText} | free ${freeMemText}`}
-                percent={memUsedPct}
-                barClass="bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 shadow-[0_0_12px_rgba(16,185,129,0.35)]"
-              />
-              <MeterRow
-                icon={HardDrive}
-                label="Disk"
-                value={`used ${diskUsedText} | free ${diskFreeText}`}
-                percent={diskUsedPct}
-                barClass="bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 shadow-[0_0_12px_rgba(245,158,11,0.35)]"
-              />
-              <MeterRow
-                icon={Network}
-                label="Network"
-                value={`up ${upInterfaces} | RX ${rxTotalText} / TX ${txTotalText}`}
-                percent={networkRxPct}
-                barClass="bg-gradient-to-r from-cyan-500 via-violet-500 to-fuchsia-500 shadow-[0_0_12px_rgba(34,211,238,0.35)]"
-              />
-              <div className="text-[11px] text-slate-500 dark:text-slate-400">Listen IP: <span className="font-semibold text-slate-900 dark:text-slate-100">{primaryListenIP}</span></div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5 flex-1">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-3">Security Snapshot</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+              <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">DNSSEC Secure</div>
+                <div className="mt-1 text-lg font-bold text-emerald-400">{formatNumber(dnssecSecure)}</div>
+              </div>
+              <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">DNSSEC Insecure / Bogus</div>
+                <div className="mt-1 text-lg font-bold text-amber-300">{formatNumber(dnssecInsecure)} / <span className="text-rose-300">{formatNumber(dnssecBogus)}</span></div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div>
+                <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1"><span>Secure Ratio</span><span className="font-semibold text-emerald-300">{dnssecSecureRatio.toFixed(1)}%</span></div>
+                <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1"><span>Bogus Ratio</span><span className="font-semibold text-rose-300">{dnssecBogusRatio.toFixed(1)}%</span></div>
+                <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full rounded-full bg-rose-500" style={{ width: `${Math.max(0, Math.min(100, dnssecBogusRatio))}%` }} /></div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">DNS Resolver Matrix</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">DNS Queries</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(profile?.traffic.dns_queries_total || 0)}</div></div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Upstream Queries</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.upstream_queries || 0)}</div></div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Upstream / DNS</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{upstreamDnsRatio.toFixed(1)}%</div></div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Duration Samples</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.query_duration_count || 0)}</div></div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Entries</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.cache_entries || 0)}</div></div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Evictions</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.cache_evictions || 0)}</div></div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Pos / Neg</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.cache_positive || 0)} / {formatNumber(statsView?.cache_negative || 0)}</div></div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Rate Limited</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.rate_limited || 0)}</div></div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">Security Snapshot</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">DNSSEC Secure</div>
-              <div className="mt-1 text-lg font-bold text-emerald-400">{formatNumber(dnssecSecure)}</div>
-            </div>
-            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">DNSSEC Insecure / Bogus</div>
-              <div className="mt-1 text-lg font-bold text-amber-300">{formatNumber(dnssecInsecure)} / <span className="text-rose-300">{formatNumber(dnssecBogus)}</span></div>
-            </div>
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">System Glance</h2>
+          <div className="space-y-3 mb-4">
+            <MeterRow
+              icon={Cpu}
+              label="CPU"
+              value={profile?.runtime?.os === 'windows' ? `load ${loadAvgText}` : `${cpuLoadPct.toFixed(1)}%`}
+              percent={cpuLoadPct}
+              barClass="bg-gradient-to-r from-sky-500 via-blue-500 to-indigo-500 shadow-[0_0_12px_rgba(59,130,246,0.35)]"
+            />
+            <MeterRow
+              icon={MemoryStick}
+              label="RAM"
+              value={`proc ${processMemText} | free ${freeMemText}`}
+              percent={memUsedPct}
+              barClass="bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 shadow-[0_0_12px_rgba(16,185,129,0.35)]"
+            />
+            <MeterRow
+              icon={HardDrive}
+              label="Disk"
+              value={`used ${diskUsedText} | free ${diskFreeText}`}
+              percent={diskUsedPct}
+              barClass="bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 shadow-[0_0_12px_rgba(245,158,11,0.35)]"
+            />
+            <MeterRow
+              icon={Network}
+              label="Network"
+              value={`up ${upInterfaces} | RX ${rxTotalText} / TX ${txTotalText}`}
+              percent={networkRxPct}
+              barClass="bg-gradient-to-r from-cyan-500 via-violet-500 to-fuchsia-500 shadow-[0_0_12px_rgba(34,211,238,0.35)]"
+            />
           </div>
-          <div className="space-y-2">
-            <div>
-              <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1"><span>Secure Ratio</span><span className="font-semibold text-emerald-300">{dnssecSecureRatio.toFixed(1)}%</span></div>
-              <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Listen IP</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100 break-all">{primaryListenIP}</div>
             </div>
-            <div>
-              <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1"><span>Bogus Ratio</span><span className="font-semibold text-rose-300">{dnssecBogusRatio.toFixed(1)}%</span></div>
-              <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full rounded-full bg-rose-500" style={{ width: `${Math.max(0, Math.min(100, dnssecBogusRatio))}%` }} /></div>
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">CPU Cores</div>
+              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(profile?.runtime?.cpu_cores || 0)}</div>
+            </div>
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Goroutines</div>
+              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(profile?.runtime?.goroutines || 0)}</div>
+            </div>
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Go Runtime</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">{profile?.runtime?.go_version || 'unknown'}</div>
             </div>
           </div>
         </div>
@@ -892,28 +971,11 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">Query Type Counters</h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-          {queryTypeCounts.map((item) => (
-            <div key={item.type} className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 bg-slate-50 dark:bg-slate-800/70">
-              <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">{item.type}</div>
-              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100 font-mono">{formatNumber(item.count)}</div>
-              <div className="mt-1 h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500"
-                  style={{ width: `${Math.max(4, Math.min(100, (item.count / maxQueryTypeCount) * 100))}%` }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
             <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">
-              Top Clients <span className="text-xs text-slate-500 dark:text-slate-400">({filteredClients.length}/{topClients.length})</span>
+              Top Clients <span className="text-xs text-slate-500 dark:text-slate-400">({clientOffset + filteredClients.length}/{clientTotal || 0})</span>
             </h2>
             <div className="flex items-center gap-2">
               <input
@@ -927,7 +989,27 @@ export default function DashboardPage() {
               </button>
             </div>
           </div>
-          {filteredClients.length > 0 ? (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <span>Viewing top window up to {TOP_WINDOW_LIMIT}</span>
+            <div className="flex items-center gap-2">
+              <span>Rows</span>
+              <select
+                value={clientPageSize}
+                onChange={(e) => {
+                  setClientPageSize(Number(e.target.value))
+                  setClientPage(0)
+                }}
+                className="h-7 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 text-xs text-slate-700 dark:text-slate-300"
+              >
+                {TOP_PAGE_SIZE_OPTIONS.map((size) => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {clientLoading ? (
+            <div className="flex items-center justify-center h-20 text-sm text-slate-500">Loading clients...</div>
+          ) : filteredClients.length > 0 ? (
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
@@ -937,9 +1019,9 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {filteredClients.slice(0, 10).map((entry, i) => (
+                {filteredClients.map((entry, i) => (
                   <tr key={entry.key}>
-                    <td className="py-1.5 text-xs text-slate-500">{i + 1}</td>
+                    <td className="py-1.5 text-xs text-slate-500">{clientOffset + i + 1}</td>
                     <td className="py-1.5 font-mono text-xs text-slate-900 dark:text-slate-200">{entry.key}</td>
                     <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
                   </tr>
@@ -949,12 +1031,31 @@ export default function DashboardPage() {
           ) : (
             <div className="flex items-center justify-center h-20 text-sm text-slate-500">No matching clients</div>
           )}
+          <div className="mt-4 flex items-center justify-between">
+            <button
+              onClick={() => setClientPage((p) => Math.max(0, p - 1))}
+              disabled={clientPage <= 0}
+              className="h-8 px-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Page {clientPage + 1} / {Math.max(1, Math.ceil(Math.max(0, clientTotal) / clientPageSize))}
+            </span>
+            <button
+              onClick={() => setClientPage((p) => p + 1)}
+              disabled={clientOffset + clientPageSize >= clientTotal}
+              className="h-8 px-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         </div>
 
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
             <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">
-              Top Domains <span className="text-xs text-slate-500 dark:text-slate-400">({filteredDomains.length}/{topDomains.length})</span>
+              Top Domains <span className="text-xs text-slate-500 dark:text-slate-400">({domainOffset + filteredDomains.length}/{domainTotal || 0})</span>
             </h2>
             <div className="flex items-center gap-2">
               <input
@@ -968,20 +1069,57 @@ export default function DashboardPage() {
               </button>
             </div>
           </div>
-          {filteredDomains.length > 0 ? (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <span>Click a domain to run cache query</span>
+            <div className="flex items-center gap-2">
+              <span>Rows</span>
+              <select
+                value={domainPageSize}
+                onChange={(e) => {
+                  setDomainPageSize(Number(e.target.value))
+                  setDomainPage(0)
+                }}
+                className="h-7 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 text-xs text-slate-700 dark:text-slate-300"
+              >
+                {TOP_PAGE_SIZE_OPTIONS.map((size) => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {domainLoading ? (
+            <div className="flex items-center justify-center h-20 text-sm text-slate-500">Loading domains...</div>
+          ) : filteredDomains.length > 0 ? (
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   <th className="text-left pb-2 w-8">#</th>
                   <th className="text-left pb-2">Domain</th>
+                  <th className="text-right pb-2">Action</th>
                   <th className="text-right pb-2">Queries</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {filteredDomains.slice(0, 10).map((entry, i) => (
-                  <tr key={entry.key}>
-                    <td className="py-1.5 text-xs text-slate-500">{i + 1}</td>
+                {filteredDomains.map((entry, i) => (
+                  <tr
+                    key={entry.key}
+                    className="group hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer"
+                    onClick={() => void runCacheLookupForDomain(entry.key)}
+                  >
+                    <td className="py-1.5 text-xs text-slate-500">{domainOffset + i + 1}</td>
                     <td className="py-1.5 text-xs text-slate-900 dark:text-slate-200 max-w-xs truncate" title={entry.key}>{entry.key}</td>
+                    <td className="py-1.5 text-right">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void runCacheLookupForDomain(entry.key)
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity h-7 px-2 rounded-md border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 text-[11px]"
+                      >
+                        Cache Query
+                      </button>
+                    </td>
                     <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
                   </tr>
                 ))}
@@ -990,8 +1128,103 @@ export default function DashboardPage() {
           ) : (
             <div className="flex items-center justify-center h-20 text-sm text-slate-500">No matching domains</div>
           )}
+          <div className="mt-4 flex items-center justify-between">
+            <button
+              onClick={() => setDomainPage((p) => Math.max(0, p - 1))}
+              disabled={domainPage <= 0}
+              className="h-8 px-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Page {domainPage + 1} / {Math.max(1, Math.ceil(Math.max(0, domainTotal) / domainPageSize))}
+            </span>
+            <button
+              onClick={() => setDomainPage((p) => p + 1)}
+              disabled={domainOffset + domainPageSize >= domainTotal}
+              className="h-8 px-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
+
+      {lookupDomain && (
+        <div className="fixed inset-0 z-50 p-3 sm:p-6 md:p-10">
+          <button
+            aria-label="Close cache lookup modal"
+            className="absolute inset-0 bg-slate-950/75 backdrop-blur-[2px]"
+            onClick={() => {
+              setLookupDomain(null)
+              setLookupResults([])
+              setLookupError('')
+            }}
+          />
+          <div className="relative mx-auto max-w-4xl rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5 shadow-2xl">
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Domain Cache Query</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-mono mt-1">{lookupDomain}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setLookupDomain(null)
+                  setLookupResults([])
+                  setLookupError('')
+                }}
+                className="inline-flex items-center gap-1 px-2.5 h-8 rounded-md text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+              >
+                <X size={12} />
+                Close
+              </button>
+            </div>
+            {lookupLoading ? (
+              <div className="h-24 flex items-center justify-center text-sm text-slate-500 dark:text-slate-400">Querying cache...</div>
+            ) : lookupError ? (
+              <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-300 text-sm px-3 py-2">{lookupError}</div>
+            ) : lookupResults.length > 0 ? (
+              <div className="space-y-3 max-h-[65vh] overflow-auto pr-1">
+                {lookupResults.map((entry, idx) => (
+                  <div key={`${entry.type}-${idx}`} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-3">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">{entry.type}</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">TTL {entry.ttl}s {entry.negative ? '• Negative' : ''}</div>
+                    </div>
+                    {entry.records?.length ? (
+                      <div className="overflow-x-auto rounded border border-slate-200 dark:border-slate-700">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800">
+                              <th className="text-left px-2 py-1.5">Type</th>
+                              <th className="text-left px-2 py-1.5">TTL</th>
+                              <th className="text-left px-2 py-1.5">Data</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                            {entry.records.map((rec, recIdx) => (
+                              <tr key={`${rec.type}-${recIdx}`}>
+                                <td className="px-2 py-1.5 text-slate-700 dark:text-slate-200">{rec.type}</td>
+                                <td className="px-2 py-1.5 text-slate-500 dark:text-slate-400">{rec.ttl}s</td>
+                                <td className="px-2 py-1.5 font-mono text-[11px] text-slate-700 dark:text-slate-200 break-all">{rec.rdata}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-500 dark:text-slate-400">No record payload returned.</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="h-24 flex items-center justify-center text-sm text-slate-500 dark:text-slate-400">No cache entries found.</div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

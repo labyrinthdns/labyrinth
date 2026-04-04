@@ -14,6 +14,7 @@
 
 - **Single binary** — DNS resolver + web dashboard + auth, everything in one 6.8 MB executable
 - **Web dashboard** — Real-time DNS monitoring, cache management, live query stream, dark/light theme
+- **Operator-first dashboard** — Compact high-signal matrix, expandable secondary metrics, and inline cache query modal from top domains
 - **Zero-config start** — Interactive setup wizard on first run, sane defaults for everything
 - **Recursive only** — Navigates root → TLD → authoritative, caches results
 - **RFC compliant** — RFC 1035, 2308, 3596, 4033-4035, 6891, 7858, 8484, 8767, 9114, 9156
@@ -84,7 +85,7 @@ On first run (no config file), the dashboard shows an interactive setup wizard:
 
 | Page | Description |
 |------|-------------|
-| **Dashboard** | Real-time stats: QPS chart, cache hit ratio, response code distribution, DNSSEC status, blocked queries |
+| **Dashboard** | Real-time DNS stats with compact matrix view, expandable secondary metrics, paged Top Clients/Top Domains (up to 2000), and inline domain cache-query modal |
 | **Queries** | Live DNS query stream via WebSocket — filterable, pausable, DNSSEC badges, blocked indicators |
 | **Cache** | Cache stats, lookup tool, flush, delete individual entries, negative cache view |
 | **Blocklist** | List management, quick block/unblock, domain check, source stats |
@@ -153,6 +154,8 @@ web:
   tls_enabled: true
   tls_cert_file: "/etc/labyrinth/certs/web.crt"
   tls_key_file: "/etc/labyrinth/certs/web.key"
+  top_clients_limit: 2000
+  top_domains_limit: 2000
   auto_update: true
   update_check_interval: 24h
   auth:
