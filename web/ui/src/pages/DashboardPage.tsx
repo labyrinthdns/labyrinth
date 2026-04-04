@@ -56,7 +56,7 @@ const CHART_SERIES_LABELS: Record<ChartSeriesKey, string> = {
   errors: 'Errors',
 }
 const CHART_SERIES_STORAGE_KEY = 'labyrinth.dashboard.chart_series_visibility'
-const TOP_PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const
+const TOP_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 250] as const
 const TOP_WINDOW_LIMIT = 2000
 const CHART_HEARTBEAT_MS = 1000
 const TIMESERIES_POLL_MS = 5000
@@ -155,8 +155,8 @@ export default function DashboardPage() {
   const [domainSortDesc, setDomainSortDesc] = useState(true)
   const [clientPage, setClientPage] = useState(0)
   const [domainPage, setDomainPage] = useState(0)
-  const [clientPageSize, setClientPageSize] = useState<number>(50)
-  const [domainPageSize, setDomainPageSize] = useState<number>(50)
+  const [clientPageSize, setClientPageSize] = useState<number>(10)
+  const [domainPageSize, setDomainPageSize] = useState<number>(10)
   const [clientTotal, setClientTotal] = useState(0)
   const [domainTotal, setDomainTotal] = useState(0)
   const [clientLoading, setClientLoading] = useState(false)
