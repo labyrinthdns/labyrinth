@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ArrowUpCircle,
   CheckCircle2,
+  Check,
+  Copy,
   ExternalLink,
   GitFork,
   Globe,
@@ -37,6 +39,7 @@ export default function AboutPage() {
   const [confirmUpdate, setConfirmUpdate] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  const [copiedCmd, setCopiedCmd] = useState('')
 
   const loadAboutData = useCallback(async () => {
     setLoading(true)
@@ -106,6 +109,16 @@ export default function AboutPage() {
   const latestVersion = useMemo(() => {
     return formatVersion(updateInfo?.latest_version || '')
   }, [updateInfo])
+
+  const copyCommand = useCallback(async (id: string, command: string) => {
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopiedCmd(id)
+      setTimeout(() => setCopiedCmd(''), 1200)
+    } catch {
+      setError('Clipboard copy failed in this browser context')
+    }
+  }, [])
 
   return (
     <div className="space-y-6">
@@ -305,6 +318,43 @@ export default function AboutPage() {
               </div>
             )}
           </div>
+
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 space-y-2">
+            <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Install & Upgrade Commands</p>
+            <div className="space-y-2">
+              <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-2">
+                <p className="text-[10px] uppercase text-slate-400 mb-1">Install (Linux)</p>
+                <code className="block text-[11px] text-slate-700 dark:text-slate-200 break-all">curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash</code>
+                <button
+                  onClick={() => void copyCommand('install', 'curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash')}
+                  className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
+                >
+                  {copiedCmd === 'install' ? <Check size={11} /> : <Copy size={11} />}
+                  {copiedCmd === 'install' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-2">
+                <p className="text-[10px] uppercase text-slate-400 mb-1">Update</p>
+                <code className="block text-[11px] text-slate-700 dark:text-slate-200 break-all">curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/update.sh | sudo bash</code>
+                <button
+                  onClick={() => void copyCommand('update', 'curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/update.sh | sudo bash')}
+                  className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
+                >
+                  {copiedCmd === 'update' ? <Check size={11} /> : <Copy size={11} />}
+                  {copiedCmd === 'update' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {updateInfo?.release_notes && (
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-2">Latest Release Notes</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-line line-clamp-6">
+                {updateInfo.release_notes}
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

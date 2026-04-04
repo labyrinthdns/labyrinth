@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-04-04
+
+### Added
+- New Web UI `Operations` page for live reliability monitoring with configurable thresholds (error rate and latency), auto-refresh control, and incident surfacing.
+- New Web UI `Reports` page for operational snapshot exports (JSON, CSV, Markdown) including top clients/domains and time-series data.
+- Expanded backend and Web API test suites for system profile, update paths, cache APIs, and additional server handlers.
+
+### Changed
+- Dashboard server profile panel now prioritizes actionable runtime visibility (CPU, memory, disk, network and traffic snapshot) without adding unnecessary polling load.
+- Web UI navigation and layout refined to expose Operations, Reports, and About/Updates more clearly in the main menu.
+- Update/version requests in the Web UI client are now deduplicated and short-term cached to reduce repeated API calls.
+
+### Fixed
+- Linux install/update flow alignment improved by standardizing release-facing scripts and docs to the latest tagged version.
+- WebSocket reconnect behavior now uses exponential backoff to avoid aggressive retry loops under transient network failures.
+- Version labeling and About/Update presentation consistency improved across the Web UI.
+
+### Performance
+- Frontend API layer now applies request timeouts and shared in-flight request handling for lower UI overhead.
+- Dashboard and operations refresh logic avoids unnecessary duplicate calls while preserving near-real-time observability.
+
+### Docs
+- Installer/updater usage examples and man-page metadata updated for `0.4.3`.
+
 ## [0.4.2] - 2026-04-03
 
 ### Added

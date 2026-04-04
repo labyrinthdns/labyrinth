@@ -6,7 +6,6 @@ import (
 	"runtime"
 
 	"github.com/labyrinthdns/labyrinth/config"
-	"github.com/labyrinthdns/labyrinth/daemon"
 )
 
 func printVersion() {
@@ -32,7 +31,7 @@ func handleDaemonCommand(args []string, configPath string) int {
 
 	switch args[0] {
 	case "start":
-		isDaemon, err := daemon.Daemonize(pidFile)
+		isDaemon, err := daemonizeProcess(pidFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
@@ -41,12 +40,12 @@ func handleDaemonCommand(args []string, configPath string) int {
 			return 0
 		}
 	case "stop":
-		if err := daemon.StopDaemon(pidFile); err != nil {
+		if err := stopDaemonProcess(pidFile); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
 	case "status":
-		running, pid, err := daemon.StatusDaemon(pidFile)
+		running, pid, err := statusDaemonProcess(pidFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "not running (no PID file)\n")
 			return 1

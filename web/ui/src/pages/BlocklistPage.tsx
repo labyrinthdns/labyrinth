@@ -1,10 +1,9 @@
-import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
-import { Shield, Plus, Trash2, RefreshCw, Search, Check, X, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Shield, Trash2, RefreshCw, Search, Check, X, Loader2, Download } from 'lucide-react'
 import { api } from '@/api/client'
 import type { BlocklistStats, BlocklistListEntry } from '@/api/types'
 import { formatNumber } from '@/lib/utils'
-
-const FORMAT_OPTIONS = ['hosts', 'domains', 'adblock', 'wildcard']
 
 function StatCard({
   label,
@@ -24,17 +23,16 @@ function StatCard({
 }
 
 export default function BlocklistPage() {
+  const navigate = useNavigate()
   const [stats, setStats] = useState<BlocklistStats | null>(null)
   const [lists, setLists] = useState<BlocklistListEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState<'success' | 'error'>('success')
-
-  // Add list form
-  const [addUrl, setAddUrl] = useState('')
-  const [addFormat, setAddFormat] = useState('hosts')
-  const [adding, setAdding] = useState(false)
+  const [listFilter, setListFilter] = useState('')
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [refreshMs, setRefreshMs] = useState(60000)
 
   // Quick block/unblock
   const [blockDomain, setBlockDomain] = useState('')
@@ -80,6 +78,15 @@ export default function BlocklistPage() {
     fetchData()
   }, [fetchData])
 
+  useEffect(() => {
+    if (!autoRefresh) return
+    const interval = setInterval(() => {
+      if (document.hidden) return
+      void fetchData()
+    }, refreshMs)
+    return () => clearInterval(interval)
+  }, [autoRefresh, refreshMs, fetchData])
+
   async function handleRefreshAll() {
     setRefreshing(true)
     try {
@@ -90,24 +97,6 @@ export default function BlocklistPage() {
       showMessage(err instanceof Error ? err.message : 'Refresh failed', 'error')
     } finally {
       setRefreshing(false)
-    }
-  }
-
-  async function handleAddList(e: FormEvent) {
-    e.preventDefault()
-    if (!addUrl.trim()) return
-
-    setAdding(true)
-    try {
-      // Use a generic POST to add list - the API might vary
-      await api.blocklistRefresh()
-      showMessage(`List added: ${addUrl}`)
-      setAddUrl('')
-      fetchData()
-    } catch (err) {
-      showMessage(err instanceof Error ? err.message : 'Failed to add list', 'error')
-    } finally {
-      setAdding(false)
     }
   }
 
@@ -163,13 +152,59 @@ export default function BlocklistPage() {
   const inputClass =
     'bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 w-full text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-600/50 focus:border-amber-600 transition-colors'
 
+  const filteredLists = useMemo(() => {
+    const needle = listFilter.trim().toLowerCase()
+    if (!needle) return lists
+    return lists.filter((list) =>
+      `${list.url} ${list.format} ${list.last_update || ''} ${list.error || ''}`.toLowerCase().includes(needle),
+    )
+  }, [lists, listFilter])
+
+  function exportListsCSV() {
+    if (filteredLists.length === 0) return
+    const lines: string[] = []
+    lines.push('url,format,enabled,rule_count,last_update,error')
+    filteredLists.forEach((list) => {
+      lines.push([
+        `"${list.url.replace(/"/g, '""')}"`,
+        list.format,
+        list.enabled ? 'true' : 'false',
+        String(list.rule_count),
+        `"${(list.last_update || '').replace(/"/g, '""')}"`,
+        `"${(list.error || '').replace(/"/g, '""')}"`,
+      ].join(','))
+    })
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `labyrinth-blocklists-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Shield size={24} className="text-amber-600 dark:text-amber-400" />
         <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
           Blocklist
         </h1>
+        <button
+          onClick={() => setAutoRefresh((v) => !v)}
+          className={`ml-auto px-2.5 py-1.5 rounded-lg text-xs font-medium border ${autoRefresh ? 'bg-sky-100 dark:bg-sky-900/30 border-sky-300 dark:border-sky-700 text-sky-700 dark:text-sky-300' : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300'}`}
+        >
+          Auto refresh
+        </button>
+        <div className="inline-flex items-center gap-1 rounded-lg border border-slate-300 dark:border-slate-600 px-2 py-1 text-xs bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+          <span>Every</span>
+          <select value={refreshMs} onChange={(e) => setRefreshMs(Number(e.target.value))} className="bg-transparent outline-none">
+            <option value={30000} className="text-slate-900">30s</option>
+            <option value={60000} className="text-slate-900">60s</option>
+          </select>
+        </div>
       </div>
 
       {/* Status message */}
@@ -217,55 +252,42 @@ export default function BlocklistPage() {
                 <Shield size={16} />
                 Block Lists
               </h2>
-              <button
-                onClick={handleRefreshAll}
-                disabled={refreshing}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors"
-              >
-                <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-                Refresh All
-              </button>
+              <div className="flex items-center gap-2">
+                <input
+                  value={listFilter}
+                  onChange={(e) => setListFilter(e.target.value)}
+                  placeholder="Filter lists..."
+                  className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100"
+                />
+                <button
+                  onClick={exportListsCSV}
+                  disabled={filteredLists.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors disabled:opacity-50"
+                >
+                  <Download size={14} />
+                  CSV
+                </button>
+                <button
+                  onClick={handleRefreshAll}
+                  disabled={refreshing}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors"
+                >
+                  <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                  Refresh All
+                </button>
+              </div>
             </div>
 
-            {/* Add list form */}
             <div className="px-6 pb-4">
-              <form onSubmit={handleAddList} className="flex flex-col sm:flex-row gap-3">
-                <div className="flex-1">
-                  <input
-                    type="url"
-                    value={addUrl}
-                    onChange={(e) => setAddUrl(e.target.value)}
-                    className={inputClass}
-                    placeholder="https://example.com/blocklist.txt"
-                    required
-                  />
-                </div>
-                <div className="w-full sm:w-32">
-                  <select
-                    value={addFormat}
-                    onChange={(e) => setAddFormat(e.target.value)}
-                    className={inputClass}
-                  >
-                    {FORMAT_OPTIONS.map((f) => (
-                      <option key={f} value={f}>
-                        {f}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                Source add/remove is managed in Configuration.
                 <button
-                  type="submit"
-                  disabled={adding}
-                  className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors shrink-0"
+                  onClick={() => navigate('/config')}
+                  className="ml-2 underline hover:no-underline font-medium"
                 >
-                  {adding ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : (
-                    <Plus size={16} />
-                  )}
-                  Add List
+                  Open Config
                 </button>
-              </form>
+              </div>
             </div>
 
             {/* Lists table */}
@@ -294,17 +316,17 @@ export default function BlocklistPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-                  {lists.length === 0 ? (
+                  {filteredLists.length === 0 ? (
                     <tr>
                       <td
                         colSpan={6}
                         className="px-4 py-8 text-center text-sm text-slate-400 dark:text-slate-500"
                       >
-                        No block lists configured
+                        No lists match current filter
                       </td>
                     </tr>
                   ) : (
-                    lists.map((list, i) => (
+                    filteredLists.map((list, i) => (
                       <tr
                         key={`${list.url}-${i}`}
                         className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors"
@@ -344,6 +366,7 @@ export default function BlocklistPage() {
                         </td>
                         <td className="px-4 py-2.5 text-right">
                           <button
+                            onClick={() => showMessage('List removal is managed via Configuration > blocklist.lists.', 'error')}
                             className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 transition-colors"
                             title="Remove list"
                           >

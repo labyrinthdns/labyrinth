@@ -40,9 +40,16 @@ clean:
 	go clean -testcache
 
 cross: webui
-	GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o labyrinth-linux-amd64 .
-	GOOS=darwin GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o labyrinth-darwin-arm64 .
-	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o labyrinth-windows-amd64.exe .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o labyrinth-linux-amd64 .
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o labyrinth-linux-arm64 .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o labyrinth-darwin-amd64 .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o labyrinth-darwin-arm64 .
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o labyrinth-windows-amd64.exe .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o labyrinth-bench-linux-amd64 ./cmd/labyrinth-bench/
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o labyrinth-bench-linux-arm64 ./cmd/labyrinth-bench/
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o labyrinth-bench-darwin-amd64 ./cmd/labyrinth-bench/
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o labyrinth-bench-darwin-arm64 ./cmd/labyrinth-bench/
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o labyrinth-bench-windows-amd64.exe ./cmd/labyrinth-bench/
 
 install:
 	sudo bash install.sh

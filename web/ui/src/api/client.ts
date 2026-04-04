@@ -11,6 +11,15 @@ import type {
 } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000
+
+type CachedValue = {
+  expiresAt: number
+  value: unknown
+}
+
+const responseCache = new Map<string, CachedValue>()
+const inflightCache = new Map<string, Promise<unknown>>()
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
@@ -34,7 +43,27 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  const resp = await fetch(path, { ...options, headers })
+  const hasExternalSignal = Boolean(options.signal)
+  const controller = hasExternalSignal ? null : new AbortController()
+  const timeout = hasExternalSignal
+    ? null
+    : setTimeout(() => controller?.abort(), DEFAULT_REQUEST_TIMEOUT_MS)
+
+  let resp: Response
+  try {
+    resp = await fetch(path, {
+      ...options,
+      headers,
+      signal: options.signal ?? controller?.signal,
+    })
+  } catch (err) {
+    if (!hasExternalSignal && (err instanceof DOMException) && err.name === 'AbortError') {
+      throw new Error(`Request timeout after ${DEFAULT_REQUEST_TIMEOUT_MS}ms`)
+    }
+    throw err
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
 
   if (resp.status === 401) {
     clearToken()
@@ -48,6 +77,40 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   return resp.json()
+}
+
+async function requestCached<T>(cacheKey: string, ttlMs: number, path: string, options: RequestInit = {}): Promise<T> {
+  const now = Date.now()
+  const cached = responseCache.get(cacheKey)
+  if (cached && cached.expiresAt > now) {
+    return cached.value as T
+  }
+
+  const inflight = inflightCache.get(cacheKey)
+  if (inflight) {
+    return inflight as Promise<T>
+  }
+
+  const promise = request<T>(path, options)
+    .then((value) => {
+      responseCache.set(cacheKey, { expiresAt: Date.now() + ttlMs, value })
+      inflightCache.delete(cacheKey)
+      return value
+    })
+    .catch((err) => {
+      inflightCache.delete(cacheKey)
+      throw err
+    })
+
+  inflightCache.set(cacheKey, promise as Promise<unknown>)
+  return promise
+}
+
+function clearCached(...keys: string[]) {
+  keys.forEach((key) => {
+    responseCache.delete(key)
+    inflightCache.delete(key)
+  })
 }
 
 export const api = {
@@ -101,7 +164,11 @@ export const api = {
 
   health: () => request<Record<string, unknown>>('/api/system/health'),
 
-  version: () => request<{ version: string; build_time: string; go_version: string }>('/api/system/version'),
+  version: () => requestCached<{ version: string; build_time: string; go_version: string }>(
+    'system.version',
+    60000,
+    '/api/system/version',
+  ),
   systemProfile: () => request<SystemProfileResponse>('/api/system/profile'),
 
   topClients: (limit?: number) =>
@@ -113,9 +180,12 @@ export const api = {
   cacheNegative: (limit = 100) =>
     request<{ entries: NegativeCacheEntry[] }>(`/api/cache/negative?limit=${limit}`),
 
-  checkUpdate: () => request<UpdateInfo>('/api/system/update/check'),
+  checkUpdate: () => requestCached<UpdateInfo>('system.update.check', 30000, '/api/system/update/check'),
 
-  applyUpdate: () => request<{ status: string }>('/api/system/update/apply', { method: 'POST' }),
+  applyUpdate: () => {
+    clearCached('system.update.check')
+    return request<{ status: string }>('/api/system/update/apply', { method: 'POST' })
+  },
 
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ status: string }>('/api/auth/change-password', {

@@ -55,6 +55,12 @@ export interface SystemProfileResponse {
       flags?: string[]
       addrs?: string[]
     }[]
+    io: {
+      rx_bytes_total: number
+      tx_bytes_total: number
+      rx_packets_total: number
+      tx_packets_total: number
+    }
   }
   runtime: {
     version: string
@@ -68,12 +74,16 @@ export interface SystemProfileResponse {
   }
   cpu: {
     process_cpu_seconds_total: number
+    load_avg_1m: number
+    load_avg_5m: number
+    load_avg_15m: number
   }
   memory: {
     process_alloc_bytes: number
     process_heap_bytes: number
     process_sys_bytes: number
     system_total_bytes: number
+    system_free_bytes: number
     gc_cycles: number
   }
   disk: {

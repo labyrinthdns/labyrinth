@@ -6,7 +6,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatDuration(ms: number): string {
-  if (ms < 1) return `${(ms * 1000).toFixed(0)}µs`
+  if (ms < 1) return `${(ms * 1000).toFixed(0)}us`
   if (ms < 1000) return `${ms.toFixed(1)}ms`
   return `${(ms / 1000).toFixed(2)}s`
 }
@@ -48,4 +48,11 @@ export function normalizeVersion(version: string | null | undefined): string {
 export function formatVersion(version: string | null | undefined): string {
   const normalized = normalizeVersion(version)
   return normalized ? `v${normalized}` : ''
+}
+
+export function formatBytesPerSecond(bytesPerSecond: number | null | undefined): string {
+  if (bytesPerSecond == null || Number.isNaN(bytesPerSecond) || bytesPerSecond < 0) {
+    return '0 B/s'
+  }
+  return `${formatBytes(bytesPerSecond)}/s`
 }

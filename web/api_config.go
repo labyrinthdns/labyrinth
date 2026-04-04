@@ -11,6 +11,22 @@ import (
 	"github.com/labyrinthdns/labyrinth/config"
 )
 
+type atomicTempFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+	Name() string
+}
+
+var (
+	configCreateTemp = func(dir, pattern string) (atomicTempFile, error) {
+		return os.CreateTemp(dir, pattern)
+	}
+	configRemove = os.Remove
+	configStat   = os.Stat
+	configRename = os.Rename
+)
+
 // handleGetConfig handles GET /api/config and returns a sanitized config JSON.
 func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -358,7 +374,7 @@ func writeFileAtomically(path string, data []byte) error {
 		dir = "."
 	}
 
-	tmp, err := os.CreateTemp(dir, ".labyrinth-config-*.tmp")
+	tmp, err := configCreateTemp(dir, ".labyrinth-config-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
@@ -366,7 +382,7 @@ func writeFileAtomically(path string, data []byte) error {
 	cleanupTmp := true
 	defer func() {
 		if cleanupTmp {
-			_ = os.Remove(tmpPath)
+			_ = configRemove(tmpPath)
 		}
 	}()
 
@@ -384,17 +400,17 @@ func writeFileAtomically(path string, data []byte) error {
 
 	backupPath := path + ".bak"
 	hadOriginal := false
-	if _, err := os.Stat(path); err == nil {
+	if _, err := configStat(path); err == nil {
 		hadOriginal = true
-		_ = os.Remove(backupPath)
-		if err := os.Rename(path, backupPath); err != nil {
+		_ = configRemove(backupPath)
+		if err := configRename(path, backupPath); err != nil {
 			return fmt.Errorf("backup existing config: %w", err)
 		}
 	}
 
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := configRename(tmpPath, path); err != nil {
 		if hadOriginal {
-			_ = os.Rename(backupPath, path)
+			_ = configRename(backupPath, path)
 		}
 		return fmt.Errorf("replace config file: %w", err)
 	}

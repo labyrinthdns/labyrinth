@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -225,5 +226,24 @@ func TestRRLStartCleanupDefaultInterval(t *testing.T) {
 		// OK
 	case <-time.After(2 * time.Second):
 		t.Error("StartCleanup did not stop after context cancel")
+	}
+}
+
+func TestNormalizeRRLKeyPart_EdgeCases(t *testing.T) {
+	if got := normalizeRRLKeyPart("   ", 10, false); got != "-" {
+		t.Fatalf("expected '-' for empty trimmed value, got %q", got)
+	}
+
+	longVal := strings.Repeat("A", maxRRLResponseTypeLen+10)
+	got := normalizeRRLKeyPart(longVal, maxRRLResponseTypeLen, false)
+	if len(got) != maxRRLResponseTypeLen {
+		t.Fatalf("expected truncation to %d, got %d", maxRRLResponseTypeLen, len(got))
+	}
+	if got != longVal[:maxRRLResponseTypeLen] {
+		t.Fatalf("unexpected truncated value: %q", got)
+	}
+
+	if got := normalizeRRLKeyPart("  MiXeD.Example.COM  ", maxRRLQNameLen, true); got != "mixed.example.com" {
+		t.Fatalf("expected lower-cased trimmed value, got %q", got)
 	}
 }

@@ -28,8 +28,10 @@ func (s *AdminServer) handleSystemProfile(w http.ResponseWriter, r *http.Request
 
 	hostname, _ := os.Hostname()
 	interfaces, ips := collectSystemInterfaces()
+	rxBytes, txBytes, rxPackets, txPackets := readNetworkIOCounters()
 	memStats := readMemoryStats()
 	cpuSeconds := readProcessCPUSeconds()
+	load1, load5, load15 := readSystemLoadAverages()
 	disk := readDiskUsage()
 	traffic := readTrafficSummary(s)
 
@@ -38,6 +40,12 @@ func (s *AdminServer) handleSystemProfile(w http.ResponseWriter, r *http.Request
 		"network": map[string]interface{}{
 			"ip_addresses": ips,
 			"interfaces":   interfaces,
+			"io": map[string]interface{}{
+				"rx_bytes_total":   rxBytes,
+				"tx_bytes_total":   txBytes,
+				"rx_packets_total": rxPackets,
+				"tx_packets_total": txPackets,
+			},
 		},
 		"runtime": map[string]interface{}{
 			"version":     Version,
@@ -51,6 +59,9 @@ func (s *AdminServer) handleSystemProfile(w http.ResponseWriter, r *http.Request
 		},
 		"cpu": map[string]interface{}{
 			"process_cpu_seconds_total": cpuSeconds,
+			"load_avg_1m":              load1,
+			"load_avg_5m":              load5,
+			"load_avg_15m":             load15,
 		},
 		"memory": memStats,
 		"disk":   disk,
@@ -140,11 +151,13 @@ func readMemoryStats() map[string]interface{} {
 	runtime.ReadMemStats(&m)
 
 	totalRAM := readSystemTotalMemoryBytes()
+	freeRAM := readSystemFreeMemoryBytes()
 	return map[string]interface{}{
 		"process_alloc_bytes": m.Alloc,
 		"process_heap_bytes":  m.HeapAlloc,
 		"process_sys_bytes":   m.Sys,
 		"system_total_bytes":  totalRAM,
+		"system_free_bytes":   freeRAM,
 		"gc_cycles":           m.NumGC,
 	}
 }

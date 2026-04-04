@@ -1,29 +1,46 @@
-import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
-import { Database, Search, Trash2, AlertCircle, Loader2, RefreshCw } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef, type FormEvent } from 'react'
+import { Database, Search, Trash2, AlertCircle, Loader2, RefreshCw, Download } from 'lucide-react'
 import { api } from '@/api/client'
 import type { CacheStats, CacheEntry, NegativeCacheEntry } from '@/api/types'
 import { formatNumber } from '@/lib/utils'
 
 const DNS_TYPES = ['ALL', 'A', 'AAAA', 'NS', 'CNAME', 'MX', 'TXT', 'SOA', 'SRV', 'PTR']
+const REFRESH_INTERVALS = [
+  { label: '5s', value: 5000 },
+  { label: '15s', value: 15000 },
+  { label: '30s', value: 30000 },
+] as const
 
 // Convert an IPv4/IPv6 address to its reverse DNS (in-addr.arpa / ip6.arpa) name.
 function toReverseDNS(input: string): string | null {
   const trimmed = input.trim()
-  // IPv4: 1.2.3.4 → 4.3.2.1.in-addr.arpa
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) {
-    return trimmed.split('.').reverse().join('.') + '.in-addr.arpa'
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed)) {
+    const octets = trimmed.split('.')
+    if (octets.some((o) => Number(o) > 255)) return null
+    return octets.reverse().join('.') + '.in-addr.arpa'
   }
-  // IPv6: expand and reverse nibbles → ...ip6.arpa
-  if (trimmed.includes(':')) {
-    // Expand :: and normalize to 32 hex nibbles
-    const parts = trimmed.split(':')
-    const missing = 8 - parts.filter(p => p !== '').length
-    const expanded = parts.flatMap(p => p === '' ? Array(missing + 1).fill('0000') : [p.padStart(4, '0')])
-    if (expanded.length === 8) {
-      return expanded.join('').split('').reverse().join('.') + '.ip6.arpa'
-    }
+
+  if (!trimmed.includes(':')) return null
+
+  const normalized = trimmed.toLowerCase()
+  const parts = normalized.split('::')
+  if (parts.length > 2) return null
+
+  const left = parts[0] ? parts[0].split(':').filter(Boolean) : []
+  const right = parts[1] ? parts[1].split(':').filter(Boolean) : []
+  if ([...left, ...right].some((p) => !/^[0-9a-f]{1,4}$/.test(p))) return null
+
+  let full = [...left.map((p) => p.padStart(4, '0'))]
+  if (parts.length === 2) {
+    const missing = 8 - (left.length + right.length)
+    if (missing < 1) return null
+    full = [...full, ...Array(missing).fill('0000'), ...right.map((p) => p.padStart(4, '0'))]
+  } else {
+    full = [...full, ...right.map((p) => p.padStart(4, '0'))]
   }
-  return null
+
+  if (full.length !== 8) return null
+  return full.join('').split('').reverse().join('.') + '.ip6.arpa'
 }
 
 function StatCard({
@@ -55,8 +72,13 @@ export default function CachePage() {
   const [flushConfirm, setFlushConfirm] = useState(false)
   const [message, setMessage] = useState('')
   const [negativeEntries, setNegativeEntries] = useState<NegativeCacheEntry[]>([])
+  const [negativeFilter, setNegativeFilter] = useState('')
   const [negativeLoading, setNegativeLoading] = useState(false)
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [refreshMs, setRefreshMs] = useState<number>(30000)
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fetchingStatsRef = useRef(false)
+  const fetchingNegRef = useRef(false)
 
   // Clear message timer on unmount to prevent setState on unmounted component
   useEffect(() => {
@@ -66,15 +88,21 @@ export default function CachePage() {
   }, [])
 
   const fetchStats = useCallback(async () => {
+    if (fetchingStatsRef.current) return
+    fetchingStatsRef.current = true
     try {
       const res = await api.cacheStats() as unknown as CacheStats
       setStats(res)
     } catch {
       // silently ignore
+    } finally {
+      fetchingStatsRef.current = false
     }
   }, [])
 
   const fetchNegative = useCallback(async () => {
+    if (fetchingNegRef.current) return
+    fetchingNegRef.current = true
     setNegativeLoading(true)
     try {
       const res = await api.cacheNegative()
@@ -83,6 +111,7 @@ export default function CachePage() {
       // silently ignore
     } finally {
       setNegativeLoading(false)
+      fetchingNegRef.current = false
     }
   }, [])
 
@@ -90,6 +119,16 @@ export default function CachePage() {
     fetchStats()
     fetchNegative()
   }, [fetchStats, fetchNegative])
+
+  useEffect(() => {
+    if (!autoRefresh) return
+    const interval = setInterval(() => {
+      if (document.hidden) return
+      void fetchStats()
+      void fetchNegative()
+    }, refreshMs)
+    return () => clearInterval(interval)
+  }, [autoRefresh, refreshMs, fetchStats, fetchNegative])
 
   async function handleLookup(e: FormEvent) {
     e.preventDefault()
@@ -173,14 +212,66 @@ export default function CachePage() {
     messageTimerRef.current = setTimeout(() => setMessage(''), 3000)
   }
 
+  const filteredNegativeEntries = useMemo(() => {
+    const needle = negativeFilter.trim().toLowerCase()
+    if (!needle) return negativeEntries
+    return negativeEntries.filter((entry) =>
+      `${entry.name} ${entry.type} ${entry.neg_type} ${entry.rcode}`.toLowerCase().includes(needle),
+    )
+  }, [negativeEntries, negativeFilter])
+
+  function exportNegativeCSV() {
+    if (filteredNegativeEntries.length === 0) return
+    const lines: string[] = []
+    lines.push('name,type,neg_type,rcode,ttl')
+    filteredNegativeEntries.forEach((entry) => {
+      lines.push([
+        `"${entry.name.replace(/"/g, '""')}"`,
+        entry.type,
+        entry.neg_type,
+        entry.rcode,
+        String(entry.ttl),
+      ].join(','))
+    })
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `labyrinth-negative-cache-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   const inputClass =
     'bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 w-full text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-600/50 focus:border-amber-600 transition-colors'
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
-        Cache Management
-      </h1>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+          Cache Management
+        </h1>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAutoRefresh((v) => !v)}
+            className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border ${autoRefresh ? 'bg-sky-100 dark:bg-sky-900/30 border-sky-300 dark:border-sky-700 text-sky-700 dark:text-sky-300' : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300'}`}
+          >
+            Auto refresh
+          </button>
+          <div className="inline-flex items-center gap-1 rounded-lg border border-slate-300 dark:border-slate-600 px-2 py-1 text-xs bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+            <span>Every</span>
+            <select value={refreshMs} onChange={(e) => setRefreshMs(Number(e.target.value))} className="bg-transparent outline-none">
+              {REFRESH_INTERVALS.map((i) => (
+                <option key={i.value} value={i.value} className="text-slate-900">
+                  {i.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
 
       {/* Status message */}
       {message && (
@@ -301,7 +392,7 @@ export default function CachePage() {
                                 </span>
                               </td>
                               <td className="px-3 py-1.5 text-slate-500">{String(rec.ttl ?? 0)}s</td>
-                              <td className="px-3 py-1.5 break-all">{String(rec.rdata || '—')}</td>
+                              <td className="px-3 py-1.5 break-all">{String(rec.rdata || 'N/A')}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -333,11 +424,11 @@ export default function CachePage() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
                 <div>
                   <span className="text-slate-500 dark:text-slate-400 text-xs block">Name</span>
-                  <span className="font-mono text-slate-900 dark:text-slate-100">{String(lookupResult.name || '—')}</span>
+                  <span className="font-mono text-slate-900 dark:text-slate-100">{String(lookupResult.name || 'N/A')}</span>
                 </div>
                 <div>
                   <span className="text-slate-500 dark:text-slate-400 text-xs block">Type</span>
-                  <span className="font-mono text-slate-900 dark:text-slate-100">{String(lookupResult.type || '—')}</span>
+                  <span className="font-mono text-slate-900 dark:text-slate-100">{String(lookupResult.type || 'N/A')}</span>
                 </div>
                 <div>
                   <span className="text-slate-500 dark:text-slate-400 text-xs block">TTL</span>
@@ -375,7 +466,7 @@ export default function CachePage() {
                               </span>
                             </td>
                             <td className="px-3 py-1.5 text-slate-500">{String(rec.ttl ?? 0)}s</td>
-                            <td className="px-3 py-1.5 break-all">{String(rec.rdata || '—')}</td>
+                            <td className="px-3 py-1.5 break-all">{String(rec.rdata || 'N/A')}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -442,14 +533,30 @@ export default function CachePage() {
             <AlertCircle size={16} />
             Negative Cache Entries
           </h2>
-          <button
-            onClick={fetchNegative}
-            disabled={negativeLoading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
-          >
-            <RefreshCw size={14} className={negativeLoading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <input
+              value={negativeFilter}
+              onChange={(e) => setNegativeFilter(e.target.value)}
+              placeholder="Filter entries..."
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100"
+            />
+            <button
+              onClick={exportNegativeCSV}
+              disabled={filteredNegativeEntries.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors disabled:opacity-50"
+            >
+              <Download size={14} />
+              CSV
+            </button>
+            <button
+              onClick={fetchNegative}
+              disabled={negativeLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+            >
+              <RefreshCw size={14} className={negativeLoading ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -473,14 +580,14 @@ export default function CachePage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-              {negativeEntries.length === 0 ? (
+              {filteredNegativeEntries.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-                    {negativeLoading ? 'Loading...' : 'No negative cache entries'}
+                    {negativeLoading ? 'Loading...' : 'No entries match current filter'}
                   </td>
                 </tr>
               ) : (
-                negativeEntries.map((entry, i) => (
+                filteredNegativeEntries.map((entry, i) => (
                   <tr key={`${entry.name}-${entry.type}-${i}`} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">
                     <td className="px-4 py-2.5 font-mono text-xs text-slate-900 dark:text-slate-100 max-w-xs truncate" title={entry.name}>
                       {entry.name}

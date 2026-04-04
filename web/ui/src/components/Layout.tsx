@@ -6,6 +6,8 @@ import {
   Database,
   Shield,
   Settings,
+  BarChart3,
+  FileText,
   Info,
   Sun,
   Moon,
@@ -24,10 +26,12 @@ import { api } from '@/api/client'
 
 const mainNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/operations', icon: BarChart3, label: 'Operations' },
   { to: '/queries', icon: Activity, label: 'Queries' },
   { to: '/cache', icon: Database, label: 'Cache' },
   { to: '/blocklist', icon: Shield, label: 'Blocklist' },
   { to: '/config', icon: Settings, label: 'Config' },
+  { to: '/reports', icon: FileText, label: 'Reports' },
 ]
 const aboutNavItem = { to: '/about', icon: Info, label: 'About & Updates' }
 
