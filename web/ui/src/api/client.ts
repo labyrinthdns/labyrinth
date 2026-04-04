@@ -180,7 +180,13 @@ export const api = {
   cacheNegative: (limit = 100) =>
     request<{ entries: NegativeCacheEntry[] }>(`/api/cache/negative?limit=${limit}`),
 
-  checkUpdate: () => requestCached<UpdateInfo>('system.update.check', 30000, '/api/system/update/check'),
+  checkUpdate: (force = false) => {
+    if (force) {
+      clearCached('system.update.check')
+      return request<UpdateInfo>('/api/system/update/check?force=1')
+    }
+    return requestCached<UpdateInfo>('system.update.check', 30000, '/api/system/update/check')
+  },
 
   applyUpdate: () => {
     clearCached('system.update.check')

@@ -62,13 +62,19 @@ func (s *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	force := false
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("force"))) {
+	case "1", "true", "yes", "on":
+		force = true
+	}
+
 	// Return cached result if fresh enough
 	s.updateMu.RLock()
 	cached := s.updateCache
 	checkedAt := s.updateCheckedAt
 	s.updateMu.RUnlock()
 
-	if cached != nil && time.Since(checkedAt) < s.config.Web.UpdateCheckInterval {
+	if !force && cached != nil && time.Since(checkedAt) < s.config.Web.UpdateCheckInterval {
 		jsonResponse(w, http.StatusOK, cached)
 		return
 	}
@@ -76,8 +82,8 @@ func (s *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) 
 	// Fetch fresh
 	info, err := checkForUpdate()
 	if err != nil {
-		// Return stale cache if available
-		if cached != nil {
+		// Return stale cache if available for non-forced checks.
+		if cached != nil && !force {
 			jsonResponse(w, http.StatusOK, cached)
 			return
 		}
