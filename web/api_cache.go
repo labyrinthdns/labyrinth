@@ -116,6 +116,9 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "missing name parameter"})
 		return
 	}
+	if !strings.HasSuffix(name, ".") {
+		name += "."
+	}
 	if typeStr == "" {
 		typeStr = "A"
 	}
@@ -300,6 +303,9 @@ func (s *AdminServer) handleCacheDelete(w http.ResponseWriter, r *http.Request) 
 	if name == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "missing name parameter"})
 		return
+	}
+	if !strings.HasSuffix(name, ".") {
+		name += "."
 	}
 	if typeStr == "" {
 		typeStr = "A"
