@@ -76,7 +76,7 @@ export default function AboutPage() {
     setConfirmUpdate(false)
 
     try {
-      const info = await api.checkUpdate()
+      const info = await api.checkUpdate(true)
       setUpdateInfo(info)
       setStatus(info.update_available ? 'A new release is available.' : 'You are already on the latest version.')
     } catch (err) {
