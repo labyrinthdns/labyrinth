@@ -321,6 +321,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/health", s.handleHealth)
 	mux.HandleFunc("/api/system/version", s.handleVersion)
 	mux.HandleFunc("/api/system/profile", s.requireAuth(s.handleSystemProfile))
+	mux.HandleFunc("/api/dashboard/layout", s.requireAuth(s.handleDashboardLayout))
 
 	// Protected routes
 	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleMe))

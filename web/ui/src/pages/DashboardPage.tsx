@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Link } from 'react-router-dom'
 import {
   Globe,
   Zap,
@@ -17,6 +16,10 @@ import {
   RefreshCw,
   Pause,
   Play,
+  GripVertical,
+  EyeOff,
+  Eye,
+  LayoutGrid,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -34,7 +37,7 @@ import {
   CartesianGrid,
 } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse } from '@/api/types'
+import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse, QueryEntry } from '@/api/types'
 import { formatNumber, formatUptime, formatBytes, formatVersion } from '@/lib/utils'
 
 const QUERY_TYPE_COUNTERS = ['A', 'AAAA', 'MX', 'NS', 'PTR', 'SRV', 'CNAME', 'TXT'] as const
@@ -46,6 +49,14 @@ const REFRESH_INTERVALS = [
   { label: '15s', value: 15000 },
   { label: '30s', value: 30000 },
 ] as const
+const DASHBOARD_SECTION_IDS = ['query_types', 'network_security', 'top_lists'] as const
+type DashboardSectionID = (typeof DASHBOARD_SECTION_IDS)[number]
+const DEFAULT_SECTION_ORDER: DashboardSectionID[] = ['query_types', 'network_security', 'top_lists']
+const SECTION_LABELS: Record<DashboardSectionID, string> = {
+  query_types: 'Query Type Counters',
+  network_security: 'Network & Security',
+  top_lists: 'Top Clients & Domains',
+}
 
 const RCODE_COLORS: Record<string, string> = {
   NOERROR: '#22c55e',
@@ -74,6 +85,20 @@ function ema(values: number[], alpha = 0.35): number[] {
     out.push(alpha * values[i] + (1 - alpha) * out[i - 1])
   }
   return out
+}
+
+function normalizeSectionOrder(input: string[] | undefined): DashboardSectionID[] {
+  const known = new Set(DASHBOARD_SECTION_IDS)
+  const unique: DashboardSectionID[] = []
+  for (const raw of input || []) {
+    const id = raw as DashboardSectionID
+    if (!known.has(id) || unique.includes(id)) continue
+    unique.push(id)
+  }
+  for (const id of DEFAULT_SECTION_ORDER) {
+    if (!unique.includes(id)) unique.push(id)
+  }
+  return unique
 }
 
 function StatCard({
@@ -145,6 +170,8 @@ export default function DashboardPage() {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('15m')
   const [topClients, setTopClients] = useState<TopEntry[]>([])
   const [topDomains, setTopDomains] = useState<TopEntry[]>([])
+  const [recentQueries, setRecentQueries] = useState<QueryEntry[]>([])
+  const [recentPaused, setRecentPaused] = useState(false)
   const [networkHistory, setNetworkHistory] = useState<ThroughputPoint[]>([])
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
@@ -153,19 +180,26 @@ export default function DashboardPage() {
   const [domainFilter, setDomainFilter] = useState('')
   const [clientSortDesc, setClientSortDesc] = useState(true)
   const [domainSortDesc, setDomainSortDesc] = useState(true)
+  const [sectionOrder, setSectionOrder] = useState<DashboardSectionID[]>(DEFAULT_SECTION_ORDER)
+  const [hiddenSections, setHiddenSections] = useState<DashboardSectionID[]>([])
+  const [draggingSection, setDraggingSection] = useState<DashboardSectionID | null>(null)
+  const [layoutPanelOpen, setLayoutPanelOpen] = useState(false)
+  const [layoutStatus, setLayoutStatus] = useState('')
   const [error, setError] = useState('')
 
   const cpuSampleRef = useRef<{ sec: number; atMs: number } | null>(null)
   const netSampleRef = useRef<{ rx: number; tx: number; atMs: number } | null>(null)
+  const layoutHydratedRef = useRef(false)
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, tsRes, clientsRes, domainsRes, profileRes] = await Promise.allSettled([
+      const [statsRes, tsRes, clientsRes, domainsRes, profileRes, recentRes] = await Promise.allSettled([
         api.stats(),
         api.timeseries(timeWindow),
         api.topClients(20),
         api.topDomains(20),
         api.systemProfile(),
+        api.recentQueries(10),
       ])
 
       if (statsRes.status === 'fulfilled') setStats(statsRes.value as unknown as StatsResponse)
@@ -223,12 +257,16 @@ export default function DashboardPage() {
         netSampleRef.current = { rx: rxTotal, tx: txTotal, atMs: nowMs }
       }
 
+      if (recentRes.status === 'fulfilled' && !recentPaused) {
+        setRecentQueries(recentRes.value.entries || [])
+      }
+
       setUpdatedAt(new Date())
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch stats')
     }
-  }, [timeWindow])
+  }, [timeWindow, recentPaused])
 
   useEffect(() => {
     void fetchData()
@@ -320,6 +358,282 @@ export default function DashboardPage() {
     return [...filtered].sort((a, b) => (domainSortDesc ? b.count - a.count : a.count - b.count))
   }, [topDomains, domainFilter, domainSortDesc])
 
+  useEffect(() => {
+    let cancelled = false
+    void api.dashboardLayout()
+      .then((res) => {
+        if (cancelled) return
+        setSectionOrder(normalizeSectionOrder(res.panel_order))
+        const hidden = normalizeSectionOrder(res.hidden_panels || []).filter((id) => (res.hidden_panels || []).includes(id))
+        setHiddenSections(hidden)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSectionOrder(DEFAULT_SECTION_ORDER)
+          setHiddenSections([])
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          layoutHydratedRef.current = true
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!layoutHydratedRef.current) return
+    const timer = window.setTimeout(() => {
+      void api.saveDashboardLayout({
+        panel_order: sectionOrder,
+        hidden_panels: hiddenSections,
+      }).then(() => {
+        setLayoutStatus('Layout saved to YAML')
+        window.setTimeout(() => setLayoutStatus(''), 1800)
+      }).catch(() => {
+        setLayoutStatus('Layout save failed')
+        window.setTimeout(() => setLayoutStatus(''), 2200)
+      })
+    }, 350)
+    return () => window.clearTimeout(timer)
+  }, [sectionOrder, hiddenSections])
+
+  const moveSection = useCallback((source: DashboardSectionID, target: DashboardSectionID) => {
+    setSectionOrder((prev) => {
+      if (source === target) return prev
+      const next = [...prev]
+      const from = next.indexOf(source)
+      const to = next.indexOf(target)
+      if (from < 0 || to < 0) return prev
+      next.splice(from, 1)
+      next.splice(to, 0, source)
+      return next
+    })
+  }, [])
+
+  const hideSection = useCallback((id: DashboardSectionID) => {
+    setHiddenSections((prev) => (prev.includes(id) ? prev : [...prev, id]))
+  }, [])
+
+  const showSection = useCallback((id: DashboardSectionID) => {
+    setHiddenSections((prev) => prev.filter((v) => v !== id))
+  }, [])
+
+  const visibleSections = sectionOrder.filter((id) => !hiddenSections.includes(id))
+
+  const renderSection = useCallback((id: DashboardSectionID) => {
+    if (id === 'query_types') {
+      return (
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">
+            Query Type Counters
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+            {queryTypeCounts.map((item) => (
+              <div
+                key={item.type}
+                className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 bg-slate-50 dark:bg-slate-800/70"
+              >
+                <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
+                  {item.type}
+                </div>
+                <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100 font-mono">
+                  {formatNumber(item.count)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )
+    }
+
+    if (id === 'network_security') {
+      return (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Network Interfaces</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">{upInterfaces} up / {profile?.network.interfaces?.length || 0} total interfaces</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {listenIPs.slice(0, 4).map((ip) => (
+                  <span key={ip} className="px-2 py-0.5 rounded-full text-[10px] bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">{ip}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    <th className="text-left pb-2">Name</th>
+                    <th className="text-center pb-2">State</th>
+                    <th className="text-right pb-2">MTU</th>
+                    <th className="text-right pb-2">Addrs</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {(profile?.network.interfaces || []).slice(0, 8).map((iface) => {
+                    const up = Boolean(iface.flags?.includes('up'))
+                    return (
+                      <tr key={iface.name}>
+                        <td className="py-2 text-slate-900 dark:text-slate-200">{iface.name}</td>
+                        <td className="py-2 text-center">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${up ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700'}`}>
+                            {up ? 'UP' : 'DOWN'}
+                          </span>
+                        </td>
+                        <td className="py-2 text-right text-slate-700 dark:text-slate-300">{formatNumber(iface.mtu)}</td>
+                        <td className="py-2 text-right text-slate-700 dark:text-slate-300">{formatNumber(iface.addrs?.length || 0)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4 inline-flex items-center gap-2">
+              <Shield size={15} className="text-amber-400" /> Security Snapshot
+            </h2>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Status</span><span className={`font-semibold ${securityNeedsAttention ? 'text-amber-300' : 'text-emerald-300'}`}>{securityNeedsAttention ? 'Needs Attention' : 'Healthy'}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Blocked Queries</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.blocked_queries || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Rate Limited</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.rate_limited || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Upstream Errors</span><span className="font-semibold text-rose-300">{formatNumber(stats?.upstream_errors || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Secure</span><span className="font-semibold text-emerald-300">{formatNumber(stats?.dnssec_secure || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Insecure</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.dnssec_insecure || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Bogus</span><span className="font-semibold text-rose-300">{formatNumber(stats?.dnssec_bogus || 0)}</span></div>
+              <div className="pt-2">
+                <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Secure Ratio</span><span>{dnssecSecureRatio.toFixed(1)}%</span></div>
+                <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
+              </div>
+              <div>
+                <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Bogus Ratio</span><span>{dnssecBogusRatio.toFixed(1)}%</span></div>
+                <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-rose-500" style={{ width: `${Math.max(0, Math.min(100, dnssecBogusRatio))}%` }} /></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 flex items-center gap-2">
+              <Users size={16} className="text-amber-400" />
+              Top Clients
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">{filteredClients.length}/{topClients.length}</span>
+            </h2>
+            <div className="flex items-center gap-2">
+              <input
+                value={clientFilter}
+                onChange={(e) => setClientFilter(e.target.value)}
+                placeholder="Filter client..."
+                className="h-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 text-xs text-slate-900 dark:text-slate-200 placeholder:text-slate-500"
+              />
+              <button onClick={() => setClientSortDesc((v) => !v)} className="h-8 px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300">
+                Sort {clientSortDesc ? 'High-Low' : 'Low-High'}
+              </button>
+            </div>
+          </div>
+          {filteredClients.length > 0 ? (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  <th className="text-left pb-2 w-8">#</th>
+                  <th className="text-left pb-2">Client</th>
+                  <th className="text-right pb-2">Queries</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {filteredClients.slice(0, 10).map((entry, i) => (
+                  <tr key={entry.key}>
+                    <td className="py-1.5 text-xs text-slate-500">{i + 1}</td>
+                    <td className="py-1.5 font-mono text-xs text-slate-900 dark:text-slate-200">{entry.key}</td>
+                    <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="flex items-center justify-center h-20 text-sm text-slate-500">
+              No matching clients
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 flex items-center gap-2">
+              <Globe size={16} className="text-amber-400" />
+              Top Domains
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">{filteredDomains.length}/{topDomains.length}</span>
+            </h2>
+            <div className="flex items-center gap-2">
+              <input
+                value={domainFilter}
+                onChange={(e) => setDomainFilter(e.target.value)}
+                placeholder="Filter domain..."
+                className="h-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 text-xs text-slate-900 dark:text-slate-200 placeholder:text-slate-500"
+              />
+              <button onClick={() => setDomainSortDesc((v) => !v)} className="h-8 px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300">
+                Sort {domainSortDesc ? 'High-Low' : 'Low-High'}
+              </button>
+            </div>
+          </div>
+          {filteredDomains.length > 0 ? (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  <th className="text-left pb-2 w-8">#</th>
+                  <th className="text-left pb-2">Domain</th>
+                  <th className="text-right pb-2">Queries</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {filteredDomains.slice(0, 10).map((entry, i) => (
+                  <tr key={entry.key}>
+                    <td className="py-1.5 text-xs text-slate-500">{i + 1}</td>
+                    <td className="py-1.5 text-xs text-slate-900 dark:text-slate-200 max-w-xs truncate" title={entry.key}>{entry.key}</td>
+                    <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="flex items-center justify-center h-20 text-sm text-slate-500">
+              No matching domains
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }, [
+    queryTypeCounts,
+    upInterfaces,
+    profile,
+    listenIPs,
+    securityNeedsAttention,
+    stats,
+    dnssecSecureRatio,
+    dnssecBogusRatio,
+    filteredClients,
+    topClients.length,
+    clientFilter,
+    clientSortDesc,
+    filteredDomains,
+    topDomains.length,
+    domainFilter,
+    domainSortDesc,
+  ])
+
   return (
     <div className="space-y-6">
       <div>
@@ -327,49 +641,105 @@ export default function DashboardPage() {
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Live resolver and system telemetry</p>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Link to="/operations" className="px-2.5 py-1 rounded-md text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/25 hover:bg-amber-500/20">Operations</Link>
-        <Link to="/reports" className="px-2.5 py-1 rounded-md text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700">Reports</Link>
-
-        <button
-          onClick={() => void fetchData()}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
-        >
-          <RefreshCw size={12} /> Refresh
-        </button>
-
-        <div className="inline-flex items-center gap-1 rounded-md px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300">
-          <span>Auto</span>
-          <select
-            value={refreshMs}
-            onChange={(e) => setRefreshMs(Number(e.target.value))}
-            className="bg-transparent outline-none"
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => void fetchData()}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
           >
-            {REFRESH_INTERVALS.map((item) => (
-              <option key={item.value} value={item.value} className="text-slate-900">{item.label}</option>
-            ))}
-          </select>
+            <RefreshCw size={12} /> Refresh
+          </button>
+
+          <div className="inline-flex items-center gap-1 rounded-md px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300">
+            <span>Auto</span>
+            <select
+              value={refreshMs}
+              onChange={(e) => setRefreshMs(Number(e.target.value))}
+              className="bg-transparent outline-none"
+            >
+              {REFRESH_INTERVALS.map((item) => (
+                <option key={item.value} value={item.value} className="text-slate-900">{item.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            onClick={() => setAutoRefresh((v) => !v)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
+          >
+            {autoRefresh ? <Pause size={12} /> : <Play size={12} />}
+            {autoRefresh ? 'Pause Auto' : 'Resume Auto'}
+          </button>
+
+          <button
+            onClick={() => setLayoutPanelOpen((v) => !v)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
+          >
+            <LayoutGrid size={12} />
+            {layoutPanelOpen ? 'Close Layout' : 'Customize Layout'}
+          </button>
+
+          <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+            Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
+          </span>
+          {layoutStatus && (
+            <span className="px-2.5 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+              {layoutStatus}
+            </span>
+          )}
         </div>
 
-        <button
-          onClick={() => setAutoRefresh((v) => !v)}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
-        >
-          {autoRefresh ? <Pause size={12} /> : <Play size={12} />}
-          {autoRefresh ? 'Pause Auto' : 'Resume Auto'}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`px-2.5 py-1 rounded-md text-xs border ${stats?.resolver_ready ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/30'}`}>
+            {stats?.resolver_ready ? 'Resolver Ready' : 'Resolver Not Ready'}
+          </span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">Avg QPS 1m: {(profile?.traffic.last_minute_qps_avg || 0).toFixed(2)}</span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">Errors 1m: {formatNumber(profile?.traffic.last_minute_error_total || 0)}</span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">Cache Hit: {((stats?.cache_hit_ratio || 0) * 100).toFixed(1)}%</span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30">Blocked: {formatNumber(stats?.blocked_queries || 0)}</span>
+          <span className="px-2.5 py-1 rounded-md text-xs bg-rose-500/10 text-rose-300 border border-rose-500/30">Upstream Errors: {formatNumber(stats?.upstream_errors || 0)}</span>
+        </div>
 
-        <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
-          Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
-        </span>
-        <span className={`px-2.5 py-1 rounded-md text-xs border ${stats?.resolver_ready ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/30'}`}>
-          {stats?.resolver_ready ? 'Resolver Ready' : 'Resolver Not Ready'}
-        </span>
-        <span className="px-2.5 py-1 rounded-md text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">Avg QPS 1m: {(profile?.traffic.last_minute_qps_avg || 0).toFixed(2)}</span>
-        <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">Errors 1m: {formatNumber(profile?.traffic.last_minute_error_total || 0)}</span>
-        <span className="px-2.5 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">Cache Hit: {((stats?.cache_hit_ratio || 0) * 100).toFixed(1)}%</span>
-        <span className="px-2.5 py-1 rounded-md text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30">Blocked: {formatNumber(stats?.blocked_queries || 0)}</span>
-        <span className="px-2.5 py-1 rounded-md text-xs bg-rose-500/10 text-rose-300 border border-rose-500/30">Upstream Errors: {formatNumber(stats?.upstream_errors || 0)}</span>
+        {layoutPanelOpen && (
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
+              Drag sections below to reorder. Hide low-priority sections and restore anytime.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {sectionOrder.map((id) => {
+                const hidden = hiddenSections.includes(id)
+                return (
+                  <button
+                    key={id}
+                    onClick={() => (hidden ? showSection(id) : hideSection(id))}
+                    className={`px-2 py-1 rounded-md text-xs border ${
+                      hidden
+                        ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600'
+                        : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                    }`}
+                  >
+                    {hidden ? <Eye size={11} className="inline mr-1" /> : <EyeOff size={11} className="inline mr-1" />}
+                    {hidden ? `Show ${SECTION_LABELS[id]}` : `Hide ${SECTION_LABELS[id]}`}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {!layoutPanelOpen && hiddenSections.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {hiddenSections.map((id) => (
+              <button
+                key={id}
+                onClick={() => showSection(id)}
+                className="px-2 py-1 rounded-md text-xs border bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600"
+              >
+                Show {SECTION_LABELS[id]}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {error && (
@@ -377,6 +747,225 @@ export default function DashboardPage() {
           {error}
         </div>
       )}
+
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Live Query Pulse</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Last 10 queries on dashboard, full stream in Queries page.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setRecentPaused((v) => !v)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
+            >
+              {recentPaused ? <Play size={12} /> : <Pause size={12} />}
+              {recentPaused ? 'Resume List' : 'Pause List'}
+            </button>
+            <a
+              href="/queries"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-cyan-300 bg-cyan-500/10 border border-cyan-500/30 hover:bg-cyan-500/20"
+            >
+              Continue in Queries
+            </a>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
+            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Total Queries</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</p>
+          </div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
+            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Window Queries</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{formatNumber(windowQueries)}</p>
+          </div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
+            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Avg QPS (1m)</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{(profile?.traffic.last_minute_qps_avg || 0).toFixed(2)}</p>
+          </div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
+            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Errors (1m)</p>
+            <p className="text-sm font-semibold text-rose-300">{formatNumber(profile?.traffic.last_minute_error_total || 0)}</p>
+          </div>
+        </div>
+        <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-100 dark:bg-slate-800">
+              <tr className="text-slate-500 dark:text-slate-400">
+                <th className="text-left px-2 py-2">Time</th>
+                <th className="text-left px-2 py-2">Client</th>
+                <th className="text-left px-2 py-2">Domain</th>
+                <th className="text-left px-2 py-2">Type</th>
+                <th className="text-left px-2 py-2">RCode</th>
+                <th className="text-right px-2 py-2">ms</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+              {recentQueries.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-4 text-center text-slate-500 dark:text-slate-400">
+                    No recent queries yet
+                  </td>
+                </tr>
+              ) : (
+                recentQueries.map((q) => (
+                  <tr key={q.id}>
+                    <td className="px-2 py-1.5 text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                      {q.ts ? new Date(q.ts).toLocaleTimeString() : '-'}
+                    </td>
+                    <td className="px-2 py-1.5 font-mono text-slate-600 dark:text-slate-300">{q.client}</td>
+                    <td className="px-2 py-1.5 text-slate-900 dark:text-slate-100 max-w-xs truncate" title={q.qname}>{q.qname}</td>
+                    <td className="px-2 py-1.5 font-mono text-slate-600 dark:text-slate-300">{q.qtype}</td>
+                    <td className="px-2 py-1.5 text-slate-600 dark:text-slate-300">{q.rcode}</td>
+                    <td className="px-2 py-1.5 text-right text-slate-600 dark:text-slate-300">{(q.duration_ms || 0).toFixed(1)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">
+                Traffic Stability Over Time
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Raw area + moving average + EMA trend to reduce sudden spikes
+              </p>
+            </div>
+            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
+              {TIME_WINDOWS.map((w) => (
+                <button
+                  key={w}
+                  onClick={() => setTimeWindow(w)}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
+                    timeWindow === w
+                      ? 'bg-amber-500 text-slate-950'
+                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {w}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="h-72">
+            {chartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={chartData} margin={{ top: 10, right: 12, left: 4, bottom: 6 }}>
+                  <defs>
+                    <linearGradient id="queriesBarGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.45} />
+                      <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.06} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.18} />
+                  <XAxis
+                    dataKey="time"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 11, fill: '#94a3b8' }}
+                    minTickGap={20}
+                  />
+                  <YAxis
+                    yAxisId="q"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 11, fill: '#94a3b8' }}
+                    width={40}
+                  />
+                  <YAxis
+                    yAxisId="pct"
+                    orientation="right"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 11, fill: '#94a3b8' }}
+                    width={36}
+                    domain={[0, 100]}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#0f172a',
+                      border: '1px solid #1e293b',
+                      borderRadius: '10px',
+                      color: '#e2e8f0',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Area yAxisId="q" type="monotone" dataKey="queries" fill="url(#queriesBarGrad)" stroke="#22d3ee" strokeWidth={1.8} name="Queries" />
+                  <Line yAxisId="q" type="linear" dataKey="queriesTrend" stroke="#f59e0b" strokeWidth={2.3} dot={false} name="Moving Avg" />
+                  <Line yAxisId="q" type="linear" dataKey="queriesEMA" stroke="#60a5fa" strokeWidth={2} dot={false} strokeDasharray="4 4" name="EMA" />
+                  <Line yAxisId="q" type="linear" dataKey="errors" stroke="#ef4444" strokeWidth={1.8} dot={false} name="Errors" />
+                  <Bar yAxisId="pct" dataKey="hitRate" fill="#22c55e22" name="Hit Rate %" />
+                </ComposedChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
+                No data yet
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">
+            Response Codes
+          </h2>
+          <div className="h-64">
+            {rcodeData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={rcodeData}
+                    cx="50%"
+                    cy="45%"
+                    innerRadius={45}
+                    outerRadius={75}
+                    paddingAngle={2}
+                    dataKey="value"
+                  >
+                    {rcodeData.map((entry) => (
+                      <Cell
+                        key={entry.name}
+                        fill={RCODE_COLORS[entry.name] || '#64748b'}
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#0f172a',
+                      border: '1px solid #1e293b',
+                      borderRadius: '10px',
+                      color: '#e2e8f0',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Legend
+                    verticalAlign="bottom"
+                    iconType="circle"
+                    iconSize={8}
+                    formatter={(value: string) => (
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                        {value}
+                      </span>
+                    )}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
+                No data yet
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Server profile card */}
       {profile && (
@@ -591,330 +1180,38 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Query Type Counters */}
-      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">
-          Query Type Counters
-        </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-          {queryTypeCounts.map((item) => (
-            <div
-              key={item.type}
-              className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 bg-slate-50 dark:bg-slate-800/70"
-            >
-              <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
-                {item.type}
+      <div className="space-y-4">
+        {visibleSections.map((id) => (
+          <section
+            key={id}
+            draggable={layoutPanelOpen}
+            onDragStart={() => layoutPanelOpen && setDraggingSection(id)}
+            onDragEnd={() => setDraggingSection(null)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => {
+              if (draggingSection) moveSection(draggingSection, id)
+              setDraggingSection(null)
+            }}
+            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2"
+          >
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <div className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                <GripVertical size={12} />
+                {SECTION_LABELS[id]}
               </div>
-              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100 font-mono">
-                {formatNumber(item.count)}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <div className="xl:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Network Interfaces</h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">{upInterfaces} up / {profile?.network.interfaces?.length || 0} total interfaces</p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {listenIPs.slice(0, 4).map((ip) => (
-                <span key={ip} className="px-2 py-0.5 rounded-full text-[10px] bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">{ip}</span>
-              ))}
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                  <th className="text-left pb-2">Name</th>
-                  <th className="text-center pb-2">State</th>
-                  <th className="text-right pb-2">MTU</th>
-                  <th className="text-right pb-2">Addrs</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {(profile?.network.interfaces || []).slice(0, 8).map((iface) => {
-                  const up = Boolean(iface.flags?.includes('up'))
-                  return (
-                    <tr key={iface.name}>
-                      <td className="py-2 text-slate-900 dark:text-slate-200">{iface.name}</td>
-                      <td className="py-2 text-center">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${up ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700'}`}>
-                          {up ? 'UP' : 'DOWN'}
-                        </span>
-                      </td>
-                      <td className="py-2 text-right text-slate-700 dark:text-slate-300">{formatNumber(iface.mtu)}</td>
-                      <td className="py-2 text-right text-slate-700 dark:text-slate-300">{formatNumber(iface.addrs?.length || 0)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4 inline-flex items-center gap-2">
-            <Shield size={15} className="text-amber-400" /> Security Snapshot
-          </h2>
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Status</span><span className={`font-semibold ${securityNeedsAttention ? 'text-amber-300' : 'text-emerald-300'}`}>{securityNeedsAttention ? 'Needs Attention' : 'Healthy'}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Blocked Queries</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.blocked_queries || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Rate Limited</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.rate_limited || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Upstream Errors</span><span className="font-semibold text-rose-300">{formatNumber(stats?.upstream_errors || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Secure</span><span className="font-semibold text-emerald-300">{formatNumber(stats?.dnssec_secure || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Insecure</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.dnssec_insecure || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Bogus</span><span className="font-semibold text-rose-300">{formatNumber(stats?.dnssec_bogus || 0)}</span></div>
-            <div className="pt-2">
-              <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Secure Ratio</span><span>{dnssecSecureRatio.toFixed(1)}%</span></div>
-              <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
-            </div>
-            <div>
-              <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Bogus Ratio</span><span>{dnssecBogusRatio.toFixed(1)}%</span></div>
-              <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-rose-500" style={{ width: `${Math.max(0, Math.min(100, dnssecBogusRatio))}%` }} /></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Charts row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Traffic chart */}
-        <div className="lg:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">
-                Traffic Stability Over Time
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Raw area + moving average + EMA trend to reduce sudden spikes
-              </p>
-            </div>
-            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
-              {TIME_WINDOWS.map((w) => (
-                <button
-                  key={w}
-                  onClick={() => setTimeWindow(w)}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
-                    timeWindow === w
-                      ? 'bg-amber-500 text-slate-950'
-                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  {w}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="h-72">
-            {chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData} margin={{ top: 10, right: 12, left: 4, bottom: 6 }}>
-                  <defs>
-                    <linearGradient id="queriesBarGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.45} />
-                      <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.06} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.18} />
-                  <XAxis
-                    dataKey="time"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: '#94a3b8' }}
-                    minTickGap={20}
-                  />
-                  <YAxis
-                    yAxisId="q"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: '#94a3b8' }}
-                    width={40}
-                  />
-                  <YAxis
-                    yAxisId="pct"
-                    orientation="right"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: '#94a3b8' }}
-                    width={36}
-                    domain={[0, 100]}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#0f172a',
-                      border: '1px solid #1e293b',
-                      borderRadius: '10px',
-                      color: '#e2e8f0',
-                      fontSize: '12px',
-                    }}
-                  />
-                  <Area yAxisId="q" type="monotone" dataKey="queries" fill="url(#queriesBarGrad)" stroke="#22d3ee" strokeWidth={1.8} name="Queries" />
-                  <Line yAxisId="q" type="linear" dataKey="queriesTrend" stroke="#f59e0b" strokeWidth={2.3} dot={false} name="Moving Avg" />
-                  <Line yAxisId="q" type="linear" dataKey="queriesEMA" stroke="#60a5fa" strokeWidth={2} dot={false} strokeDasharray="4 4" name="EMA" />
-                  <Line yAxisId="q" type="linear" dataKey="errors" stroke="#ef4444" strokeWidth={1.8} dot={false} name="Errors" />
-                  <Bar yAxisId="pct" dataKey="hitRate" fill="#22c55e22" name="Hit Rate %" />
-                </ComposedChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
-                No data yet
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* RCode Distribution */}
-        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">
-            Response Codes
-          </h2>
-          <div className="h-64">
-            {rcodeData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={rcodeData}
-                    cx="50%"
-                    cy="45%"
-                    innerRadius={45}
-                    outerRadius={75}
-                    paddingAngle={2}
-                    dataKey="value"
-                  >
-                    {rcodeData.map((entry) => (
-                      <Cell
-                        key={entry.name}
-                        fill={RCODE_COLORS[entry.name] || '#64748b'}
-                      />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#0f172a',
-                      border: '1px solid #1e293b',
-                      borderRadius: '10px',
-                      color: '#e2e8f0',
-                      fontSize: '12px',
-                    }}
-                  />
-                  <Legend
-                    verticalAlign="bottom"
-                    iconType="circle"
-                    iconSize={8}
-                    formatter={(value: string) => (
-                      <span className="text-xs text-slate-500 dark:text-slate-400">
-                        {value}
-                      </span>
-                    )}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
-                No data yet
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Top Clients & Top Domains */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 flex items-center gap-2">
-              <Users size={16} className="text-amber-400" />
-              Top Clients
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">{filteredClients.length}/{topClients.length}</span>
-            </h2>
-            <div className="flex items-center gap-2">
-              <input
-                value={clientFilter}
-                onChange={(e) => setClientFilter(e.target.value)}
-                placeholder="Filter client..."
-                className="h-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 text-xs text-slate-900 dark:text-slate-200 placeholder:text-slate-500"
-              />
-              <button onClick={() => setClientSortDesc((v) => !v)} className="h-8 px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300">
-                Sort {clientSortDesc ? 'High-Low' : 'Low-High'}
+              <button
+                onClick={() => hideSection(id)}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <EyeOff size={12} />
+                Hide
               </button>
             </div>
-          </div>
-          {filteredClients.length > 0 ? (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  <th className="text-left pb-2 w-8">#</th>
-                  <th className="text-left pb-2">Client</th>
-                  <th className="text-right pb-2">Queries</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {filteredClients.slice(0, 10).map((entry, i) => (
-                  <tr key={entry.key}>
-                    <td className="py-1.5 text-xs text-slate-500">{i + 1}</td>
-                    <td className="py-1.5 font-mono text-xs text-slate-900 dark:text-slate-200">{entry.key}</td>
-                    <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="flex items-center justify-center h-20 text-sm text-slate-500">
-              No matching clients
+            <div className="pt-1">
+              {renderSection(id)}
             </div>
-          )}
-        </div>
-
-        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 flex items-center gap-2">
-              <Globe size={16} className="text-amber-400" />
-              Top Domains
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">{filteredDomains.length}/{topDomains.length}</span>
-            </h2>
-            <div className="flex items-center gap-2">
-              <input
-                value={domainFilter}
-                onChange={(e) => setDomainFilter(e.target.value)}
-                placeholder="Filter domain..."
-                className="h-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 text-xs text-slate-900 dark:text-slate-200 placeholder:text-slate-500"
-              />
-              <button onClick={() => setDomainSortDesc((v) => !v)} className="h-8 px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300">
-                Sort {domainSortDesc ? 'High-Low' : 'Low-High'}
-              </button>
-            </div>
-          </div>
-          {filteredDomains.length > 0 ? (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  <th className="text-left pb-2 w-8">#</th>
-                  <th className="text-left pb-2">Domain</th>
-                  <th className="text-right pb-2">Queries</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {filteredDomains.slice(0, 10).map((entry, i) => (
-                  <tr key={entry.key}>
-                    <td className="py-1.5 text-xs text-slate-500">{i + 1}</td>
-                    <td className="py-1.5 text-xs text-slate-900 dark:text-slate-200 max-w-xs truncate" title={entry.key}>{entry.key}</td>
-                    <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="flex items-center justify-center h-20 text-sm text-slate-500">
-              No matching domains
-            </div>
-          )}
-        </div>
+          </section>
+        ))}
       </div>
 
       {stats && stats.rate_limited > 0 && (
