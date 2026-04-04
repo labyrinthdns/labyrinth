@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -336,6 +337,56 @@ func TestHandleApplyUpdate_CreateTempError(t *testing.T) {
 	}
 }
 
+func TestHandleApplyUpdate_CreateTempReadOnly(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	call := int32(0)
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		c := atomic.AddInt32(&call, 1)
+		if c <= 2 {
+			return jsonHTTP(http.StatusOK, `{
+				"tag_name":"v0.4.2",
+				"html_url":"https://example/release",
+				"body":"notes",
+				"assets":[{"name":"`+assetName+`","browser_download_url":"https://example/download"}]
+			}`), nil
+		}
+		return jsonHTTP(http.StatusOK, "new-binary-bytes"), nil
+	})
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatalf("os.WriteFile exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+	updateCreateTemp = func(string, string) (*os.File, error) {
+		return nil, &os.PathError{Op: "open", Path: filepath.Dir(exePath), Err: syscall.EROFS}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for read-only fs, got %d", rec.Code)
+	}
+	body := decodeJSON(t, rec)
+	if !strings.Contains(fmt.Sprint(body["error"]), "read-only") {
+		t.Fatalf("expected read-only hint, got %#v", body["error"])
+	}
+}
+
 func TestHandleApplyUpdate_ExecutableAndEvalErrors(t *testing.T) {
 	srv := testAdminServer(t)
 	withUpdateHooksReset(t)
@@ -453,6 +504,58 @@ func TestHandleApplyUpdate_CopyAndRenameErrors(t *testing.T) {
 	srv.handleApplyUpdate(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 for rename failure, got %d", rec.Code)
+	}
+}
+
+func TestHandleApplyUpdate_RenameReadOnly(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+
+	call := int32(0)
+	updateHTTPGet = func(string) (*http.Response, error) {
+		c := atomic.AddInt32(&call, 1)
+		if c <= 2 {
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("new-binary")),
+		}, nil
+	}
+	updateRename = func(oldpath, newpath string) error {
+		if newpath == exePath || strings.Contains(newpath, ".old") {
+			return &os.PathError{Op: "rename", Path: newpath, Err: syscall.EROFS}
+		}
+		return os.Rename(oldpath, newpath)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for read-only fs on rename, got %d", rec.Code)
+	}
+	body := decodeJSON(t, rec)
+	if !strings.Contains(fmt.Sprint(body["error"]), "read-only") {
+		t.Fatalf("expected read-only hint, got %#v", body["error"])
 	}
 }
 
