@@ -353,36 +353,6 @@ Binary size: **6.8 MB** (stripped, with embedded web dashboard)
 | 8767 | Serving Stale Data | Optional |
 | 9156 | QNAME Minimization | Full |
 
-## Development
-
-```bash
-# Prerequisites: Go 1.23+, Node.js 20+
-
-# Build frontend
-cd web/ui && npm ci && npm run build && cd ../..
-
-# Build binary
-make build
-
-# Run tests (850+ tests, 98-100% coverage)
-make test
-
-# Run benchmarks
-make bench
-
-# Run fuzz tests
-make fuzz
-
-# Lint
-make lint
-
-# Cross-compile
-make cross
-
-# Docker build
-make docker
-```
-
 ## License
 
 MIT
