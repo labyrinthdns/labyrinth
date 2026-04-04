@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-04-04
+
+### Changed
+- Dashboard traffic chart now merges live WebSocket query events into the active 10-second bucket, so QPS/queries/errors move in near real time instead of waiting for the next poll cycle.
+- Dashboard aggregate counters continue to use a hybrid model (polled baseline + live delta overlay) for smoother and faster on-screen updates.
+
+### Performance
+- Kept high-frequency telemetry on WebSocket stream path while preserving periodic polling only for heavier profile/toplist endpoints.
+
 ## [0.4.5] - 2026-04-04
 
 ### Changed
