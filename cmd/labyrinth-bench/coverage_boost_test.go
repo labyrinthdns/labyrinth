@@ -468,7 +468,7 @@ func buildDNSResponse(t *testing.T, req *dns.Message, rcode uint8) []byte {
 	return out
 }
 
-func runWorkerOnce(target string) liveStats {
+func runWorkerOnce(target string) *liveStats {
 	cfg := RunConfig{
 		Target:  target,
 		Domains: []string{"example.com"},
@@ -477,9 +477,9 @@ func runWorkerOnce(target string) liveStats {
 	tokens := make(chan struct{}, 1)
 	tokens <- struct{}{}
 	close(tokens)
-	var stats liveStats
+	stats := &liveStats{}
 	latCh := make(chan queryLatency, 4)
-	worker(0, cfg, time.Now().Add(time.Second), tokens, &stats, latCh)
+	worker(0, cfg, time.Now().Add(time.Second), tokens, stats, latCh)
 	return stats
 }
 
