@@ -207,6 +207,8 @@ export interface UpdateInfo {
   current_version: string
   latest_version: string
   update_available: boolean
+  read_only?: boolean
+  read_only_hint?: string
   release_url?: string
   release_notes?: string
   asset_name?: string

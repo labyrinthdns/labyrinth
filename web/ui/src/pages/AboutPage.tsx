@@ -106,8 +106,16 @@ export default function AboutPage() {
         window.location.reload()
       }, 5000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Update failed')
+      const msg = err instanceof Error ? err.message : 'Update failed'
+      if (msg.includes('409') || msg.toLowerCase().includes('read-only')) {
+        setUpdateInfo((prev) => prev ? { ...prev, read_only: true } : prev)
+        setError('Install path is read-only. Use the update command below to upgrade manually.')
+      } else {
+        setError(msg)
+      }
       setApplying(false)
+      setConfirmUpdate(false)
+      setStatus('')
     }
   }, [])
 
@@ -297,7 +305,7 @@ export default function AboutPage() {
               Check Updates
             </button>
 
-            {updateInfo?.update_available && !confirmUpdate && (
+            {updateInfo?.update_available && !updateInfo?.read_only && !confirmUpdate && (
               <button
                 onClick={() => setConfirmUpdate(true)}
                 disabled={checking || applying}
@@ -308,7 +316,15 @@ export default function AboutPage() {
               </button>
             )}
 
-            {updateInfo?.update_available && confirmUpdate && (
+            {updateInfo?.update_available && updateInfo?.read_only && (
+              <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-900/40">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Self-update is not available because the install path is read-only. Use the update command below to upgrade manually.
+                </p>
+              </div>
+            )}
+
+            {updateInfo?.update_available && !updateInfo?.read_only && confirmUpdate && (
               <div className="space-y-2 rounded-lg border border-amber-200 dark:border-amber-800 p-3 bg-amber-50 dark:bg-amber-900/20">
                 <p className="text-xs text-amber-700 dark:text-amber-400">Confirm update and restart service?</p>
                 <button
