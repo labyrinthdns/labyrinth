@@ -97,6 +97,10 @@ function ema(values: number[], alpha = 0.35): number[] {
   return out
 }
 
+function toTenSecondBucket(tsMs: number): number {
+  return Math.floor(tsMs / 10_000) * 10_000
+}
+
 function normalizeSectionOrder(input: string[] | undefined): DashboardSectionID[] {
   const known = new Set(DASHBOARD_SECTION_IDS)
   const unique: DashboardSectionID[] = []
@@ -346,11 +350,9 @@ export default function DashboardPage() {
     let hits = 0
     let misses = 0
     let blocked = 0
-    let total = 0
     for (const q of streamQueries) {
       const ts = Date.parse(q.ts || '')
       if (!Number.isFinite(ts) || ts <= statsSnapshotAtMs) continue
-      total++
       const qt = (q.qtype || '').toUpperCase()
       if (qt) queryTypeDelta[qt] = (queryTypeDelta[qt] || 0) + 1
       const rc = (q.rcode || '').toUpperCase() || 'UNKNOWN'
@@ -359,7 +361,7 @@ export default function DashboardPage() {
       else misses++
       if (q.blocked) blocked++
     }
-    return { queryTypeDelta, rcodeDelta, hits, misses, blocked, total }
+    return { queryTypeDelta, rcodeDelta, hits, misses, blocked }
   }, [streamQueries, statsSnapshotAtMs])
 
   const statsView = useMemo<StatsResponse | null>(() => {
@@ -399,25 +401,76 @@ export default function DashboardPage() {
         .map(([name, value]) => ({ name, value }))
     : []
 
-  const chartDataRaw = (timeseries || [])
-    .map((b) => {
-      const ts = b.timestamp || b.ts || ''
-      const queryCount = b.queries || 0
-      const cacheHits = b.cache_hits || 0
-      const cacheMisses = b.cache_misses || 0
-      return {
-        ts,
-        time: ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
-        queries: queryCount,
-        cacheHits,
-        cacheMisses,
-        errors: b.errors || 0,
-        avgLatencyMs: b.avg_latency_ms || 0,
-        qps: Number((queryCount / 10).toFixed(2)),
-        hitRate: queryCount > 0 ? (cacheHits / queryCount) * 100 : 0,
-      }
-    })
-    .sort((a, b) => a.ts.localeCompare(b.ts))
+  const liveChartPoint = useMemo(() => {
+    const nowMs = Date.now()
+    const bucketStartMs = toTenSecondBucket(nowMs)
+    const bucketEndMs = bucketStartMs + 10_000
+    let queries = 0
+    let cacheHits = 0
+    let cacheMisses = 0
+    let errors = 0
+    let totalLatencyMs = 0
+
+    for (const q of streamQueries) {
+      const tsMs = Date.parse(q.ts || '')
+      if (!Number.isFinite(tsMs) || tsMs < bucketStartMs || tsMs >= bucketEndMs) continue
+      queries++
+      if (q.cached) cacheHits++
+      else cacheMisses++
+      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) errors++
+      totalLatencyMs += q.duration_ms || 0
+    }
+
+    const bucketTs = new Date(bucketStartMs).toISOString()
+    return {
+      ts: bucketTs,
+      bucketMs: bucketStartMs,
+      time: new Date(bucketStartMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      queries,
+      cacheHits,
+      cacheMisses,
+      errors,
+      avgLatencyMs: queries > 0 ? totalLatencyMs / queries : 0,
+      qps: Number((queries / 10).toFixed(2)),
+      hitRate: queries > 0 ? (cacheHits / queries) * 100 : 0,
+    }
+  }, [streamQueries])
+
+  const chartDataRaw = useMemo(() => {
+    const base = (timeseries || [])
+      .map((b) => {
+        const ts = b.timestamp || b.ts || ''
+        const tsMs = Date.parse(ts)
+        const bucketMs = Number.isFinite(tsMs) ? toTenSecondBucket(tsMs) : 0
+        const queryCount = b.queries || 0
+        const cacheHits = b.cache_hits || 0
+        const cacheMisses = b.cache_misses || 0
+        return {
+          ts,
+          bucketMs,
+          time: ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+          queries: queryCount,
+          cacheHits,
+          cacheMisses,
+          errors: b.errors || 0,
+          avgLatencyMs: b.avg_latency_ms || 0,
+          qps: Number((queryCount / 10).toFixed(2)),
+          hitRate: queryCount > 0 ? (cacheHits / queryCount) * 100 : 0,
+        }
+      })
+      .filter((row) => row.ts)
+      .sort((a, b) => a.bucketMs - b.bucketMs)
+
+    const live = liveChartPoint
+    if (!live) return base
+    const idx = base.findIndex((row) => row.bucketMs === live.bucketMs)
+    if (idx >= 0) {
+      base[idx] = live
+    } else if (base.length === 0 || live.bucketMs >= base[base.length - 1].bucketMs) {
+      base.push(live)
+    }
+    return base.sort((a, b) => a.bucketMs - b.bucketMs)
+  }, [timeseries, liveChartPoint])
 
   const trendWindow = timeWindow === '5m' ? 4 : timeWindow === '15m' ? 6 : 8
   const queryTrend = movingAverage(chartDataRaw.map((x) => x.queries), trendWindow)
