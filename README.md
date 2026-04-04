@@ -91,6 +91,9 @@ On first run (no config file), the dashboard shows an interactive setup wizard:
 | **Cache** | Cache stats, lookup tool, flush, delete individual entries, negative cache view |
 | **Blocklist** | List management, quick block/unblock, domain check, source stats |
 | **Config** | Running configuration viewer, password change |
+| **Operations** | Live reliability monitoring with configurable thresholds, auto-refresh, incident surfacing |
+| **Reports** | Operational snapshot exports (JSON, CSV, Markdown) with top clients/domains and time-series |
+| **About** | Project overview, build metadata, release links, and integrated update controls |
 
 ### Authentication
 
@@ -361,7 +364,7 @@ cd web/ui && npm ci && npm run build && cd ../..
 # Build binary
 make build
 
-# Run tests (840+ tests, 98-100% coverage)
+# Run tests (850+ tests, 98-100% coverage)
 make test
 
 # Run benchmarks
@@ -378,44 +381,6 @@ make cross
 
 # Docker build
 make docker
-```
-
-## Project Structure
-
-```
-labyrinth/
-├── main.go                 # Entry point, CLI, signal handling
-├── dns/                    # Wire protocol, name compression, all RR types
-├── resolver/               # Recursive resolution, QNAME min, delegation
-├── dnssec/                 # DNSSEC validation, trust chain, RSA/ECDSA/ED25519
-├── blocklist/              # Domain blocking, hosts/domain/ABP parsers
-├── cache/                  # 256-shard concurrent cache, TTL decay, serve-stale
-├── security/               # Bailiwick, rate limit, RRL, ACL
-├── server/                 # UDP/TCP DNS servers, request handler
-├── config/                 # YAML parser, env vars, validation
-├── metrics/                # Prometheus metrics, atomic counters
-├── log/                    # Structured logging (slog)
-├── web/                    # Web dashboard backend
-│   ├── server.go           # HTTP server, SPA serving, route registration
-│   ├── auth.go             # JWT auth, bcrypt, login handler
-│   ├── querylog.go         # Ring buffer for live query stream
-│   ├── timeseries.go       # Rolling time-bucketed aggregator
-│   ├── api_*.go            # REST API handlers
-│   ├── embed.go            # go:embed for React SPA
-│   └── ui/                 # React 19 + Tailwind 4.1 frontend
-│       └── src/
-│           ├── pages/      # Login, Setup, Dashboard, Queries, Cache, Config
-│           ├── components/ # Layout, sidebar, charts
-│           └── hooks/      # useAuth, useTheme, useWebSocket
-├── daemon/                 # Daemonization (Unix/Windows)
-├── install.sh              # One-line installer
-├── uninstall.sh            # Uninstaller
-├── Dockerfile              # Multi-stage Docker build
-├── docker-compose.yml      # Docker Compose config
-├── Makefile                # Build targets
-├── labyrinth.service       # systemd service file
-├── labyrinth.1             # Man page
-└── labyrinth.yaml          # Example configuration
 ```
 
 ## License

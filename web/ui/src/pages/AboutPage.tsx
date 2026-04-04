@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUpCircle,
   CheckCircle2,
@@ -40,6 +40,15 @@ export default function AboutPage() {
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [copiedCmd, setCopiedCmd] = useState('')
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(copyTimerRef.current)
+      clearTimeout(reloadTimerRef.current)
+    }
+  }, [])
 
   const loadAboutData = useCallback(async () => {
     setLoading(true)
@@ -93,7 +102,7 @@ export default function AboutPage() {
 
     try {
       await api.applyUpdate()
-      setTimeout(() => {
+      reloadTimerRef.current = setTimeout(() => {
         window.location.reload()
       }, 5000)
     } catch (err) {
@@ -115,7 +124,8 @@ export default function AboutPage() {
     if (copied) {
       setError('')
       setCopiedCmd(id)
-      setTimeout(() => setCopiedCmd(''), 1200)
+      clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = setTimeout(() => setCopiedCmd(''), 1200)
     } else {
       setError('Clipboard access is blocked in this browser. Copy the command manually.')
     }
