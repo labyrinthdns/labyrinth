@@ -15,6 +15,19 @@ func readSystemTotalMemoryBytes() uint64 {
 	return 0
 }
 
+func readSystemFreeMemoryBytes() uint64 {
+	return 0
+}
+
+func readSystemLoadAverages() (one float64, five float64, fifteen float64) {
+	// Windows has no POSIX-style load average metric.
+	return 0, 0, 0
+}
+
+func readNetworkIOCounters() (rxBytes uint64, txBytes uint64, rxPackets uint64, txPackets uint64) {
+	return 0, 0, 0, 0
+}
+
 func readDiskUsageBytes(path string) (total uint64, free uint64, targetPath string, err error) {
 	targetPath = path
 	if targetPath == "" {
