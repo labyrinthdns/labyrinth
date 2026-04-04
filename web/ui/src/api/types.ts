@@ -44,6 +44,12 @@ export interface TimeSeriesBucket {
   avg_latency_ms: number
 }
 
+export interface TimeSeriesResponse {
+  window?: string
+  bucket_seconds?: number
+  buckets: TimeSeriesBucket[]
+}
+
 export interface SystemProfileResponse {
   hostname: string
   network: {
