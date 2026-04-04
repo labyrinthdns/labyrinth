@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import { api } from '@/api/client'
 import type { UpdateInfo } from '@/api/types'
-import { formatVersion } from '@/lib/utils'
+import { copyTextToClipboard, formatVersion } from '@/lib/utils'
 
 type VersionInfo = {
   version: string
@@ -111,12 +111,13 @@ export default function AboutPage() {
   }, [updateInfo])
 
   const copyCommand = useCallback(async (id: string, command: string) => {
-    try {
-      await navigator.clipboard.writeText(command)
+    const copied = await copyTextToClipboard(command)
+    if (copied) {
+      setError('')
       setCopiedCmd(id)
       setTimeout(() => setCopiedCmd(''), 1200)
-    } catch {
-      setError('Clipboard copy failed in this browser context')
+    } else {
+      setError('Clipboard access is blocked in this browser. Copy the command manually.')
     }
   }, [])
 
