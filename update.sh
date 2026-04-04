@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Labyrinth DNS Resolver — Update Script
 # Usage: curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/update.sh | sudo bash
-# Or:    sudo bash update.sh [--version v0.4.3] [--no-restart] [--check]
+# Or:    sudo bash update.sh [--version v0.4.4] [--no-restart] [--check]
 
 REPO="labyrinthdns/labyrinth"
 INSTALL_DIR="/usr/local/bin"
@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
       echo "Examples:"
       echo "  sudo bash update.sh                  # Update to latest"
       echo "  sudo bash update.sh --check          # Just check"
-      echo "  sudo bash update.sh --version v0.4.3 # Specific version"
+      echo "  sudo bash update.sh --version v0.4.4 # Specific version"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -98,15 +98,23 @@ info "Latest version:  ${VERSION}"
 CURRENT_CLEAN="${CURRENT_VERSION#v}"
 LATEST_CLEAN="${VERSION#v}"
 
+SAME_VERSION=false
 if [[ "$CURRENT_CLEAN" == "$LATEST_CLEAN" ]]; then
-  ok "Already up to date (${VERSION})"
-  exit 0
+  SAME_VERSION=true
 fi
 
 echo ""
-info "Update available: ${CURRENT_VERSION} → ${VERSION}"
+if [[ "$SAME_VERSION" == true ]]; then
+  warn "Installed version matches target (${VERSION}). Continuing with forced reinstall..."
+else
+  info "Update available: ${CURRENT_VERSION} -> ${VERSION}"
+fi
 
 if [[ "$CHECK_ONLY" == true ]]; then
+  if [[ "$SAME_VERSION" == true ]]; then
+    ok "Already up to date (${VERSION})"
+    exit 0
+  fi
   echo ""
   echo "Run the following to update:"
   echo "  curl -sSL https://raw.githubusercontent.com/${REPO}/main/update.sh | sudo bash"

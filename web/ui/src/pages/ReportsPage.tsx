@@ -38,6 +38,7 @@ export default function ReportsPage() {
   const refreshSnapshot = useCallback(async () => {
     setLoading(true)
     setError('')
+    setCopyDone(false)
     try {
       const [statsRes, profileRes, clientsRes, domainsRes, tsRes] = await Promise.all([
         api.stats(),
@@ -172,7 +173,7 @@ export default function ReportsPage() {
       lines.push('_No data_')
     } else {
       clients.forEach((row, idx) => {
-        lines.push(`${idx + 1}. ${row.key} — ${row.count}`)
+        lines.push(`${idx + 1}. ${row.key} - ${row.count}`)
       })
     }
     lines.push('')
@@ -184,7 +185,7 @@ export default function ReportsPage() {
       lines.push('_No data_')
     } else {
       domains.forEach((row, idx) => {
-        lines.push(`${idx + 1}. ${row.key} — ${row.count}`)
+        lines.push(`${idx + 1}. ${row.key} - ${row.count}`)
       })
     }
 
@@ -197,9 +198,15 @@ export default function ReportsPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Reports</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Generate quick operational snapshots and export them as JSON or CSV.</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Generate quick operational snapshots and export them as JSON, CSV, or Markdown.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <span className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800">
+            Generated {snapshot ? new Date(snapshot.at).toLocaleTimeString() : '-'}
+          </span>
+          <span className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800">
+            Clients {summary?.topClientCount || 0} / Domains {summary?.topDomainCount || 0}
+          </span>
           <div className="inline-flex rounded-lg border border-slate-300 dark:border-slate-600 overflow-hidden">
             {SNAPSHOT_WINDOWS.map((w) => (
               <button
