@@ -1,6 +1,7 @@
 import type {
   TopEntry,
   NegativeCacheEntry,
+  QueryEntry,
   UpdateInfo,
   BlocklistStats,
   BlocklistListEntry,
@@ -8,6 +9,7 @@ import type {
   ConfigValidateResponse,
   ConfigSaveResponse,
   SystemProfileResponse,
+  DashboardLayoutResponse,
 } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
@@ -128,7 +130,7 @@ export const api = {
     request<{ buckets: Record<string, unknown>[] }>(`/api/stats/timeseries?window=${window}`),
 
   recentQueries: (limit = 50) =>
-    request<{ queries: Record<string, unknown>[] }>(`/api/queries/recent?limit=${limit}`),
+    request<{ entries: QueryEntry[]; count: number }>(`/api/queries/recent?limit=${limit}`),
 
   cacheStats: () => request<Record<string, unknown>>('/api/cache/stats'),
 
@@ -170,6 +172,12 @@ export const api = {
     '/api/system/version',
   ),
   systemProfile: () => request<SystemProfileResponse>('/api/system/profile'),
+  dashboardLayout: () => request<DashboardLayoutResponse>('/api/dashboard/layout'),
+  saveDashboardLayout: (payload: { panel_order: string[]; hidden_panels: string[] }) =>
+    request<DashboardLayoutResponse>('/api/dashboard/layout', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
 
   topClients: (limit?: number) =>
     request<{ entries: TopEntry[] }>(`/api/stats/top-clients${limit ? `?limit=${limit}` : ''}`),

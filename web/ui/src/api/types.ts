@@ -232,3 +232,11 @@ export interface ConfigSaveResponse {
   path: string
   restart_required: boolean
 }
+
+export interface DashboardLayoutResponse {
+  panel_order: string[]
+  hidden_panels: string[]
+  status?: string
+  path?: string
+  storage?: string
+}

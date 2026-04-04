@@ -77,12 +77,19 @@ type WebConfig struct {
 	TopDomainsLimit     int
 	AutoUpdate          bool
 	UpdateCheckInterval time.Duration
+	Dashboard           WebDashboardConfig
 	Auth                WebAuthConfig
 	DoHEnabled          bool
 	DoH3Enabled         bool
 	TLSEnabled          bool
 	TLSCertFile         string
 	TLSKeyFile          string
+}
+
+// WebDashboardConfig holds persisted dashboard layout preferences.
+type WebDashboardConfig struct {
+	PanelOrder   []string
+	HiddenPanels []string
 }
 
 // WebAuthConfig holds web dashboard authentication settings.
@@ -381,6 +388,8 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setInt(&cfg.Web.TopDomainsLimit, "web.top_domains_limit")
 	setBool(&cfg.Web.AutoUpdate, "web.auto_update")
 	setDuration(&cfg.Web.UpdateCheckInterval, "web.update_check_interval")
+	setCSV(&cfg.Web.Dashboard.PanelOrder, "web.dashboard.panel_order")
+	setCSV(&cfg.Web.Dashboard.HiddenPanels, "web.dashboard.hidden_panels")
 	setBool(&cfg.Web.DoHEnabled, "web.doh_enabled")
 	setBool(&cfg.Web.DoH3Enabled, "web.doh3_enabled")
 	setBool(&cfg.Web.TLSEnabled, "web.tls_enabled")
