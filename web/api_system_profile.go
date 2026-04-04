@@ -28,6 +28,7 @@ func (s *AdminServer) handleSystemProfile(w http.ResponseWriter, r *http.Request
 
 	hostname, _ := os.Hostname()
 	interfaces, ips := collectSystemInterfaces()
+	dnsListenIPs := resolveListenIPs(s.config.Server.ListenAddr, ips)
 	rxBytes, txBytes, rxPackets, txPackets := readNetworkIOCounters()
 	memStats := readMemoryStats()
 	cpuSeconds := readProcessCPUSeconds()
@@ -38,8 +39,9 @@ func (s *AdminServer) handleSystemProfile(w http.ResponseWriter, r *http.Request
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"hostname": hostname,
 		"network": map[string]interface{}{
-			"ip_addresses": ips,
-			"interfaces":   interfaces,
+			"ip_addresses":         ips,
+			"dns_listen_addresses": dnsListenIPs,
+			"interfaces":           interfaces,
 			"io": map[string]interface{}{
 				"rx_bytes_total":   rxBytes,
 				"tx_bytes_total":   txBytes,
@@ -75,6 +77,52 @@ func (s *AdminServer) handleSystemProfile(w http.ResponseWriter, r *http.Request
 			"last_minute_error_total": traffic.lastMinuteErrors,
 		},
 	})
+}
+
+func resolveListenIPs(listenAddr string, discoveredIPs []string) []string {
+	listenAddr = strings.TrimSpace(listenAddr)
+	if listenAddr == "" {
+		return []string{}
+	}
+
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(discoveredIPs))
+	add := func(value string) {
+		value = strings.TrimSpace(strings.Trim(value, "[]"))
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+
+	host := listenAddr
+	if h, _, err := net.SplitHostPort(listenAddr); err == nil {
+		host = h
+	} else if strings.HasPrefix(listenAddr, ":") {
+		host = ""
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+
+	switch host {
+	case "", "0.0.0.0", "::", "*":
+		for _, ip := range discoveredIPs {
+			add(ip)
+		}
+	default:
+		if parsed := net.ParseIP(host); parsed != nil {
+			add(parsed.String())
+		} else {
+			// Preserve hostname-based bind values when explicit IP parsing is not possible.
+			add(host)
+		}
+	}
+
+	sort.Strings(out)
+	return out
 }
 
 func collectSystemInterfaces() ([]systemInterfaceInfo, []string) {

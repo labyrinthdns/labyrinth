@@ -8,7 +8,6 @@ import {
   AlertTriangle,
   Users,
   Shield,
-  Lock,
   Server,
   Cpu,
   HardDrive,
@@ -99,7 +98,7 @@ function StatCard({
             {value}
           </p>
           {sub && (
-            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{sub}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{sub}</p>
           )}
         </div>
         <div className={`flex items-center justify-center w-12 h-12 rounded-lg ${iconColor}`}>
@@ -125,10 +124,10 @@ function UsageBar({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-400">{label}</span>
-        <span className="font-semibold text-slate-100">{value}</span>
+        <span className="text-slate-500 dark:text-slate-400">{label}</span>
+        <span className="font-semibold text-slate-900 dark:text-slate-100">{value}</span>
       </div>
-      <div className="h-2 rounded-full bg-slate-700 overflow-hidden">
+      <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-500 ${colorClass}`}
           style={{ width: `${clamped}%` }}
@@ -302,6 +301,9 @@ export default function DashboardPage() {
   const windowErrorRate = windowQueries > 0 ? (windowErrors / windowQueries) * 100 : 0
   const windowHitRate = windowQueries > 0 ? (windowHits / windowQueries) * 100 : 0
   const windowAvgLatency = windowQueries > 0 ? (weightedLatency / windowQueries) : 0
+  const listenIPs = profile?.network.dns_listen_addresses?.length
+    ? profile.network.dns_listen_addresses
+    : (profile?.network.ip_addresses || [])
   const upInterfaces = (profile?.network.interfaces || []).filter((iface) => iface.flags?.includes('up')).length
   const securityTotalDNSSEC = (stats?.dnssec_secure || 0) + (stats?.dnssec_insecure || 0) + (stats?.dnssec_bogus || 0)
   const dnssecSecureRatio = securityTotalDNSSEC > 0 ? ((stats?.dnssec_secure || 0) / securityTotalDNSSEC) * 100 : 0
@@ -327,16 +329,16 @@ export default function DashboardPage() {
 
       <div className="flex flex-wrap items-center gap-2">
         <Link to="/operations" className="px-2.5 py-1 rounded-md text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/25 hover:bg-amber-500/20">Operations</Link>
-        <Link to="/reports" className="px-2.5 py-1 rounded-md text-xs font-semibold text-slate-300 bg-slate-800 border border-slate-700 hover:bg-slate-700">Reports</Link>
+        <Link to="/reports" className="px-2.5 py-1 rounded-md text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700">Reports</Link>
 
         <button
           onClick={() => void fetchData()}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-200 bg-slate-800 border border-slate-700 hover:bg-slate-700"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
         >
           <RefreshCw size={12} /> Refresh
         </button>
 
-        <div className="inline-flex items-center gap-1 rounded-md px-2 py-1 bg-slate-800 border border-slate-700 text-xs text-slate-300">
+        <div className="inline-flex items-center gap-1 rounded-md px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300">
           <span>Auto</span>
           <select
             value={refreshMs}
@@ -351,20 +353,20 @@ export default function DashboardPage() {
 
         <button
           onClick={() => setAutoRefresh((v) => !v)}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-200 bg-slate-800 border border-slate-700 hover:bg-slate-700"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
         >
           {autoRefresh ? <Pause size={12} /> : <Play size={12} />}
           {autoRefresh ? 'Pause Auto' : 'Resume Auto'}
         </button>
 
-        <span className="px-2.5 py-1 rounded-md text-xs bg-slate-800 border border-slate-700 text-slate-300">
+        <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
           Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
         </span>
         <span className={`px-2.5 py-1 rounded-md text-xs border ${stats?.resolver_ready ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/30'}`}>
           {stats?.resolver_ready ? 'Resolver Ready' : 'Resolver Not Ready'}
         </span>
         <span className="px-2.5 py-1 rounded-md text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">Avg QPS 1m: {(profile?.traffic.last_minute_qps_avg || 0).toFixed(2)}</span>
-        <span className="px-2.5 py-1 rounded-md text-xs bg-slate-800 text-slate-300 border border-slate-700">Errors 1m: {formatNumber(profile?.traffic.last_minute_error_total || 0)}</span>
+        <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">Errors 1m: {formatNumber(profile?.traffic.last_minute_error_total || 0)}</span>
         <span className="px-2.5 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">Cache Hit: {((stats?.cache_hit_ratio || 0) * 100).toFixed(1)}%</span>
         <span className="px-2.5 py-1 rounded-md text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30">Blocked: {formatNumber(stats?.blocked_queries || 0)}</span>
         <span className="px-2.5 py-1 rounded-md text-xs bg-rose-500/10 text-rose-300 border border-rose-500/30">Upstream Errors: {formatNumber(stats?.upstream_errors || 0)}</span>
@@ -378,14 +380,14 @@ export default function DashboardPage() {
 
       {/* Server profile card */}
       {profile && (
-        <div className="rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-sm relative overflow-hidden">
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6 shadow-sm relative overflow-hidden">
           <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-gradient-to-br from-amber-400/15 to-orange-500/10 blur-2xl" />
           <div className="absolute -bottom-20 -left-10 w-52 h-52 rounded-full bg-gradient-to-br from-sky-400/15 to-emerald-500/10 blur-2xl" />
 
           <div className="relative grid grid-cols-1 xl:grid-cols-3 gap-6">
             <div className="xl:col-span-2 space-y-4">
               <div className="flex flex-wrap items-center gap-3">
-                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 text-slate-200 border border-slate-700">
+                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-200 border border-slate-200 dark:border-slate-700">
                   <Server size={13} />
                   {profile.hostname || 'unknown-host'}
                 </span>
@@ -393,27 +395,27 @@ export default function DashboardPage() {
                   <Activity size={12} />
                   {formatVersion(profile.runtime.version)}
                 </span>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-slate-800 text-slate-300 border border-slate-700">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
                   {profile.runtime.os}/{profile.runtime.arch}
                 </span>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="rounded-lg border border-slate-700 p-3 bg-slate-800/70">
-                  <p className="text-xs text-slate-400">Primary IP</p>
-                  <p className="font-mono text-sm text-slate-100 mt-1 break-all">
-                    {profile.network.ip_addresses?.[0] || 'N/A'}
+                <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/70">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Primary Listen IP</p>
+                  <p className="font-mono text-sm text-slate-900 dark:text-slate-100 mt-1 break-all">
+                    {listenIPs[0] || 'N/A'}
                   </p>
                 </div>
-                <div className="rounded-lg border border-slate-700 p-3 bg-slate-800/70">
-                  <p className="text-xs text-slate-400">Interfaces</p>
-                  <p className="text-sm text-slate-100 mt-1">
+                <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/70">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Interfaces</p>
+                  <p className="text-sm text-slate-900 dark:text-slate-100 mt-1">
                     {formatNumber(profile.network.interfaces?.length || 0)}
                   </p>
                 </div>
-                <div className="rounded-lg border border-slate-700 p-3 bg-slate-800/70">
-                  <p className="text-xs text-slate-400">Go Runtime</p>
-                  <p className="font-mono text-sm text-slate-100 mt-1 truncate" title={profile.runtime.go_version}>
+                <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/70">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Go Runtime</p>
+                  <p className="font-mono text-sm text-slate-900 dark:text-slate-100 mt-1 truncate" title={profile.runtime.go_version}>
                     {profile.runtime.go_version}
                   </p>
                 </div>
@@ -446,10 +448,10 @@ export default function DashboardPage() {
                 />
               </div>
 
-              <div className="rounded-lg border border-slate-700 p-4 bg-slate-800/70">
+              <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 bg-slate-50 dark:bg-slate-800/70">
                 <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-xs uppercase tracking-wider font-semibold text-slate-400">Network Throughput (host)</h2>
-                  <div className="text-[11px] text-slate-400">
+                  <h2 className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Network Throughput (host)</h2>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
                     RX packets: {formatNumber(profile.network.io.rx_packets_total)} | TX packets: {formatNumber(profile.network.io.tx_packets_total)}
                   </div>
                 </div>
@@ -473,85 +475,114 @@ export default function DashboardPage() {
                   )}
                 </div>
               </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                <StatCard
+                  icon={Globe}
+                  label="Total Queries"
+                  value={formatNumber(totalQueries)}
+                  iconColor="bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400"
+                />
+                <StatCard
+                  icon={Zap}
+                  label="Cache Hit Ratio"
+                  value={stats ? `${((stats.cache_hit_ratio || 0) * 100).toFixed(1)}%` : '0%'}
+                  sub={stats ? `${formatNumber(stats.cache_hits || 0)} hits / ${formatNumber(stats.cache_misses || 0)} misses` : undefined}
+                  iconColor="bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
+                />
+                <StatCard
+                  icon={Database}
+                  label="Cache Entries"
+                  value={stats ? formatNumber(stats.cache_entries || 0) : '0'}
+                  sub={stats ? `${formatNumber(stats.cache_positive || 0)} positive / ${formatNumber(stats.cache_negative || 0)} negative` : undefined}
+                  iconColor="bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
+                />
+                <StatCard
+                  icon={Clock}
+                  label="Uptime"
+                  value={stats ? formatUptime(stats.uptime_seconds) : '0m'}
+                  iconColor="bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400"
+                />
+              </div>
             </div>
 
             <div className="space-y-3">
-              <div className="rounded-lg border border-slate-700 p-4 bg-slate-800/70">
-                <h3 className="text-xs uppercase tracking-wider font-semibold text-slate-400 mb-3">
+              <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 bg-slate-50 dark:bg-slate-800/70">
+                <h3 className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-3">
                   Traffic Snapshot
                 </h3>
                 <div className="space-y-2.5 text-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400 inline-flex items-center gap-1.5"><Network size={13} /> Avg QPS (1m)</span>
-                    <span className="font-semibold text-slate-100">{profile.traffic.last_minute_qps_avg.toFixed(2)}</span>
+                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><Network size={13} /> Avg QPS (1m)</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{profile.traffic.last_minute_qps_avg.toFixed(2)}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400 inline-flex items-center gap-1.5"><Zap size={13} /> Peak QPS (1m)</span>
-                    <span className="font-semibold text-slate-100">{profile.traffic.last_minute_qps_peak.toFixed(2)}</span>
+                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><Zap size={13} /> Peak QPS (1m)</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{profile.traffic.last_minute_qps_peak.toFixed(2)}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">DNS Queries</span>
-                    <span className="font-semibold text-slate-100">{formatNumber(profile.traffic.dns_queries_total)}</span>
+                    <span className="text-slate-500 dark:text-slate-400">DNS Queries</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.traffic.dns_queries_total)}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Upstream Queries</span>
-                    <span className="font-semibold text-slate-100">{formatNumber(profile.traffic.upstream_queries_total)}</span>
+                    <span className="text-slate-500 dark:text-slate-400">Upstream Queries</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.traffic.upstream_queries_total)}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Errors (1m)</span>
+                    <span className="text-slate-500 dark:text-slate-400">Errors (1m)</span>
                     <span className="font-semibold text-red-300">{formatNumber(profile.traffic.last_minute_error_total)}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Error Rate (window)</span>
+                    <span className="text-slate-500 dark:text-slate-400">Error Rate (window)</span>
                     <span className="font-semibold text-red-300">{windowErrorRate.toFixed(2)}%</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Hit Rate (window)</span>
+                    <span className="text-slate-500 dark:text-slate-400">Hit Rate (window)</span>
                     <span className="font-semibold text-emerald-300">{windowHitRate.toFixed(1)}%</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Avg Latency (window)</span>
-                    <span className="font-semibold text-slate-100">{windowAvgLatency.toFixed(1)} ms</span>
+                    <span className="text-slate-500 dark:text-slate-400">Avg Latency (window)</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{windowAvgLatency.toFixed(1)} ms</span>
                   </div>
                 </div>
               </div>
 
-              <div className="rounded-lg border border-slate-700 p-4 bg-slate-800/70">
-                <h3 className="text-xs uppercase tracking-wider font-semibold text-slate-400 mb-3">
+              <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 bg-slate-50 dark:bg-slate-800/70">
+                <h3 className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-3">
                   Runtime
                 </h3>
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-slate-400 inline-flex items-center gap-1.5"><Cpu size={13} /> CPU Cores</span>
-                    <span className="font-semibold text-slate-100">{profile.runtime.cpu_cores}</span>
+                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><Cpu size={13} /> CPU Cores</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{profile.runtime.cpu_cores}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-400">Load Avg (1/5/15)</span>
-                    <span className="font-semibold text-slate-100">
+                    <span className="text-slate-500 dark:text-slate-400">Load Avg (1/5/15)</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">
                       {profile.runtime.os === 'windows'
                         ? 'N/A on Windows'
                         : `${profile.cpu.load_avg_1m.toFixed(2)} / ${profile.cpu.load_avg_5m.toFixed(2)} / ${profile.cpu.load_avg_15m.toFixed(2)}`}
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-400 inline-flex items-center gap-1.5"><MemoryStick size={13} /> Goroutines</span>
-                    <span className="font-semibold text-slate-100">{formatNumber(profile.runtime.goroutines)}</span>
+                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><MemoryStick size={13} /> Goroutines</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.runtime.goroutines)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-400">GOMAXPROCS</span>
-                    <span className="font-semibold text-slate-100">{formatNumber(profile.runtime.go_maxprocs)}</span>
+                    <span className="text-slate-500 dark:text-slate-400">GOMAXPROCS</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.runtime.go_maxprocs)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-400">Process Memory</span>
-                    <span className="font-semibold text-slate-100">{formatBytes(memUsed)}</span>
+                    <span className="text-slate-500 dark:text-slate-400">Process Memory</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatBytes(memUsed)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-400 inline-flex items-center gap-1.5"><HardDrive size={13} /> Disk Free</span>
-                    <span className="font-semibold text-slate-100">{formatBytes(profile.disk.free_bytes)}</span>
+                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><HardDrive size={13} /> Disk Free</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatBytes(profile.disk.free_bytes)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-400">GC Cycles</span>
-                    <span className="font-semibold text-slate-100">{formatNumber(profile.memory.gc_cycles)}</span>
+                    <span className="text-slate-500 dark:text-slate-400">GC Cycles</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.memory.gc_cycles)}</span>
                   </div>
                 </div>
               </div>
@@ -560,68 +591,21 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          icon={Globe}
-          label="Total Queries"
-          value={formatNumber(totalQueries)}
-          iconColor="bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400"
-        />
-        <StatCard
-          icon={Zap}
-          label="Cache Hit Ratio"
-          value={stats ? `${((stats.cache_hit_ratio || 0) * 100).toFixed(1)}%` : '0%'}
-          sub={stats ? `${formatNumber(stats.cache_hits || 0)} hits / ${formatNumber(stats.cache_misses || 0)} misses` : undefined}
-          iconColor="bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
-        />
-        <StatCard
-          icon={Database}
-          label="Cache Entries"
-          value={stats ? formatNumber(stats.cache_entries || 0) : '0'}
-          sub={stats ? `${formatNumber(stats.cache_positive || 0)} positive / ${formatNumber(stats.cache_negative || 0)} negative` : undefined}
-          iconColor="bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
-        />
-        <StatCard
-          icon={Clock}
-          label="Uptime"
-          value={stats ? formatUptime(stats.uptime_seconds) : '0m'}
-          iconColor="bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400"
-        />
-        {stats && (stats.blocked_queries || 0) > 0 && (
-          <StatCard
-            icon={Shield}
-            label="Blocked"
-            value={formatNumber(stats.blocked_queries || 0)}
-            iconColor="bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400"
-          />
-        )}
-        {stats && ((stats.dnssec_secure || 0) > 0 || (stats.dnssec_bogus || 0) > 0) && (
-          <StatCard
-            icon={Lock}
-            label="DNSSEC"
-            value={formatNumber(stats.dnssec_secure || 0)}
-            sub={`${formatNumber(stats.dnssec_secure || 0)} secure / ${formatNumber(stats.dnssec_bogus || 0)} bogus`}
-            iconColor="bg-teal-100 dark:bg-teal-900/40 text-teal-600 dark:text-teal-400"
-          />
-        )}
-      </div>
-
       {/* Query Type Counters */}
-      <div className="rounded-lg border border-slate-700 bg-slate-900 p-6">
-        <h2 className="text-sm font-semibold text-slate-200 mb-4">
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">
           Query Type Counters
         </h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
           {queryTypeCounts.map((item) => (
             <div
               key={item.type}
-              className="rounded-lg border border-slate-700 px-3 py-2 bg-slate-800/70"
+              className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 bg-slate-50 dark:bg-slate-800/70"
             >
-              <div className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">
+              <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
                 {item.type}
               </div>
-              <div className="mt-1 text-lg font-bold text-slate-100 font-mono">
+              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100 font-mono">
                 {formatNumber(item.count)}
               </div>
             </div>
@@ -630,15 +614,15 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <div className="xl:col-span-2 rounded-lg border border-slate-700 bg-slate-900 p-6">
+        <div className="xl:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
             <div>
-              <h2 className="text-sm font-semibold text-slate-200">Network Interfaces</h2>
-              <p className="text-xs text-slate-400">{upInterfaces} up / {profile?.network.interfaces?.length || 0} total interfaces</p>
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Network Interfaces</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">{upInterfaces} up / {profile?.network.interfaces?.length || 0} total interfaces</p>
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {(profile?.network.ip_addresses || []).slice(0, 4).map((ip) => (
-                <span key={ip} className="px-2 py-0.5 rounded-full text-[10px] bg-slate-800 border border-slate-700 text-slate-300">{ip}</span>
+              {listenIPs.slice(0, 4).map((ip) => (
+                <span key={ip} className="px-2 py-0.5 rounded-full text-[10px] bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">{ip}</span>
               ))}
             </div>
           </div>
@@ -646,26 +630,26 @@ export default function DashboardPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-xs uppercase tracking-wider text-slate-400">
+                <tr className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
                   <th className="text-left pb-2">Name</th>
                   <th className="text-center pb-2">State</th>
                   <th className="text-right pb-2">MTU</th>
                   <th className="text-right pb-2">Addrs</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {(profile?.network.interfaces || []).slice(0, 8).map((iface) => {
                   const up = Boolean(iface.flags?.includes('up'))
                   return (
                     <tr key={iface.name}>
-                      <td className="py-2 text-slate-200">{iface.name}</td>
+                      <td className="py-2 text-slate-900 dark:text-slate-200">{iface.name}</td>
                       <td className="py-2 text-center">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${up ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700'}`}>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${up ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700'}`}>
                           {up ? 'UP' : 'DOWN'}
                         </span>
                       </td>
-                      <td className="py-2 text-right text-slate-300">{formatNumber(iface.mtu)}</td>
-                      <td className="py-2 text-right text-slate-300">{formatNumber(iface.addrs?.length || 0)}</td>
+                      <td className="py-2 text-right text-slate-700 dark:text-slate-300">{formatNumber(iface.mtu)}</td>
+                      <td className="py-2 text-right text-slate-700 dark:text-slate-300">{formatNumber(iface.addrs?.length || 0)}</td>
                     </tr>
                   )
                 })}
@@ -674,25 +658,25 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-slate-700 bg-slate-900 p-6">
-          <h2 className="text-sm font-semibold text-slate-200 mb-4 inline-flex items-center gap-2">
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4 inline-flex items-center gap-2">
             <Shield size={15} className="text-amber-400" /> Security Snapshot
           </h2>
           <div className="space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-slate-400">Status</span><span className={`font-semibold ${securityNeedsAttention ? 'text-amber-300' : 'text-emerald-300'}`}>{securityNeedsAttention ? 'Needs Attention' : 'Healthy'}</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">Blocked Queries</span><span className="font-semibold text-slate-100">{formatNumber(stats?.blocked_queries || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">Rate Limited</span><span className="font-semibold text-slate-100">{formatNumber(stats?.rate_limited || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">Upstream Errors</span><span className="font-semibold text-rose-300">{formatNumber(stats?.upstream_errors || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">DNSSEC Secure</span><span className="font-semibold text-emerald-300">{formatNumber(stats?.dnssec_secure || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">DNSSEC Insecure</span><span className="font-semibold text-slate-100">{formatNumber(stats?.dnssec_insecure || 0)}</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">DNSSEC Bogus</span><span className="font-semibold text-rose-300">{formatNumber(stats?.dnssec_bogus || 0)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Status</span><span className={`font-semibold ${securityNeedsAttention ? 'text-amber-300' : 'text-emerald-300'}`}>{securityNeedsAttention ? 'Needs Attention' : 'Healthy'}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Blocked Queries</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.blocked_queries || 0)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Rate Limited</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.rate_limited || 0)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Upstream Errors</span><span className="font-semibold text-rose-300">{formatNumber(stats?.upstream_errors || 0)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Secure</span><span className="font-semibold text-emerald-300">{formatNumber(stats?.dnssec_secure || 0)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Insecure</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.dnssec_insecure || 0)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Bogus</span><span className="font-semibold text-rose-300">{formatNumber(stats?.dnssec_bogus || 0)}</span></div>
             <div className="pt-2">
-              <div className="flex justify-between text-xs text-slate-400 mb-1"><span>DNSSEC Secure Ratio</span><span>{dnssecSecureRatio.toFixed(1)}%</span></div>
-              <div className="h-2 rounded-full bg-slate-700 overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
+              <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Secure Ratio</span><span>{dnssecSecureRatio.toFixed(1)}%</span></div>
+              <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
             </div>
             <div>
-              <div className="flex justify-between text-xs text-slate-400 mb-1"><span>DNSSEC Bogus Ratio</span><span>{dnssecBogusRatio.toFixed(1)}%</span></div>
-              <div className="h-2 rounded-full bg-slate-700 overflow-hidden"><div className="h-full bg-rose-500" style={{ width: `${Math.max(0, Math.min(100, dnssecBogusRatio))}%` }} /></div>
+              <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Bogus Ratio</span><span>{dnssecBogusRatio.toFixed(1)}%</span></div>
+              <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-rose-500" style={{ width: `${Math.max(0, Math.min(100, dnssecBogusRatio))}%` }} /></div>
             </div>
           </div>
         </div>
@@ -701,17 +685,17 @@ export default function DashboardPage() {
       {/* Charts row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Traffic chart */}
-        <div className="lg:col-span-2 rounded-lg border border-slate-700 bg-slate-900 p-6">
+        <div className="lg:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
             <div>
-              <h2 className="text-sm font-semibold text-slate-200 mb-1">
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">
                 Traffic Stability Over Time
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Raw area + moving average + EMA trend to reduce sudden spikes
               </p>
             </div>
-            <div className="inline-flex rounded-lg border border-slate-700 bg-slate-800 p-1">
+            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
               {TIME_WINDOWS.map((w) => (
                 <button
                   key={w}
@@ -719,7 +703,7 @@ export default function DashboardPage() {
                   className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
                     timeWindow === w
                       ? 'bg-amber-500 text-slate-950'
-                      : 'text-slate-300 hover:bg-slate-700'
+                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
                   }`}
                 >
                   {w}
@@ -778,7 +762,7 @@ export default function DashboardPage() {
                 </ComposedChart>
               </ResponsiveContainer>
             ) : (
-              <div className="flex items-center justify-center h-full text-sm text-slate-400">
+              <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
                 No data yet
               </div>
             )}
@@ -786,8 +770,8 @@ export default function DashboardPage() {
         </div>
 
         {/* RCode Distribution */}
-        <div className="rounded-lg border border-slate-700 bg-slate-900 p-6">
-          <h2 className="text-sm font-semibold text-slate-200 mb-4">
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">
             Response Codes
           </h2>
           <div className="h-64">
@@ -832,7 +816,7 @@ export default function DashboardPage() {
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <div className="flex items-center justify-center h-full text-sm text-slate-400">
+              <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
                 No data yet
               </div>
             )}
@@ -842,21 +826,21 @@ export default function DashboardPage() {
 
       {/* Top Clients & Top Domains */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="rounded-lg border border-slate-700 bg-slate-900 p-6">
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 flex items-center gap-2">
               <Users size={16} className="text-amber-400" />
               Top Clients
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-400">{filteredClients.length}/{topClients.length}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">{filteredClients.length}/{topClients.length}</span>
             </h2>
             <div className="flex items-center gap-2">
               <input
                 value={clientFilter}
                 onChange={(e) => setClientFilter(e.target.value)}
                 placeholder="Filter client..."
-                className="h-8 rounded-md border border-slate-700 bg-slate-800 px-2 text-xs text-slate-200 placeholder:text-slate-500"
+                className="h-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 text-xs text-slate-900 dark:text-slate-200 placeholder:text-slate-500"
               />
-              <button onClick={() => setClientSortDesc((v) => !v)} className="h-8 px-2.5 rounded-md border border-slate-700 bg-slate-800 text-xs text-slate-300">
+              <button onClick={() => setClientSortDesc((v) => !v)} className="h-8 px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300">
                 Sort {clientSortDesc ? 'High-Low' : 'Low-High'}
               </button>
             </div>
@@ -864,18 +848,18 @@ export default function DashboardPage() {
           {filteredClients.length > 0 ? (
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-xs text-slate-400 uppercase tracking-wider">
+                <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   <th className="text-left pb-2 w-8">#</th>
                   <th className="text-left pb-2">Client</th>
                   <th className="text-right pb-2">Queries</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {filteredClients.slice(0, 10).map((entry, i) => (
                   <tr key={entry.key}>
                     <td className="py-1.5 text-xs text-slate-500">{i + 1}</td>
-                    <td className="py-1.5 font-mono text-xs text-slate-200">{entry.key}</td>
-                    <td className="py-1.5 text-right text-xs font-medium text-slate-100">{formatNumber(entry.count)}</td>
+                    <td className="py-1.5 font-mono text-xs text-slate-900 dark:text-slate-200">{entry.key}</td>
+                    <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -887,21 +871,21 @@ export default function DashboardPage() {
           )}
         </div>
 
-        <div className="rounded-lg border border-slate-700 bg-slate-900 p-6">
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 flex items-center gap-2">
               <Globe size={16} className="text-amber-400" />
               Top Domains
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-400">{filteredDomains.length}/{topDomains.length}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">{filteredDomains.length}/{topDomains.length}</span>
             </h2>
             <div className="flex items-center gap-2">
               <input
                 value={domainFilter}
                 onChange={(e) => setDomainFilter(e.target.value)}
                 placeholder="Filter domain..."
-                className="h-8 rounded-md border border-slate-700 bg-slate-800 px-2 text-xs text-slate-200 placeholder:text-slate-500"
+                className="h-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 text-xs text-slate-900 dark:text-slate-200 placeholder:text-slate-500"
               />
-              <button onClick={() => setDomainSortDesc((v) => !v)} className="h-8 px-2.5 rounded-md border border-slate-700 bg-slate-800 text-xs text-slate-300">
+              <button onClick={() => setDomainSortDesc((v) => !v)} className="h-8 px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-300">
                 Sort {domainSortDesc ? 'High-Low' : 'Low-High'}
               </button>
             </div>
@@ -909,18 +893,18 @@ export default function DashboardPage() {
           {filteredDomains.length > 0 ? (
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-xs text-slate-400 uppercase tracking-wider">
+                <tr className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   <th className="text-left pb-2 w-8">#</th>
                   <th className="text-left pb-2">Domain</th>
                   <th className="text-right pb-2">Queries</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {filteredDomains.slice(0, 10).map((entry, i) => (
                   <tr key={entry.key}>
                     <td className="py-1.5 text-xs text-slate-500">{i + 1}</td>
-                    <td className="py-1.5 text-xs text-slate-200 max-w-xs truncate" title={entry.key}>{entry.key}</td>
-                    <td className="py-1.5 text-right text-xs font-medium text-slate-100">{formatNumber(entry.count)}</td>
+                    <td className="py-1.5 text-xs text-slate-900 dark:text-slate-200 max-w-xs truncate" title={entry.key}>{entry.key}</td>
+                    <td className="py-1.5 text-right text-xs font-medium text-slate-900 dark:text-slate-100">{formatNumber(entry.count)}</td>
                   </tr>
                 ))}
               </tbody>

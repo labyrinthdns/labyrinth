@@ -48,6 +48,7 @@ export interface SystemProfileResponse {
   hostname: string
   network: {
     ip_addresses: string[]
+    dns_listen_addresses?: string[]
     interfaces: {
       name: string
       mtu: number

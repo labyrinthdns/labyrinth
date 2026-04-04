@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-04-04
+
+### Changed
+- Backend cache eviction path optimized in the sweeper to use shard eviction heaps instead of full shard map scans on each cycle.
+- Dashboard system profile now prefers DNS listen addresses for `Primary Listen IP` and listen badges, instead of arbitrary interface order.
+- Dashboard and layout theme classes were aligned for light/dark parity to avoid dark-only artifacts in light mode.
+
+### Fixed
+- Expired NXDOMAIN sentinel entries are now deleted correctly on lookup miss-expiry path (type-agnostic negative cache key handling).
+- Negative cache writes are now tracked in the eviction queue, improving consistency between capacity eviction and sweep eviction.
+- Mobile sidebar close button now follows theme-aware hover/text classes in light mode.
+
+### Performance
+- Cache sweep complexity for the common case (mostly-fresh cache) reduced by popping only due heap heads per shard.
+- Added sweep benchmark (`BenchmarkSweepMostlyFresh`) to guard hot-path regressions.
+
+### Tests
+- Cache package coverage raised to 100% with new eviction-heap and fallback sweep tests.
+- Added dedicated tests for listen-address resolution and system profile response shape.
+
 ## [0.4.4] - 2026-04-04
 
 ### Changed
