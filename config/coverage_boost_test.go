@@ -162,6 +162,8 @@ func TestApplyYAMLWebExtraFields(t *testing.T) {
 	values := map[string]string{
 		"web.top_clients_limit":     "50",
 		"web.top_domains_limit":     "100",
+		"web.alert_error_threshold_pct": "3.5",
+		"web.alert_latency_threshold_ms": "180",
 		"web.auto_update":           "false",
 		"web.update_check_interval": "12h",
 		"web.doh_enabled":           "true",
@@ -176,6 +178,12 @@ func TestApplyYAMLWebExtraFields(t *testing.T) {
 	}
 	if cfg.Web.TopDomainsLimit != 100 {
 		t.Errorf("TopDomainsLimit: got %d", cfg.Web.TopDomainsLimit)
+	}
+	if cfg.Web.AlertErrorThreshold != 3.5 {
+		t.Errorf("AlertErrorThreshold: got %f", cfg.Web.AlertErrorThreshold)
+	}
+	if cfg.Web.AlertLatencyMs != 180 {
+		t.Errorf("AlertLatencyMs: got %d", cfg.Web.AlertLatencyMs)
 	}
 	if cfg.Web.AutoUpdate {
 		t.Error("AutoUpdate should be false")

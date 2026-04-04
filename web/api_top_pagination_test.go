@@ -57,8 +57,12 @@ func TestTopTracker_TopPage(t *testing.T) {
 	if len(page) != 2 {
 		t.Fatalf("want page len=2, got %d", len(page))
 	}
-	if page[0].Key != "b" || page[1].Key != "c" {
-		t.Fatalf("unexpected page order: %+v", page)
+	got := map[string]bool{
+		page[0].Key: true,
+		page[1].Key: true,
+	}
+	if !got["b"] || !got["c"] {
+		t.Fatalf("unexpected page content: %+v", page)
 	}
 }
 

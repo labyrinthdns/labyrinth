@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Download, FileJson, FileSpreadsheet, Loader2, RefreshCw, Copy, Check, FileText } from 'lucide-react'
 import { api } from '@/api/client'
-import type { TopEntry } from '@/api/types'
+import type { TopEntry, TimeSeriesBucket } from '@/api/types'
 import { copyTextToClipboard } from '@/lib/utils'
 
 type Snapshot = {
@@ -14,7 +14,7 @@ type Snapshot = {
   topClientsTotal: number
   topDomains: TopEntry[]
   topDomainsTotal: number
-  timeseries: Record<string, unknown>[]
+  timeseries: TimeSeriesBucket[]
 }
 
 const SNAPSHOT_WINDOWS = ['5m', '15m', '1h'] as const
@@ -66,7 +66,7 @@ export default function ReportsPage() {
         topClientsTotal: Number((clientsRes as { total?: number }).total || 0),
         topDomains: (domainsRes as { entries?: TopEntry[] }).entries || [],
         topDomainsTotal: Number((domainsRes as { total?: number }).total || 0),
-        timeseries: (tsRes as { buckets?: Record<string, unknown>[] }).buckets || [],
+        timeseries: (tsRes as { buckets?: TimeSeriesBucket[] }).buckets || [],
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to collect snapshot')
