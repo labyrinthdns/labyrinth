@@ -20,9 +20,14 @@ import (
 )
 
 var (
-	version   = "dev"
-	buildTime = "unknown"
-	goVersion = "unknown"
+	version             = "dev"
+	buildTime           = "unknown"
+	goVersion           = "unknown"
+	daemonizeProcess    = daemon.Daemonize
+	stopDaemonProcess   = daemon.StopDaemon
+	statusDaemonProcess = daemon.StatusDaemon
+	startHTTPServicesFn = startHTTPServices
+	startDNSServersFn   = startDNSServers
 )
 
 const (
@@ -111,7 +116,7 @@ func run() int {
 		if cfg != nil && cfg.Daemon.PIDFile != "" {
 			pidFile = cfg.Daemon.PIDFile
 		}
-		isDaemon, err := daemon.Daemonize(pidFile)
+		isDaemon, err := daemonizeProcess(pidFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
 			return 1
@@ -283,11 +288,11 @@ func run() int {
 		}
 	}()
 
-	if err := startHTTPServices(ctx, cfg, c, m, res, handler, logger, blocklistMgr, *configPath); err != nil {
+	if err := startHTTPServicesFn(ctx, cfg, c, m, res, handler, logger, blocklistMgr, *configPath); err != nil {
 		return 1
 	}
 
-	errCh, err := startDNSServers(ctx, cfg, handler, logger)
+	errCh, err := startDNSServersFn(ctx, cfg, handler, logger)
 	if err != nil {
 		return 1
 	}

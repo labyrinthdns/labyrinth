@@ -22,6 +22,11 @@ import (
 
 const dnsServerErrorBuffer = 4
 
+var (
+	waitSignalNotify = signal.Notify
+	waitSignalStop   = signal.Stop
+)
+
 func startHTTPServices(
 	ctx context.Context,
 	cfg *config.Config,
@@ -173,7 +178,8 @@ func waitForShutdown(
 	logger *slog.Logger,
 ) int {
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	waitSignalNotify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer waitSignalStop(sigCh)
 
 	for {
 		select {

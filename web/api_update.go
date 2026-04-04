@@ -39,6 +39,22 @@ type githubAsset struct {
 
 const githubReleasesURL = "https://api.github.com/repos/labyrinthdns/labyrinth/releases/latest"
 
+var (
+	updateInitialDelay = 30 * time.Second
+	updateTickerFactory = func(d time.Duration) *time.Ticker {
+		return time.NewTicker(d)
+	}
+	updateHTTPGet = http.Get
+	updateExecutable = os.Executable
+	updateEvalSymlinks = filepath.EvalSymlinks
+	updateCreateTemp = os.CreateTemp
+	updateChmod = os.Chmod
+	updateRename = os.Rename
+	updateRemove = os.Remove
+	updateSleep = time.Sleep
+	updateRestartSelf = restartSelf
+)
+
 // handleCheckUpdate handles GET /api/system/update/check — returns cached update info or fetches fresh.
 func (s *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -92,7 +108,7 @@ func (s *AdminServer) StartUpdateChecker(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(30 * time.Second):
+	case <-time.After(updateInitialDelay):
 	}
 
 	info, err := checkForUpdate()
@@ -106,7 +122,7 @@ func (s *AdminServer) StartUpdateChecker(ctx context.Context) {
 		}
 	}
 
-	ticker := time.NewTicker(interval)
+	ticker := updateTickerFactory(interval)
 	defer ticker.Stop()
 
 	for {
@@ -157,7 +173,7 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Download the binary
-	resp, err := http.Get(downloadURL)
+	resp, err := updateHTTPGet(downloadURL)
 	if err != nil {
 		jsonResponse(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("download failed: %v", err)})
 		return
@@ -170,18 +186,18 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Write to temp file
-	exePath, err := os.Executable()
+	exePath, err := updateExecutable()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get executable path: %v", err)})
 		return
 	}
-	exePath, err = filepath.EvalSymlinks(exePath)
+	exePath, err = updateEvalSymlinks(exePath)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to resolve executable path: %v", err)})
 		return
 	}
 
-	tmpFile, err := os.CreateTemp(filepath.Dir(exePath), "labyrinth-update-*")
+	tmpFile, err := updateCreateTemp(filepath.Dir(exePath), "labyrinth-update-*")
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to create temp file: %v", err)})
 		return
@@ -191,15 +207,15 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 	_, err = io.Copy(tmpFile, resp.Body)
 	tmpFile.Close()
 	if err != nil {
-		os.Remove(tmpPath)
+		updateRemove(tmpPath)
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to write update: %v", err)})
 		return
 	}
 
 	// Make executable on unix
 	if runtime.GOOS != "windows" {
-		if err := os.Chmod(tmpPath, 0755); err != nil {
-			os.Remove(tmpPath)
+		if err := updateChmod(tmpPath, 0755); err != nil {
+			updateRemove(tmpPath)
 			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to set permissions: %v", err)})
 			return
 		}
@@ -209,16 +225,16 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 	// On Windows, rename running exe to .old first since overwrite is blocked
 	if runtime.GOOS == "windows" {
 		oldPath := exePath + ".old"
-		os.Remove(oldPath) // clean up previous .old if exists
-		if err := os.Rename(exePath, oldPath); err != nil {
-			os.Remove(tmpPath)
+		updateRemove(oldPath) // clean up previous .old if exists
+		if err := updateRename(exePath, oldPath); err != nil {
+			updateRemove(tmpPath)
 			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to move current executable: %v", err)})
 			return
 		}
 	}
 
-	if err := os.Rename(tmpPath, exePath); err != nil {
-		os.Remove(tmpPath)
+	if err := updateRename(tmpPath, exePath); err != nil {
+		updateRemove(tmpPath)
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to replace executable: %v", err)})
 		return
 	}
@@ -238,8 +254,8 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 
 	// Delay restart slightly to ensure HTTP response is sent
 	go func() {
-		time.Sleep(500 * time.Millisecond)
-		if err := restartSelf(); err != nil {
+		updateSleep(500 * time.Millisecond)
+		if err := updateRestartSelf(); err != nil {
 			s.logger.Error("restart failed", "error", err)
 		}
 	}()
@@ -247,7 +263,7 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 
 // checkForUpdate fetches the latest release from GitHub and compares with the current version.
 func checkForUpdate() (*UpdateInfo, error) {
-	resp, err := http.Get(githubReleasesURL)
+	resp, err := updateHTTPGet(githubReleasesURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch release info: %w", err)
 	}
@@ -292,7 +308,7 @@ func checkForUpdate() (*UpdateInfo, error) {
 
 // findAssetURL fetches the latest release and finds the download URL for the given asset name.
 func findAssetURL(assetName string) (string, error) {
-	resp, err := http.Get(githubReleasesURL)
+	resp, err := updateHTTPGet(githubReleasesURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch release info: %w", err)
 	}
