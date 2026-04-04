@@ -77,6 +77,14 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 
 	// Determine cleanup interval, default to 5 minutes
 	cleanupInterval := 5 * time.Minute
+	topTrackingLimitClients := cfg.Web.TopClientsLimit
+	if topTrackingLimitClients < 1000 {
+		topTrackingLimitClients = 1000
+	}
+	topTrackingLimitDomains := cfg.Web.TopDomainsLimit
+	if topTrackingLimitDomains < 1000 {
+		topTrackingLimitDomains = 1000
+	}
 
 	return &AdminServer{
 		cache:                 c,
@@ -88,8 +96,8 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		timeSeries:            NewTimeSeriesAggregator(),
 		logger:                logger,
 		jwtSecret:             secret,
-		topClients:            NewTopTracker(cfg.Web.TopClientsLimit),
-		topDomains:            NewTopTracker(cfg.Web.TopDomainsLimit),
+		topClients:            NewTopTracker(topTrackingLimitClients),
+		topDomains:            NewTopTracker(topTrackingLimitDomains),
 		clientQueryNum:        make(map[string]*clientQueryEntry),
 		clientCleanupInterval: cleanupInterval,
 		blocklist:             bl,

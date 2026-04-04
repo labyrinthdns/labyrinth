@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-04-04
+
+### Added
+- Dashboard now includes a DNS-first telemetry composition with richer resolver visuals: `DNS Resolver Matrix`, `Security Snapshot`, and `Response Codes` donut.
+- Top list APIs now support pagination metadata and windowing for large lists: `limit`, `offset`, `total`, and `has_more`.
+- New backend tests for top-list pagination and API limit/offset behavior.
+
+### Changed
+- Dashboard information hierarchy was rebuilt to prioritize live DNS resolver signals over host-level system details.
+- Reports page now supports large top-list inspection (`Top limit` up to 1000) with in-table filtering for clients and domains.
+- Top tracker retention is now decoupled from small UI card defaults so high-cardinality client/domain rankings remain queryable.
+
+### Performance
+- Top list tracking capacity is elevated (minimum 1000 retained keys) to avoid early pruning under active traffic and improve observability depth.
+
 ## [0.4.6] - 2026-04-04
 
 ### Changed

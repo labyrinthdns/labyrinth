@@ -180,6 +180,14 @@ export interface TopEntry {
   count: number
 }
 
+export interface TopListResponse {
+  entries: TopEntry[]
+  total?: number
+  limit?: number
+  offset?: number
+  has_more?: boolean
+}
+
 export interface NegativeCacheEntry {
   name: string
   type: string

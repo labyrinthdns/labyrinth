@@ -1,56 +1,66 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
-  Globe,
-  Zap,
-  Database,
-  Clock,
-  AlertTriangle,
-  Users,
-  Shield,
-  Server,
-  Cpu,
-  HardDrive,
-  Network,
   Activity,
+  AlertTriangle,
+  Ban,
+  CheckCircle2,
+  Cpu,
+  Globe,
+  HardDrive,
   MemoryStick,
+  Network,
   RefreshCw,
-  Pause,
-  Play,
-  GripVertical,
-  EyeOff,
-  Eye,
-  LayoutGrid,
+  Shield,
+  Zap,
 } from 'lucide-react'
 import {
   ComposedChart,
   Area,
   Line,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  Legend,
   CartesianGrid,
 } from 'recharts'
 import { api } from '@/api/client'
 import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse } from '@/api/types'
-import { formatNumber, formatUptime, formatBytes, formatVersion } from '@/lib/utils'
+import { formatBytes, formatNumber, formatUptime, formatVersion } from '@/lib/utils'
 import { useQueryStream } from '@/hooks/useWebSocket'
 
 const QUERY_TYPE_COUNTERS = ['A', 'AAAA', 'MX', 'NS', 'PTR', 'SRV', 'CNAME', 'TXT'] as const
 const TIME_WINDOWS = ['5m', '15m', '1h'] as const
 type TimeWindow = (typeof TIME_WINDOWS)[number]
-type ThroughputPoint = { time: string; rxBps: number; txBps: number }
 const REFRESH_INTERVALS = [
   { label: '5s', value: 5000 },
   { label: '15s', value: 15000 },
   { label: '30s', value: 30000 },
 ] as const
 const CHART_SERIES_KEYS = ['queries', 'moving_avg', 'ema', 'qps', 'errors'] as const
+
 type ChartSeriesKey = (typeof CHART_SERIES_KEYS)[number]
+type TelemetryPoint = {
+  ts: string
+  bucketMs: number
+  time: string
+  queries: number
+  cacheHits: number
+  cacheMisses: number
+  errors: number
+  avgLatencyMs: number
+  qps: number
+}
+
+type VersionState = {
+  current: string
+  latest: string
+  updateAvailable: boolean
+  releaseUrl: string
+}
+
 const CHART_SERIES_LABELS: Record<ChartSeriesKey, string> = {
   queries: 'Queries',
   moving_avg: 'Moving Avg',
@@ -59,22 +69,6 @@ const CHART_SERIES_LABELS: Record<ChartSeriesKey, string> = {
   errors: 'Errors',
 }
 const CHART_SERIES_STORAGE_KEY = 'labyrinth.dashboard.chart_series_visibility'
-const DASHBOARD_SECTION_IDS = ['query_types', 'network_security', 'top_lists'] as const
-type DashboardSectionID = (typeof DASHBOARD_SECTION_IDS)[number]
-const DEFAULT_SECTION_ORDER: DashboardSectionID[] = ['query_types', 'network_security', 'top_lists']
-const SECTION_LABELS: Record<DashboardSectionID, string> = {
-  query_types: 'Query Type Counters',
-  network_security: 'Network & Security',
-  top_lists: 'Top Clients & Domains',
-}
-
-const RCODE_COLORS: Record<string, string> = {
-  NOERROR: '#22c55e',
-  NXDOMAIN: '#eab308',
-  SERVFAIL: '#ef4444',
-  REFUSED: '#f97316',
-  FORMERR: '#a855f7',
-}
 
 function movingAverage(values: number[], windowSize = 4): number[] {
   if (values.length === 0) return []
@@ -82,8 +76,7 @@ function movingAverage(values: number[], windowSize = 4): number[] {
   for (let i = 0; i < values.length; i++) {
     const start = Math.max(0, i - windowSize + 1)
     const slice = values.slice(start, i + 1)
-    const avg = slice.reduce((sum, x) => sum + x, 0) / slice.length
-    out.push(avg)
+    out.push(slice.reduce((sum, x) => sum + x, 0) / slice.length)
   }
   return out
 }
@@ -101,20 +94,6 @@ function toTenSecondBucket(tsMs: number): number {
   return Math.floor(tsMs / 10_000) * 10_000
 }
 
-function normalizeSectionOrder(input: string[] | undefined): DashboardSectionID[] {
-  const known = new Set(DASHBOARD_SECTION_IDS)
-  const unique: DashboardSectionID[] = []
-  for (const raw of input || []) {
-    const id = raw as DashboardSectionID
-    if (!known.has(id) || unique.includes(id)) continue
-    unique.push(id)
-  }
-  for (const id of DEFAULT_SECTION_ORDER) {
-    if (!unique.includes(id)) unique.push(id)
-  }
-  return unique
-}
-
 function defaultChartSeriesVisibility(): Record<ChartSeriesKey, boolean> {
   return {
     queries: true,
@@ -127,75 +106,87 @@ function defaultChartSeriesVisibility(): Record<ChartSeriesKey, boolean> {
 
 function normalizeChartSeriesVisibility(input: unknown): Record<ChartSeriesKey, boolean> {
   const defaults = defaultChartSeriesVisibility()
-  if (!input || typeof input !== 'object') {
-    return defaults
-  }
+  if (!input || typeof input !== 'object') return defaults
   const raw = input as Record<string, unknown>
   const next = { ...defaults }
   CHART_SERIES_KEYS.forEach((key) => {
-    if (typeof raw[key] === 'boolean') {
-      next[key] = raw[key] as boolean
-    }
+    if (typeof raw[key] === 'boolean') next[key] = raw[key] as boolean
   })
   return next
 }
 
-function StatCard({
+function SummaryCard({
   icon: Icon,
   label,
   value,
   sub,
-  iconColor,
+  tone = 'default',
+  href,
 }: {
   icon: typeof Globe
   label: string
   value: string
   sub?: string
-  iconColor: string
+  tone?: 'default' | 'good' | 'warn' | 'danger' | 'info'
+  href?: string
 }) {
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 shadow-sm">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-slate-500 dark:text-slate-400">{label}</p>
-          <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">
-            {value}
-          </p>
-          {sub && (
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{sub}</p>
-          )}
+  const toneClasses = {
+    default: 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100',
+    good: 'border-emerald-300/60 dark:border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300',
+    warn: 'border-amber-300/60 dark:border-amber-500/40 bg-amber-50/70 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300',
+    danger: 'border-rose-300/70 dark:border-rose-500/40 bg-rose-50/80 dark:bg-rose-900/25 text-rose-700 dark:text-rose-300',
+    info: 'border-cyan-300/60 dark:border-cyan-500/40 bg-cyan-50/70 dark:bg-cyan-900/20 text-cyan-700 dark:text-cyan-300',
+  }[tone]
+
+  const content = (
+    <div className={`rounded-md border px-2.5 py-2 ${toneClasses}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[10px] uppercase tracking-wider opacity-75">{label}</p>
+          <p className="text-sm font-semibold mt-0.5 leading-none">{value}</p>
+          {sub && <p className="text-[10px] mt-1 opacity-75 line-clamp-1">{sub}</p>}
         </div>
-        <div className={`flex items-center justify-center w-12 h-12 rounded-lg ${iconColor}`}>
-          <Icon size={24} />
-        </div>
+        <Icon size={13} className="opacity-70 mt-0.5" />
       </div>
     </div>
   )
+
+  if (href) {
+    return (
+      <a href={href} className="block hover:opacity-95 transition-opacity">
+        {content}
+      </a>
+    )
+  }
+
+  return content
 }
 
-function UsageBar({
+function MeterRow({
+  icon: Icon,
   label,
   value,
   percent,
-  colorClass,
+  barClass,
 }: {
+  icon: typeof Cpu
   label: string
   value: string
   percent: number
-  colorClass: string
+  barClass: string
 }) {
-  const clamped = Math.max(0, Math.min(percent, 100))
+  const clamped = Math.max(0, Math.min(100, percent))
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-500 dark:text-slate-400">{label}</span>
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400">
+          <Icon size={12} />
+          {label}
+        </span>
         <span className="font-semibold text-slate-900 dark:text-slate-100">{value}</span>
       </div>
-      <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-500 ${colorClass}`}
-          style={{ width: `${clamped}%` }}
-        />
+      <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+        <div className={`h-full rounded-full ${barClass}`} style={{ width: `${clamped}%` }} />
       </div>
     </div>
   )
@@ -204,13 +195,11 @@ function UsageBar({
 export default function DashboardPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [profile, setProfile] = useState<SystemProfileResponse | null>(null)
-  const [cpuUsagePct, setCPUUsagePct] = useState(0)
   const [timeseries, setTimeseries] = useState<TimeSeriesBucket[]>([])
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('15m')
   const [topClients, setTopClients] = useState<TopEntry[]>([])
   const [topDomains, setTopDomains] = useState<TopEntry[]>([])
   const [statsSnapshotAtMs, setStatsSnapshotAtMs] = useState(0)
-  const [networkHistory, setNetworkHistory] = useState<ThroughputPoint[]>([])
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshMs, setRefreshMs] = useState(15000)
@@ -218,24 +207,16 @@ export default function DashboardPage() {
   const [domainFilter, setDomainFilter] = useState('')
   const [clientSortDesc, setClientSortDesc] = useState(true)
   const [domainSortDesc, setDomainSortDesc] = useState(true)
-  const [sectionOrder, setSectionOrder] = useState<DashboardSectionID[]>(DEFAULT_SECTION_ORDER)
-  const [hiddenSections, setHiddenSections] = useState<DashboardSectionID[]>([])
-  const [draggingSection, setDraggingSection] = useState<DashboardSectionID | null>(null)
-  const [layoutPanelOpen, setLayoutPanelOpen] = useState(false)
-  const [layoutStatus, setLayoutStatus] = useState('')
   const [chartSeriesVisibility, setChartSeriesVisibility] = useState<Record<ChartSeriesKey, boolean>>(defaultChartSeriesVisibility())
+  const [versionState, setVersionState] = useState<VersionState>({
+    current: 'unknown',
+    latest: 'unknown',
+    updateAvailable: false,
+    releaseUrl: '',
+  })
   const [error, setError] = useState('')
 
-  const cpuSampleRef = useRef<{ sec: number; atMs: number } | null>(null)
-  const netSampleRef = useRef<{ rx: number; tx: number; atMs: number } | null>(null)
-  const layoutHydratedRef = useRef(false)
-  const {
-    queries: streamQueries,
-    connected: streamConnected,
-    paused: streamPaused,
-    setPaused: setStreamPaused,
-  } = useQueryStream(400)
-  const recentQueries = useMemo(() => streamQueries.slice(0, 10), [streamQueries])
+  const { queries: streamQueries, connected: streamConnected } = useQueryStream(300)
 
   const fetchData = useCallback(async () => {
     try {
@@ -251,58 +232,20 @@ export default function DashboardPage() {
         setStats(statsRes.value as unknown as StatsResponse)
         setStatsSnapshotAtMs(Date.now())
       }
-
       if (tsRes.status === 'fulfilled') {
         const tsData = tsRes.value as unknown as { buckets: TimeSeriesBucket[] }
         setTimeseries(tsData?.buckets || [])
       }
-
       if (clientsRes.status === 'fulfilled') {
         const data = clientsRes.value as unknown as { entries?: TopEntry[] }
         setTopClients(data?.entries || [])
       }
-
       if (domainsRes.status === 'fulfilled') {
         const data = domainsRes.value as unknown as { entries?: TopEntry[] }
         setTopDomains(data?.entries || [])
       }
-
       if (profileRes.status === 'fulfilled') {
-        const p = profileRes.value as unknown as SystemProfileResponse
-        setProfile(p)
-
-        const nowMs = Date.now()
-        const secTotal = p?.cpu?.process_cpu_seconds_total || 0
-        const prev = cpuSampleRef.current
-        if (prev && secTotal >= prev.sec) {
-          const dSec = secTotal - prev.sec
-          const dWall = (nowMs - prev.atMs) / 1000
-          if (dWall > 0) {
-            const pct = (dSec / dWall) * 100
-            setCPUUsagePct(Math.max(0, Math.min(100, pct)))
-          }
-        }
-        cpuSampleRef.current = { sec: secTotal, atMs: nowMs }
-
-        const rxTotal = p.network?.io?.rx_bytes_total || 0
-        const txTotal = p.network?.io?.tx_bytes_total || 0
-        const prevNet = netSampleRef.current
-        if (prevNet && rxTotal >= prevNet.rx && txTotal >= prevNet.tx) {
-          const dWall = (nowMs - prevNet.atMs) / 1000
-          if (dWall > 0) {
-            const rxBps = (rxTotal - prevNet.rx) / dWall
-            const txBps = (txTotal - prevNet.tx) / dWall
-            setNetworkHistory((prevSeries) => [
-              ...prevSeries.slice(-23),
-              {
-                time: new Date(nowMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-                rxBps,
-                txBps,
-              },
-            ])
-          }
-        }
-        netSampleRef.current = { rx: rxTotal, tx: txTotal, atMs: nowMs }
+        setProfile(profileRes.value as unknown as SystemProfileResponse)
       }
 
       setUpdatedAt(new Date())
@@ -325,6 +268,50 @@ export default function DashboardPage() {
     return () => clearInterval(interval)
   }, [autoRefresh, refreshMs, fetchData])
 
+  useEffect(() => {
+    let cancelled = false
+    void Promise.allSettled([api.version(), api.checkUpdate(false)]).then(([versionRes, updateRes]) => {
+      if (cancelled) return
+      const current = versionRes.status === 'fulfilled' ? versionRes.value.version || 'unknown' : 'unknown'
+      if (updateRes.status === 'fulfilled') {
+        const u = updateRes.value
+        setVersionState({
+          current,
+          latest: u.latest_version || current,
+          updateAvailable: Boolean(u.update_available),
+          releaseUrl: u.release_url || '',
+        })
+        return
+      }
+      setVersionState({
+        current,
+        latest: current,
+        updateAvailable: false,
+        releaseUrl: '',
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CHART_SERIES_STORAGE_KEY)
+      if (!raw) return
+      setChartSeriesVisibility(normalizeChartSeriesVisibility(JSON.parse(raw)))
+    } catch {
+      // keep defaults
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHART_SERIES_STORAGE_KEY, JSON.stringify(chartSeriesVisibility))
+    } catch {
+      // ignore storage failures
+    }
+  }, [chartSeriesVisibility])
   const liveWindowStats = useMemo(() => {
     const cutoff = Date.now() - 10_000
     let count = 0
@@ -333,9 +320,7 @@ export default function DashboardPage() {
       const ts = Date.parse(q.ts || '')
       if (!Number.isFinite(ts) || ts < cutoff) continue
       count++
-      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) {
-        errors++
-      }
+      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) errors++
     }
     return {
       queries10s: count,
@@ -378,7 +363,6 @@ export default function DashboardPage() {
     const cacheHits = (stats.cache_hits || 0) + streamDelta.hits
     const cacheMisses = (stats.cache_misses || 0) + streamDelta.misses
     const totalForHit = cacheHits + cacheMisses
-    const cacheHitRatio = totalForHit > 0 ? cacheHits / totalForHit : 0
 
     return {
       ...stats,
@@ -386,7 +370,7 @@ export default function DashboardPage() {
       responses_by_rcode: nextRcodes,
       cache_hits: cacheHits,
       cache_misses: cacheMisses,
-      cache_hit_ratio: cacheHitRatio,
+      cache_hit_ratio: totalForHit > 0 ? cacheHits / totalForHit : 0,
       blocked_queries: (stats.blocked_queries || 0) + streamDelta.blocked,
     }
   }, [stats, streamDelta])
@@ -395,13 +379,7 @@ export default function DashboardPage() {
     ? Object.values(statsView.queries_by_type).reduce((a, b) => a + b, 0)
     : 0
 
-  const rcodeData = statsView?.responses_by_rcode
-    ? Object.entries(statsView.responses_by_rcode)
-        .filter(([, count]) => count > 0)
-        .map(([name, value]) => ({ name, value }))
-    : []
-
-  const liveChartPoint = useMemo(() => {
+  const liveChartPoint = useMemo<TelemetryPoint>(() => {
     const nowMs = Date.now()
     const bucketStartMs = toTenSecondBucket(nowMs)
     const bucketEndMs = bucketStartMs + 10_000
@@ -421,9 +399,9 @@ export default function DashboardPage() {
       totalLatencyMs += q.duration_ms || 0
     }
 
-    const bucketTs = new Date(bucketStartMs).toISOString()
+    const ts = new Date(bucketStartMs).toISOString()
     return {
-      ts: bucketTs,
+      ts,
       bucketMs: bucketStartMs,
       time: new Date(bucketStartMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       queries,
@@ -432,175 +410,108 @@ export default function DashboardPage() {
       errors,
       avgLatencyMs: queries > 0 ? totalLatencyMs / queries : 0,
       qps: Number((queries / 10).toFixed(2)),
-      hitRate: queries > 0 ? (cacheHits / queries) * 100 : 0,
     }
   }, [streamQueries])
 
   const chartDataRaw = useMemo(() => {
-    const base = (timeseries || [])
+    const base: TelemetryPoint[] = (timeseries || [])
       .map((b) => {
         const ts = b.timestamp || b.ts || ''
         const tsMs = Date.parse(ts)
         const bucketMs = Number.isFinite(tsMs) ? toTenSecondBucket(tsMs) : 0
         const queryCount = b.queries || 0
-        const cacheHits = b.cache_hits || 0
-        const cacheMisses = b.cache_misses || 0
         return {
           ts,
           bucketMs,
           time: ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
           queries: queryCount,
-          cacheHits,
-          cacheMisses,
+          cacheHits: b.cache_hits || 0,
+          cacheMisses: b.cache_misses || 0,
           errors: b.errors || 0,
           avgLatencyMs: b.avg_latency_ms || 0,
           qps: Number((queryCount / 10).toFixed(2)),
-          hitRate: queryCount > 0 ? (cacheHits / queryCount) * 100 : 0,
         }
       })
       .filter((row) => row.ts)
       .sort((a, b) => a.bucketMs - b.bucketMs)
 
-    const live = liveChartPoint
-    if (!live) return base
-    const idx = base.findIndex((row) => row.bucketMs === live.bucketMs)
-    if (idx >= 0) {
-      base[idx] = live
-    } else if (base.length === 0 || live.bucketMs >= base[base.length - 1].bucketMs) {
-      base.push(live)
-    }
+    const idx = base.findIndex((row) => row.bucketMs === liveChartPoint.bucketMs)
+    if (idx >= 0) base[idx] = liveChartPoint
+    else if (base.length === 0 || liveChartPoint.bucketMs >= base[base.length - 1].bucketMs) base.push(liveChartPoint)
+
     return base.sort((a, b) => a.bucketMs - b.bucketMs)
   }, [timeseries, liveChartPoint])
-
   const trendWindow = timeWindow === '5m' ? 4 : timeWindow === '15m' ? 6 : 8
   const queryTrend = movingAverage(chartDataRaw.map((x) => x.queries), trendWindow)
   const queryEMA = ema(chartDataRaw.map((x) => x.queries), 0.35)
   const chartData = chartDataRaw.map((x, i) => ({
     ...x,
-    queriesTrend: Number(queryTrend[i].toFixed(2)),
-    queriesEMA: Number(queryEMA[i].toFixed(2)),
+    queriesTrend: Number((queryTrend[i] || 0).toFixed(2)),
+    queriesEMA: Number((queryEMA[i] || 0).toFixed(2)),
   }))
 
+  const windowQueries = chartData.reduce((sum, row) => sum + row.queries, 0)
+  const windowErrors = chartData.reduce((sum, row) => sum + row.errors, 0)
+  const weightedLatency = chartData.reduce((sum, row) => sum + row.avgLatencyMs * row.queries, 0)
+  const windowErrorRate = windowQueries > 0 ? (windowErrors / windowQueries) * 100 : 0
+  const windowAvgLatency = windowQueries > 0 ? weightedLatency / windowQueries : 0
+  const noErrorCount = statsView?.responses_by_rcode?.NOERROR || 0
+  const nxdomainCount = statsView?.responses_by_rcode?.NXDOMAIN || 0
+  const servfailCount = statsView?.responses_by_rcode?.SERVFAIL || 0
+  const totalRcodes = Object.values(statsView?.responses_by_rcode || {}).reduce((a, b) => a + b, 0)
+  const noErrorRatio = totalRcodes > 0 ? (noErrorCount / totalRcodes) * 100 : 0
+  const uptimeText = statsView ? formatUptime(statsView.uptime_seconds) : '0m'
+  const hasChartActivity = chartData.some((row) => row.queries > 0 || row.errors > 0 || row.qps > 0)
+  const upstreamDnsRatio = (() => {
+    const dns = profile?.traffic?.dns_queries_total || 0
+    const upstream = profile?.traffic?.upstream_queries_total || 0
+    if (dns <= 0) return 0
+    return (upstream / dns) * 100
+  })()
+
+  const statusReasons = useMemo(() => {
+    const reasons: string[] = []
+    if (!statsView?.resolver_ready) reasons.push('Resolver is not ready')
+    if ((statsView?.upstream_errors || 0) > 0) reasons.push(`Upstream errors: ${formatNumber(statsView?.upstream_errors || 0)}`)
+    if (windowErrorRate >= 2) reasons.push(`Error rate high: ${windowErrorRate.toFixed(2)}%`)
+    if ((statsView?.rate_limited || 0) > 0) reasons.push(`Rate limited: ${formatNumber(statsView?.rate_limited || 0)}`)
+    return reasons
+  }, [statsView, windowErrorRate])
+
+  const isCritical = statusReasons.length > 0
+  const qpsLive = liveWindowStats.qps10s
   const queryTypeCounts = QUERY_TYPE_COUNTERS.map((type) => ({
     type,
     count: statsView?.queries_by_type?.[type] || 0,
   }))
+  const maxQueryTypeCount = Math.max(1, ...queryTypeCounts.map((item) => item.count))
+  const dnssecSecure = statsView?.dnssec_secure || 0
+  const dnssecInsecure = statsView?.dnssec_insecure || 0
+  const dnssecBogus = statsView?.dnssec_bogus || 0
+  const dnssecTotal = dnssecSecure + dnssecInsecure + dnssecBogus
+  const dnssecSecureRatio = dnssecTotal > 0 ? (dnssecSecure / dnssecTotal) * 100 : 0
+  const dnssecBogusRatio = dnssecTotal > 0 ? (dnssecBogus / dnssecTotal) * 100 : 0
+  const responseSlices = useMemo(() => {
+    const src = statsView?.responses_by_rcode || {}
+    const preferred = ['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED']
+    const pairs = preferred
+      .map((key) => ({ name: key, value: src[key] || 0 }))
+      .filter((item) => item.value > 0)
+    if (pairs.length > 0) return pairs
+    return [{ name: 'NOERROR', value: 1 }]
+  }, [statsView])
 
-  const memTotal = profile?.memory?.system_total_bytes || 0
-  const memUsed = profile?.memory?.process_alloc_bytes || 0
-  const memPct = memTotal > 0 ? (memUsed / memTotal) * 100 : 0
-  const memValue = memTotal > 0
-    ? `${formatBytes(memUsed)} (process)`
-    : `${formatBytes(memUsed)} (process)`
-  const diskPct = profile?.disk?.used_pct || 0
-  const cpuHostSharePct = profile?.runtime.cpu_cores ? cpuUsagePct / Math.max(1, profile.runtime.cpu_cores) : 0
-  const windowQueries = chartData.reduce((sum, row) => sum + row.queries, 0)
-  const windowErrors = chartData.reduce((sum, row) => sum + row.errors, 0)
-  const windowHits = chartData.reduce((sum, row) => sum + row.cacheHits, 0)
-  const weightedLatency = chartData.reduce((sum, row) => sum + row.avgLatencyMs * row.queries, 0)
-  const windowErrorRate = windowQueries > 0 ? (windowErrors / windowQueries) * 100 : 0
-  const windowHitRate = windowQueries > 0 ? (windowHits / windowQueries) * 100 : 0
-  const windowAvgLatency = windowQueries > 0 ? (weightedLatency / windowQueries) : 0
-  const listenIPs = profile?.network.dns_listen_addresses?.length
-    ? profile.network.dns_listen_addresses
-    : (profile?.network.ip_addresses || [])
-  const upInterfaces = (profile?.network.interfaces || []).filter((iface) => iface.flags?.includes('up')).length
-  const securityTotalDNSSEC = (statsView?.dnssec_secure || 0) + (statsView?.dnssec_insecure || 0) + (statsView?.dnssec_bogus || 0)
-  const dnssecSecureRatio = securityTotalDNSSEC > 0 ? ((statsView?.dnssec_secure || 0) / securityTotalDNSSEC) * 100 : 0
-  const dnssecBogusRatio = securityTotalDNSSEC > 0 ? ((statsView?.dnssec_bogus || 0) / securityTotalDNSSEC) * 100 : 0
-  const securityNeedsAttention = Boolean((statsView?.upstream_errors || 0) > 0 || (statsView?.rate_limited || 0) > 0 || (statsView?.dnssec_bogus || 0) > 0)
   const filteredClients = useMemo(() => {
     const key = clientFilter.trim().toLowerCase()
     const filtered = topClients.filter((entry) => !key || entry.key.toLowerCase().includes(key))
     return [...filtered].sort((a, b) => (clientSortDesc ? b.count - a.count : a.count - b.count))
   }, [topClients, clientFilter, clientSortDesc])
+
   const filteredDomains = useMemo(() => {
     const key = domainFilter.trim().toLowerCase()
     const filtered = topDomains.filter((entry) => !key || entry.key.toLowerCase().includes(key))
     return [...filtered].sort((a, b) => (domainSortDesc ? b.count - a.count : a.count - b.count))
   }, [topDomains, domainFilter, domainSortDesc])
-
-  useEffect(() => {
-    let cancelled = false
-    void api.dashboardLayout()
-      .then((res) => {
-        if (cancelled) return
-        setSectionOrder(normalizeSectionOrder(res.panel_order))
-        const hidden = normalizeSectionOrder(res.hidden_panels || []).filter((id) => (res.hidden_panels || []).includes(id))
-        setHiddenSections(hidden)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSectionOrder(DEFAULT_SECTION_ORDER)
-          setHiddenSections([])
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          layoutHydratedRef.current = true
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!layoutHydratedRef.current) return
-    const timer = window.setTimeout(() => {
-      void api.saveDashboardLayout({
-        panel_order: sectionOrder,
-        hidden_panels: hiddenSections,
-      }).then(() => {
-        setLayoutStatus('Layout saved to YAML')
-        window.setTimeout(() => setLayoutStatus(''), 1800)
-      }).catch(() => {
-        setLayoutStatus('Layout save failed')
-        window.setTimeout(() => setLayoutStatus(''), 2200)
-      })
-    }, 350)
-    return () => window.clearTimeout(timer)
-  }, [sectionOrder, hiddenSections])
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(CHART_SERIES_STORAGE_KEY)
-      if (!raw) return
-      const parsed = JSON.parse(raw) as unknown
-      setChartSeriesVisibility(normalizeChartSeriesVisibility(parsed))
-    } catch {
-      // keep defaults
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(CHART_SERIES_STORAGE_KEY, JSON.stringify(chartSeriesVisibility))
-    } catch {
-      // ignore storage failures
-    }
-  }, [chartSeriesVisibility])
-
-  const moveSection = useCallback((source: DashboardSectionID, target: DashboardSectionID) => {
-    setSectionOrder((prev) => {
-      if (source === target) return prev
-      const next = [...prev]
-      const from = next.indexOf(source)
-      const to = next.indexOf(target)
-      if (from < 0 || to < 0) return prev
-      next.splice(from, 1)
-      next.splice(to, 0, source)
-      return next
-    })
-  }, [])
-
-  const hideSection = useCallback((id: DashboardSectionID) => {
-    setHiddenSections((prev) => (prev.includes(id) ? prev : [...prev, id]))
-  }, [])
-
-  const showSection = useCallback((id: DashboardSectionID) => {
-    setHiddenSections((prev) => prev.filter((v) => v !== id))
-  }, [])
 
   const toggleChartSeries = useCallback((key: ChartSeriesKey) => {
     setChartSeriesVisibility((prev) => {
@@ -610,115 +521,399 @@ export default function DashboardPage() {
     })
   }, [])
 
-  const visibleSections = sectionOrder.filter((id) => !hiddenSections.includes(id))
+  const primaryListenIP = profile?.network?.dns_listen_addresses?.[0] || profile?.network?.ip_addresses?.[0] || 'N/A'
+  const upInterfaces = (profile?.network?.interfaces || []).filter((i) => i.flags?.includes('up')).length
+  const loadAvgText = profile?.runtime?.os === 'windows'
+    ? 'N/A on Windows'
+    : `${(profile?.cpu?.load_avg_1m || 0).toFixed(2)} / ${(profile?.cpu?.load_avg_5m || 0).toFixed(2)} / ${(profile?.cpu?.load_avg_15m || 0).toFixed(2)}`
+  const processMemText = formatBytes(profile?.memory?.process_alloc_bytes || 0)
+  const freeMemText = formatBytes(profile?.memory?.system_free_bytes || 0)
+  const diskUsedText = `${(profile?.disk?.used_pct || 0).toFixed(1)}%`
+  const diskFreeText = formatBytes(profile?.disk?.free_bytes || 0)
+  const rxTotalText = formatBytes(profile?.network?.io?.rx_bytes_total || 0)
+  const txTotalText = formatBytes(profile?.network?.io?.tx_bytes_total || 0)
+  const cpuLoadPct = profile?.runtime?.os === 'windows'
+    ? 0
+    : Math.max(0, Math.min(100, ((profile?.cpu?.load_avg_1m || 0) / Math.max(1, profile?.runtime?.cpu_cores || 1)) * 100))
+  const memUsedPct = (() => {
+    const total = profile?.memory?.system_total_bytes || 0
+    const free = profile?.memory?.system_free_bytes || 0
+    if (total <= 0) return 0
+    return Math.max(0, Math.min(100, ((total - free) / total) * 100))
+  })()
+  const diskUsedPct = Math.max(0, Math.min(100, profile?.disk?.used_pct || 0))
+  const networkRxPct = (() => {
+    const rx = profile?.network?.io?.rx_bytes_total || 0
+    const tx = profile?.network?.io?.tx_bytes_total || 0
+    const total = rx + tx
+    if (total <= 0) return 0
+    return (rx / total) * 100
+  })()
 
-  const renderSection = useCallback((id: DashboardSectionID) => {
-    if (id === 'query_types') {
-      return (
-        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">
-            Query Type Counters
-          </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-            {queryTypeCounts.map((item) => (
-              <div
-                key={item.type}
-                className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 bg-slate-50 dark:bg-slate-800/70"
-              >
-                <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
-                  {item.type}
-                </div>
-                <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100 font-mono">
-                  {formatNumber(item.count)}
-                </div>
-              </div>
-            ))}
-          </div>
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Dashboard</h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Live resolver and system telemetry</p>
         </div>
-      )
-    }
+        {versionState.updateAvailable ? (
+          <a
+            href={versionState.releaseUrl || '/about'}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs hover:bg-amber-500/20"
+          >
+            <span>Version {formatVersion(versionState.current)}</span>
+            <span className="opacity-60">|</span>
+            <AlertTriangle size={12} />
+            <span>Update required</span>
+          </a>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs">
+            <span>Version {formatVersion(versionState.current)}</span>
+            <span className="opacity-60">|</span>
+            <CheckCircle2 size={12} />
+            <span>Up to date</span>
+          </span>
+        )}
+      </div>
 
-    if (id === 'network_security') {
-      return (
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          <div className="xl:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2">
+        <button
+          onClick={() => void fetchData()}
+          className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
+        >
+          <RefreshCw size={12} /> Refresh
+        </button>
+        <div className="inline-flex items-center gap-1 rounded-md px-2 h-8 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300">
+          <span>Auto</span>
+          <select
+            value={refreshMs}
+            onChange={(e) => setRefreshMs(Number(e.target.value))}
+            className="bg-transparent outline-none"
+          >
+            {REFRESH_INTERVALS.map((item) => (
+              <option key={item.value} value={item.value} className="text-slate-900">
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button
+          onClick={() => setAutoRefresh((v) => !v)}
+          className={`inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs font-semibold border ${
+            autoRefresh
+              ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+          }`}
+        >
+          {autoRefresh ? 'Pause Auto' : 'Resume Auto'}
+        </button>
+        <span className="px-2.5 h-8 inline-flex items-center rounded-md text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+          Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
+        </span>
+        <span className={`px-2.5 h-8 inline-flex items-center rounded-md text-xs border ${streamConnected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
+          WS: {streamConnected ? 'Live' : 'Offline'}
+        </span>
+      </div>
+
+      {error && (
+        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 text-sm rounded-lg px-4 py-3">
+          {error}
+        </div>
+      )}
+
+      <div className="sticky top-2 z-20 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-white/90 dark:bg-slate-900/90 backdrop-blur p-2.5 shadow-sm">
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5">
+          <SummaryCard
+            icon={Shield}
+            label="Status"
+            value={isCritical ? 'ALARM' : 'NORMAL'}
+            sub={isCritical ? 'Open Operations for active alert details' : 'No immediate operational alerts'}
+            tone={isCritical ? 'danger' : 'good'}
+            href={isCritical ? '/operations' : undefined}
+          />
+          <SummaryCard icon={Activity} label="Queries/sec" value={qpsLive.toFixed(2)} sub="Live 10s window" tone="info" />
+          <SummaryCard icon={AlertTriangle} label="Error Rate" value={`${windowErrorRate.toFixed(2)}%`} sub={`${formatNumber(windowErrors)} errors`} tone={windowErrorRate >= 2 ? 'danger' : 'default'} />
+          <SummaryCard icon={Zap} label="Cache Hit Ratio" value={`${((statsView?.cache_hit_ratio || 0) * 100).toFixed(1)}%`} sub={`${formatNumber(statsView?.cache_hits || 0)} hits / ${formatNumber(statsView?.cache_misses || 0)} misses`} tone="good" />
+          <SummaryCard icon={Ban} label="Blocked" value={formatNumber(statsView?.blocked_queries || 0)} sub="Blocked queries total" tone={(statsView?.blocked_queries || 0) > 0 ? 'warn' : 'default'} />
+          <SummaryCard icon={Globe} label="Upstream Errors" value={formatNumber(statsView?.upstream_errors || 0)} sub="Resolver upstream failures" tone={(statsView?.upstream_errors || 0) > 0 ? 'danger' : 'default'} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+        <div className="lg:col-span-2 space-y-4">
+          <div className="relative overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+            <div className="pointer-events-none absolute -top-24 -left-24 h-64 w-64 rounded-full bg-cyan-500/10 blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-28 right-0 h-64 w-64 rounded-full bg-amber-500/10 blur-3xl" />
+
+            <div className="relative flex flex-wrap items-start justify-between gap-3 mb-4">
               <div>
-                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Network Interfaces</h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{upInterfaces} up / {profile?.network.interfaces?.length || 0} total interfaces</p>
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">Traffic Stability & QPS Over Time</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Primary DNS signal: query volume, trend, QPS and failures in one frame</p>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {listenIPs.slice(0, 4).map((ip) => (
-                  <span key={ip} className="px-2 py-0.5 rounded-full text-[10px] bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">{ip}</span>
+              <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
+                {TIME_WINDOWS.map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => setTimeWindow(w)}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
+                      timeWindow === w
+                        ? 'bg-amber-500 text-slate-950'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {w}
+                  </button>
                 ))}
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                    <th className="text-left pb-2">Name</th>
-                    <th className="text-center pb-2">State</th>
-                    <th className="text-right pb-2">MTU</th>
-                    <th className="text-right pb-2">Addrs</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                  {(profile?.network.interfaces || []).slice(0, 8).map((iface) => {
-                    const up = Boolean(iface.flags?.includes('up'))
-                    return (
-                      <tr key={iface.name}>
-                        <td className="py-2 text-slate-900 dark:text-slate-200">{iface.name}</td>
-                        <td className="py-2 text-center">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${up ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700'}`}>
-                            {up ? 'UP' : 'DOWN'}
-                          </span>
-                        </td>
-                        <td className="py-2 text-right text-slate-700 dark:text-slate-300">{formatNumber(iface.mtu)}</td>
-                        <td className="py-2 text-right text-slate-700 dark:text-slate-300">{formatNumber(iface.addrs?.length || 0)}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+            <div className="relative flex flex-wrap items-center gap-1.5 mb-3">
+              {CHART_SERIES_KEYS.map((key) => {
+                const visible = chartSeriesVisibility[key]
+                return (
+                  <button
+                    key={key}
+                    onClick={() => toggleChartSeries(key)}
+                    className={`px-2 py-1 rounded-md text-[11px] border ${
+                      visible
+                        ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-600'
+                    }`}
+                  >
+                    {visible ? 'Hide' : 'Show'} {CHART_SERIES_LABELS[key]}
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="relative h-80">
+              {chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={chartData} margin={{ top: 10, right: 12, left: 4, bottom: 6 }}>
+                    <defs>
+                      <linearGradient id="queriesAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.45} />
+                        <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.06} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.18} />
+                    <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} minTickGap={20} />
+                    <YAxis yAxisId="q" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} width={40} />
+                    {chartSeriesVisibility.qps && (
+                      <YAxis yAxisId="qps" orientation="right" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} width={42} />
+                    )}
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#0f172a',
+                        border: '1px solid #1e293b',
+                        borderRadius: '10px',
+                        color: '#e2e8f0',
+                        fontSize: '12px',
+                      }}
+                    />
+                    {chartSeriesVisibility.queries && (
+                      <Area yAxisId="q" type="monotone" dataKey="queries" fill="url(#queriesAreaGrad)" stroke="#22d3ee" strokeWidth={1.8} name="Queries" />
+                    )}
+                    {chartSeriesVisibility.moving_avg && (
+                      <Line yAxisId="q" type="linear" dataKey="queriesTrend" stroke="#f59e0b" strokeWidth={2.3} dot={false} name="Moving Avg" />
+                    )}
+                    {chartSeriesVisibility.ema && (
+                      <Line yAxisId="q" type="linear" dataKey="queriesEMA" stroke="#60a5fa" strokeWidth={2} dot={false} strokeDasharray="4 4" name="EMA" />
+                    )}
+                    {chartSeriesVisibility.errors && (
+                      <Line yAxisId="q" type="linear" dataKey="errors" stroke="#ef4444" strokeWidth={1.8} dot={false} name="Errors" />
+                    )}
+                    {chartSeriesVisibility.qps && (
+                      <Line yAxisId="qps" type="linear" dataKey="qps" stroke="#14b8a6" strokeWidth={2} dot={false} name="QPS" />
+                    )}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">No data yet</div>
+              )}
+              {!hasChartActivity && (
+                <div className="absolute bottom-2 left-2 rounded-md border border-slate-300/60 dark:border-slate-600/60 bg-slate-50/90 dark:bg-slate-800/80 px-2.5 py-1 text-[11px] text-slate-600 dark:text-slate-300">
+                  Waiting for live traffic...
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4 inline-flex items-center gap-2">
-              <Shield size={15} className="text-amber-400" /> Security Snapshot
-            </h2>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Status</span><span className={`font-semibold ${securityNeedsAttention ? 'text-amber-300' : 'text-emerald-300'}`}>{securityNeedsAttention ? 'Needs Attention' : 'Healthy'}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Blocked Queries</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.blocked_queries || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Rate Limited</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.rate_limited || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Upstream Errors</span><span className="font-semibold text-rose-300">{formatNumber(statsView?.upstream_errors || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Secure</span><span className="font-semibold text-emerald-300">{formatNumber(statsView?.dnssec_secure || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Insecure</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.dnssec_insecure || 0)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">DNSSEC Bogus</span><span className="font-semibold text-rose-300">{formatNumber(statsView?.dnssec_bogus || 0)}</span></div>
-              <div className="pt-2">
-                <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Secure Ratio</span><span>{dnssecSecureRatio.toFixed(1)}%</span></div>
-                <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
-              </div>
-              <div>
-                <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1"><span>DNSSEC Bogus Ratio</span><span>{dnssecBogusRatio.toFixed(1)}%</span></div>
-                <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-rose-500" style={{ width: `${Math.max(0, Math.min(100, dnssecBogusRatio))}%` }} /></div>
-              </div>
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Queries</div>
+              <div className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Uptime</div>
+              <div className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">{uptimeText}</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">NOERROR Ratio</div>
+              <div className="mt-1 text-xl font-bold text-emerald-400">{noErrorRatio.toFixed(1)}%</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Window Latency</div>
+              <div className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">{windowAvgLatency.toFixed(1)} ms</div>
             </div>
           </div>
         </div>
-      )
-    }
 
-    return (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">Resolver Snapshot</h2>
+            <div className="space-y-2.5 text-sm">
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Live Queries (10s)</span><span className="font-semibold text-cyan-300">{formatNumber(liveWindowStats.queries10s)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Live Errors (10s)</span><span className="font-semibold text-rose-300">{formatNumber(liveWindowStats.errors10s)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Peak QPS (1m)</span><span className="font-semibold text-slate-900 dark:text-slate-100">{(profile?.traffic.last_minute_qps_peak || 0).toFixed(2)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Window Queries ({timeWindow})</span><span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(windowQueries)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Errors (1m)</span><span className="font-semibold text-rose-300">{formatNumber(profile?.traffic.last_minute_error_total || 0)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">NXDOMAIN + SERVFAIL</span><span className="font-semibold text-rose-300">{formatNumber(nxdomainCount + servfailCount)}</span></div>
+            </div>
+            <div className="mt-4 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Latest Reason</div>
+              <div className="mt-1 text-xs font-semibold text-slate-900 dark:text-slate-100 break-words">{isCritical ? statusReasons[0] : 'All clear'}</div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-3">System Glance</h2>
+            <div className="space-y-3">
+              <MeterRow
+                icon={Cpu}
+                label="CPU"
+                value={profile?.runtime?.os === 'windows' ? `load ${loadAvgText}` : `${cpuLoadPct.toFixed(1)}%`}
+                percent={cpuLoadPct}
+                barClass="bg-gradient-to-r from-sky-500 via-blue-500 to-indigo-500 shadow-[0_0_12px_rgba(59,130,246,0.35)]"
+              />
+              <MeterRow
+                icon={MemoryStick}
+                label="RAM"
+                value={`proc ${processMemText} | free ${freeMemText}`}
+                percent={memUsedPct}
+                barClass="bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 shadow-[0_0_12px_rgba(16,185,129,0.35)]"
+              />
+              <MeterRow
+                icon={HardDrive}
+                label="Disk"
+                value={`used ${diskUsedText} | free ${diskFreeText}`}
+                percent={diskUsedPct}
+                barClass="bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 shadow-[0_0_12px_rgba(245,158,11,0.35)]"
+              />
+              <MeterRow
+                icon={Network}
+                label="Network"
+                value={`up ${upInterfaces} | RX ${rxTotalText} / TX ${txTotalText}`}
+                percent={networkRxPct}
+                barClass="bg-gradient-to-r from-cyan-500 via-violet-500 to-fuchsia-500 shadow-[0_0_12px_rgba(34,211,238,0.35)]"
+              />
+              <div className="text-[11px] text-slate-500 dark:text-slate-400">Listen IP: <span className="font-semibold text-slate-900 dark:text-slate-100">{primaryListenIP}</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">DNS Resolver Matrix</h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">DNS Queries</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(profile?.traffic.dns_queries_total || 0)}</div></div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Upstream Queries</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.upstream_queries || 0)}</div></div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Upstream / DNS</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{upstreamDnsRatio.toFixed(1)}%</div></div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Duration Samples</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.query_duration_count || 0)}</div></div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Entries</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.cache_entries || 0)}</div></div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Evictions</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.cache_evictions || 0)}</div></div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Pos / Neg</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.cache_positive || 0)} / {formatNumber(statsView?.cache_negative || 0)}</div></div>
+          <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Rate Limited</div><div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(statsView?.rate_limited || 0)}</div></div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">Security Snapshot</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">DNSSEC Secure</div>
+              <div className="mt-1 text-lg font-bold text-emerald-400">{formatNumber(dnssecSecure)}</div>
+            </div>
+            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">DNSSEC Insecure / Bogus</div>
+              <div className="mt-1 text-lg font-bold text-amber-300">{formatNumber(dnssecInsecure)} / <span className="text-rose-300">{formatNumber(dnssecBogus)}</span></div>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div>
+              <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1"><span>Secure Ratio</span><span className="font-semibold text-emerald-300">{dnssecSecureRatio.toFixed(1)}%</span></div>
+              <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, dnssecSecureRatio))}%` }} /></div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1"><span>Bogus Ratio</span><span className="font-semibold text-rose-300">{dnssecBogusRatio.toFixed(1)}%</span></div>
+              <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full rounded-full bg-rose-500" style={{ width: `${Math.max(0, Math.min(100, dnssecBogusRatio))}%` }} /></div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">Response Codes</h2>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={responseSlices} dataKey="value" nameKey="name" innerRadius={56} outerRadius={82} paddingAngle={2}>
+                  {responseSlices.map((entry) => {
+                    const color = entry.name === 'NOERROR'
+                      ? '#22c55e'
+                      : entry.name === 'NXDOMAIN'
+                        ? '#f59e0b'
+                        : entry.name === 'SERVFAIL'
+                          ? '#ef4444'
+                          : '#60a5fa'
+                    return <Cell key={entry.name} fill={color} />
+                  })}
+                </Pie>
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#0f172a',
+                    border: '1px solid #1e293b',
+                    borderRadius: '10px',
+                    color: '#e2e8f0',
+                    fontSize: '12px',
+                  }}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+            {responseSlices.map((entry) => (
+              <div key={entry.name} className="rounded border border-slate-200 dark:border-slate-700 px-2 py-1.5 text-slate-600 dark:text-slate-300">
+                <span className="font-semibold">{entry.name}</span>: {formatNumber(entry.value)}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">Query Type Counters</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+          {queryTypeCounts.map((item) => (
+            <div key={item.type} className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 bg-slate-50 dark:bg-slate-800/70">
+              <div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">{item.type}</div>
+              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100 font-mono">{formatNumber(item.count)}</div>
+              <div className="mt-1 h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500"
+                  style={{ width: `${Math.max(4, Math.min(100, (item.count / maxQueryTypeCount) * 100))}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 flex items-center gap-2">
-              <Users size={16} className="text-amber-400" />
-              Top Clients
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">{filteredClients.length}/{topClients.length}</span>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">
+              Top Clients <span className="text-xs text-slate-500 dark:text-slate-400">({filteredClients.length}/{topClients.length})</span>
             </h2>
             <div className="flex items-center gap-2">
               <input
@@ -752,18 +947,14 @@ export default function DashboardPage() {
               </tbody>
             </table>
           ) : (
-            <div className="flex items-center justify-center h-20 text-sm text-slate-500">
-              No matching clients
-            </div>
+            <div className="flex items-center justify-center h-20 text-sm text-slate-500">No matching clients</div>
           )}
         </div>
 
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 flex items-center gap-2">
-              <Globe size={16} className="text-amber-400" />
-              Top Domains
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">{filteredDomains.length}/{topDomains.length}</span>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">
+              Top Domains <span className="text-xs text-slate-500 dark:text-slate-400">({filteredDomains.length}/{topDomains.length})</span>
             </h2>
             <div className="flex items-center gap-2">
               <input
@@ -797,667 +988,10 @@ export default function DashboardPage() {
               </tbody>
             </table>
           ) : (
-            <div className="flex items-center justify-center h-20 text-sm text-slate-500">
-              No matching domains
-            </div>
+            <div className="flex items-center justify-center h-20 text-sm text-slate-500">No matching domains</div>
           )}
         </div>
       </div>
-    )
-  }, [
-    queryTypeCounts,
-    upInterfaces,
-    profile,
-    listenIPs,
-    securityNeedsAttention,
-    statsView,
-    dnssecSecureRatio,
-    dnssecBogusRatio,
-    filteredClients,
-    topClients.length,
-    clientFilter,
-    clientSortDesc,
-    filteredDomains,
-    topDomains.length,
-    domainFilter,
-    domainSortDesc,
-  ])
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Dashboard</h1>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Live resolver and system telemetry</p>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => void fetchData()}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
-          >
-            <RefreshCw size={12} /> Refresh
-          </button>
-
-          <div className="inline-flex items-center gap-1 rounded-md px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300">
-            <span>Auto</span>
-            <select
-              value={refreshMs}
-              onChange={(e) => setRefreshMs(Number(e.target.value))}
-              className="bg-transparent outline-none"
-            >
-              {REFRESH_INTERVALS.map((item) => (
-                <option key={item.value} value={item.value} className="text-slate-900">{item.label}</option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            onClick={() => setAutoRefresh((v) => !v)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
-          >
-            {autoRefresh ? <Pause size={12} /> : <Play size={12} />}
-            {autoRefresh ? 'Pause Auto' : 'Resume Auto'}
-          </button>
-
-          <button
-            onClick={() => setLayoutPanelOpen((v) => !v)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
-          >
-            <LayoutGrid size={12} />
-            {layoutPanelOpen ? 'Close Layout' : 'Customize Layout'}
-          </button>
-
-          <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
-            Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
-          </span>
-          {layoutStatus && (
-            <span className="px-2.5 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
-              {layoutStatus}
-            </span>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={`px-2.5 py-1 rounded-md text-xs border ${statsView?.resolver_ready ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/30'}`}>
-            {statsView?.resolver_ready ? 'Resolver Ready' : 'Resolver Not Ready'}
-          </span>
-          <span className={`px-2.5 py-1 rounded-md text-xs border ${streamConnected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
-            WS: {streamConnected ? 'Live' : 'Offline'}
-          </span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
-            Live QPS 10s: {liveWindowStats.qps10s.toFixed(2)}
-          </span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">Avg QPS 1m: {(profile?.traffic.last_minute_qps_avg || 0).toFixed(2)}</span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">Errors 1m: {formatNumber(profile?.traffic.last_minute_error_total || 0)}</span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">Cache Hit: {((statsView?.cache_hit_ratio || 0) * 100).toFixed(1)}%</span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30">Blocked: {formatNumber(statsView?.blocked_queries || 0)}</span>
-          <span className="px-2.5 py-1 rounded-md text-xs bg-rose-500/10 text-rose-300 border border-rose-500/30">Upstream Errors: {formatNumber(statsView?.upstream_errors || 0)}</span>
-        </div>
-
-        {layoutPanelOpen && (
-          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3">
-            <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">
-              Drag sections below to reorder. Hide low-priority sections and restore anytime.
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {sectionOrder.map((id) => {
-                const hidden = hiddenSections.includes(id)
-                return (
-                  <button
-                    key={id}
-                    onClick={() => (hidden ? showSection(id) : hideSection(id))}
-                    className={`px-2 py-1 rounded-md text-xs border ${
-                      hidden
-                        ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600'
-                        : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                    }`}
-                  >
-                    {hidden ? <Eye size={11} className="inline mr-1" /> : <EyeOff size={11} className="inline mr-1" />}
-                    {hidden ? `Show ${SECTION_LABELS[id]}` : `Hide ${SECTION_LABELS[id]}`}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {!layoutPanelOpen && hiddenSections.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {hiddenSections.map((id) => (
-              <button
-                key={id}
-                onClick={() => showSection(id)}
-                className="px-2 py-1 rounded-md text-xs border bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600"
-              >
-                Show {SECTION_LABELS[id]}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {error && (
-        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 text-sm rounded-lg px-4 py-3">
-          {error}
-        </div>
-      )}
-
-      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Live Query Pulse</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              WebSocket stream preview (last 10 queries). Full stream in Queries page.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setStreamPaused(!streamPaused)}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-900 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700"
-            >
-              {streamPaused ? <Play size={12} /> : <Pause size={12} />}
-              {streamPaused ? 'Resume Stream' : 'Pause Stream'}
-            </button>
-            <a
-              href="/queries"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-cyan-300 bg-cyan-500/10 border border-cyan-500/30 hover:bg-cyan-500/20"
-            >
-              Continue in Queries
-            </a>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
-            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Total Queries</p>
-            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</p>
-          </div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
-            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Live Queries (10s)</p>
-            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{formatNumber(liveWindowStats.queries10s)}</p>
-          </div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
-            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Avg QPS (1m)</p>
-            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{(profile?.traffic.last_minute_qps_avg || 0).toFixed(2)}</p>
-          </div>
-          <div className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 bg-slate-50 dark:bg-slate-800/70">
-            <p className="text-[11px] uppercase text-slate-500 dark:text-slate-400">Live Errors (10s)</p>
-            <p className="text-sm font-semibold text-rose-300">{formatNumber(liveWindowStats.errors10s)}</p>
-          </div>
-        </div>
-        <div className="overflow-x-auto rounded-md border border-slate-200 dark:border-slate-700">
-          <table className="w-full text-xs">
-            <thead className="bg-slate-100 dark:bg-slate-800">
-              <tr className="text-slate-500 dark:text-slate-400">
-                <th className="text-left px-2 py-2">Time</th>
-                <th className="text-left px-2 py-2">Client</th>
-                <th className="text-left px-2 py-2">Domain</th>
-                <th className="text-left px-2 py-2">Type</th>
-                <th className="text-left px-2 py-2">RCode</th>
-                <th className="text-right px-2 py-2">ms</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-              {recentQueries.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-3 py-4 text-center text-slate-500 dark:text-slate-400">
-                    No recent queries yet
-                  </td>
-                </tr>
-              ) : (
-                recentQueries.map((q) => (
-                  <tr key={q.id}>
-                    <td className="px-2 py-1.5 text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                      {q.ts ? new Date(q.ts).toLocaleTimeString() : '-'}
-                    </td>
-                    <td className="px-2 py-1.5 font-mono text-slate-600 dark:text-slate-300">{q.client}</td>
-                    <td className="px-2 py-1.5 text-slate-900 dark:text-slate-100 max-w-xs truncate" title={q.qname}>{q.qname}</td>
-                    <td className="px-2 py-1.5 font-mono text-slate-600 dark:text-slate-300">{q.qtype}</td>
-                    <td className="px-2 py-1.5 text-slate-600 dark:text-slate-300">{q.rcode}</td>
-                    <td className="px-2 py-1.5 text-right text-slate-600 dark:text-slate-300">{(q.duration_ms || 0).toFixed(1)}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">
-                Traffic Stability & QPS Over Time
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Raw queries + moving average + EMA + QPS line
-              </p>
-            </div>
-            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
-              {TIME_WINDOWS.map((w) => (
-                <button
-                  key={w}
-                  onClick={() => setTimeWindow(w)}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
-                    timeWindow === w
-                      ? 'bg-amber-500 text-slate-950'
-                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  {w}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5 mb-3">
-            {CHART_SERIES_KEYS.map((key) => {
-              const visible = chartSeriesVisibility[key]
-              return (
-                <button
-                  key={key}
-                  onClick={() => toggleChartSeries(key)}
-                  className={`px-2 py-1 rounded-md text-[11px] border ${
-                    visible
-                      ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-600'
-                  }`}
-                >
-                  {visible ? 'Hide' : 'Show'} {CHART_SERIES_LABELS[key]}
-                </button>
-              )
-            })}
-          </div>
-          <div className="h-72">
-            {chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData} margin={{ top: 10, right: 12, left: 4, bottom: 6 }}>
-                  <defs>
-                    <linearGradient id="queriesBarGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.45} />
-                      <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.06} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.18} />
-                  <XAxis
-                    dataKey="time"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: '#94a3b8' }}
-                    minTickGap={20}
-                  />
-                  <YAxis
-                    yAxisId="q"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: '#94a3b8' }}
-                    width={40}
-                  />
-                  {chartSeriesVisibility.qps && (
-                    <YAxis
-                      yAxisId="qps"
-                      orientation="right"
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fontSize: 11, fill: '#94a3b8' }}
-                      width={42}
-                    />
-                  )}
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#0f172a',
-                      border: '1px solid #1e293b',
-                      borderRadius: '10px',
-                      color: '#e2e8f0',
-                      fontSize: '12px',
-                    }}
-                  />
-                  {chartSeriesVisibility.queries && (
-                    <Area yAxisId="q" type="monotone" dataKey="queries" fill="url(#queriesBarGrad)" stroke="#22d3ee" strokeWidth={1.8} name="Queries" />
-                  )}
-                  {chartSeriesVisibility.moving_avg && (
-                    <Line yAxisId="q" type="linear" dataKey="queriesTrend" stroke="#f59e0b" strokeWidth={2.3} dot={false} name="Moving Avg" />
-                  )}
-                  {chartSeriesVisibility.ema && (
-                    <Line yAxisId="q" type="linear" dataKey="queriesEMA" stroke="#60a5fa" strokeWidth={2} dot={false} strokeDasharray="4 4" name="EMA" />
-                  )}
-                  {chartSeriesVisibility.errors && (
-                    <Line yAxisId="q" type="linear" dataKey="errors" stroke="#ef4444" strokeWidth={1.8} dot={false} name="Errors" />
-                  )}
-                  {chartSeriesVisibility.qps && (
-                    <Line yAxisId="qps" type="linear" dataKey="qps" stroke="#14b8a6" strokeWidth={2} dot={false} name="QPS" />
-                  )}
-                </ComposedChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
-                No data yet
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-4">
-            Response Codes
-          </h2>
-          <div className="h-64">
-            {rcodeData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={rcodeData}
-                    cx="50%"
-                    cy="45%"
-                    innerRadius={45}
-                    outerRadius={75}
-                    paddingAngle={2}
-                    dataKey="value"
-                  >
-                    {rcodeData.map((entry) => (
-                      <Cell
-                        key={entry.name}
-                        fill={RCODE_COLORS[entry.name] || '#64748b'}
-                      />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#0f172a',
-                      border: '1px solid #1e293b',
-                      borderRadius: '10px',
-                      color: '#e2e8f0',
-                      fontSize: '12px',
-                    }}
-                  />
-                  <Legend
-                    verticalAlign="bottom"
-                    iconType="circle"
-                    iconSize={8}
-                    formatter={(value: string) => (
-                      <span className="text-xs text-slate-500 dark:text-slate-400">
-                        {value}
-                      </span>
-                    )}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex items-center justify-center h-full text-sm text-slate-500 dark:text-slate-400">
-                No data yet
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Server profile card */}
-      {profile && (
-        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6 shadow-sm relative overflow-hidden">
-          <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-gradient-to-br from-amber-400/15 to-orange-500/10 blur-2xl" />
-          <div className="absolute -bottom-20 -left-10 w-52 h-52 rounded-full bg-gradient-to-br from-sky-400/15 to-emerald-500/10 blur-2xl" />
-
-          <div className="relative grid grid-cols-1 xl:grid-cols-3 gap-6">
-            <div className="xl:col-span-2 space-y-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-200 border border-slate-200 dark:border-slate-700">
-                  <Server size={13} />
-                  {profile.hostname || 'unknown-host'}
-                </span>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30">
-                  <Activity size={12} />
-                  {formatVersion(profile.runtime.version)}
-                </span>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                  {profile.runtime.os}/{profile.runtime.arch}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/70">
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Primary Listen IP</p>
-                  <p className="font-mono text-sm text-slate-900 dark:text-slate-100 mt-1 break-all">
-                    {listenIPs[0] || 'N/A'}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/70">
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Interfaces</p>
-                  <p className="text-sm text-slate-900 dark:text-slate-100 mt-1">
-                    {formatNumber(profile.network.interfaces?.length || 0)}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/70">
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Go Runtime</p>
-                  <p className="font-mono text-sm text-slate-900 dark:text-slate-100 mt-1 truncate" title={profile.runtime.go_version}>
-                    {profile.runtime.go_version}
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <UsageBar
-                  label="CPU (process, 1 core=100%)"
-                  value={`${cpuUsagePct.toFixed(1)}%`}
-                  percent={cpuUsagePct}
-                  colorClass="bg-gradient-to-r from-sky-500 to-indigo-500"
-                />
-                <UsageBar
-                  label="CPU (host share)"
-                  value={`${cpuHostSharePct.toFixed(1)}%`}
-                  percent={cpuHostSharePct}
-                  colorClass="bg-gradient-to-r from-slate-500 to-slate-300"
-                />
-                <UsageBar
-                  label="RAM (process)"
-                  value={memValue}
-                  percent={memPct}
-                  colorClass="bg-gradient-to-r from-emerald-500 to-teal-500"
-                />
-                <UsageBar
-                  label="Disk Usage"
-                  value={`${diskPct.toFixed(1)}%`}
-                  percent={diskPct}
-                  colorClass="bg-gradient-to-r from-amber-500 to-orange-500"
-                />
-              </div>
-
-              <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 bg-slate-50 dark:bg-slate-800/70">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Network Throughput (host)</h2>
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                    RX packets: {formatNumber(profile.network.io.rx_packets_total)} | TX packets: {formatNumber(profile.network.io.tx_packets_total)}
-                  </div>
-                </div>
-                <div className="h-36">
-                  {networkHistory.length > 1 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={networkHistory} margin={{ top: 8, right: 6, left: 0, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.16} />
-                        <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} minTickGap={24} />
-                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} width={30} />
-                        <Tooltip
-                          formatter={(value, name) => [`${formatBytes(Number(value) || 0)}/s`, String(name)]}
-                          contentStyle={{ backgroundColor: '#020617', border: '1px solid #1e293b', borderRadius: '8px' }}
-                        />
-                        <Line type="monotone" dataKey="rxBps" stroke="#22d3ee" strokeWidth={2} dot={false} name="RX" />
-                        <Line type="monotone" dataKey="txBps" stroke="#8b5cf6" strokeWidth={2} dot={false} name="TX" />
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-xs text-slate-500">Waiting for throughput samples...</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-                <StatCard
-                  icon={Globe}
-                  label="Total Queries"
-                  value={formatNumber(totalQueries)}
-                  iconColor="bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400"
-                />
-                <StatCard
-                  icon={Zap}
-                  label="Cache Hit Ratio"
-                  value={statsView ? `${((statsView.cache_hit_ratio || 0) * 100).toFixed(1)}%` : '0%'}
-                  sub={statsView ? `${formatNumber(statsView.cache_hits || 0)} hits / ${formatNumber(statsView.cache_misses || 0)} misses` : undefined}
-                  iconColor="bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400"
-                />
-                <StatCard
-                  icon={Database}
-                  label="Cache Entries"
-                  value={statsView ? formatNumber(statsView.cache_entries || 0) : '0'}
-                  sub={statsView ? `${formatNumber(statsView.cache_positive || 0)} positive / ${formatNumber(statsView.cache_negative || 0)} negative` : undefined}
-                  iconColor="bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
-                />
-                <StatCard
-                  icon={Clock}
-                  label="Uptime"
-                  value={statsView ? formatUptime(statsView.uptime_seconds) : '0m'}
-                  iconColor="bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 bg-slate-50 dark:bg-slate-800/70">
-                <h3 className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-3">
-                  Traffic Snapshot
-                </h3>
-                <div className="space-y-2.5 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><Network size={13} /> Avg QPS (1m)</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{profile.traffic.last_minute_qps_avg.toFixed(2)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><Zap size={13} /> Peak QPS (1m)</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{profile.traffic.last_minute_qps_peak.toFixed(2)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">DNS Queries</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.traffic.dns_queries_total)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">Upstream Queries</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.traffic.upstream_queries_total)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">Errors (1m)</span>
-                    <span className="font-semibold text-red-300">{formatNumber(profile.traffic.last_minute_error_total)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">Error Rate (window)</span>
-                    <span className="font-semibold text-red-300">{windowErrorRate.toFixed(2)}%</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">Hit Rate (window)</span>
-                    <span className="font-semibold text-emerald-300">{windowHitRate.toFixed(1)}%</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">Avg Latency (window)</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{windowAvgLatency.toFixed(1)} ms</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4 bg-slate-50 dark:bg-slate-800/70">
-                <h3 className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 mb-3">
-                  Runtime
-                </h3>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><Cpu size={13} /> CPU Cores</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{profile.runtime.cpu_cores}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">Load Avg (1/5/15)</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">
-                      {profile.runtime.os === 'windows'
-                        ? 'N/A on Windows'
-                        : `${profile.cpu.load_avg_1m.toFixed(2)} / ${profile.cpu.load_avg_5m.toFixed(2)} / ${profile.cpu.load_avg_15m.toFixed(2)}`}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><MemoryStick size={13} /> Goroutines</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.runtime.goroutines)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">GOMAXPROCS</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.runtime.go_maxprocs)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">Process Memory</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatBytes(memUsed)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5"><HardDrive size={13} /> Disk Free</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatBytes(profile.disk.free_bytes)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 dark:text-slate-400">GC Cycles</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(profile.memory.gc_cycles)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="space-y-4">
-        {visibleSections.map((id) => (
-          <section
-            key={id}
-            draggable={layoutPanelOpen}
-            onDragStart={() => layoutPanelOpen && setDraggingSection(id)}
-            onDragEnd={() => setDraggingSection(null)}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={() => {
-              if (draggingSection) moveSection(draggingSection, id)
-              setDraggingSection(null)
-            }}
-            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2"
-          >
-            <div className="flex items-center justify-between px-2 py-1.5">
-              <div className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
-                <GripVertical size={12} />
-                {SECTION_LABELS[id]}
-              </div>
-              <button
-                onClick={() => hideSection(id)}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
-              >
-                <EyeOff size={12} />
-                Hide
-              </button>
-            </div>
-            <div className="pt-1">
-              {renderSection(id)}
-            </div>
-          </section>
-        ))}
-      </div>
-
-      {statsView && statsView.rate_limited > 0 && (
-        <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-orange-100 dark:bg-orange-900/40 text-orange-600 dark:text-orange-400">
-              <AlertTriangle size={20} />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                Security
-              </h2>
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                <span className="font-mono font-bold text-orange-600 dark:text-orange-400">
-                  {formatNumber(statsView.rate_limited)}
-                </span>{' '}
-                queries rate limited
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

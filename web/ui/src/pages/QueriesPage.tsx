@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Pause, Play, Trash2, Wifi, WifiOff, Shield, Search, Download } from 'lucide-react'
 import { useQueryStream } from '@/hooks/useWebSocket'
-import { formatDuration } from '@/lib/utils'
+import { api } from '@/api/client'
+import { formatDuration, formatNumber } from '@/lib/utils'
 
 const RCODE_STYLES: Record<string, string> = {
   NOERROR: 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400',
@@ -30,11 +31,25 @@ function CachedBadge({ cached }: { cached: boolean }) {
 
 export default function QueriesPage() {
   const { queries, connected, paused, setPaused, clear } = useQueryStream(200)
+  const [totalQueries, setTotalQueries] = useState(0)
   const [search, setSearch] = useState('')
   const [onlyBlocked, setOnlyBlocked] = useState(false)
   const [onlyErrors, setOnlyErrors] = useState(false)
   const [autoScroll, setAutoScroll] = useState(false)
   const tableRef = useRef<HTMLDivElement | null>(null)
+
+  const liveWindowStats = useMemo(() => {
+    const cutoff = Date.now() - 10_000
+    let count = 0
+    let errors = 0
+    for (const q of queries) {
+      const ts = Date.parse(q.ts || '')
+      if (!Number.isFinite(ts) || ts < cutoff) continue
+      count++
+      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) errors++
+    }
+    return { queries10s: count, errors10s: errors }
+  }, [queries])
 
   const filteredQueries = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -59,6 +74,29 @@ export default function QueriesPage() {
     // Newest rows are rendered first, keep viewport at the top when enabled.
     el.scrollTop = 0
   }, [autoScroll, filteredQueries.length])
+
+  useEffect(() => {
+    let cancelled = false
+    async function fetchTotals() {
+      try {
+        const data = await api.stats()
+        if (cancelled) return
+        const byType = (data?.queries_by_type || {}) as Record<string, number>
+        const total = Object.values(byType).reduce((sum, v) => sum + (v || 0), 0)
+        setTotalQueries(total)
+      } catch {
+        // keep last value
+      }
+    }
+    void fetchTotals()
+    const interval = setInterval(() => {
+      void fetchTotals()
+    }, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [])
 
   function exportCSV() {
     if (filteredQueries.length === 0) return
@@ -177,6 +215,21 @@ export default function QueriesPage() {
           <div className="text-xs text-slate-400 ml-2">
             {filteredQueries.length}/{queries.length} entries
           </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
+          <p className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Queries</p>
+          <p className="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</p>
+        </div>
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
+          <p className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Live Queries (10s)</p>
+          <p className="mt-1 text-xl font-bold text-sky-600 dark:text-sky-400">{formatNumber(liveWindowStats.queries10s)}</p>
+        </div>
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
+          <p className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Live Errors (10s)</p>
+          <p className="mt-1 text-xl font-bold text-rose-600 dark:text-rose-400">{formatNumber(liveWindowStats.errors10s)}</p>
         </div>
       </div>
 
