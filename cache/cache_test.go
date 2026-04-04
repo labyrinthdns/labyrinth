@@ -107,6 +107,51 @@ func TestNegativeCache(t *testing.T) {
 	}
 }
 
+func TestStoreNegativeTracksEvictionQueue(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+
+	c.StoreNegative("queued-nx.example.com", dns.TypeA, dns.ClassIN, NegNXDomain, dns.RCodeNXDomain, nil)
+
+	name := "queued-nx.example.com"
+	idx := c.shardIndex(name)
+	s := &c.shards[idx]
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.evictQ.Len() == 0 {
+		t.Fatalf("expected negative entry to be tracked by eviction queue")
+	}
+}
+
+func TestGetExpiredNXDomainDeletesSentinelEntry(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCacheWithStale(1000, 1, 86400, 3600, false, 30, m)
+
+	c.StoreNegative("expired-nx.example.com", dns.TypeA, dns.ClassIN, NegNXDomain, dns.RCodeNXDomain, nil)
+
+	name := "expired-nx.example.com"
+	sentinel := cacheKey{name: name, qtype: 0, class: dns.ClassIN}
+	idx := c.shardIndex(name)
+	s := &c.shards[idx]
+	s.mu.Lock()
+	if entry, ok := s.entries[sentinel]; ok {
+		entry.InsertedAt = time.Now().Add(-2 * time.Hour)
+		entry.OrigTTL = 1
+	}
+	s.mu.Unlock()
+
+	if _, ok := c.Get(name, dns.TypeAAAA, dns.ClassIN); ok {
+		t.Fatalf("expected miss for expired NXDOMAIN entry")
+	}
+
+	s.mu.RLock()
+	_, stillPresent := s.entries[sentinel]
+	s.mu.RUnlock()
+	if stillPresent {
+		t.Fatalf("expected expired NXDOMAIN sentinel to be deleted")
+	}
+}
+
 func TestCacheFlush(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := NewCache(1000, 5, 86400, 3600, m)

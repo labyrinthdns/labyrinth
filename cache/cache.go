@@ -91,6 +91,7 @@ func fnv32a(s string) uint32 {
 func (c *Cache) Get(name string, qtype uint16, class uint16) (*Entry, bool) {
 	name = strings.ToLower(name)
 	key := cacheKey{name: name, qtype: qtype, class: class}
+	lookupKey := key
 	idx := c.shardIndex(name)
 
 	s := &c.shards[idx]
@@ -105,6 +106,9 @@ func (c *Cache) Get(name string, qtype uint16, class uint16) (*Entry, bool) {
 			s.mu.RLock()
 			entry, ok = s.entries[nxKey]
 			s.mu.RUnlock()
+			if ok {
+				lookupKey = nxKey
+			}
 		}
 		if !ok {
 			// RFC 8020 harden-below-nxdomain: walk up parent labels
@@ -123,7 +127,7 @@ func (c *Cache) Get(name string, qtype uint16, class uint16) (*Entry, bool) {
 		// they may still be served via GetStale on upstream failure.
 		if !c.serveStale {
 			s.mu.Lock()
-			delete(s.entries, key)
+			delete(s.entries, lookupKey)
 			s.mu.Unlock()
 			if c.metrics != nil {
 				c.metrics.IncCacheEvictions("expired")
@@ -286,6 +290,7 @@ func (c *Cache) StoreNegative(name string, qtype uint16, class uint16, negType N
 	s := &c.shards[idx]
 	s.mu.Lock()
 	s.entries[key] = entry
+	s.pushEvictionEntry(key, entry)
 	c.enforceMaxEntriesLocked(s)
 	s.mu.Unlock()
 }
@@ -349,10 +354,7 @@ func (c *Cache) enforceMaxEntriesLocked(s *shard) {
 		return
 	}
 	for len(s.entries) > c.maxEntries/shardCount+1 {
-		evictKey, found := s.nextEvictionKeyLocked()
-		if !found {
-			break // unreachable: loop only entered when entries exist
-		}
+		evictKey, _ := s.nextEvictionKeyLocked()
 		delete(s.entries, evictKey)
 		if c.metrics != nil {
 			c.metrics.IncCacheEvictions("capacity")

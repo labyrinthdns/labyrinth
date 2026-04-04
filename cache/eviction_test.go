@@ -115,6 +115,25 @@ func TestSweepNoEvictions(t *testing.T) {
 	}
 }
 
+func TestSweepFallbackWhenQueueMissing(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 1, 86400, 3600, m)
+
+	name := "fallback-sweep.example.com"
+	key := cacheKey{name: name, qtype: dns.TypeA, class: dns.ClassIN}
+	idx := c.shardIndex(name)
+	s := &c.shards[idx]
+	s.mu.Lock()
+	s.entries[key] = &Entry{InsertedAt: time.Now().Add(-2 * time.Hour), OrigTTL: 1}
+	s.evictQ = s.evictQ[:0]
+	s.mu.Unlock()
+
+	c.sweep()
+	if got := c.Stats().Entries; got != 0 {
+		t.Fatalf("expected fallback sweep to evict expired entry, got %d entries", got)
+	}
+}
+
 func TestFlush(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := NewCache(1000, 5, 86400, 3600, m)
