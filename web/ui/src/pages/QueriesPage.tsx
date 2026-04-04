@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Pause, Play, Trash2, Wifi, WifiOff, Shield, Search, Download } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Pause, Play, Trash2, Wifi, WifiOff, Shield, Search, Download, Copy, Check, Database, Loader2 } from 'lucide-react'
 import { useQueryStream } from '@/hooks/useWebSocket'
 import { api } from '@/api/client'
-import { formatDuration, formatNumber } from '@/lib/utils'
+import { copyTextToClipboard, formatDuration, formatNumber } from '@/lib/utils'
 
 const RCODE_STYLES: Record<string, string> = {
   NOERROR: 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400',
@@ -26,6 +26,103 @@ function CachedBadge({ cached }: { cached: boolean }) {
     <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400">
       Cached
     </span>
+  )
+}
+
+type CacheResult = {
+  status: 'idle' | 'loading' | 'found' | 'miss' | 'error'
+  records?: { type: string; rdata: string; ttl: number }[]
+}
+
+function DomainCell({ domain, qtype, paused }: { domain: string; qtype: string; paused: boolean }) {
+  const [showPopover, setShowPopover] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [cache, setCache] = useState<CacheResult>({ status: 'idle' })
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+
+  const handleCopy = useCallback(async () => {
+    const ok = await copyTextToClipboard(domain)
+    if (ok) {
+      setCopied(true)
+      clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setCopied(false), 1200)
+    }
+  }, [domain])
+
+  const handleCacheLookup = useCallback(async () => {
+    setCache({ status: 'loading' })
+    try {
+      const res = await api.cacheLookup(domain, qtype) as { records?: { type: string; rdata: string; ttl: number }[] }
+      if (res?.records && res.records.length > 0) {
+        setCache({ status: 'found', records: res.records })
+      } else {
+        setCache({ status: 'miss' })
+      }
+    } catch {
+      setCache({ status: 'miss' })
+    }
+  }, [domain, qtype])
+
+  useEffect(() => {
+    return () => clearTimeout(timerRef.current)
+  }, [])
+
+  if (!paused) {
+    return <span className="truncate block max-w-xs">{domain}</span>
+  }
+
+  return (
+    <div
+      className="relative group"
+      onMouseEnter={() => { setShowPopover(true); setCache({ status: 'idle' }) }}
+      onMouseLeave={() => { setShowPopover(false); setCopied(false) }}
+    >
+      <span className="truncate block max-w-xs cursor-default">{domain}</span>
+      {showPopover && (
+        <div
+          ref={popoverRef}
+          className="absolute left-0 top-full mt-1 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 min-w-[180px]"
+          onMouseEnter={() => setShowPopover(true)}
+          onMouseLeave={() => setShowPopover(false)}
+        >
+          <div className="flex items-center gap-1 mb-1">
+            <button
+              onClick={handleCopy}
+              className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+            >
+              {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+            <button
+              onClick={handleCacheLookup}
+              disabled={cache.status === 'loading'}
+              className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
+            >
+              {cache.status === 'loading' ? <Loader2 size={12} className="animate-spin" /> : <Database size={12} />}
+              Cache Query
+            </button>
+          </div>
+          {cache.status === 'found' && cache.records && (
+            <div className="border-t border-slate-200 dark:border-slate-700 pt-1.5 mt-1 space-y-0.5">
+              {cache.records.slice(0, 5).map((r, i) => (
+                <div key={i} className="text-[11px] font-mono text-slate-600 dark:text-slate-300 flex items-center gap-2">
+                  <span className="text-slate-400 w-8 shrink-0">{r.type}</span>
+                  <span className="truncate">{r.rdata}</span>
+                  <span className="text-slate-400 ml-auto shrink-0">{r.ttl}s</span>
+                </div>
+              ))}
+              {cache.records.length > 5 && (
+                <p className="text-[10px] text-slate-400">+{cache.records.length - 5} more</p>
+              )}
+            </div>
+          )}
+          {cache.status === 'miss' && (
+            <p className="border-t border-slate-200 dark:border-slate-700 pt-1.5 mt-1 text-[11px] text-slate-400">Not in cache</p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -299,8 +396,8 @@ export default function QueriesPage() {
                         <span className="ml-1.5 text-xs text-slate-400">#{q.client_num}</span>
                       )}
                     </td>
-                    <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100 font-medium max-w-xs truncate">
-                      {q.qname}
+                    <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100 font-medium max-w-xs">
+                      <DomainCell domain={q.qname} qtype={q.qtype} paused={paused} />
                     </td>
                     <td className="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">
                       {q.qtype}
