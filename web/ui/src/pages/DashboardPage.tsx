@@ -469,23 +469,31 @@ export default function DashboardPage() {
     if (sampled[sampled.length - 1]?.bucketMs !== last.bucketMs) sampled.push(last)
     return sampled
   }, [timeseries, bucketSeconds, liveSecondStats, streamConnected, timeWindow])
-  const trendWindow = timeWindow === '5m' ? 4 : timeWindow === '15m' ? 6 : 8
-  const queryTrend = movingAverage(chartDataRaw.map((x) => x.queries), trendWindow)
-  const queryEMA = ema(chartDataRaw.map((x) => x.queries), 0.35)
-  const qpsWindowPoints = Math.max(1, Math.round(10 / Math.max(1, bucketSeconds)))
-  const qpsTrend = movingAverage(chartDataRaw.map((x) => x.qpsRaw), qpsWindowPoints)
-  const chartData = chartDataRaw.map((x, i) => ({
-    ...x,
-    queriesTrend: Number((queryTrend[i] || 0).toFixed(2)),
-    queriesEMA: Number((queryEMA[i] || 0).toFixed(2)),
-    qps: Number((qpsTrend[i] || 0).toFixed(2)),
-  }))
+  const chartData = useMemo(() => {
+    const tw = timeWindow === '5m' ? 4 : timeWindow === '15m' ? 6 : 8
+    const queryTrend = movingAverage(chartDataRaw.map((x) => x.queries), tw)
+    const queryEMA = ema(chartDataRaw.map((x) => x.queries), 0.35)
+    const qpsWindowPoints = Math.max(1, Math.round(10 / Math.max(1, bucketSeconds)))
+    const qpsTrend = movingAverage(chartDataRaw.map((x) => x.qpsRaw), qpsWindowPoints)
+    return chartDataRaw.map((x, i) => ({
+      ...x,
+      queriesTrend: Number((queryTrend[i] || 0).toFixed(2)),
+      queriesEMA: Number((queryEMA[i] || 0).toFixed(2)),
+      qps: Number((qpsTrend[i] || 0).toFixed(2)),
+    }))
+  }, [chartDataRaw, timeWindow, bucketSeconds])
 
-  const windowQueries = chartData.reduce((sum, row) => sum + row.queries, 0)
-  const windowErrors = chartData.reduce((sum, row) => sum + row.errors, 0)
-  const weightedLatency = chartData.reduce((sum, row) => sum + row.avgLatencyMs * row.queries, 0)
-  const windowErrorRate = windowQueries > 0 ? (windowErrors / windowQueries) * 100 : 0
-  const windowAvgLatency = windowQueries > 0 ? weightedLatency / windowQueries : 0
+  const { windowQueries, windowErrors, windowErrorRate, windowAvgLatency } = useMemo(() => {
+    const wq = chartData.reduce((sum, row) => sum + row.queries, 0)
+    const we = chartData.reduce((sum, row) => sum + row.errors, 0)
+    const wl = chartData.reduce((sum, row) => sum + row.avgLatencyMs * row.queries, 0)
+    return {
+      windowQueries: wq,
+      windowErrors: we,
+      windowErrorRate: wq > 0 ? (we / wq) * 100 : 0,
+      windowAvgLatency: wq > 0 ? wl / wq : 0,
+    }
+  }, [chartData])
   const noErrorCount = statsView?.responses_by_rcode?.NOERROR || 0
   const nxdomainCount = statsView?.responses_by_rcode?.NXDOMAIN || 0
   const servfailCount = statsView?.responses_by_rcode?.SERVFAIL || 0

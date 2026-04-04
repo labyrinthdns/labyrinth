@@ -31,7 +31,9 @@ export default function OperationsPage() {
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const fetchingRef = useRef(false)
+  const healthRef = useRef(health)
   const healthFetchedAtRef = useRef(0)
+  healthRef.current = health
 
   const fetchData = useCallback(async (opts?: { forceHealth?: boolean }) => {
     if (fetchingRef.current) return
@@ -47,7 +49,7 @@ export default function OperationsPage() {
       const now = Date.now()
       const shouldFetchHealth = Boolean(
         opts?.forceHealth ||
-          !health ||
+          !healthRef.current ||
           (now - healthFetchedAtRef.current) >= 60_000,
       )
       let healthRes: PromiseSettledResult<unknown> | null = null
@@ -74,7 +76,7 @@ export default function OperationsPage() {
     } finally {
       fetchingRef.current = false
     }
-  }, [timeWindow, health])
+  }, [timeWindow])
 
   useEffect(() => {
     void fetchData()

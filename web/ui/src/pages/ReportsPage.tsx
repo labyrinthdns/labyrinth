@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileJson, FileSpreadsheet, Loader2, RefreshCw, Copy, Check, FileText } from 'lucide-react'
 import { api } from '@/api/client'
 import type { TopEntry, TimeSeriesBucket } from '@/api/types'
@@ -42,6 +42,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false)
   const [copyDone, setCopyDone] = useState(false)
   const [error, setError] = useState('')
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>()
 
   const refreshSnapshot = useCallback(async () => {
     setLoading(true)
@@ -77,6 +78,7 @@ export default function ReportsPage() {
 
   useEffect(() => {
     void refreshSnapshot()
+    return () => clearTimeout(copyTimerRef.current)
   }, [refreshSnapshot])
 
   const summary = useMemo(() => {
@@ -127,7 +129,8 @@ export default function ReportsPage() {
     if (copied) {
       setError('')
       setCopyDone(true)
-      setTimeout(() => setCopyDone(false), 1200)
+      clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = setTimeout(() => setCopyDone(false), 1200)
     } else {
       setError('Clipboard access is blocked in this browser. Copy manually from the exported output.')
     }
