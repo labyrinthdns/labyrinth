@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Download, FileJson, FileSpreadsheet, Loader2, RefreshCw, Copy, Check, FileText } from 'lucide-react'
 import { api } from '@/api/client'
 import type { TopEntry } from '@/api/types'
+import { copyTextToClipboard } from '@/lib/utils'
 
 type Snapshot = {
   at: string
@@ -101,12 +102,13 @@ export default function ReportsPage() {
 
   const copyJSON = useCallback(async () => {
     if (!snapshot) return
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2))
+    const copied = await copyTextToClipboard(JSON.stringify(snapshot, null, 2))
+    if (copied) {
+      setError('')
       setCopyDone(true)
       setTimeout(() => setCopyDone(false), 1200)
-    } catch {
-      setError('Clipboard copy failed in this browser context')
+    } else {
+      setError('Clipboard access is blocked in this browser. Copy manually from the exported output.')
     }
   }, [snapshot])
 
