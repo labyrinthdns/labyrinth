@@ -21,6 +21,8 @@ type UpdateInfo struct {
 	CurrentVersion  string `json:"current_version"`
 	LatestVersion   string `json:"latest_version"`
 	UpdateAvailable bool   `json:"update_available"`
+	ReadOnly        bool   `json:"read_only"`
+	ReadOnlyHint    string `json:"read_only_hint,omitempty"`
 	ReleaseURL      string `json:"release_url,omitempty"`
 	ReleaseNotes    string `json:"release_notes,omitempty"`
 	AssetName       string `json:"asset_name,omitempty"`
@@ -334,10 +336,32 @@ func checkForUpdate() (*UpdateInfo, error) {
 		updateAvailable = compareSemver(currentVersion, latestVersion) < 0
 	}
 
+	// Probe whether the install directory is writable.
+	readOnly := false
+	readOnlyHint := ""
+	if exePath, err := updateExecutable(); err == nil {
+		if resolved, err := updateEvalSymlinks(exePath); err == nil {
+			exePath = resolved
+		}
+		dir := filepath.Dir(exePath)
+		tmp, err := updateCreateTemp(dir, ".labyrinth-probe-*")
+		if err != nil {
+			if isReadOnlyFS(err) {
+				readOnly = true
+				readOnlyHint = updateReadOnlyHint(exePath)
+			}
+		} else {
+			tmp.Close()
+			updateRemove(tmp.Name())
+		}
+	}
+
 	info := &UpdateInfo{
 		CurrentVersion:  Version,
 		LatestVersion:   release.TagName,
 		UpdateAvailable: updateAvailable,
+		ReadOnly:        readOnly,
+		ReadOnlyHint:    readOnlyHint,
 		ReleaseURL:      release.HTMLURL,
 		ReleaseNotes:    release.Body,
 		AssetName:       assetName,
