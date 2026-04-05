@@ -74,6 +74,7 @@ func defaultConfig() *Config {
 			AutoUpdate:          true,
 			UpdateCheckInterval: 24 * time.Hour,
 			DoH3Enabled:         false,
+			AutoTLSCacheDir:     "certs",
 		},
 		Daemon: DaemonConfig{
 			Enabled: false,

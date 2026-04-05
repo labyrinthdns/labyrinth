@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-04-05
+
+### Added
+- **Auto-TLS (Let's Encrypt)**: optional automatic certificate provisioning via ACME. Set `web.auto_tls: true` + `web.auto_tls_domain` and Labyrinth handles cert issuance, renewal, and storage. Uses TLS-ALPN-01 (primary) with HTTP-01 fallback on port 80. Staging mode available for testing (`web.auto_tls_staging`).
+- New `certmanager` package wrapping `golang.org/x/crypto/acme/autocert` — shared `*tls.Config` for web server, DoH, and DoT.
+- `NewDoTServerWithTLSConfig()` constructor for DoT server to accept a pre-built `*tls.Config` from auto-TLS instead of cert file paths.
+- **TLS certificate status API**: `GET /api/system/tls` returns cert domain, issuer, expiry, SAN list, and auto-TLS mode; `POST /api/system/tls/renew` forces certificate cache eviction for re-provisioning.
+- **Public DNS guide page** at `/guide` (no authentication required) — platform-specific setup instructions for Windows, macOS, Linux, iOS, Android, and browsers (Firefox DoH, Chrome/Edge DoH). Auto-detects server capabilities (DoH URL, DoT hostname) from `GET /api/dns-guide`.
+- Operations page: TLS certificate status card showing domain, issuer, expiry countdown (color-coded), SAN list, and "Force Renew" button for auto-TLS.
+- Config page: Auto-TLS form section (domain, email, cache dir, staging toggle) that conditionally hides manual cert file inputs when enabled.
+- Comprehensive test suite: 10 certmanager unit tests (New, staging, Info, ForceRenew, TLSConfig, HTTPHandler, InfoFromStatic, certIssuer), 7 web API tests (TLS status/renew, DNS guide with DoH URL construction).
+
+### Changed
+- Config validation relaxed: `web.tls_enabled` no longer requires cert/key files when `web.auto_tls` is active; DoH3 validation also accepts auto-TLS.
+- DoT server startup in `main_runtime_helpers.go` now checks for shared auto-TLS config before falling back to static cert paths.
+
 ## [0.5.4] - 2026-04-05
 
 ### Added

@@ -15,6 +15,7 @@ const BlocklistPage = lazy(() => import('@/pages/BlocklistPage'))
 const AboutPage = lazy(() => import('@/pages/AboutPage'))
 const OperationsPage = lazy(() => import('@/pages/OperationsPage'))
 const ReportsPage = lazy(() => import('@/pages/ReportsPage'))
+const GuidePage = lazy(() => import('@/pages/GuidePage'))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = getToken()
@@ -113,6 +114,7 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/setup" element={<SetupWizard />} />
+            <Route path="/guide" element={<GuidePage />} />
             <Route
               path="/"
               element={

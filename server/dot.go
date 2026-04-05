@@ -54,6 +54,28 @@ func NewDoTServer(addr string, handler Handler, certFile, keyFile string, timeou
 	}, nil
 }
 
+// NewDoTServerWithTLSConfig creates a DoT server using a pre-built tls.Config.
+// This is used when auto-TLS provides the certificate dynamically.
+func NewDoTServerWithTLSConfig(addr string, handler Handler, tlsCfg *tls.Config, timeout time.Duration, maxConns int, logger *slog.Logger) (*DoTServer, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsLn := tls.NewListener(ln, tlsCfg)
+
+	return &DoTServer{
+		listener:    tlsLn,
+		handler:     handler,
+		timeout:     timeout,
+		maxConns:    maxConns,
+		sem:         make(chan struct{}, maxConns),
+		logger:      logger,
+		pipelineMax: 100,
+		idleTimeout: 5 * time.Second,
+	}, nil
+}
+
 // NewDoTServerWithListener creates a DoT server using an existing TLS listener.
 // This is primarily useful for testing.
 func NewDoTServerWithListener(ln net.Listener, handler Handler, timeout time.Duration, maxConns int, logger *slog.Logger) *DoTServer {
