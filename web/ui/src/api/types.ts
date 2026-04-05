@@ -5,6 +5,7 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   token: string
+  username: string
 }
 
 export interface AuthUser {
@@ -38,7 +39,7 @@ export interface StatsResponse {
 
 export interface TimeSeriesBucket {
   ts?: string
-  timestamp?: string
+  timestamp: string
   queries: number
   cache_hits: number
   cache_misses: number
@@ -142,6 +143,10 @@ export interface CacheStats {
   entries: number
   positive_entries: number
   negative_entries: number
+  hits: number
+  misses: number
+  evictions: number
+  hit_rate: number
 }
 
 export interface CacheRecord {
@@ -162,17 +167,15 @@ export interface CacheEntry {
 export interface SetupStatus {
   setup_required: boolean
   version: string
-  os_arch: string
 }
 
 export interface SetupRequest {
-  admin_username: string
-  admin_password: string
   listen_addr: string
-  metrics_addr: string
-  cache_max_entries: number
-  qname_minimization: boolean
-  rate_limit_enabled: boolean
+  web_addr: string
+  username: string
+  password: string
+  max_cache_size: number
+  max_depth: number
   rate_limit_rate: number
   rate_limit_burst: number
   log_level: string
@@ -181,8 +184,6 @@ export interface SetupRequest {
 
 export interface HealthResponse {
   status: string
-  cache_entries: number
-  uptime: string
   resolver_ready: boolean
 }
 
@@ -190,7 +191,8 @@ export interface VersionResponse {
   version: string
   build_time: string
   go_version: string
-  os_arch: string
+  os: string
+  arch: string
 }
 
 export interface TopEntry {
@@ -208,10 +210,10 @@ export interface TopListResponse {
 
 export interface NegativeCacheEntry {
   name: string
-  type: string
+  qtype: string
   neg_type: string
   rcode: string
-  ttl: number
+  remaining_ttl: number
   authority: { name: string; type: string; ttl: number; rdata: string }[]
 }
 

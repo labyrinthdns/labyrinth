@@ -80,11 +80,11 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
     }
   }, [connect])
 
-  // Interval-based batch flush — replaces per-frame RAF flush.
-  // Messages silently queue up and flush every flushIntervalMs as a single
-  // state update, dramatically reducing re-renders under heavy traffic.
+  // Flush strategy:
+  // - flushIntervalMs === 0  → real-time: RAF loop flushes every animation frame (~16ms)
+  // - flushIntervalMs > 0    → batched: setInterval flushes at the given cadence
   useEffect(() => {
-    const timer = setInterval(() => {
+    const flush = () => {
       const batch = queueRef.current
       if (batch.length === 0) return
       queueRef.current = []
@@ -92,7 +92,19 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
         const next = [...batch.reverse(), ...prev]
         return next.length > maxEntries ? next.slice(0, maxEntries) : next
       })
-    }, flushIntervalMs)
+    }
+
+    if (flushIntervalMs === 0) {
+      let raf = 0
+      const loop = () => {
+        flush()
+        raf = requestAnimationFrame(loop)
+      }
+      raf = requestAnimationFrame(loop)
+      return () => cancelAnimationFrame(raf)
+    }
+
+    const timer = setInterval(flush, flushIntervalMs)
     return () => clearInterval(timer)
   }, [flushIntervalMs, maxEntries])
 

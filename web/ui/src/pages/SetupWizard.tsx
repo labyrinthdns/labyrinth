@@ -59,12 +59,11 @@ export default function SetupWizard() {
 
     try {
       await api.setupComplete({
-        admin_username: adminUsername,
-        admin_password: adminPassword,
+        username: adminUsername,
+        password: adminPassword,
         listen_addr: listenAddr,
-        metrics_addr: metricsAddr,
-        cache_max_entries: cacheMaxEntries,
-        qname_minimization: qnameMinimization,
+        web_addr: metricsAddr,
+        max_cache_size: cacheMaxEntries,
       })
       navigate('/login', { replace: true })
     } catch (err) {
@@ -148,14 +147,6 @@ export default function SetupWizard() {
                       {setupInfo.version}
                     </span>
                   </div>
-                  {setupInfo.os_arch && (
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-500 dark:text-slate-400">Platform</span>
-                      <span className="font-mono text-slate-700 dark:text-slate-300">
-                        {setupInfo.os_arch}
-                      </span>
-                    </div>
-                  )}
                 </div>
               )}
             </div>

@@ -91,7 +91,7 @@ export default function CachePage() {
     if (fetchingStatsRef.current) return
     fetchingStatsRef.current = true
     try {
-      const res = await api.cacheStats() as unknown as CacheStats
+      const res = await api.cacheStats()
       setStats(res)
     } catch {
       // silently ignore
@@ -216,21 +216,21 @@ export default function CachePage() {
     const needle = negativeFilter.trim().toLowerCase()
     if (!needle) return negativeEntries
     return negativeEntries.filter((entry) =>
-      `${entry.name} ${entry.type} ${entry.neg_type} ${entry.rcode}`.toLowerCase().includes(needle),
+      `${entry.name} ${entry.qtype} ${entry.neg_type} ${entry.rcode}`.toLowerCase().includes(needle),
     )
   }, [negativeEntries, negativeFilter])
 
   function exportNegativeCSV() {
     if (filteredNegativeEntries.length === 0) return
     const lines: string[] = []
-    lines.push('name,type,neg_type,rcode,ttl')
+    lines.push('name,qtype,neg_type,rcode,remaining_ttl')
     filteredNegativeEntries.forEach((entry) => {
       lines.push([
         `"${entry.name.replace(/"/g, '""')}"`,
-        entry.type,
+        entry.qtype,
         entry.neg_type,
         entry.rcode,
-        String(entry.ttl),
+        String(entry.remaining_ttl),
       ].join(','))
     })
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
@@ -588,12 +588,12 @@ export default function CachePage() {
                 </tr>
               ) : (
                 filteredNegativeEntries.map((entry, i) => (
-                  <tr key={`${entry.name}-${entry.type}-${i}`} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">
+                  <tr key={`${entry.name}-${entry.qtype}-${i}`} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">
                     <td className="px-4 py-2.5 font-mono text-xs text-slate-900 dark:text-slate-100 max-w-xs truncate" title={entry.name}>
                       {entry.name}
                     </td>
                     <td className="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">
-                      {entry.type}
+                      {entry.qtype}
                     </td>
                     <td className="px-4 py-2.5">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
@@ -608,7 +608,7 @@ export default function CachePage() {
                       {entry.rcode}
                     </td>
                     <td className="px-4 py-2.5 text-right text-xs font-mono text-slate-500 dark:text-slate-400">
-                      {entry.ttl}s
+                      {entry.remaining_ttl}s
                     </td>
                   </tr>
                 ))
