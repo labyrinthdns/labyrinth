@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New `useTimeSeriesStream` React hook for WebSocket-driven chart data.
 - Comprehensive test suite for aggregation logic, subscription parsing, HTTP interval param, and WebSocket live/history/update flows (31 new tests).
 
+### Fixed
+- Live QPS display no longer plateaus at 30 under heavy traffic; value is now derived from server-side time-series aggregation instead of the 300-entry query stream buffer.
+
 ### Changed
 - Time-series data retention extended from 1 hour to 24 hours (86 400 one-second buckets, ~5 MB).
 - Dashboard chart data source switched from HTTP polling to WebSocket streaming — removes the 5-second polling interval entirely.
