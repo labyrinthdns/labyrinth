@@ -58,7 +58,7 @@ const CHART_SERIES_LABELS: Record<ChartSeriesKey, string> = {
 const CHART_SERIES_STORAGE_KEY = 'labyrinth.dashboard.chart_series_visibility'
 const TOP_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 250] as const
 const TOP_WINDOW_LIMIT = 2000
-const CHART_HEARTBEAT_MS = 1000
+const CHART_HEARTBEAT_MS = 5000
 const TIMESERIES_POLL_MS = 5000
 
 function movingAverage(values: number[], windowSize = 4): number[] {
@@ -174,7 +174,7 @@ export default function DashboardPage() {
   })
   const [error, setError] = useState('')
 
-  const { queries: streamQueries, connected: streamConnected } = useQueryStream(300)
+  const { queries: streamQueries, connected: streamConnected } = useQueryStream(300, CHART_HEARTBEAT_MS)
   const clientOffset = clientPage * clientPageSize
   const domainOffset = domainPage * domainPageSize
 
@@ -345,7 +345,7 @@ export default function DashboardPage() {
 
   const liveSecondStats = useMemo(() => {
     const now = chartHeartbeatAtMs
-    const cutoff = now - 1_000
+    const cutoff = now - CHART_HEARTBEAT_MS
     let queries = 0
     let errors = 0
     let latencyTotal = 0

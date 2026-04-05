@@ -96,7 +96,7 @@ Request method: GET
 
 # 2. Test connectivity from Zabbix server:
 zabbix_get -s labyrinth-host -p 10050 -k labyrinth.version
-# Output: 0.5.0
+# Output: 0.5.1
 
 zabbix_get -s labyrinth-host -p 10050 -k labyrinth.queries.per_second
 # Output: 14.4
