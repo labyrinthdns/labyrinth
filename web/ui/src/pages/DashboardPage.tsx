@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   AlertTriangle,
-  ChevronDown,
   CheckCircle2,
   Cpu,
   HardDrive,
@@ -141,8 +140,8 @@ function MeterRow({
 export default function DashboardPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [profile, setProfile] = useState<SystemProfileResponse | null>(null)
-  const [chartMode, setChartMode] = useState<ChartMode>('15m')
-  const [chartInterval, setChartInterval] = useState<string>(INTERVAL_OPTIONS['15m'][0])
+  const [chartMode, setChartMode] = useState<ChartMode>('live')
+  const [chartInterval, setChartInterval] = useState<string>(INTERVAL_OPTIONS['live'][0])
   const [topClients, setTopClients] = useState<TopEntry[]>([])
   const [topDomains, setTopDomains] = useState<TopEntry[]>([])
   const [statsSnapshotAtMs, setStatsSnapshotAtMs] = useState(0)
@@ -150,9 +149,8 @@ export default function DashboardPage() {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshMs, setRefreshMs] = useState(15000)
   const [showControls, setShowControls] = useState(false)
-  const [showMatrixExtras, setShowMatrixExtras] = useState(false)
   const [errorThresholdPct, setErrorThresholdPct] = useState(5)
-  const [latencyThresholdMs, setLatencyThresholdMs] = useState(250)
+  const [, setLatencyThresholdMs] = useState(250)
   const [clientFilter, setClientFilter] = useState('')
   const [domainFilter, setDomainFilter] = useState('')
   const [clientSortDesc, setClientSortDesc] = useState(true)
@@ -430,7 +428,7 @@ export default function DashboardPage() {
     }))
   }, [chartDataRaw, chartMode, intervalSeconds])
 
-  const { windowErrors, windowErrorRate, windowAvgLatency } = useMemo(() => {
+  const { windowErrorRate, windowAvgLatency } = useMemo(() => {
     const wq = chartData.reduce((sum, row) => sum + row.queries, 0)
     const we = chartData.reduce((sum, row) => sum + row.errors, 0)
     const wl = chartData.reduce((sum, row) => sum + row.avgLatencyMs * row.queries, 0)
@@ -448,23 +446,6 @@ export default function DashboardPage() {
   const noErrorRatio = totalRcodes > 0 ? (noErrorCount / totalRcodes) * 100 : 0
   const uptimeText = statsView ? formatUptime(statsView.uptime_seconds) : '0m'
   const hasChartActivity = chartData.some((row) => row.queries > 0 || row.errors > 0 || row.qps > 0)
-
-  const statusReasons = useMemo(() => {
-    const reasons: string[] = []
-    if (!statsView?.resolver_ready) reasons.push('Resolver is not ready')
-    if (windowErrorRate >= errorThresholdPct) reasons.push(`Error rate high: ${windowErrorRate.toFixed(2)}% (>= ${errorThresholdPct.toFixed(2)}%)`)
-    if (windowAvgLatency >= latencyThresholdMs) reasons.push(`Latency high: ${windowAvgLatency.toFixed(1)}ms (>= ${latencyThresholdMs}ms)`)
-    if ((statsView?.upstream_errors || 0) > 0) reasons.push(`Upstream errors: ${formatNumber(statsView?.upstream_errors || 0)}`)
-    if ((statsView?.rate_limited || 0) > 0) reasons.push(`Rate limited: ${formatNumber(statsView?.rate_limited || 0)}`)
-    return reasons
-  }, [statsView, windowErrorRate, windowAvgLatency, errorThresholdPct, latencyThresholdMs])
-
-  const statusLevel = useMemo<'normal' | 'warning' | 'critical'>(() => {
-    if (!statsView?.resolver_ready) return 'critical'
-    if (windowErrorRate >= errorThresholdPct * 2 || windowAvgLatency >= latencyThresholdMs * 2) return 'critical'
-    if (statusReasons.length > 0) return 'warning'
-    return 'normal'
-  }, [statsView, windowErrorRate, windowAvgLatency, errorThresholdPct, latencyThresholdMs, statusReasons])
 
   const qpsLive = liveWindowStats.qps10s
   const queryTypeCounts = QUERY_TYPE_COUNTERS.map((type) => ({
@@ -595,14 +576,14 @@ export default function DashboardPage() {
             href={versionState.releaseUrl || '/about'}
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs hover:bg-amber-500/20"
           >
-            <span>Version {formatVersion(versionState.current)}</span>
+            <span>{formatVersion(versionState.current)}</span>
             <span className="opacity-60">|</span>
             <AlertTriangle size={12} />
             <span>Update required</span>
           </a>
         ) : (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs">
-            <span>Version {formatVersion(versionState.current)}</span>
+            <span>{formatVersion(versionState.current)}</span>
             <CheckCircle2 size={12} />
           </span>
         )}
@@ -655,86 +636,31 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">DNS Resolver Matrix</h2>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowMatrixExtras((v) => !v)}
-              className="inline-flex items-center gap-1 px-2.5 h-7 rounded-md text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
-            >
-              {showMatrixExtras ? 'Hide More' : 'Show More'}
-              <ChevronDown size={12} className={`transition-transform ${showMatrixExtras ? 'rotate-180' : ''}`} />
-            </button>
-            {statusLevel !== 'normal' && (
-              <a
-                href="/operations"
-                className="inline-flex items-center gap-1 text-xs font-semibold text-amber-300 hover:text-amber-200"
-              >
-                <AlertTriangle size={12} />
-                Open Operations
-              </a>
-            )}
-          </div>
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+        <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Queries</div>
+          <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className={`rounded-md border px-3 py-2 ${
-            statusLevel === 'critical'
-              ? 'border-rose-500/40 bg-rose-500/10'
-              : statusLevel === 'warning'
-                ? 'border-amber-500/40 bg-amber-500/10'
-                : 'border-emerald-500/40 bg-emerald-500/10'
-          }`}>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</div>
-            <div className={`mt-1 text-lg font-bold ${
-              statusLevel === 'critical' ? 'text-rose-300' : statusLevel === 'warning' ? 'text-amber-300' : 'text-emerald-300'
-            }`}>
-              {statusLevel === 'critical' ? 'CRITICAL' : statusLevel === 'warning' ? 'WARNING' : 'NORMAL'}
-            </div>
-            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
-              {statusLevel === 'normal' ? 'No immediate operational alerts' : statusReasons[0]}
-            </div>
-          </div>
-          <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-2">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Queries/sec</div>
-            <div className="mt-1 text-lg font-bold text-cyan-300">{qpsLive.toFixed(2)}</div>
-            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">From time-series</div>
-          </div>
-          <div className={`rounded-md border px-3 py-2 ${windowErrorRate >= errorThresholdPct ? 'border-rose-500/40 bg-rose-500/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'}`}>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Error Rate</div>
-            <div className={`mt-1 text-lg font-bold ${windowErrorRate >= errorThresholdPct ? 'text-rose-300' : 'text-slate-900 dark:text-slate-100'}`}>{windowErrorRate.toFixed(2)}%</div>
-            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">{formatNumber(windowErrors)} errors</div>
-          </div>
-          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Hit Ratio</div>
-            <div className="mt-1 text-lg font-bold text-emerald-300">{((statsView?.cache_hit_ratio || 0) * 100).toFixed(1)}%</div>
-            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">{formatNumber(statsView?.cache_hits || 0)} hits / {formatNumber(statsView?.cache_misses || 0)} misses</div>
-          </div>
+        <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Uptime</div>
+          <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{uptimeText}</div>
         </div>
-        {showMatrixExtras && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-            <div className={`rounded-md border px-3 py-2 ${(statsView?.blocked_queries || 0) > 0 ? 'border-amber-500/40 bg-amber-500/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'}`}>
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Blocked</div>
-              <div className={`mt-1 text-lg font-bold ${(statsView?.blocked_queries || 0) > 0 ? 'text-amber-300' : 'text-slate-900 dark:text-slate-100'}`}>{formatNumber(statsView?.blocked_queries || 0)}</div>
-              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Blocked queries total</div>
-            </div>
-            <div className={`rounded-md border px-3 py-2 ${(statsView?.upstream_errors || 0) > 0 ? 'border-rose-500/40 bg-rose-500/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'}`}>
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Upstream Errors</div>
-              <div className={`mt-1 text-lg font-bold ${(statsView?.upstream_errors || 0) > 0 ? 'text-rose-300' : 'text-slate-900 dark:text-slate-100'}`}>{formatNumber(statsView?.upstream_errors || 0)}</div>
-              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Resolver upstream failures</div>
-            </div>
-            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Queries</div>
-              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{formatNumber(totalQueries)}</div>
-              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">All-time counter</div>
-            </div>
-            <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Uptime</div>
-              <div className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">{uptimeText}</div>
-              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Resolver process uptime</div>
-            </div>
-          </div>
-        )}
+        <div className={`rounded-md border px-3 py-2 ${windowErrorRate >= errorThresholdPct ? 'border-rose-500/40 bg-rose-500/10' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900'}`}>
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Error Rate</div>
+          <div className={`mt-1 text-lg font-bold ${windowErrorRate >= errorThresholdPct ? 'text-rose-300' : 'text-slate-900 dark:text-slate-100'}`}>{windowErrorRate.toFixed(2)}%</div>
+        </div>
+        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Cache Hit Ratio</div>
+          <div className="mt-1 text-lg font-bold text-emerald-300">{((statsView?.cache_hit_ratio || 0) * 100).toFixed(1)}%</div>
+        </div>
+        <div className={`rounded-md border px-3 py-2 ${(statsView?.blocked_queries || 0) > 0 ? 'border-amber-500/40 bg-amber-500/10' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900'}`}>
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Blocked</div>
+          <div className={`mt-1 text-lg font-bold ${(statsView?.blocked_queries || 0) > 0 ? 'text-amber-300' : 'text-slate-900 dark:text-slate-100'}`}>{formatNumber(statsView?.blocked_queries || 0)}</div>
+        </div>
+        <div className={`rounded-md border px-3 py-2 ${(statsView?.upstream_errors || 0) > 0 ? 'border-rose-500/40 bg-rose-500/10' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900'}`}>
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Upstream Errors</div>
+          <div className={`mt-1 text-lg font-bold ${(statsView?.upstream_errors || 0) > 0 ? 'text-rose-300' : 'text-slate-900 dark:text-slate-100'}`}>{formatNumber(statsView?.upstream_errors || 0)}</div>
+        </div>
       </div>
 
       <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
@@ -767,12 +693,18 @@ export default function DashboardPage() {
             <div className="pointer-events-none absolute -bottom-28 right-0 h-64 w-64 rounded-full bg-amber-500/10 blur-3xl" />
 
             <div className="relative flex flex-wrap items-start justify-between gap-3 mb-4">
-              <div>
-                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">Traffic Stability & QPS Over Time</h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {chartMode === 'live' ? 'Live — last 60 seconds, 1s resolution' : `History — ${chartMode} window, ${chartInterval} buckets`}
-                  {tsConnected ? '' : ' (connecting...)'}
-                </p>
+              <div className="flex items-center gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">Traffic Stability & QPS Over Time</h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {chartMode === 'live' ? 'Live — last 60 seconds, 1s resolution' : `History — ${chartMode} window, ${chartInterval} buckets`}
+                    {tsConnected ? '' : ' (connecting...)'}
+                  </p>
+                </div>
+                <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">QPS</div>
+                  <div className="text-lg font-bold text-cyan-300 tabular-nums">{qpsLive.toFixed(1)}</div>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
