@@ -50,7 +50,8 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleTimeSeries handles GET /api/stats/timeseries?window=5m — returns time-bucketed data.
+// handleTimeSeries handles GET /api/stats/timeseries?window=5m&interval=1m — returns time-bucketed data.
+// When interval is specified, raw 1s buckets are aggregated into larger intervals.
 func (s *AdminServer) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -68,19 +69,34 @@ func (s *AdminServer) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cap at 1 hour
-	if window > time.Hour {
-		window = time.Hour
+	// Cap at 24 hours
+	if window > 24*time.Hour {
+		window = 24 * time.Hour
 	}
 
-	buckets := s.timeSeries.Snapshot(window)
+	intervalStr := r.URL.Query().Get("interval")
+	resultBucketSec := int(bucketInterval.Seconds())
+
+	var buckets []Bucket
+	if intervalStr != "" {
+		interval, err := time.ParseDuration(intervalStr)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid interval duration"})
+			return
+		}
+		buckets = s.timeSeries.SnapshotAggregated(window, interval)
+		resultBucketSec = int(interval.Seconds())
+	} else {
+		buckets = s.timeSeries.Snapshot(window)
+	}
+
 	if buckets == nil {
 		buckets = []Bucket{}
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"window":         windowStr,
-		"bucket_seconds": int(bucketInterval.Seconds()),
+		"bucket_seconds": resultBucketSec,
 		"buckets":        buckets,
 	})
 }

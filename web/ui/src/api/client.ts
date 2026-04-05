@@ -232,3 +232,17 @@ export function createQueryWebSocket(): WebSocket {
   const url = `${protocol}//${window.location.host}/api/queries/stream${token ? `?token=${token}` : ''}`
   return new WebSocket(url)
 }
+
+export function createTimeSeriesWebSocket(mode: string, tsWindow: string, interval: string): WebSocket {
+  const token = getToken()
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const params = new URLSearchParams()
+  if (token) params.set('token', token)
+  params.set('mode', mode)
+  if (mode === 'history') {
+    params.set('window', tsWindow)
+    params.set('interval', interval)
+  }
+  const url = `${protocol}//${window.location.host}/api/stats/timeseries/ws?${params.toString()}`
+  return new WebSocket(url)
+}
