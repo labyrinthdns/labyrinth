@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-04-05
+
+### Added
+- **Config page: full-coverage form editor** — all server, resolver, cache, security, web, blocklist, and cluster settings now exposed in the visual config form, including DoT, DNS64, ECS, prefetch, private-address filtering, DNS cookies, auto-update, dashboard panel order, TLS cert/key paths, and fanout blocklist refresh.
+- **Operations page: selectable time window** — 15 m / 1 h / 24 h presets with matching bucket intervals (≤ 30 data points); latency threshold reference line on chart.
+- `useQueryStream` real-time flush mode (`flushIntervalMs = 0`) — RAF-based loop for zero-latency query rendering on Queries page.
+- Typed API client: `StatsResponse`, `CacheStats`, `LoginResponse`, and `HealthResponse` replace `Record<string, unknown>` casts across all pages.
+
+### Fixed
+- Negative cache table now uses backend field names (`qtype`, `remaining_ttl`) instead of stale aliases (`type`, `ttl`), fixing empty columns after API alignment.
+- `CacheStats` type extended with `hits`, `misses`, `evictions`, `hit_rate` to match actual `/api/cache/stats` payload.
+- Setup wizard sends correct field names (`username`, `password`, `web_addr`, `max_cache_size`, `max_depth`) matching current backend API; removed stale `os_arch` display.
+- `VersionResponse` split `os_arch` into separate `os` and `arch` fields.
+- Dashboard optional-chaining on `profile?.traffic?.last_minute_qps_peak` prevents crash when profile is still loading.
+- Removed unused `latencyThresholdMs` state and dead `windowQueries`/`windowErrors` destructuring in Dashboard.
+
+### Changed
+- `TimeSeriesBucket.timestamp` field changed from optional to required in type definition.
+- Operations page chart data source is now driven by selectable window preset instead of hard-coded 1 h / 1 m.
+- `cacheFlush` and `cacheDelete` API return type corrected from `{ ok: boolean }` to `{ status: string }`.
+
 ## [0.5.3] - 2026-04-05
 
 ### Added

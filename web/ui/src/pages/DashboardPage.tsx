@@ -150,7 +150,6 @@ export default function DashboardPage() {
   const [refreshMs, setRefreshMs] = useState(15000)
   const [showControls, setShowControls] = useState(false)
   const [errorThresholdPct, setErrorThresholdPct] = useState(5)
-  const [, setLatencyThresholdMs] = useState(250)
   const [clientFilter, setClientFilter] = useState('')
   const [domainFilter, setDomainFilter] = useState('')
   const [clientSortDesc, setClientSortDesc] = useState(true)
@@ -204,7 +203,7 @@ export default function DashboardPage() {
       ])
 
       if (statsRes.status === 'fulfilled') {
-        setStats(statsRes.value as unknown as StatsResponse)
+        setStats(statsRes.value)
         setStatsSnapshotAtMs(Date.now())
       }
       if (clientsRes.status === 'fulfilled') {
@@ -218,7 +217,7 @@ export default function DashboardPage() {
         setDomainTotal(Math.min(TOP_WINDOW_LIMIT, data?.total || 0))
       }
       if (profileRes.status === 'fulfilled') {
-        setProfile(profileRes.value as unknown as SystemProfileResponse)
+        setProfile(profileRes.value)
       }
 
       setUpdatedAt(new Date())
@@ -278,9 +277,7 @@ export default function DashboardPage() {
         if (cancelled) return
         const web = (cfg?.web && typeof cfg.web === 'object') ? (cfg.web as Record<string, unknown>) : {}
         const errThreshold = Number(web.alert_error_threshold_pct)
-        const latencyThreshold = Number(web.alert_latency_threshold_ms)
         if (Number.isFinite(errThreshold) && errThreshold > 0) setErrorThresholdPct(errThreshold)
-        if (Number.isFinite(latencyThreshold) && latencyThreshold > 0) setLatencyThresholdMs(latencyThreshold)
       })
       .catch(() => {
         // keep defaults
@@ -433,8 +430,6 @@ export default function DashboardPage() {
     const we = chartData.reduce((sum, row) => sum + row.errors, 0)
     const wl = chartData.reduce((sum, row) => sum + row.avgLatencyMs * row.queries, 0)
     return {
-      windowQueries: wq,
-      windowErrors: we,
       windowErrorRate: wq > 0 ? (we / wq) * 100 : 0,
       windowAvgLatency: wq > 0 ? wl / wq : 0,
     }
@@ -823,7 +818,7 @@ export default function DashboardPage() {
             <div className="space-y-2.5 text-sm">
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Live Queries (10s)</span><span className="font-semibold text-cyan-300">{formatNumber(liveWindowStats.queries10s)}</span></div>
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Live Errors (10s)</span><span className="font-semibold text-rose-300">{formatNumber(liveWindowStats.errors10s)}</span></div>
-              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Peak QPS (1m)</span><span className="font-semibold text-slate-900 dark:text-slate-100">{(profile?.traffic.last_minute_qps_peak || 0).toFixed(2)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Peak QPS (1m)</span><span className="font-semibold text-slate-900 dark:text-slate-100">{(profile?.traffic?.last_minute_qps_peak || 0).toFixed(2)}</span></div>
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">Window Latency</span><span className="font-semibold text-slate-900 dark:text-slate-100">{windowAvgLatency.toFixed(1)} ms</span></div>
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">NOERROR Ratio</span><span className="font-semibold text-emerald-300">{noErrorRatio.toFixed(1)}%</span></div>
               <div className="flex items-center justify-between"><span className="text-slate-500 dark:text-slate-400">NXDOMAIN + SERVFAIL</span><span className="font-semibold text-rose-300">{formatNumber(nxdomainCount + servfailCount)}</span></div>

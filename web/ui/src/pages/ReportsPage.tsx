@@ -61,7 +61,7 @@ export default function ReportsPage() {
         at: new Date().toISOString(),
         window: windowSize,
         topLimit,
-        stats: statsRes as Record<string, unknown>,
+        stats: statsRes as unknown as Record<string, unknown>,
         profile: profileRes as unknown as Record<string, unknown>,
         topClients: (clientsRes as { entries?: TopEntry[] }).entries || [],
         topClientsTotal: Number((clientsRes as { total?: number }).total || 0),
