@@ -127,7 +127,7 @@ function DomainCell({ domain, qtype, paused }: { domain: string; qtype: string; 
 }
 
 export default function QueriesPage() {
-  const { queries, connected, paused, setPaused, clear } = useQueryStream(200)
+  const { queries, connected, paused, setPaused, clear } = useQueryStream(200, 2000)
   const [totalQueries, setTotalQueries] = useState(0)
   const [search, setSearch] = useState('')
   const [onlyBlocked, setOnlyBlocked] = useState(false)

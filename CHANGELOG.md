@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-05
+
+### Changed
+- WebSocket query stream now uses interval-based batch flush instead of per-frame `requestAnimationFrame`, reducing dashboard re-renders from ~60/s to 1 every 5 seconds under heavy traffic.
+- Dashboard chart heartbeat interval increased from 1 s to 5 s, synchronized with the time-series polling interval.
+- `useQueryStream` accepts a configurable `flushIntervalMs` parameter: dashboard uses 5 s, queries page uses 2 s.
+
+### Fixed
+- Live chart bucket window now covers the full heartbeat interval instead of a fixed 1-second slice, so no query data is lost between heartbeat ticks.
+
 ## [0.5.0] - 2026-04-04
 
 ### Fixed
