@@ -42,11 +42,21 @@ export interface TimeSeriesBucket {
   cache_misses: number
   errors: number
   avg_latency_ms: number
+  cache_hit_ratio: number
 }
 
 export interface TimeSeriesResponse {
   window?: string
   bucket_seconds?: number
+  buckets: TimeSeriesBucket[]
+}
+
+export type TSMode = 'live' | 'history'
+
+export interface TimeSeriesWSMessage {
+  mode: TSMode
+  window: string
+  interval: string
   buckets: TimeSeriesBucket[]
 }
 
