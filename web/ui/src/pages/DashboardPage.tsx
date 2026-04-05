@@ -34,7 +34,7 @@ const QUERY_TYPE_COUNTERS = ['A', 'AAAA', 'MX', 'NS', 'PTR', 'SRV', 'CNAME', 'TX
 const CHART_MODES = ['live', '15m', '1h', '24h'] as const
 type ChartMode = (typeof CHART_MODES)[number]
 const INTERVAL_OPTIONS: Record<ChartMode, string[]> = {
-  live: ['2s'],
+  live: ['1s'],
   '15m': ['1m'],
   '1h': ['2m', '5m'],
   '24h': ['15m', '30m', '1h'],
@@ -310,7 +310,7 @@ export default function DashboardPage() {
     }
   }, [chartSeriesVisibility])
   const intervalSeconds = useMemo(() => {
-    const d = { '2s': 2, '1m': 60, '2m': 120, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600 }
+    const d = { '1s': 1, '2s': 2, '1m': 60, '2m': 120, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600 }
     return (d as Record<string, number>)[chartInterval] || 1
   }, [chartInterval])
 
@@ -770,7 +770,7 @@ export default function DashboardPage() {
               <div>
                 <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">Traffic Stability & QPS Over Time</h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {chartMode === 'live' ? 'Live view — last 60 seconds, updating every 2s' : `History — ${chartMode} window, ${chartInterval} buckets`}
+                  {chartMode === 'live' ? 'Live — last 60 seconds, 1s resolution' : `History — ${chartMode} window, ${chartInterval} buckets`}
                   {tsConnected ? '' : ' (connecting...)'}
                 </p>
               </div>
