@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-04-05
+
+### Added
+- **Live time-series chart mode**: real-time 60-second rolling view with 2-second granularity, pushed via WebSocket every 2 seconds.
+- **History time-series chart modes**: configurable window (15 m / 1 h / 24 h) with selectable bucket interval (1 m, 2 m, 5 m, 15 m, 30 m, 1 h), pushed via WebSocket every 10 seconds.
+- New WebSocket endpoint `GET /api/stats/timeseries/ws` with `mode`, `window`, and `interval` query parameters; supports in-flight subscription updates without reconnect.
+- `SnapshotAggregated(window, interval)` method on `TimeSeriesAggregator` for server-side bucket aggregation with weighted-average latency and cache-hit ratio.
+- `cache_hit_ratio` field added to time-series bucket JSON responses.
+- New `useTimeSeriesStream` React hook for WebSocket-driven chart data.
+- Comprehensive test suite for aggregation logic, subscription parsing, HTTP interval param, and WebSocket live/history/update flows (31 new tests).
+
+### Changed
+- Time-series data retention extended from 1 hour to 24 hours (86 400 one-second buckets, ~5 MB).
+- Dashboard chart data source switched from HTTP polling to WebSocket streaming — removes the 5-second polling interval entirely.
+- HTTP `/api/stats/timeseries` endpoint now accepts an optional `interval` query parameter for server-side aggregation and supports windows up to 24 h (previously capped at 1 h).
+- Chart mode selector redesigned: `[Live] [15m] [1h] [24h]` buttons with a dynamic interval dropdown for history modes.
+
+### Removed
+- Frontend HTTP time-series polling (`TIMESERIES_POLL_MS`) and client-side bucket merging logic replaced by server-pushed pre-aggregated data.
+
 ## [0.5.1] - 2026-04-05
 
 ### Changed
