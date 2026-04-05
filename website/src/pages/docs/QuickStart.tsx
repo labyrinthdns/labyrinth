@@ -60,7 +60,7 @@ sudo labyrinth --config labyrinth.yaml`}</code></pre>
         You should see output like:
       </p>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`[INFO] Labyrinth DNS v0.5.0 starting
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`[INFO] Labyrinth DNS v0.5.1 starting
 [INFO] Loading configuration from labyrinth.yaml
 [INFO] Cache initialized: max_entries=100000
 [INFO] DNS listener started on 0.0.0.0:53 (UDP+TCP)

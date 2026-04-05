@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createQueryWebSocket } from '@/api/client'
 import type { QueryEntry } from '@/api/types'
 
-export function useQueryStream(maxEntries = 200) {
+export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
   const [queries, setQueries] = useState<QueryEntry[]>([])
   const [connected, setConnected] = useState(false)
   const [paused, setPaused] = useState(false)
@@ -11,7 +11,6 @@ export function useQueryStream(maxEntries = 200) {
   const visibleRef = useRef<boolean>(typeof document === 'undefined' ? true : !document.hidden)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
-  const flushRafRef = useRef<number | null>(null)
   const queueRef = useRef<QueryEntry[]>([])
   const unmountedRef = useRef(false)
 
@@ -47,20 +46,9 @@ export function useQueryStream(maxEntries = 200) {
       try {
         const entry = JSON.parse(event.data) as QueryEntry
         queueRef.current.push(entry)
-        if (flushRafRef.current != null) return
-        flushRafRef.current = requestAnimationFrame(() => {
-          flushRafRef.current = null
-          const batch = queueRef.current
-          queueRef.current = []
-          if (batch.length === 0) return
-          setQueries((prev) => {
-            const next = [...batch.reverse(), ...prev]
-            return next.length > maxEntries ? next.slice(0, maxEntries) : next
-          })
-        })
       } catch { /* ignore parse errors */ }
     }
-  }, [maxEntries])
+  }, [])
 
   useEffect(() => {
     unmountedRef.current = false
@@ -87,14 +75,26 @@ export function useQueryStream(maxEntries = 200) {
         clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null
       }
-      if (flushRafRef.current != null) {
-        cancelAnimationFrame(flushRafRef.current)
-        flushRafRef.current = null
-      }
       wsRef.current?.close()
       wsRef.current = null
     }
   }, [connect])
+
+  // Interval-based batch flush — replaces per-frame RAF flush.
+  // Messages silently queue up and flush every flushIntervalMs as a single
+  // state update, dramatically reducing re-renders under heavy traffic.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const batch = queueRef.current
+      if (batch.length === 0) return
+      queueRef.current = []
+      setQueries((prev) => {
+        const next = [...batch.reverse(), ...prev]
+        return next.length > maxEntries ? next.slice(0, maxEntries) : next
+      })
+    }, flushIntervalMs)
+    return () => clearInterval(timer)
+  }, [flushIntervalMs, maxEntries])
 
   const clear = useCallback(() => setQueries([]), [])
 

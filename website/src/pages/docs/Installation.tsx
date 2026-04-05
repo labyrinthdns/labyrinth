@@ -37,7 +37,7 @@ export default function Installation({ dark }: Props) {
       </ul>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Install a specific version to a custom directory
-VERSION=0.5.0 INSTALL_DIR=/opt/labyrinth/bin \\
+VERSION=0.5.1 INSTALL_DIR=/opt/labyrinth/bin \\
   curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash`}</code></pre>
 
       <h2 className={h2}>Build from Source</h2>
