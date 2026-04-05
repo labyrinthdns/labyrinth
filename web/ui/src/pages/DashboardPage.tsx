@@ -25,13 +25,20 @@ import {
   CartesianGrid,
 } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, TimeSeriesBucket, TopEntry, SystemProfileResponse, CacheEntry, TopListResponse, TimeSeriesResponse } from '@/api/types'
+import type { StatsResponse, TopEntry, SystemProfileResponse, CacheEntry, TopListResponse } from '@/api/types'
 import { formatBytes, formatNumber, formatUptime, formatVersion } from '@/lib/utils'
 import { useQueryStream } from '@/hooks/useWebSocket'
+import { useTimeSeriesStream } from '@/hooks/useTimeSeriesStream'
 
 const QUERY_TYPE_COUNTERS = ['A', 'AAAA', 'MX', 'NS', 'PTR', 'SRV', 'CNAME', 'TXT'] as const
-const TIME_WINDOWS = ['5m', '15m', '1h'] as const
-type TimeWindow = (typeof TIME_WINDOWS)[number]
+const CHART_MODES = ['live', '15m', '1h', '24h'] as const
+type ChartMode = (typeof CHART_MODES)[number]
+const INTERVAL_OPTIONS: Record<ChartMode, string[]> = {
+  live: ['2s'],
+  '15m': ['1m'],
+  '1h': ['2m', '5m'],
+  '24h': ['15m', '30m', '1h'],
+}
 const REFRESH_INTERVALS = [
   { label: '5s', value: 5000 },
   { label: '15s', value: 15000 },
@@ -59,7 +66,6 @@ const CHART_SERIES_STORAGE_KEY = 'labyrinth.dashboard.chart_series_visibility'
 const TOP_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 250] as const
 const TOP_WINDOW_LIMIT = 2000
 const CHART_HEARTBEAT_MS = 5000
-const TIMESERIES_POLL_MS = 5000
 
 function movingAverage(values: number[], windowSize = 4): number[] {
   if (values.length === 0) return []
@@ -135,13 +141,11 @@ function MeterRow({
 export default function DashboardPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [profile, setProfile] = useState<SystemProfileResponse | null>(null)
-  const [timeseries, setTimeseries] = useState<TimeSeriesBucket[]>([])
-  const [bucketSeconds, setBucketSeconds] = useState(10)
-  const [timeWindow, setTimeWindow] = useState<TimeWindow>('15m')
+  const [chartMode, setChartMode] = useState<ChartMode>('15m')
+  const [chartInterval, setChartInterval] = useState<string>(INTERVAL_OPTIONS['15m'][0])
   const [topClients, setTopClients] = useState<TopEntry[]>([])
   const [topDomains, setTopDomains] = useState<TopEntry[]>([])
   const [statsSnapshotAtMs, setStatsSnapshotAtMs] = useState(0)
-  const [chartHeartbeatAtMs, setChartHeartbeatAtMs] = useState(() => Date.now())
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshMs, setRefreshMs] = useState(15000)
@@ -175,6 +179,18 @@ export default function DashboardPage() {
   const [error, setError] = useState('')
 
   const { queries: streamQueries, connected: streamConnected } = useQueryStream(300, CHART_HEARTBEAT_MS)
+
+  const tsStreamParams = useMemo(() => ({
+    mode: (chartMode === 'live' ? 'live' : 'history') as 'live' | 'history',
+    window: chartMode === 'live' ? '1m' : chartMode,
+    interval: chartInterval,
+  }), [chartMode, chartInterval])
+  const { buckets: tsBuckets, connected: tsConnected } = useTimeSeriesStream(tsStreamParams)
+
+  const handleChartModeChange = useCallback((mode: ChartMode) => {
+    setChartMode(mode)
+    setChartInterval(INTERVAL_OPTIONS[mode][0])
+  }, [])
   const clientOffset = clientPage * clientPageSize
   const domainOffset = domainPage * domainPageSize
 
@@ -277,39 +293,6 @@ export default function DashboardPage() {
   }, [])
 
   useEffect(() => {
-    const tick = setInterval(() => {
-      if (document.hidden) return
-      setChartHeartbeatAtMs(Date.now())
-    }, CHART_HEARTBEAT_MS)
-    return () => clearInterval(tick)
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    const fetchTimeseries = async () => {
-      try {
-        const tsData = await api.timeseries(timeWindow) as TimeSeriesResponse
-        if (cancelled) return
-        setTimeseries(tsData?.buckets || [])
-        const secs = Number(tsData?.bucket_seconds)
-        setBucketSeconds(Number.isFinite(secs) && secs > 0 ? secs : 10)
-      } catch {
-        // keep last timeseries on transient errors
-      }
-    }
-
-    void fetchTimeseries()
-    const interval = setInterval(() => {
-      if (!autoRefresh || document.hidden) return
-      void fetchTimeseries()
-    }, TIMESERIES_POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [timeWindow, autoRefresh])
-
-  useEffect(() => {
     try {
       const raw = localStorage.getItem(CHART_SERIES_STORAGE_KEY)
       if (!raw) return
@@ -342,27 +325,6 @@ export default function DashboardPage() {
       errors10s: errors,
     }
   }, [streamQueries])
-
-  const liveSecondStats = useMemo(() => {
-    const now = chartHeartbeatAtMs
-    const cutoff = now - CHART_HEARTBEAT_MS
-    let queries = 0
-    let errors = 0
-    let latencyTotal = 0
-    for (const q of streamQueries) {
-      const ts = Date.parse(q.ts || '')
-      if (!Number.isFinite(ts) || ts < cutoff || ts > now) continue
-      queries++
-      latencyTotal += Number(q.duration_ms || 0)
-      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) errors++
-    }
-    return {
-      bucketMs: Math.floor(now / 1000) * 1000,
-      queries,
-      errors,
-      avgLatencyMs: queries > 0 ? latencyTotal / queries : 0,
-    }
-  }, [streamQueries, chartHeartbeatAtMs])
 
   const streamDelta = useMemo(() => {
     const queryTypeDelta: Record<string, number> = {}
@@ -414,66 +376,47 @@ export default function DashboardPage() {
     ? Object.values(statsView.queries_by_type).reduce((a, b) => a + b, 0)
     : 0
 
+  const intervalSeconds = useMemo(() => {
+    const d = { '2s': 2, '1m': 60, '2m': 120, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600 }
+    return (d as Record<string, number>)[chartInterval] || 1
+  }, [chartInterval])
+
   const chartDataRaw = useMemo(() => {
-    const perBucketSeconds = Math.max(1, bucketSeconds)
-    const rows = (timeseries || [])
+    const perBucketSeconds = Math.max(1, intervalSeconds)
+    return (tsBuckets || [])
       .map((b) => {
         const ts = b.timestamp || b.ts || ''
         const tsMs = Date.parse(ts)
         const bucketMs = Number.isFinite(tsMs) ? tsMs : 0
         const queryCount = b.queries || 0
         const qpsRaw = queryCount / perBucketSeconds
+        const timeFmt = chartMode === 'live'
+          ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          : chartMode === '24h'
+            ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
         return {
           ts,
           bucketMs,
-          time: ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
+          time: ts ? timeFmt : '',
           queries: queryCount,
           cacheHits: b.cache_hits || 0,
           cacheMisses: b.cache_misses || 0,
           errors: b.errors || 0,
           avgLatencyMs: b.avg_latency_ms || 0,
+          cacheHitRatio: b.cache_hit_ratio || 0,
           qpsRaw,
         }
       })
       .filter((row) => row.ts)
       .sort((a, b) => a.bucketMs - b.bucketMs)
-    if (streamConnected) {
-      const liveRow = {
-        ts: new Date(liveSecondStats.bucketMs).toISOString(),
-        bucketMs: liveSecondStats.bucketMs,
-        time: new Date(liveSecondStats.bucketMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        queries: liveSecondStats.queries,
-        cacheHits: 0,
-        cacheMisses: 0,
-        errors: liveSecondStats.errors,
-        avgLatencyMs: liveSecondStats.avgLatencyMs,
-        qpsRaw: liveSecondStats.queries,
-      }
-      if (rows.length === 0) {
-        rows.push(liveRow)
-      } else {
-        const lastIdx = rows.length - 1
-        const last = rows[lastIdx]
-        if (liveRow.bucketMs <= last.bucketMs+perBucketSeconds*1000) {
-          rows[lastIdx] = { ...last, ...liveRow }
-        } else {
-          rows.push(liveRow)
-        }
-      }
-    }
-    const maxPoints = timeWindow === '5m' ? 300 : timeWindow === '15m' ? 900 : 1200
-    if (rows.length <= maxPoints) return rows
-    const stride = Math.ceil(rows.length / maxPoints)
-    const sampled = rows.filter((_, idx) => idx % stride === 0)
-    const last = rows[rows.length - 1]
-    if (sampled[sampled.length - 1]?.bucketMs !== last.bucketMs) sampled.push(last)
-    return sampled
-  }, [timeseries, bucketSeconds, liveSecondStats, streamConnected, timeWindow])
+  }, [tsBuckets, intervalSeconds, chartMode])
+
   const chartData = useMemo(() => {
-    const tw = timeWindow === '5m' ? 4 : timeWindow === '15m' ? 6 : 8
+    const tw = chartMode === 'live' ? 3 : chartMode === '15m' ? 4 : chartMode === '1h' ? 6 : 8
     const queryTrend = movingAverage(chartDataRaw.map((x) => x.queries), tw)
     const queryEMA = ema(chartDataRaw.map((x) => x.queries), 0.35)
-    const qpsWindowPoints = Math.max(1, Math.round(10 / Math.max(1, bucketSeconds)))
+    const qpsWindowPoints = Math.max(1, Math.round(10 / Math.max(1, intervalSeconds)))
     const qpsTrend = movingAverage(chartDataRaw.map((x) => x.qpsRaw), qpsWindowPoints)
     return chartDataRaw.map((x, i) => ({
       ...x,
@@ -481,7 +424,7 @@ export default function DashboardPage() {
       queriesEMA: Number((queryEMA[i] || 0).toFixed(2)),
       qps: Number((qpsTrend[i] || 0).toFixed(2)),
     }))
-  }, [chartDataRaw, timeWindow, bucketSeconds])
+  }, [chartDataRaw, chartMode, intervalSeconds])
 
   const { windowErrors, windowErrorRate, windowAvgLatency } = useMemo(() => {
     const wq = chartData.reduce((sum, row) => sum + row.queries, 0)
@@ -822,22 +765,38 @@ export default function DashboardPage() {
             <div className="relative flex flex-wrap items-start justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200 mb-1">Traffic Stability & QPS Over Time</h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">Primary DNS signal: query volume, trend, QPS and failures in one frame</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {chartMode === 'live' ? 'Live view — last 60 seconds, updating every 2s' : `History — ${chartMode} window, ${chartInterval} buckets`}
+                  {tsConnected ? '' : ' (connecting...)'}
+                </p>
               </div>
-              <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
-                {TIME_WINDOWS.map((w) => (
-                  <button
-                    key={w}
-                    onClick={() => setTimeWindow(w)}
-                    className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
-                      timeWindow === w
-                        ? 'bg-amber-500 text-slate-950'
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                    }`}
+              <div className="flex items-center gap-2">
+                <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
+                  {CHART_MODES.map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => handleChartModeChange(m)}
+                      className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors ${
+                        chartMode === m
+                          ? m === 'live' ? 'bg-emerald-500 text-slate-950' : 'bg-amber-500 text-slate-950'
+                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {m === 'live' ? 'Live' : m}
+                    </button>
+                  ))}
+                </div>
+                {chartMode !== 'live' && INTERVAL_OPTIONS[chartMode].length > 1 && (
+                  <select
+                    value={chartInterval}
+                    onChange={(e) => setChartInterval(e.target.value)}
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2 py-1 text-xs font-semibold text-slate-700 dark:text-slate-300 outline-none"
                   >
-                    {w}
-                  </button>
-                ))}
+                    {INTERVAL_OPTIONS[chartMode].map((iv) => (
+                      <option key={iv} value={iv}>{iv}</option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
 

@@ -7,17 +7,18 @@ import (
 
 const (
 	bucketInterval = 1 * time.Second
-	maxBuckets     = 3600 // 1 hour at 1s intervals
+	maxBuckets     = 86400 // 24 hours at 1s intervals
 )
 
 // Bucket represents an aggregated time-series data point.
 type Bucket struct {
-	Timestamp    string  `json:"timestamp"`
-	Queries      int64   `json:"queries"`
-	CacheHits    int64   `json:"cache_hits"`
-	CacheMisses  int64   `json:"cache_misses"`
-	Errors       int64   `json:"errors"`
-	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	Timestamp     string  `json:"timestamp"`
+	Queries       int64   `json:"queries"`
+	CacheHits     int64   `json:"cache_hits"`
+	CacheMisses   int64   `json:"cache_misses"`
+	Errors        int64   `json:"errors"`
+	AvgLatencyMs  float64 `json:"avg_latency_ms"`
+	CacheHitRatio float64 `json:"cache_hit_ratio"`
 }
 
 // activeBucket holds the mutable counters for the current time window.
@@ -158,4 +159,76 @@ func (ts *TimeSeriesAggregator) Snapshot(window time.Duration) []Bucket {
 	}
 
 	return result
+}
+
+// SnapshotAggregated returns buckets within the given window, aggregated into
+// super-buckets of the given interval. For example, window=15m and interval=1m
+// produces ~15 data points. Each super-bucket sums queries/hits/misses/errors
+// and computes a weighted-average latency plus cache-hit ratio.
+func (ts *TimeSeriesAggregator) SnapshotAggregated(window, interval time.Duration) []Bucket {
+	raw := ts.Snapshot(window)
+	if len(raw) == 0 || interval <= bucketInterval {
+		// No aggregation needed — add cache_hit_ratio to raw buckets.
+		for i := range raw {
+			total := raw[i].CacheHits + raw[i].CacheMisses
+			if total > 0 {
+				raw[i].CacheHitRatio = float64(raw[i].CacheHits) / float64(total)
+			}
+		}
+		return raw
+	}
+
+	intervalSec := int64(interval.Seconds())
+	type acc struct {
+		bucketStart  int64
+		queries      int64
+		cacheHits    int64
+		cacheMisses  int64
+		errors       int64
+		totalLatency float64
+	}
+
+	var groups []acc
+
+	for _, b := range raw {
+		t, err := time.Parse(time.RFC3339, b.Timestamp)
+		if err != nil {
+			continue
+		}
+		epoch := t.Unix()
+		groupStart := epoch - (epoch % intervalSec)
+
+		if len(groups) == 0 || groups[len(groups)-1].bucketStart != groupStart {
+			groups = append(groups, acc{bucketStart: groupStart})
+		}
+		g := &groups[len(groups)-1]
+		g.queries += b.Queries
+		g.cacheHits += b.CacheHits
+		g.cacheMisses += b.CacheMisses
+		g.errors += b.Errors
+		g.totalLatency += b.AvgLatencyMs * float64(b.Queries)
+	}
+
+	out := make([]Bucket, 0, len(groups))
+	for _, g := range groups {
+		var avgLat float64
+		if g.queries > 0 {
+			avgLat = g.totalLatency / float64(g.queries)
+		}
+		var hitRatio float64
+		total := g.cacheHits + g.cacheMisses
+		if total > 0 {
+			hitRatio = float64(g.cacheHits) / float64(total)
+		}
+		out = append(out, Bucket{
+			Timestamp:     time.Unix(g.bucketStart, 0).UTC().Format(time.RFC3339),
+			Queries:       g.queries,
+			CacheHits:     g.cacheHits,
+			CacheMisses:   g.cacheMisses,
+			Errors:        g.errors,
+			AvgLatencyMs:  avgLat,
+			CacheHitRatio: hitRatio,
+		})
+	}
+	return out
 }

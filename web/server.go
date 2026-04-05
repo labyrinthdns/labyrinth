@@ -345,6 +345,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/config/validate", s.requireAuth(s.handleValidateConfig))
 	mux.HandleFunc("/api/queries/recent", s.requireAuth(s.handleRecentQueries))
 	mux.HandleFunc("/api/queries/stream", s.requireAuth(s.handleQueryStreamWS))
+	mux.HandleFunc("/api/stats/timeseries/ws", s.requireAuth(s.handleTimeSeriesWS))
 	mux.HandleFunc("/api/zabbix/items", s.requireAuth(s.handleZabbixItems))
 	mux.HandleFunc("/api/zabbix/item", s.requireAuth(s.handleZabbixItem))
 	mux.HandleFunc("/api/stats/top-clients", s.requireAuth(s.handleTopClients))
