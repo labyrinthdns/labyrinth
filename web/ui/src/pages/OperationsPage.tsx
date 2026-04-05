@@ -1,40 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, CheckCircle2, Activity, ShieldAlert, Server, Flame, Clock3, Pause, Play } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Activity, ShieldAlert, Server, Flame, Clock3 } from 'lucide-react'
 import { ResponsiveContainer, ComposedChart, Bar, Line, CartesianGrid, XAxis, YAxis, Tooltip } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, TimeSeriesBucket, SystemProfileResponse } from '@/api/types'
+import type { StatsResponse, SystemProfileResponse } from '@/api/types'
 import { formatNumber } from '@/lib/utils'
+import { useTimeSeriesStream } from '@/hooks/useTimeSeriesStream'
 
 type HealthResponse = {
   status?: string
   resolver_ready?: boolean
 }
 
-const OPS_WINDOWS = ['5m', '15m', '1h'] as const
-type OpsWindow = (typeof OPS_WINDOWS)[number]
-const OPS_REFRESH_INTERVALS = [
-  { label: '5s', value: 5000 },
-  { label: '15s', value: 15000 },
-  { label: '30s', value: 30000 },
-] as const
-
 export default function OperationsPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [profile, setProfile] = useState<SystemProfileResponse | null>(null)
   const [health, setHealth] = useState<HealthResponse | null>(null)
-  const [buckets, setBuckets] = useState<TimeSeriesBucket[]>([])
-  const [timeWindow, setTimeWindow] = useState<OpsWindow>('1h')
-  const [autoRefresh, setAutoRefresh] = useState(true)
-  const [refreshMs, setRefreshMs] = useState(15000)
   const [errorThresholdPct, setErrorThresholdPct] = useState(5)
   const [latencyThresholdMs, setLatencyThresholdMs] = useState(250)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const fetchingRef = useRef(false)
   const healthRef = useRef(health)
   const healthFetchedAtRef = useRef(0)
   healthRef.current = health
 
+  // Chart data via WebSocket: 1h window, 1m intervals = 60 data points, server pushes every 10s
+  const { buckets: tsBuckets, connected: tsConnected } = useTimeSeriesStream({
+    mode: 'history',
+    window: '1h',
+    interval: '1m',
+  })
+
+  // Fetch stats + profile via HTTP (health every 60s)
   const fetchData = useCallback(async (opts?: { forceHealth?: boolean }) => {
     if (fetchingRef.current) return
     fetchingRef.current = true
@@ -42,9 +38,8 @@ export default function OperationsPage() {
       const coreResults = await Promise.allSettled([
         api.stats(),
         api.systemProfile(),
-        api.timeseries(timeWindow),
       ])
-      const [statsRes, profileRes, tsRes] = coreResults
+      const [statsRes, profileRes] = coreResults
 
       const now = Date.now()
       const shouldFetchHealth = Boolean(
@@ -64,32 +59,25 @@ export default function OperationsPage() {
       if (statsRes.status === 'fulfilled') setStats(statsRes.value as unknown as StatsResponse)
       if (profileRes.status === 'fulfilled') setProfile(profileRes.value as unknown as SystemProfileResponse)
       if (healthRes?.status === 'fulfilled') setHealth(healthRes.value as unknown as HealthResponse)
-      if (tsRes.status === 'fulfilled') {
-        const data = tsRes.value as unknown as { buckets?: TimeSeriesBucket[] }
-        setBuckets(data.buckets || [])
-      }
-
-      setUpdatedAt(new Date())
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load operations data')
     } finally {
       fetchingRef.current = false
     }
-  }, [timeWindow])
+  }, [])
 
+  // Auto-refresh stats every 15s
   useEffect(() => {
-    void fetchData()
-    if (!autoRefresh) {
-      return
-    }
+    void fetchData({ forceHealth: true })
     const interval = setInterval(() => {
       if (document.hidden) return
       void fetchData()
-    }, refreshMs)
+    }, 15000)
     return () => clearInterval(interval)
-  }, [fetchData, autoRefresh, refreshMs])
+  }, [fetchData])
 
+  // Load config thresholds
   useEffect(() => {
     let cancelled = false
     void api.config()
@@ -101,16 +89,13 @@ export default function OperationsPage() {
         if (Number.isFinite(errThreshold) && errThreshold > 0) setErrorThresholdPct(errThreshold)
         if (Number.isFinite(latencyThreshold) && latencyThreshold > 0) setLatencyThresholdMs(latencyThreshold)
       })
-      .catch(() => {
-        // keep defaults
-      })
-    return () => {
-      cancelled = true
-    }
+      .catch(() => {})
+    return () => { cancelled = true }
   }, [])
 
+  // Chart data from WS buckets
   const chartData = useMemo(() => {
-    return (buckets || [])
+    return (tsBuckets || [])
       .map((b) => {
         const ts = b.timestamp || b.ts || ''
         return {
@@ -119,11 +104,15 @@ export default function OperationsPage() {
           queries: b.queries || 0,
           errors: b.errors || 0,
           avgLatencyMs: b.avg_latency_ms || 0,
+          cacheHits: b.cache_hits || 0,
+          cacheMisses: b.cache_misses || 0,
+          cacheHitRatio: b.cache_hit_ratio || 0,
         }
       })
       .sort((a, b) => a.ts.localeCompare(b.ts))
-  }, [buckets])
+  }, [tsBuckets])
 
+  // Aggregated window stats
   const totalWindowQueries = chartData.reduce((sum, i) => sum + i.queries, 0)
   const totalWindowErrors = chartData.reduce((sum, i) => sum + i.errors, 0)
   const weightedLatency = chartData.reduce((sum, i) => sum + (i.avgLatencyMs * i.queries), 0)
@@ -136,81 +125,110 @@ export default function OperationsPage() {
       ? 'warning'
       : 'healthy'
 
-  const alerts = [
-    !stats?.resolver_ready && 'Resolver is not ready',
-    errorRate >= errorThresholdPct && `Error rate threshold breached (${errorRate.toFixed(2)}% >= ${errorThresholdPct.toFixed(2)}%)`,
-    avgLatency >= latencyThresholdMs && `Latency threshold breached (${avgLatency.toFixed(1)}ms >= ${latencyThresholdMs.toFixed(0)}ms)`,
-    (stats?.upstream_errors || 0) > 0 && `Upstream errors observed (${formatNumber(stats?.upstream_errors || 0)})`,
-    (stats?.rate_limited || 0) > 0 && `Rate limiting active (${formatNumber(stats?.rate_limited || 0)} hits)`,
-  ].filter(Boolean) as string[]
+  // Enhanced alerts with detailed root cause analysis
+  const alerts = useMemo(() => {
+    const result: { level: 'critical' | 'warning' | 'info'; title: string; detail: string }[] = []
 
-  const incidents = chartData
-    .filter((x) => x.errors > 0 || x.avgLatencyMs >= latencyThresholdMs)
-    .slice(-8)
-    .reverse()
+    if (!stats?.resolver_ready) {
+      result.push({
+        level: 'critical',
+        title: 'Resolver Offline',
+        detail: `DNS resolver is not accepting queries. Health status: ${health?.status || 'unknown'}. Check upstream connectivity and server configuration.`,
+      })
+    }
+
+    if (errorRate >= errorThresholdPct) {
+      const rcodes = stats?.responses_by_rcode || {}
+      const errorRcodes = Object.entries(rcodes)
+        .filter(([code]) => code !== 'NOERROR' && code !== 'NXDOMAIN')
+        .sort(([, a], [, b]) => b - a)
+      const topErrors = errorRcodes.slice(0, 3).map(([code, count]) => `${code}: ${formatNumber(count)}`).join(', ')
+
+      result.push({
+        level: errorRate >= errorThresholdPct * 2 ? 'critical' : 'warning',
+        title: `Error Rate ${errorRate.toFixed(2)}%`,
+        detail: `Threshold: ${errorThresholdPct}%. ${formatNumber(totalWindowErrors)} errors across ${formatNumber(totalWindowQueries)} queries in the last hour.${topErrors ? ` Response codes: ${topErrors}.` : ''} Investigate upstream DNS providers and network path.`,
+      })
+    }
+
+    if (avgLatency >= latencyThresholdMs) {
+      const peakBucket = chartData.length > 0
+        ? chartData.reduce((peak, b) => b.avgLatencyMs > peak.avgLatencyMs ? b : peak)
+        : null
+      result.push({
+        level: avgLatency >= latencyThresholdMs * 2 ? 'critical' : 'warning',
+        title: `Latency ${avgLatency.toFixed(1)}ms`,
+        detail: `Threshold: ${latencyThresholdMs}ms. Weighted average over the last hour.${peakBucket ? ` Peak: ${peakBucket.avgLatencyMs.toFixed(1)}ms at ${peakBucket.time}.` : ''} Possible causes: upstream DNS slowness, network congestion, or cache misses under high load.`,
+      })
+    }
+
+    if ((stats?.upstream_errors || 0) > 0) {
+      const pct = stats?.upstream_queries
+        ? ((stats.upstream_errors / stats.upstream_queries) * 100).toFixed(2)
+        : '?'
+      result.push({
+        level: 'warning',
+        title: `${formatNumber(stats?.upstream_errors || 0)} Upstream Errors`,
+        detail: `${pct}% upstream failure rate (${formatNumber(stats?.upstream_queries || 0)} total). DNS provider may be degraded or network path to upstream is unstable.`,
+      })
+    }
+
+    if ((stats?.rate_limited || 0) > 0) {
+      result.push({
+        level: 'info',
+        title: 'Rate Limiting Active',
+        detail: `${formatNumber(stats?.rate_limited || 0)} queries throttled. Protects resolver capacity but may affect legitimate clients if thresholds are too aggressive.`,
+      })
+    }
+
+    if ((stats?.fallback_queries || 0) > 0) {
+      const fbQ = stats?.fallback_queries || 0
+      const fbR = stats?.fallback_recoveries || 0
+      const recoveryPct = fbQ > 0 ? ((fbR / fbQ) * 100).toFixed(1) : '0'
+      result.push({
+        level: fbR < fbQ ? 'warning' : 'info',
+        title: `Fallback Resolver Active`,
+        detail: `${formatNumber(fbQ)} fallback attempts, ${formatNumber(fbR)} recovered (${recoveryPct}%). Primary resolution is failing — check upstream DNS connectivity. ${fbR === fbQ ? 'All queries recovered via fallback.' : `${formatNumber(fbQ - fbR)} queries failed even with fallback.`}`,
+      })
+    }
+
+    return result
+  }, [stats, health, errorRate, errorThresholdPct, avgLatency, latencyThresholdMs, totalWindowErrors, totalWindowQueries, chartData])
+
+  // Enhanced incidents with root cause analysis
+  const incidents = useMemo(() => {
+    return chartData
+      .filter((x) => x.errors > 0 || x.avgLatencyMs >= latencyThresholdMs)
+      .slice(-8)
+      .reverse()
+      .map((i) => {
+        const causes: string[] = []
+        const bucketErrorRate = i.queries > 0 ? (i.errors / i.queries) * 100 : 0
+
+        if (i.errors > 0) {
+          causes.push(`${i.errors} errors (${bucketErrorRate.toFixed(1)}% error rate)`)
+        }
+        if (i.avgLatencyMs >= latencyThresholdMs) {
+          const ratio = (i.avgLatencyMs / latencyThresholdMs).toFixed(1)
+          causes.push(`${i.avgLatencyMs.toFixed(1)}ms avg latency (${ratio}x threshold)`)
+        }
+        if (i.cacheHitRatio < 0.5 && i.queries > 0) {
+          causes.push(`Low cache efficiency: ${(i.cacheHitRatio * 100).toFixed(0)}% hit ratio`)
+        }
+
+        return { ...i, causes, bucketErrorRate }
+      })
+  }, [chartData, latencyThresholdMs])
 
   const qps1m = profile?.traffic?.last_minute_qps_avg || 0
   const peakQps1m = profile?.traffic?.last_minute_qps_peak || 0
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Operations</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Live service health, reliability and throughput signals.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800">
-            Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
-          </span>
-          <span className={`px-2.5 py-1 rounded-lg border text-xs ${
-            severity === 'critical'
-              ? 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-              : severity === 'warning'
-                ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
-                : 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
-          }`}>
-            {severity.toUpperCase()}
-          </span>
-          <div className="inline-flex items-center gap-1 rounded-lg border border-slate-300 dark:border-slate-600 px-2 py-1 text-xs bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-            <span>Auto</span>
-            <select
-              value={refreshMs}
-              onChange={(e) => setRefreshMs(Number(e.target.value))}
-              className="bg-transparent outline-none"
-            >
-              {OPS_REFRESH_INTERVALS.map((item) => (
-                <option key={item.value} value={item.value} className="text-slate-900">
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button
-            onClick={() => setAutoRefresh((v) => !v)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
-          >
-            {autoRefresh ? <Pause size={13} /> : <Play size={13} />}
-            {autoRefresh ? 'Pause' : 'Resume'}
-          </button>
-          <div className="inline-flex rounded-lg border border-slate-300 dark:border-slate-600 overflow-hidden">
-            {OPS_WINDOWS.map((w) => (
-              <button
-                key={w}
-                onClick={() => setTimeWindow(w)}
-                className={`px-2.5 py-1.5 text-xs font-medium ${timeWindow === w ? 'bg-amber-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
-              >
-                {w}
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={() => void fetchData({ forceHealth: true })}
-            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
-          >
-            Refresh
-          </button>
-        </div>
+      {/* Clean title */}
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Operations</h1>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Service health, reliability and throughput — last hour.</p>
       </div>
 
       {error && (
@@ -219,6 +237,7 @@ export default function OperationsPage() {
         </div>
       )}
 
+      {/* Top metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
           <p className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Resolver</p>
@@ -228,7 +247,7 @@ export default function OperationsPage() {
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Health: {health?.status || 'unknown'}</p>
         </div>
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-          <p className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Error Rate ({timeWindow})</p>
+          <p className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Error Rate (1h)</p>
           <p className="mt-1 text-xl font-bold text-red-600 dark:text-red-400">{errorRate.toFixed(2)}%</p>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{formatNumber(totalWindowErrors)} errors / {formatNumber(totalWindowQueries)} queries</p>
         </div>
@@ -238,7 +257,7 @@ export default function OperationsPage() {
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Current traffic pressure</p>
         </div>
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-          <p className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Avg Latency ({timeWindow})</p>
+          <p className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Avg Latency (1h)</p>
           <p className="mt-1 text-xl font-bold text-amber-600 dark:text-amber-400">{avgLatency.toFixed(1)} ms</p>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Weighted by query volume</p>
         </div>
@@ -258,40 +277,45 @@ export default function OperationsPage() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <div className="inline-flex items-center gap-2">
-            <Flame size={14} className="text-red-500" />
-            <span className="text-slate-500 dark:text-slate-400">Error threshold</span>
-            <input
-              type="number"
-              min={0.1}
-              step={0.1}
-              value={errorThresholdPct}
-              onChange={(e) => setErrorThresholdPct(Number(e.target.value || 0))}
-              className="w-20 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm"
-            />
-            <span className="text-slate-500 dark:text-slate-400">%</span>
-          </div>
-          <div className="inline-flex items-center gap-2">
-            <Clock3 size={14} className="text-amber-500" />
-            <span className="text-slate-500 dark:text-slate-400">Latency threshold</span>
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={latencyThresholdMs}
-              onChange={(e) => setLatencyThresholdMs(Number(e.target.value || 0))}
-              className="w-20 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm"
-            />
-            <span className="text-slate-500 dark:text-slate-400">ms</span>
-          </div>
-        </div>
-      </div>
-
+      {/* Chart + Alerts/Incidents */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        {/* Chart card with threshold controls in header */}
         <div className="xl:col-span-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-6">
-          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Reliability Trend ({timeWindow})</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Reliability Trend</h2>
+              <span className="text-xs text-slate-400 dark:text-slate-500">Last 1 hour · 1 min intervals</span>
+              <span className={`inline-block w-1.5 h-1.5 rounded-full ${tsConnected ? 'bg-emerald-500' : 'bg-slate-400'}`} title={tsConnected ? 'Connected' : 'Disconnected'} />
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <div className="inline-flex items-center gap-1.5">
+                <Flame size={12} className="text-red-500" />
+                <span className="text-slate-500 dark:text-slate-400">Error</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  step={0.1}
+                  value={errorThresholdPct}
+                  onChange={(e) => setErrorThresholdPct(Number(e.target.value || 0))}
+                  className="w-16 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-1.5 py-0.5 text-xs"
+                />
+                <span className="text-slate-400">%</span>
+              </div>
+              <div className="inline-flex items-center gap-1.5">
+                <Clock3 size={12} className="text-amber-500" />
+                <span className="text-slate-500 dark:text-slate-400">Latency</span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={latencyThresholdMs}
+                  onChange={(e) => setLatencyThresholdMs(Number(e.target.value || 0))}
+                  className="w-16 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-1.5 py-0.5 text-xs"
+                />
+                <span className="text-slate-400">ms</span>
+              </div>
+            </div>
+          </div>
           <div className="h-72">
             {chartData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -314,27 +338,54 @@ export default function OperationsPage() {
                 </ComposedChart>
               </ResponsiveContainer>
             ) : (
-              <div className="flex items-center justify-center h-full text-sm text-slate-400">No time series data</div>
+              <div className="flex items-center justify-center h-full text-sm text-slate-400">
+                {tsConnected ? 'Waiting for data...' : 'Connecting...'}
+              </div>
             )}
           </div>
         </div>
 
+        {/* Alerts + Incidents sidebar */}
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-6 space-y-4">
           <div>
-            <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Quick Alerts</h2>
+            <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Alerts</h2>
             {alerts.length > 0 ? (
               <div className="space-y-2.5">
                 {alerts.map((a) => (
-                  <div key={a} className="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
-                    <ShieldAlert size={15} className="mt-0.5" />
-                    <span>{a}</span>
+                  <div
+                    key={a.title}
+                    className={`rounded-lg border px-3 py-2.5 text-sm ${
+                      a.level === 'critical'
+                        ? 'border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-900/20'
+                        : a.level === 'warning'
+                          ? 'border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-900/20'
+                          : 'border-sky-200 dark:border-sky-900/60 bg-sky-50 dark:bg-sky-900/20'
+                    }`}
+                  >
+                    <div className={`flex items-start gap-2 font-medium ${
+                      a.level === 'critical'
+                        ? 'text-red-700 dark:text-red-300'
+                        : a.level === 'warning'
+                          ? 'text-amber-700 dark:text-amber-300'
+                          : 'text-sky-700 dark:text-sky-300'
+                    }`}>
+                      <ShieldAlert size={15} className="mt-0.5 shrink-0" />
+                      <span>{a.title}</span>
+                    </div>
+                    <p className={`mt-1 text-xs leading-relaxed ${
+                      a.level === 'critical'
+                        ? 'text-red-600 dark:text-red-400'
+                        : a.level === 'warning'
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-sky-600 dark:text-sky-400'
+                    }`}>{a.detail}</p>
                   </div>
                 ))}
               </div>
             ) : (
               <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300 flex items-center gap-2">
                 <CheckCircle2 size={15} />
-                No immediate operational alerts.
+                All systems operating normally.
               </div>
             )}
           </div>
@@ -347,17 +398,21 @@ export default function OperationsPage() {
                   <div key={`${i.ts}-${i.errors}-${i.avgLatencyMs}`} className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900/40">
                     <div className="flex items-center justify-between">
                       <span className="text-slate-500 dark:text-slate-400">{new Date(i.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                      <span className="text-slate-700 dark:text-slate-200 font-semibold">{i.queries} q</span>
+                      <span className="text-slate-700 dark:text-slate-200 font-semibold">{formatNumber(i.queries)} queries</span>
                     </div>
-                    <div className="mt-1 flex items-center justify-between">
-                      <span className="text-red-600 dark:text-red-400">errors: {i.errors}</span>
-                      <span className="text-amber-600 dark:text-amber-400">latency: {i.avgLatencyMs.toFixed(1)}ms</span>
+                    <div className="mt-1.5 space-y-0.5">
+                      {i.causes.map((cause) => (
+                        <div key={cause} className="flex items-start gap-1.5">
+                          <AlertTriangle size={10} className="mt-0.5 text-amber-500 shrink-0" />
+                          <span className="text-slate-600 dark:text-slate-300">{cause}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="text-sm text-slate-500 dark:text-slate-400">No incidents in this window.</div>
+              <div className="text-sm text-slate-500 dark:text-slate-400">No incidents in the last hour.</div>
             )}
           </div>
 
@@ -374,6 +429,18 @@ export default function OperationsPage() {
               <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1"><Activity size={13} /> Rate Limited</span>
               <span className="font-semibold text-slate-900 dark:text-slate-100">{formatNumber(stats?.rate_limited || 0)}</span>
             </div>
+            {((stats?.fallback_queries || 0) > 0) && (
+              <div className="pt-1.5 mt-1.5 border-t border-slate-200 dark:border-slate-700 space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1"><ShieldAlert size={13} /> Fallback Queries</span>
+                  <span className="font-semibold text-amber-600 dark:text-amber-400">{formatNumber(stats?.fallback_queries || 0)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 dark:text-slate-400 inline-flex items-center gap-1"><CheckCircle2 size={13} /> Fallback Recoveries</span>
+                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">{formatNumber(stats?.fallback_recoveries || 0)}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

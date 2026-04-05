@@ -663,6 +663,13 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {((statsView?.fallback_queries || 0) > 0) && (
+        <div className="flex items-center gap-3 px-3 py-2 rounded-lg border border-amber-300/40 dark:border-amber-700/40 bg-amber-50/50 dark:bg-amber-900/10 text-xs">
+          <span className="font-medium text-amber-700 dark:text-amber-300">Fallback Resolver Active</span>
+          <span className="text-slate-600 dark:text-slate-400">{formatNumber(statsView?.fallback_recoveries || 0)} / {formatNumber(statsView?.fallback_queries || 0)} recovered</span>
+        </div>
+      )}
+
       <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
         <div className="flex items-center justify-between gap-2 mb-3">
           <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Query Type Counters</h2>
