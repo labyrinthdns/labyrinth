@@ -71,6 +71,7 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"ecs_max_prefix":        cfg.Resolver.ECSMaxPrefix,
 			"dns64_enabled":         cfg.Resolver.DNS64Enabled,
 			"dns64_prefix":          cfg.Resolver.DNS64Prefix,
+			"fallback_resolvers":    cfg.Resolver.FallbackResolvers,
 		},
 		"cache": map[string]interface{}{
 			"max_entries":      cfg.Cache.MaxEntries,

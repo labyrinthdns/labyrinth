@@ -218,6 +218,56 @@ func TestDNSSECAndBlockedCounters(t *testing.T) {
 	}
 }
 
+func TestFallbackCounters_WriteMetrics(t *testing.T) {
+	m := NewMetrics()
+
+	m.IncFallbackQueries()
+	m.IncFallbackQueries()
+	m.IncFallbackRecoveries()
+
+	var buf bytes.Buffer
+	m.WriteMetrics(&buf)
+	output := buf.String()
+
+	checks := []string{
+		"labyrinth_fallback_queries_total 2",
+		"labyrinth_fallback_recoveries_total 1",
+	}
+	for _, check := range checks {
+		if !strings.Contains(output, check) {
+			t.Errorf("WriteMetrics output missing %q", check)
+		}
+	}
+}
+
+func TestFallbackCounters_ServeHTTP(t *testing.T) {
+	m := NewMetrics()
+
+	m.IncFallbackQueries()
+	m.IncFallbackQueries()
+	m.IncFallbackQueries()
+	m.IncFallbackRecoveries()
+	m.IncFallbackRecoveries()
+
+	req, err := http.NewRequest("GET", "/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	m.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	checks := []string{
+		"labyrinth_fallback_queries_total 3",
+		"labyrinth_fallback_recoveries_total 2",
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Errorf("ServeHTTP output missing %q", check)
+		}
+	}
+}
+
 func TestAddCacheEvictions(t *testing.T) {
 	m := NewMetrics()
 

@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-04-05
+
+### Added
+- **Fallback resolver system**: configurable backup DNS resolvers (`resolver.fallback_resolvers`) that activate automatically when primary resolution returns SERVFAIL or a network error. Picks one random resolver per retry, single attempt only — no retry storms.
+- `shouldFallback()` guard ensures DNSSEC-bogus responses and normal NXDOMAIN are never retried, preserving security validation semantics.
+- `queryFallback()` reuses the existing `sendForwardQueryOnce` path with RD=1, so fallback queries go through the same timeout/connection logic as forward zones.
+- Fallback Prometheus metrics: `labyrinth_fallback_queries_total`, `labyrinth_fallback_recoveries_total`.
+- Fallback fields in `/api/stats` JSON (`fallback_queries`, `fallback_recoveries`) and `/api/config` (`fallback_resolvers`).
+- Config page: new **Fallback Resolvers** string-list editor under Resolver settings to add/remove backup addresses (e.g., `8.8.8.8`, `1.1.1.1`).
+- Dashboard: amber banner "Fallback Resolver Active — X/Y recovered" shown when fallback queries are detected.
+- Operations page: fallback alert with recovery percentage and root-cause analysis; bottom stats section showing fallback query/recovery counts.
+- Comprehensive test suite: 18 unit tests covering all fallback branches — `shouldFallback` truth table, `queryFallback` success/failure/multi-resolver, and end-to-end `Resolve()` integration across iterative, forward-zone, and stub-zone paths.
+- Config parser tests for `fallback_resolvers` CSV parsing (single, multiple, empty).
+- Web layer tests for fallback metrics in `/api/stats` (non-zero and zero cases).
+
+### Changed
+- `Resolve()` restructured to unify iterative, forward-zone, and stub-zone result handling into a single fallback check point, eliminating code duplication.
+
 ## [0.5.2] - 2026-04-05
 
 ### Added

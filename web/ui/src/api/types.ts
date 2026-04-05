@@ -32,6 +32,8 @@ export interface StatsResponse {
   dnssec_insecure: number
   dnssec_bogus: number
   blocked_queries: number
+  fallback_queries: number
+  fallback_recoveries: number
 }
 
 export interface TimeSeriesBucket {

@@ -43,6 +43,8 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		"dnssec_insecure":      snap.DNSSECInsecure,
 		"dnssec_bogus":         snap.DNSSECBogus,
 		"blocked_queries":      snap.BlockedQueries,
+		"fallback_queries":     snap.FallbackQueries,
+		"fallback_recoveries":  snap.FallbackRecoveries,
 		"uptime_seconds":       snap.UptimeSeconds,
 		"goroutines":           snap.Goroutines,
 		"query_duration_count": snap.QueryDurationCount,
