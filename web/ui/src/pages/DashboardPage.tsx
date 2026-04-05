@@ -309,22 +309,31 @@ export default function DashboardPage() {
       // ignore storage failures
     }
   }, [chartSeriesVisibility])
+  const intervalSeconds = useMemo(() => {
+    const d = { '2s': 2, '1m': 60, '2m': 120, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600 }
+    return (d as Record<string, number>)[chartInterval] || 1
+  }, [chartInterval])
+
   const liveWindowStats = useMemo(() => {
+    // Derive live QPS from time-series buckets (accurate, no buffer cap).
     const cutoff = Date.now() - 10_000
-    let count = 0
+    let queries = 0
     let errors = 0
-    for (const q of streamQueries) {
-      const ts = Date.parse(q.ts || '')
+    let windowSec = 0
+    for (const b of tsBuckets) {
+      const ts = Date.parse(b.timestamp || b.ts || '')
       if (!Number.isFinite(ts) || ts < cutoff) continue
-      count++
-      if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) errors++
+      queries += b.queries || 0
+      errors += b.errors || 0
+      windowSec += intervalSeconds
     }
+    const effectiveWindow = Math.max(windowSec, 1)
     return {
-      queries10s: count,
-      qps10s: count / 10,
+      queries10s: queries,
+      qps10s: queries / effectiveWindow,
       errors10s: errors,
     }
-  }, [streamQueries])
+  }, [tsBuckets, intervalSeconds])
 
   const streamDelta = useMemo(() => {
     const queryTypeDelta: Record<string, number> = {}
@@ -375,11 +384,6 @@ export default function DashboardPage() {
   const totalQueries = statsView?.queries_by_type
     ? Object.values(statsView.queries_by_type).reduce((a, b) => a + b, 0)
     : 0
-
-  const intervalSeconds = useMemo(() => {
-    const d = { '2s': 2, '1m': 60, '2m': 120, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600 }
-    return (d as Record<string, number>)[chartInterval] || 1
-  }, [chartInterval])
 
   const chartDataRaw = useMemo(() => {
     const perBucketSeconds = Math.max(1, intervalSeconds)
@@ -694,7 +698,7 @@ export default function DashboardPage() {
           <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-2">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Queries/sec</div>
             <div className="mt-1 text-lg font-bold text-cyan-300">{qpsLive.toFixed(2)}</div>
-            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Live 10s window</div>
+            <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">From time-series</div>
           </div>
           <div className={`rounded-md border px-3 py-2 ${windowErrorRate >= errorThresholdPct ? 'border-rose-500/40 bg-rose-500/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'}`}>
             <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Error Rate</div>
