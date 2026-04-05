@@ -21,7 +21,7 @@ import {
   ReferenceLine,
 } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, SystemProfileResponse } from '@/api/types'
+import type { StatsResponse, SystemProfileResponse, TLSStatusResponse } from '@/api/types'
 import { formatNumber } from '@/lib/utils'
 import { useTimeSeriesStream } from '@/hooks/useTimeSeriesStream'
 
@@ -45,6 +45,7 @@ export default function OperationsPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [profile, setProfile] = useState<SystemProfileResponse | null>(null)
   const [health, setHealth] = useState<HealthResponse | null>(null)
+  const [tlsStatus, setTlsStatus] = useState<TLSStatusResponse | null>(null)
   const [errorThresholdPct, setErrorThresholdPct] = useState(5)
   const [latencyThresholdMs, setLatencyThresholdMs] = useState(250)
   const [error, setError] = useState('')
@@ -119,6 +120,7 @@ export default function OperationsPage() {
         if (Number.isFinite(l) && l > 0) setLatencyThresholdMs(l)
       })
       .catch(() => {})
+    void api.tlsStatus().then((t) => { if (!cancelled) setTlsStatus(t) }).catch(() => {})
     return () => { cancelled = true }
   }, [])
 
@@ -585,6 +587,53 @@ export default function OperationsPage() {
           </div>
         </div>
       </div>
+
+      {/* TLS Certificate Status */}
+      {tlsStatus?.enabled && (
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">TLS Certificate</h2>
+            {tlsStatus.auto_tls && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400">
+                Auto-TLS
+              </span>
+            )}
+          </div>
+          {tlsStatus.cert?.not_after ? (
+            <div className="space-y-2.5 text-sm">
+              <CounterRow icon={<Shield size={13} />} label="Domain" value={tlsStatus.cert.domain || tlsStatus.cert.subject || '—'} />
+              <CounterRow icon={<Shield size={13} />} label="Issuer" value={tlsStatus.cert.issuer || '—'} />
+              <CounterRow
+                icon={<Clock3 size={13} />}
+                label="Expires"
+                value={new Date(tlsStatus.cert.not_after).toLocaleDateString()}
+                color={
+                  new Date(tlsStatus.cert.not_after).getTime() - Date.now() < 7 * 86400_000
+                    ? 'text-red-600 dark:text-red-400'
+                    : new Date(tlsStatus.cert.not_after).getTime() - Date.now() < 30 * 86400_000
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : 'text-emerald-600 dark:text-emerald-400'
+                }
+              />
+              {tlsStatus.cert.dns_names && tlsStatus.cert.dns_names.length > 0 && (
+                <CounterRow icon={<Activity size={13} />} label="SANs" value={tlsStatus.cert.dns_names.join(', ')} />
+              )}
+              {tlsStatus.auto_tls && (
+                <button
+                  onClick={() => { api.tlsRenew().then(() => api.tlsStatus().then(setTlsStatus)).catch(() => {}) }}
+                  className="mt-2 w-full text-xs py-1.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+                >
+                  Force Renew
+                </button>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {tlsStatus.auto_tls ? 'Certificate will be provisioned on first TLS handshake.' : 'No certificate information available.'}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

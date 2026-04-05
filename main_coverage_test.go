@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"crypto/tls"
 	"strconv"
 	"syscall"
 	"testing"
@@ -282,7 +283,7 @@ cache:
 	startHTTPServicesFn = func(context.Context, *config.Config, *cache.Cache, *metrics.Metrics, *resolver.Resolver, *server.MainHandler, *slog.Logger, *blocklist.Manager, string) error {
 		return errors.New("http services failed")
 	}
-	startDNSServersFn = func(context.Context, *config.Config, *server.MainHandler, *slog.Logger) (chan error, error) {
+	startDNSServersFn = func(context.Context, *config.Config, *server.MainHandler, *slog.Logger, ...*tls.Config) (chan error, error) {
 		t.Fatalf("startDNSServers should not be called when startHTTPServices fails")
 		return nil, nil
 	}

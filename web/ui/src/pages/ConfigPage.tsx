@@ -33,6 +33,7 @@ type FormState = {
   web: {
     enabled: boolean; addr: string; doh: boolean; doh3: boolean
     tlsEnabled: boolean; tlsCertFile: string; tlsKeyFile: string
+    autoTLS: boolean; autoTLSDomain: string; autoTLSEmail: string; autoTLSCacheDir: string; autoTLSStaging: boolean
     authUser: string; authHash: string
     dashPanelOrder: string[]; dashHiddenPanels: string[]
     queryLogBuffer: number; topClientsLimit: number; topDomainsLimit: number
@@ -132,6 +133,8 @@ function mapForm(cfg: Record<string, unknown>, authHash: string): FormState {
       enabled: boo(web.enabled, true), addr: str(web.addr, '127.0.0.1:9153'),
       doh: boo(web.doh_enabled), doh3: boo(web.doh3_enabled),
       tlsEnabled: boo(web.tls_enabled), tlsCertFile: str(web.tls_cert_file), tlsKeyFile: str(web.tls_key_file),
+      autoTLS: boo(web.auto_tls), autoTLSDomain: str(web.auto_tls_domain), autoTLSEmail: str(web.auto_tls_email),
+      autoTLSCacheDir: str(web.auto_tls_cache_dir, 'certs'), autoTLSStaging: boo(web.auto_tls_staging),
       authUser: str(auth.username, 'admin'), authHash,
       dashPanelOrder: arr(dash.panel_order), dashHiddenPanels: arr(dash.hidden_panels),
       queryLogBuffer: num(web.query_log_buffer, 300), topClientsLimit: num(web.top_clients_limit, 2000),
@@ -258,6 +261,11 @@ function buildYAML(f: FormState): string {
   L.push(`  tls_enabled: ${f.web.tlsEnabled}`)
   if (f.web.tlsCertFile) L.push(`  tls_cert_file: ${y(f.web.tlsCertFile)}`)
   if (f.web.tlsKeyFile) L.push(`  tls_key_file: ${y(f.web.tlsKeyFile)}`)
+  L.push(`  auto_tls: ${f.web.autoTLS}`)
+  if (f.web.autoTLSDomain) L.push(`  auto_tls_domain: ${y(f.web.autoTLSDomain)}`)
+  if (f.web.autoTLSEmail) L.push(`  auto_tls_email: ${y(f.web.autoTLSEmail)}`)
+  if (f.web.autoTLSCacheDir) L.push(`  auto_tls_cache_dir: ${y(f.web.autoTLSCacheDir)}`)
+  if (f.web.autoTLSStaging) L.push(`  auto_tls_staging: true`)
   L.push(`  alert_error_threshold_pct: ${f.web.alertErrorThresholdPct}`)
   L.push(`  alert_latency_threshold_ms: ${f.web.alertLatencyThresholdMs}`)
   L.push(`  auto_update: ${f.web.autoUpdate}`)
@@ -629,10 +637,19 @@ export default function ConfigPage() {
           <Toggle label="DoH (HTTP/1.1+2)" checked={form.web.doh} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, doh: v } }))} />
           <Toggle label="DoH (HTTP/3)" checked={form.web.doh3} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, doh3: v } }))} />
           <Toggle label="Web TLS" checked={form.web.tlsEnabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, tlsEnabled: v } }))} />
-          {(form.web.tlsEnabled || form.web.tlsCertFile) && (
+          {(form.web.tlsEnabled || form.web.tlsCertFile) && !form.web.autoTLS && (
             <div className="grid grid-cols-2 gap-2">
               <I label="TLS Cert File" path="web.tls_cert_file" value={form.web.tlsCertFile} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, tlsCertFile: v } }))} />
               <I label="TLS Key File" path="web.tls_key_file" value={form.web.tlsKeyFile} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, tlsKeyFile: v } }))} />
+            </div>
+          )}
+          <Toggle label="Auto-TLS (Let's Encrypt)" checked={form.web.autoTLS} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLS: v } }))} />
+          {form.web.autoTLS && (
+            <div className="grid grid-cols-2 gap-2">
+              <I label="Domain" path="web.auto_tls_domain" value={form.web.autoTLSDomain} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSDomain: v } }))} />
+              <I label="Email" path="web.auto_tls_email" value={form.web.autoTLSEmail} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSEmail: v } }))} />
+              <I label="Cache Dir" path="web.auto_tls_cache_dir" value={form.web.autoTLSCacheDir} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSCacheDir: v } }))} />
+              <Toggle label="Staging (Test)" checked={form.web.autoTLSStaging} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSStaging: v } }))} />
             </div>
           )}
           <div className="border-t border-slate-200 dark:border-slate-700 pt-3 mt-1 grid grid-cols-3 gap-2">

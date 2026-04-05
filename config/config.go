@@ -86,6 +86,11 @@ type WebConfig struct {
 	TLSEnabled          bool
 	TLSCertFile         string
 	TLSKeyFile          string
+	AutoTLS             bool
+	AutoTLSDomain       string
+	AutoTLSEmail        string
+	AutoTLSCacheDir     string
+	AutoTLSStaging      bool
 }
 
 // WebDashboardConfig holds persisted dashboard layout preferences.
@@ -401,6 +406,11 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setBool(&cfg.Web.TLSEnabled, "web.tls_enabled")
 	setString(&cfg.Web.TLSCertFile, "web.tls_cert_file")
 	setString(&cfg.Web.TLSKeyFile, "web.tls_key_file")
+	setBool(&cfg.Web.AutoTLS, "web.auto_tls")
+	setString(&cfg.Web.AutoTLSDomain, "web.auto_tls_domain")
+	setString(&cfg.Web.AutoTLSEmail, "web.auto_tls_email")
+	setString(&cfg.Web.AutoTLSCacheDir, "web.auto_tls_cache_dir")
+	setBool(&cfg.Web.AutoTLSStaging, "web.auto_tls_staging")
 	setString(&cfg.Web.Auth.Username, "web.auth.username")
 	setString(&cfg.Web.Auth.PasswordHash, "web.auth.password_hash")
 
@@ -492,9 +502,16 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("server.dot_enabled=true requires server.tls_cert_file and server.tls_key_file")
 		}
 	}
-	if cfg.Web.TLSEnabled {
+	if cfg.Web.AutoTLS {
+		if cfg.Web.AutoTLSDomain == "" {
+			return fmt.Errorf("web.auto_tls=true requires web.auto_tls_domain")
+		}
+		// auto_tls implies tls_enabled
+		cfg.Web.TLSEnabled = true
+	}
+	if cfg.Web.TLSEnabled && !cfg.Web.AutoTLS {
 		if cfg.Web.TLSCertFile == "" || cfg.Web.TLSKeyFile == "" {
-			return fmt.Errorf("web.tls_enabled=true requires web.tls_cert_file and web.tls_key_file")
+			return fmt.Errorf("web.tls_enabled=true requires web.tls_cert_file and web.tls_key_file (or use web.auto_tls)")
 		}
 	}
 	if cfg.Web.DoH3Enabled {
@@ -504,8 +521,8 @@ func validate(cfg *Config) error {
 		if !cfg.Web.TLSEnabled {
 			return fmt.Errorf("web.doh3_enabled=true requires web.tls_enabled=true")
 		}
-		if cfg.Web.TLSCertFile == "" || cfg.Web.TLSKeyFile == "" {
-			return fmt.Errorf("web.doh3_enabled=true requires web.tls_cert_file and web.tls_key_file")
+		if !cfg.Web.AutoTLS && (cfg.Web.TLSCertFile == "" || cfg.Web.TLSKeyFile == "") {
+			return fmt.Errorf("web.doh3_enabled=true requires cert/key files or web.auto_tls")
 		}
 	}
 	if cfg.Web.AlertErrorThreshold <= 0 {

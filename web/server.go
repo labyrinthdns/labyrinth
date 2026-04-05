@@ -15,6 +15,7 @@ import (
 
 	"github.com/labyrinthdns/labyrinth/blocklist"
 	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/certmanager"
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
@@ -59,6 +60,7 @@ type AdminServer struct {
 	blocklist             *blocklist.Manager
 	dohEnabled            bool
 	dohHandler            server.Handler
+	certMgr               *certmanager.Manager
 }
 
 // NewAdminServer creates a new AdminServer. The bl parameter is optional and
@@ -112,6 +114,16 @@ func (s *AdminServer) SetConfigPath(path string) {
 	s.configPath = path
 }
 
+// SetCertManager sets the auto-TLS certificate manager.
+func (s *AdminServer) SetCertManager(cm *certmanager.Manager) {
+	s.certMgr = cm
+}
+
+// CertManager returns the auto-TLS certificate manager (may be nil).
+func (s *AdminServer) CertManager() *certmanager.Manager {
+	return s.certMgr
+}
+
 // Start starts the HTTP server and blocks until the context is cancelled.
 func (s *AdminServer) Start(ctx context.Context) error {
 	// Start client query cleanup goroutine
@@ -125,17 +137,22 @@ func (s *AdminServer) Start(ctx context.Context) error {
 		addr = "127.0.0.1:8080"
 	}
 
+	autoTLS := s.certMgr != nil
+
 	var h3Server *http3.Server
 	baseHandler := http.Handler(mux)
 
 	if s.config.Web.DoH3Enabled {
-		if !s.config.Web.TLSEnabled || s.config.Web.TLSCertFile == "" || s.config.Web.TLSKeyFile == "" {
-			return fmt.Errorf("web.doh3_enabled=true requires web.tls_enabled=true and web.tls_cert_file/web.tls_key_file")
+		if !autoTLS && (!s.config.Web.TLSEnabled || s.config.Web.TLSCertFile == "" || s.config.Web.TLSKeyFile == "") {
+			return fmt.Errorf("web.doh3_enabled=true requires TLS (auto_tls or tls_cert_file/tls_key_file)")
 		}
 
 		h3Server = &http3.Server{
 			Addr:    addr,
 			Handler: mux,
+		}
+		if autoTLS {
+			h3Server.TLSConfig = s.certMgr.TLSConfig()
 		}
 		baseHandler = withQUICHeaders(baseHandler, h3Server, s.logger)
 	}
@@ -148,13 +165,39 @@ func (s *AdminServer) Start(ctx context.Context) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	errCh := make(chan error, 2)
+	// Apply auto-TLS config to the HTTP server
+	if autoTLS {
+		srv.TLSConfig = s.certMgr.TLSConfig()
+	}
+
+	errCh := make(chan error, 3)
+
+	// Start HTTP-01 challenge handler + HTTPS redirect on port 80
+	if autoTLS {
+		go func() {
+			httpSrv := &http.Server{
+				Addr:    ":80",
+				Handler: s.certMgr.HTTPHandler(nil),
+			}
+			s.logger.Info("auto-tls: HTTP-01 challenge listener starting", "addr", ":80")
+			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				// Port 80 may be unavailable — log but don't fail; TLS-ALPN-01 is primary.
+				s.logger.Warn("auto-tls: HTTP-01 listener failed (TLS-ALPN-01 still active)", "error", err)
+			}
+		}()
+	}
 
 	if h3Server != nil {
 		go func() {
 			s.logger.Info("admin dashboard HTTP/3 starting", "addr", addr)
-			if err := h3Server.ListenAndServeTLS(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile); err != nil &&
-				!errors.Is(err, http.ErrServerClosed) {
+			var err error
+			if autoTLS {
+				// TLSConfig already set on h3Server
+				err = h3Server.ListenAndServeTLS("", "")
+			} else {
+				err = h3Server.ListenAndServeTLS(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile)
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				select {
 				case errCh <- fmt.Errorf("admin HTTP/3 server error: %w", err):
 				default:
@@ -164,7 +207,15 @@ func (s *AdminServer) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		if s.config.Web.TLSEnabled && s.config.Web.TLSCertFile != "" && s.config.Web.TLSKeyFile != "" {
+		if autoTLS {
+			s.logger.Info("admin dashboard starting with auto-TLS", "addr", addr, "domain", s.certMgr.Domain())
+			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				select {
+				case errCh <- err:
+				default:
+				}
+			}
+		} else if s.config.Web.TLSEnabled && s.config.Web.TLSCertFile != "" && s.config.Web.TLSKeyFile != "" {
 			s.logger.Info("admin dashboard starting with TLS", "addr", addr)
 			if err := srv.ListenAndServeTLS(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile); err != nil && err != http.ErrServerClosed {
 				select {
@@ -325,9 +376,10 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/setup/status", s.handleSetupStatus)
 	mux.HandleFunc("/api/setup/complete", s.handleSetupComplete)
 
-	// System routes
+	// Public routes (no auth required)
 	mux.HandleFunc("/api/system/health", s.handleHealth)
 	mux.HandleFunc("/api/system/version", s.handleVersion)
+	mux.HandleFunc("/api/dns-guide", s.handleDNSGuide)
 	mux.HandleFunc("/api/system/profile", s.requireAuth(s.handleSystemProfile))
 	mux.HandleFunc("/api/dashboard/layout", s.requireAuth(s.handleDashboardLayout))
 
@@ -359,6 +411,8 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/blocklist/block", s.requireAuth(s.handleBlocklistBlock))
 	mux.HandleFunc("/api/blocklist/unblock", s.requireAuth(s.handleBlocklistUnblock))
 	mux.HandleFunc("/api/blocklist/check", s.requireAuth(s.handleBlocklistCheck))
+	mux.HandleFunc("/api/system/tls", s.requireAuth(s.handleTLSStatus))
+	mux.HandleFunc("/api/system/tls/renew", s.requireAuth(s.handleTLSRenew))
 
 	// DNS-over-HTTPS (RFC 8484)
 	if s.dohEnabled && s.dohHandler != nil {

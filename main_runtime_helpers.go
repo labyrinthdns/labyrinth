@@ -10,8 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"crypto/tls"
+
 	"github.com/labyrinthdns/labyrinth/blocklist"
 	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/certmanager"
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/daemon"
 	"github.com/labyrinthdns/labyrinth/metrics"
@@ -46,6 +49,23 @@ func startHTTPServices(
 			return err
 		}
 		adminServer.SetConfigPath(configPath)
+
+		// Auto-TLS: create certificate manager if enabled
+		if cfg.Web.AutoTLS {
+			cm := certmanager.New(
+				cfg.Web.AutoTLSDomain,
+				cfg.Web.AutoTLSEmail,
+				cfg.Web.AutoTLSCacheDir,
+				cfg.Web.AutoTLSStaging,
+				logger,
+			)
+			adminServer.SetCertManager(cm)
+			logger.Info("auto-tls enabled",
+				"domain", cfg.Web.AutoTLSDomain,
+				"cache_dir", cfg.Web.AutoTLSCacheDir,
+				"staging", cfg.Web.AutoTLSStaging,
+			)
+		}
 
 		// Enable DoH endpoint if any DoH transport is configured.
 		if cfg.Web.DoHEnabled || cfg.Web.DoH3Enabled {
@@ -122,6 +142,7 @@ func startDNSServers(
 	cfg *config.Config,
 	handler *server.MainHandler,
 	logger *slog.Logger,
+	sharedTLSConfig ...*tls.Config,
 ) (chan error, error) {
 	errCh := make(chan error, dnsServerErrorBuffer)
 
@@ -143,26 +164,52 @@ func startDNSServers(
 	go func() { errCh <- tcpServer.Serve(ctx) }()
 
 	// Start DoT server if enabled
-	if cfg.Server.DoTEnabled && cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "" {
-		dotServer, dotErr := server.NewDoTServer(
-			cfg.Server.DoTListenAddr,
-			handler,
-			cfg.Server.TLSCertFile,
-			cfg.Server.TLSKeyFile,
-			cfg.Server.TCPTimeout,
-			cfg.Server.MaxTCPConns,
-			logger,
-		)
-		if dotErr != nil {
-			logger.Error("failed to start DoT server", "error", dotErr)
-			return nil, dotErr
+	if cfg.Server.DoTEnabled {
+		var sharedCfg *tls.Config
+		if len(sharedTLSConfig) > 0 && sharedTLSConfig[0] != nil {
+			sharedCfg = sharedTLSConfig[0]
 		}
-		go func() { errCh <- dotServer.Serve(ctx) }()
-		logger.Info("DoT server started", "addr", cfg.Server.DoTListenAddr)
-	} else if cfg.Server.DoTEnabled {
-		err := fmt.Errorf("DoT enabled but TLS certificate/key is missing")
-		logger.Error(err.Error(), "tls_cert_file", cfg.Server.TLSCertFile, "tls_key_file", cfg.Server.TLSKeyFile)
-		return nil, err
+
+		switch {
+		case sharedCfg != nil:
+			// Use auto-TLS shared config
+			dotServer, dotErr := server.NewDoTServerWithTLSConfig(
+				cfg.Server.DoTListenAddr,
+				handler,
+				sharedCfg,
+				cfg.Server.TCPTimeout,
+				cfg.Server.MaxTCPConns,
+				logger,
+			)
+			if dotErr != nil {
+				logger.Error("failed to start DoT server with auto-TLS", "error", dotErr)
+				return nil, dotErr
+			}
+			go func() { errCh <- dotServer.Serve(ctx) }()
+			logger.Info("DoT server started (auto-TLS)", "addr", cfg.Server.DoTListenAddr)
+
+		case cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "":
+			dotServer, dotErr := server.NewDoTServer(
+				cfg.Server.DoTListenAddr,
+				handler,
+				cfg.Server.TLSCertFile,
+				cfg.Server.TLSKeyFile,
+				cfg.Server.TCPTimeout,
+				cfg.Server.MaxTCPConns,
+				logger,
+			)
+			if dotErr != nil {
+				logger.Error("failed to start DoT server", "error", dotErr)
+				return nil, dotErr
+			}
+			go func() { errCh <- dotServer.Serve(ctx) }()
+			logger.Info("DoT server started", "addr", cfg.Server.DoTListenAddr)
+
+		default:
+			err := fmt.Errorf("DoT enabled but no TLS certificate available (set tls_cert_file/tls_key_file or enable web.auto_tls)")
+			logger.Error(err.Error())
+			return nil, err
+		}
 	}
 
 	return errCh, nil
