@@ -37,7 +37,7 @@ type tsClientUpdate struct {
 
 // validTSSubscriptions defines the allowed (window → interval[]) combos.
 var validTSSubscriptions = map[string][]string{
-	"live": {"2s"},
+	"live": {"1s"},
 	"15m":  {"1m"},
 	"1h":   {"2m", "5m"},
 	"24h":  {"15m", "30m", "1h"},
@@ -54,10 +54,10 @@ func parseTSSubscription(mode, windowStr, intervalStr string) (*tsSubscription, 
 		return &tsSubscription{
 			Mode:      "live",
 			Window:    60 * time.Second,
-			Interval:  2 * time.Second,
-			PushEvery: 2 * time.Second,
+			Interval:  1 * time.Second,
+			PushEvery: 1 * time.Second,
 			WindowStr: "1m",
-			InterStr:  "2s",
+			InterStr:  "1s",
 		}, true
 	}
 

@@ -228,11 +228,11 @@ func TestParseTSSubscription_LiveMode(t *testing.T) {
 	if sub.Window != 60*time.Second {
 		t.Fatalf("expected 60s window, got %v", sub.Window)
 	}
-	if sub.Interval != 2*time.Second {
-		t.Fatalf("expected 2s interval, got %v", sub.Interval)
+	if sub.Interval != 1*time.Second {
+		t.Fatalf("expected 1s interval, got %v", sub.Interval)
 	}
-	if sub.PushEvery != 2*time.Second {
-		t.Fatalf("expected 2s push rate, got %v", sub.PushEvery)
+	if sub.PushEvery != 1*time.Second {
+		t.Fatalf("expected 1s push rate, got %v", sub.PushEvery)
 	}
 }
 
@@ -428,8 +428,8 @@ func TestTimeSeriesWS_LiveMode(t *testing.T) {
 	if msg.Window != "1m" {
 		t.Fatalf("expected window=1m, got %s", msg.Window)
 	}
-	if msg.Interval != "2s" {
-		t.Fatalf("expected interval=2s, got %s", msg.Interval)
+	if msg.Interval != "1s" {
+		t.Fatalf("expected interval=1s, got %s", msg.Interval)
 	}
 }
 
