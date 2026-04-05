@@ -11,6 +11,9 @@ import type {
   ConfigSaveResponse,
   SystemProfileResponse,
   DashboardLayoutResponse,
+  StatsResponse,
+  CacheStats,
+  LoginResponse,
 } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
@@ -118,14 +121,14 @@ function clearCached(...keys: string[]) {
 
 export const api = {
   login: (username: string, password: string) =>
-    request<{ token: string }>('/api/auth/login', {
+    request<LoginResponse>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
 
   me: () => request<{ username: string }>('/api/auth/me'),
 
-  stats: () => request<Record<string, unknown>>('/api/stats'),
+  stats: () => request<StatsResponse>('/api/stats'),
 
   timeseries: (window = '5m') =>
     request<TimeSeriesResponse>(`/api/stats/timeseries?window=${window}`),
@@ -133,16 +136,16 @@ export const api = {
   recentQueries: (limit = 50) =>
     request<{ entries: QueryEntry[]; count: number }>(`/api/queries/recent?limit=${limit}`),
 
-  cacheStats: () => request<Record<string, unknown>>('/api/cache/stats'),
+  cacheStats: () => request<CacheStats>('/api/cache/stats'),
 
   cacheLookup: (name: string, type: string) =>
     request<Record<string, unknown>>(`/api/cache/lookup?name=${name}&type=${type}`),
 
   cacheFlush: () =>
-    request<{ ok: boolean }>('/api/cache/flush', { method: 'POST' }),
+    request<{ status: string }>('/api/cache/flush', { method: 'POST' }),
 
   cacheDelete: (name: string, type: string) =>
-    request<{ ok: boolean }>(`/api/cache/entry?name=${name}&type=${type}`, { method: 'DELETE' }),
+    request<{ status: string }>(`/api/cache/entry?name=${name}&type=${type}`, { method: 'DELETE' }),
 
   config: () => request<Record<string, unknown>>('/api/config'),
   configRaw: () => request<ConfigRawResponse>('/api/config/raw'),
@@ -165,7 +168,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  health: () => request<Record<string, unknown>>('/api/system/health'),
+  health: () => request<{ status: string; resolver_ready: boolean }>('/api/system/health'),
 
   version: () => requestCached<{ version: string; build_time: string; go_version: string }>(
     'system.version',
