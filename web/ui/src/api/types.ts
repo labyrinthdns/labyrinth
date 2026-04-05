@@ -208,6 +208,33 @@ export interface TopListResponse {
   has_more?: boolean
 }
 
+export interface TLSCertInfo {
+  domain: string
+  issuer: string
+  subject: string
+  not_before: string
+  not_after: string
+  dns_names: string[]
+  auto_tls: boolean
+  acme: boolean
+}
+
+export interface TLSStatusResponse {
+  enabled: boolean
+  auto_tls: boolean
+  cert?: TLSCertInfo
+}
+
+export interface DNSGuideResponse {
+  listen_addr: string
+  doh_enabled: boolean
+  doh_url?: string
+  dot_enabled: boolean
+  dot_host?: string
+  tls_enabled: boolean
+  version: string
+}
+
 export interface NegativeCacheEntry {
   name: string
   qtype: string
