@@ -37,6 +37,9 @@ type ResolverConfig struct {
 	ECSEnabled bool
 	// ECSMaxPrefix is the maximum source prefix length for ECS (default 24).
 	ECSMaxPrefix int
+	// FallbackResolvers is a list of backup recursive DNS servers (e.g. 8.8.8.8, 1.1.1.1).
+	// When primary resolution returns SERVFAIL, one randomly-picked fallback is tried once.
+	FallbackResolvers []string
 }
 
 // ResolveResult holds the outcome of a recursive resolution.
@@ -184,24 +187,28 @@ func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveRe
 	}
 
 	// Check forward/stub zones before normal recursive resolution.
+	var result *ResolveResult
+	var err error
+
 	if fz := r.forwardTable.Match(name); fz != nil {
 		if !fz.IsStub {
 			// Forward zone: send directly to configured upstreams with RD=1.
 			r.logger.Debug("forward zone match", "name", name, "zone", fz.Name)
-			return r.queryForward(fz.Addrs, name, qtype, qclass)
+			result, err = r.queryForward(fz.Addrs, name, qtype, qclass)
+		} else {
+			// Stub zone: start iterative resolution using configured addrs as initial NS.
+			r.logger.Debug("stub zone match", "name", name, "zone", fz.Name)
+			key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
+			result, err = r.inflight.do(key, func() (*ResolveResult, error) {
+				return r.resolveStub(name, qtype, qclass, fz)
+			})
 		}
-		// Stub zone: start iterative resolution using configured addrs as initial NS.
-		r.logger.Debug("stub zone match", "name", name, "zone", fz.Name)
+	} else {
 		key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
-		return r.inflight.do(key, func() (*ResolveResult, error) {
-			return r.resolveStub(name, qtype, qclass, fz)
+		result, err = r.inflight.do(key, func() (*ResolveResult, error) {
+			return r.resolveIterative(name, qtype, qclass, 0, newVisitedSet())
 		})
 	}
-
-	key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
-	result, err := r.inflight.do(key, func() (*ResolveResult, error) {
-		return r.resolveIterative(name, qtype, qclass, 0, newVisitedSet())
-	})
 
 	// DNS64 synthesis (RFC 6147): if an AAAA query returned NODATA (no
 	// AAAA records), synthesize AAAA records from A records.
@@ -211,6 +218,13 @@ func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveRe
 		len(result.Answers) == 0 &&
 		r.config.DNS64Enabled {
 		return r.dns64Synthesize(name, qclass, result, r.config.DNS64Prefix)
+	}
+
+	// Fallback resolver: on SERVFAIL (not DNSSEC bogus), try one backup resolver.
+	if shouldFallback(result, err) {
+		if fbResult := r.queryFallback(name, qtype, qclass); fbResult != nil {
+			return fbResult, nil
+		}
 	}
 
 	return result, err

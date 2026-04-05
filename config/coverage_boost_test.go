@@ -113,6 +113,49 @@ func TestApplyYAMLResolverFields(t *testing.T) {
 	}
 }
 
+func TestApplyYAMLFallbackResolvers(t *testing.T) {
+	cfg := defaultConfig()
+	values := map[string]string{
+		"resolver.fallback_resolvers": "8.8.8.8, 1.1.1.1, 9.9.9.9",
+	}
+	applyYAML(cfg, values)
+
+	if len(cfg.Resolver.FallbackResolvers) != 3 {
+		t.Fatalf("expected 3 fallback resolvers, got %d", len(cfg.Resolver.FallbackResolvers))
+	}
+	expected := []string{"8.8.8.8", "1.1.1.1", "9.9.9.9"}
+	for i, want := range expected {
+		if cfg.Resolver.FallbackResolvers[i] != want {
+			t.Errorf("fallback_resolvers[%d]: expected %q, got %q", i, want, cfg.Resolver.FallbackResolvers[i])
+		}
+	}
+}
+
+func TestApplyYAMLFallbackResolversEmpty(t *testing.T) {
+	cfg := defaultConfig()
+	values := map[string]string{}
+	applyYAML(cfg, values)
+
+	if len(cfg.Resolver.FallbackResolvers) != 0 {
+		t.Errorf("expected 0 fallback resolvers by default, got %d", len(cfg.Resolver.FallbackResolvers))
+	}
+}
+
+func TestApplyYAMLFallbackResolversSingle(t *testing.T) {
+	cfg := defaultConfig()
+	values := map[string]string{
+		"resolver.fallback_resolvers": "8.8.8.8",
+	}
+	applyYAML(cfg, values)
+
+	if len(cfg.Resolver.FallbackResolvers) != 1 {
+		t.Fatalf("expected 1 fallback resolver, got %d", len(cfg.Resolver.FallbackResolvers))
+	}
+	if cfg.Resolver.FallbackResolvers[0] != "8.8.8.8" {
+		t.Errorf("got %q", cfg.Resolver.FallbackResolvers[0])
+	}
+}
+
 func TestApplyYAMLCacheNegMaxTTL(t *testing.T) {
 	cfg := defaultConfig()
 	values := map[string]string{

@@ -836,6 +836,51 @@ func TestHandleStats_WithHitRatio(t *testing.T) {
 	}
 }
 
+func TestHandleStats_FallbackMetrics(t *testing.T) {
+	srv := testAdminServer(t)
+	srv.metrics.IncFallbackQueries()
+	srv.metrics.IncFallbackQueries()
+	srv.metrics.IncFallbackQueries()
+	srv.metrics.IncFallbackRecoveries()
+	srv.metrics.IncFallbackRecoveries()
+
+	req := httptest.NewRequest("GET", "/api/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleStats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := decodeJSON(t, w)
+
+	if v, ok := body["fallback_queries"].(float64); !ok || v != 3 {
+		t.Errorf("expected fallback_queries=3, got %v", body["fallback_queries"])
+	}
+	if v, ok := body["fallback_recoveries"].(float64); !ok || v != 2 {
+		t.Errorf("expected fallback_recoveries=2, got %v", body["fallback_recoveries"])
+	}
+}
+
+func TestHandleStats_FallbackMetricsZero(t *testing.T) {
+	srv := testAdminServer(t)
+
+	req := httptest.NewRequest("GET", "/api/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleStats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := decodeJSON(t, w)
+
+	if v, ok := body["fallback_queries"].(float64); !ok || v != 0 {
+		t.Errorf("expected fallback_queries=0, got %v", body["fallback_queries"])
+	}
+	if v, ok := body["fallback_recoveries"].(float64); !ok || v != 0 {
+		t.Errorf("expected fallback_recoveries=0, got %v", body["fallback_recoveries"])
+	}
+}
+
 // ===========================================================================
 // handleTimeSeries with capped window (api_stats.go)
 // ===========================================================================

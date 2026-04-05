@@ -9,7 +9,7 @@ type BlocklistSource = { url: string; format: string }
 type NamedCSV = { name: string; csv: string }
 type FormState = {
   server: { listen: string; metrics: string; maxUDP: number; maxTCP: number; tcpTimeout: string; graceful: string }
-  resolver: { maxDepth: number; maxCnameDepth: number; qmin: boolean; dnssec: boolean; upstreamTimeout: string; upstreamRetries: number }
+  resolver: { maxDepth: number; maxCnameDepth: number; qmin: boolean; dnssec: boolean; upstreamTimeout: string; upstreamRetries: number; fallbackResolvers: string[] }
   cache: { maxEntries: number; minTTL: number; maxTTL: number; negMaxTTL: number; sweep: string; serveStale: boolean; staleTTL: number; noCacheClients: string[] }
   security: { rateEnabled: boolean; rate: number; burst: number; rrlEnabled: boolean; rrlRPS: number; rrlSlip: number; rrlV4: number; rrlV6: number }
   web: {
@@ -75,7 +75,7 @@ function mapForm(cfg: Record<string, unknown>, authHash: string): FormState {
 
   return {
     server: { listen: str(server.listen_addr, ':53'), metrics: str(server.metrics_addr, '127.0.0.1:9153'), maxUDP: num(server.max_udp_size, 4096), maxTCP: num(server.max_tcp_conns, 256), tcpTimeout: str(server.tcp_timeout, '10s'), graceful: str(server.graceful_period, '5s') },
-    resolver: { maxDepth: num(resolver.max_depth, 30), maxCnameDepth: num(resolver.max_cname_depth, 10), qmin: boo(resolver.qname_minimization, true), dnssec: boo(resolver.dnssec_enabled, true), upstreamTimeout: str(resolver.upstream_timeout, '2s'), upstreamRetries: num(resolver.upstream_retries, 3) },
+    resolver: { maxDepth: num(resolver.max_depth, 30), maxCnameDepth: num(resolver.max_cname_depth, 10), qmin: boo(resolver.qname_minimization, true), dnssec: boo(resolver.dnssec_enabled, true), upstreamTimeout: str(resolver.upstream_timeout, '2s'), upstreamRetries: num(resolver.upstream_retries, 3), fallbackResolvers: arr(resolver.fallback_resolvers) },
     cache: { maxEntries: num(cache.max_entries, 100000), minTTL: num(cache.min_ttl, 5), maxTTL: num(cache.max_ttl, 86400), negMaxTTL: num(cache.negative_max_ttl, 3600), sweep: str(cache.sweep_interval, '60s'), serveStale: boo(cache.serve_stale, false), staleTTL: num(cache.stale_ttl, 30), noCacheClients: arr(cache.no_cache_clients) },
     security: { rateEnabled: boo(rl.enabled, true), rate: num(rl.rate, 50), burst: num(rl.burst, 100), rrlEnabled: boo(rrl.enabled, true), rrlRPS: num(rrl.responses_per_second, 5), rrlSlip: num(rrl.slip_ratio, 2), rrlV4: num(rrl.ipv4_prefix, 24), rrlV6: num(rrl.ipv6_prefix, 56) },
     web: {
@@ -148,6 +148,7 @@ function buildYAML(f: FormState): string {
   L.push(`  upstream_retries: ${f.resolver.upstreamRetries}`)
   L.push(`  qname_minimization: ${f.resolver.qmin}`)
   L.push(`  dnssec_enabled: ${f.resolver.dnssec}`)
+  if (f.resolver.fallbackResolvers.length) L.push(`  fallback_resolvers: ${y(csv(f.resolver.fallbackResolvers))}`)
   L.push('')
   L.push('cache:')
   L.push(`  max_entries: ${f.cache.maxEntries}`)
@@ -490,6 +491,7 @@ export default function ConfigPage() {
           </div>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={readonly} checked={form.resolver.qmin} onChange={(e) => patch((p) => ({ ...p, resolver: { ...p.resolver, qmin: e.target.checked } }))} />QNAME Minimization</label>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={readonly} checked={form.resolver.dnssec} onChange={(e) => patch((p) => ({ ...p, resolver: { ...p.resolver, dnssec: e.target.checked } }))} />DNSSEC</label>
+          <StringList title="Fallback Resolvers" path="resolver.fallback_resolvers" values={form.resolver.fallbackResolvers} onChange={(next) => patch((p) => ({ ...p, resolver: { ...p.resolver, fallbackResolvers: next } }))} disabled={readonly} placeholder="8.8.8.8" />
           <StringList title="No Cache Clients" path="cache.no_cache_clients" values={form.cache.noCacheClients} onChange={(next) => patch((p) => ({ ...p, cache: { ...p.cache, noCacheClients: next } }))} disabled={readonly} placeholder="192.168.1.0/24" />
         </Section>
 

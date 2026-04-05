@@ -144,6 +144,7 @@ type ResolverConfig struct {
 	ECSMaxPrefix        int
 	DNS64Enabled        bool
 	DNS64Prefix         string
+	FallbackResolvers   []string
 }
 
 // CacheConfig holds cache settings.
@@ -349,6 +350,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setInt(&cfg.Resolver.ECSMaxPrefix, "resolver.ecs_max_prefix")
 	setBool(&cfg.Resolver.DNS64Enabled, "resolver.dns64_enabled")
 	setString(&cfg.Resolver.DNS64Prefix, "resolver.dns64_prefix")
+	setCSV(&cfg.Resolver.FallbackResolvers, "resolver.fallback_resolvers")
 
 	// Cache
 	setInt(&cfg.Cache.MaxEntries, "cache.max_entries")

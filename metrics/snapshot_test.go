@@ -89,3 +89,34 @@ func TestSnapshotIsolation(t *testing.T) {
 		t.Error("snapshot should not be affected by subsequent changes")
 	}
 }
+
+func TestSnapshotFallbackMetrics(t *testing.T) {
+	m := NewMetrics()
+
+	m.IncFallbackQueries()
+	m.IncFallbackQueries()
+	m.IncFallbackQueries()
+	m.IncFallbackRecoveries()
+	m.IncFallbackRecoveries()
+
+	snap := m.Snapshot()
+
+	if snap.FallbackQueries != 3 {
+		t.Errorf("fallback queries: expected 3, got %d", snap.FallbackQueries)
+	}
+	if snap.FallbackRecoveries != 2 {
+		t.Errorf("fallback recoveries: expected 2, got %d", snap.FallbackRecoveries)
+	}
+}
+
+func TestSnapshotEmptyFallbackMetrics(t *testing.T) {
+	m := NewMetrics()
+	snap := m.Snapshot()
+
+	if snap.FallbackQueries != 0 {
+		t.Errorf("fallback queries: expected 0, got %d", snap.FallbackQueries)
+	}
+	if snap.FallbackRecoveries != 0 {
+		t.Errorf("fallback recoveries: expected 0, got %d", snap.FallbackRecoveries)
+	}
+}
