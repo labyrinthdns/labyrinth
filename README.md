@@ -348,9 +348,14 @@ Binary size: **6.8 MB** (stripped, with embedded web dashboard)
 | 2308 | Negative Caching | Full |
 | 3596 | DNS IPv6 (AAAA) | Full |
 | 4033-4035 | DNSSEC | Full |
-| 5452 | DNS Resilience | Full |
+| 5452 | DNS Resilience (0x20) | Full |
 | 6891 | EDNS0 | Full |
-| 8767 | Serving Stale Data | Optional |
+| 7873 | DNS Cookies | Full |
+| 8020 | NXDOMAIN Cut | Full |
+| 8109 | Root Priming | Full |
+| 8767 | Serving Stale Data | Full |
+| 8914 | Extended DNS Errors | Full |
+| 9018 | DNS Cookies (SipHash) | Full |
 | 9156 | QNAME Minimization | Full |
 
 ## License

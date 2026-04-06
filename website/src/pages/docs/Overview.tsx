@@ -43,7 +43,7 @@ export default function Overview({ dark }: Props) {
         <li><strong>Built-in web dashboard</strong> &mdash; a React 19 SPA served directly from the binary, with live WebSocket query stream, cache analytics, blocklist management, and a first-time setup wizard</li>
         <li><strong>Self-updating</strong> &mdash; check for and apply updates directly from the web dashboard with zero-downtime binary upgrades</li>
         <li><strong>Full observability</strong> &mdash; Prometheus metrics endpoint, native Zabbix agent protocol, structured JSON logging, health and readiness probes</li>
-        <li><strong>Security</strong> &mdash; bailiwick enforcement, TXID and source port randomization, per-IP rate limiting, response rate limiting (RRL), JWT auth, and IP-based ACLs</li>
+        <li><strong>Security</strong> &mdash; bailiwick enforcement, TXID and source port randomization, 0x20 case randomization (RFC 5452), DNS Cookies (RFC 7873/9018), Extended DNS Errors (RFC 8914), per-IP rate limiting, RRL, JWT auth, and ACLs</li>
         <li><strong>Daemon mode</strong> with PID files, signal handling (SIGHUP for config reload, SIGUSR1/2 for diagnostics), and systemd integration</li>
         <li><strong>Benchmark tool</strong> (<code className={ic}>labyrinth-bench</code>) with distributed coordinator/runner architecture and a web UI for results</li>
       </ul>

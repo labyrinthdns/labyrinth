@@ -116,7 +116,8 @@ Stale serving flow:
           <strong className="text-gold-500">Availability:</strong> Serve-stale means your DNS resolution stays
           functional even during upstream outages. Stale responses are returned with TTL
           <code className={ic}> cache.serve_stale_ttl </code> (default: 30 seconds)
-          past their original expiration.
+          past their original expiration. When serving stale, an Extended DNS Error (RFC 8914, info code 3: Stale Answer)
+          is attached to the response for clients that support EDNS0.
         </p>
       </div>
 

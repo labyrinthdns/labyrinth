@@ -777,8 +777,8 @@ func TestHandleWithCookies(t *testing.T) {
 	for _, opt := range parsed.EDNS0.Options {
 		if opt.Code == dns.EDNSOptionCodeCookie {
 			foundCookie = true
-			if len(opt.Data) < 16 {
-				t.Errorf("expected 16-byte cookie (8 client + 8 server), got %d", len(opt.Data))
+			if len(opt.Data) < 24 {
+				t.Errorf("expected 24-byte cookie (8 client + 16 server per RFC 9018), got %d", len(opt.Data))
 			}
 		}
 	}

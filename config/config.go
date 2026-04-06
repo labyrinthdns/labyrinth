@@ -141,6 +141,7 @@ type ResolverConfig struct {
 	UpstreamTimeout     time.Duration
 	UpstreamRetries     int
 	QMinEnabled         bool
+	Caps0x20Enabled     bool
 	PreferIPv4          bool
 	DNSSECEnabled       bool
 	HardenBelowNXDomain bool
@@ -347,6 +348,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setDuration(&cfg.Resolver.UpstreamTimeout, "resolver.upstream_timeout")
 	setInt(&cfg.Resolver.UpstreamRetries, "resolver.upstream_retries")
 	setBool(&cfg.Resolver.QMinEnabled, "resolver.qname_minimization")
+	setBool(&cfg.Resolver.Caps0x20Enabled, "resolver.caps_for_id")
 	setBool(&cfg.Resolver.PreferIPv4, "resolver.prefer_ipv4")
 	setBool(&cfg.Resolver.DNSSECEnabled, "resolver.dnssec_enabled")
 	setBool(&cfg.Resolver.HardenBelowNXDomain, "resolver.harden_below_nxdomain")

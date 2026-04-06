@@ -61,6 +61,12 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		return nil, err
 	}
 
+	// Apply 0x20 case randomization (RFC 5452 anti-spoofing measure).
+	queryName := name
+	if r.config.Caps0x20Enabled {
+		queryName = randomizeCase(name)
+	}
+
 	query := &dns.Message{
 		Header: dns.Header{
 			ID: txID,
@@ -70,7 +76,7 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 			QDCount: 1,
 		},
 		Questions: []dns.Question{{
-			Name:  name,
+			Name:  queryName,
 			Type:  qtype,
 			Class: qclass,
 		}},
@@ -113,8 +119,9 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 	if msg.Header.ID != txID {
 		return nil, errTXIDMismatch
 	}
-	// Validate question section matches what we asked
-	if err := validateResponseQuestion(msg, name, qtype, qclass); err != nil {
+	// Validate question section matches what we asked.
+	// When 0x20 is active, compare case-sensitively against the randomized name.
+	if err := validateResponseQuestionEx(msg, queryName, qtype, qclass, r.config.Caps0x20Enabled); err != nil {
 		return nil, err
 	}
 
@@ -131,7 +138,7 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		if msg.Header.ID != txID {
 			return nil, errTXIDMismatch
 		}
-		if err := validateResponseQuestion(msg, name, qtype, qclass); err != nil {
+		if err := validateResponseQuestionEx(msg, queryName, qtype, qclass, r.config.Caps0x20Enabled); err != nil {
 			return nil, err
 		}
 	}
@@ -197,20 +204,59 @@ func (r *Resolver) queryTCP(nsIP string, query []byte) ([]byte, error) {
 }
 
 // validateResponseQuestion checks that the response carries exactly the
-// question we asked. This prevents an off-path attacker who guesses the
-// TX ID from injecting records for a different domain.
+// question we asked (case-insensitive).
 func validateResponseQuestion(msg *dns.Message, name string, qtype uint16, qclass uint16) error {
+	return validateResponseQuestionEx(msg, name, qtype, qclass, false)
+}
+
+// validateResponseQuestionEx validates the response question section.
+// When caseSensitive is true (0x20 encoding), the name comparison preserves case.
+func validateResponseQuestionEx(msg *dns.Message, name string, qtype uint16, qclass uint16, caseSensitive bool) error {
 	if len(msg.Questions) == 0 {
 		return errors.New("response has no question section")
 	}
 	q := msg.Questions[0]
 	// Normalize root zone: "." and "" are equivalent after wire decode.
-	qn := strings.TrimSuffix(strings.ToLower(q.Name), ".")
-	nm := strings.TrimSuffix(strings.ToLower(name), ".")
+	var qn, nm string
+	if caseSensitive {
+		qn = strings.TrimSuffix(q.Name, ".")
+		nm = strings.TrimSuffix(name, ".")
+	} else {
+		qn = strings.TrimSuffix(strings.ToLower(q.Name), ".")
+		nm = strings.TrimSuffix(strings.ToLower(name), ".")
+	}
 	if qn != nm || q.Type != qtype || q.Class != qclass {
 		return errors.New("response question mismatch")
 	}
 	return nil
+}
+
+// randomizeCase applies DNS 0x20 encoding by randomly flipping the case of
+// each ASCII letter in the domain name (RFC 5452 anti-spoofing measure).
+func randomizeCase(name string) string {
+	if name == "" || name == "." {
+		return name
+	}
+	result := []byte(name)
+	var randBuf [1]byte
+	bitPos := 0
+	var randByte byte
+	for i := range result {
+		c := result[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			if bitPos == 0 {
+				rand.Read(randBuf[:])
+				randByte = randBuf[0]
+				bitPos = 8
+			}
+			if randByte&1 != 0 {
+				result[i] ^= 0x20 // flip case
+			}
+			randByte >>= 1
+			bitPos--
+		}
+	}
+	return string(result)
 }
 
 func randomTXID() (uint16, error) {

@@ -53,6 +53,64 @@ export default function Security({ dark }: Props) {
         of port entropy), making blind spoofing attacks impractical.
       </p>
 
+      <h2 className={h2}>0x20 Case Randomization (RFC 5452)</h2>
+
+      <p className={p}>
+        When enabled (<code className={ic}>resolver.caps_for_id: true</code>), Labyrinth randomly flips the case of
+        each letter in the query name before sending it to upstream nameservers (e.g., <code className={ic}>eXaMpLe.CoM</code>).
+        The response must echo back the exact same case pattern. Since an off-path attacker cannot predict the
+        randomization, this adds approximately 26 bits of entropy for a typical domain name, making cache
+        poisoning attacks exponentially harder.
+      </p>
+
+      <div className={info}>
+        <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
+          <strong className="text-gold-500">Compatibility:</strong> Some authoritative nameservers normalize
+          query names to lowercase. If you encounter resolution failures with <code className={ic}>caps_for_id</code> enabled,
+          the affected servers do not support 0x20. The feature is opt-in (default: off) for this reason.
+        </p>
+      </div>
+
+      <h2 className={h2}>DNS Cookies (RFC 7873 / RFC 9018)</h2>
+
+      <p className={p}>
+        DNS Cookies provide a lightweight mutual authentication mechanism between clients and servers. When
+        enabled (<code className={ic}>security.dns_cookies: true</code>), Labyrinth generates server cookies
+        using the SipHash-2-4 algorithm with a timestamp, as specified by RFC 9018:
+      </p>
+
+      <ul className={ul}>
+        <li><strong>Client cookie</strong> (8 bytes) &mdash; sent by the client to identify itself</li>
+        <li><strong>Server cookie</strong> (16 bytes) &mdash; Version + Timestamp + SipHash-2-4 hash bound to the client IP</li>
+        <li><strong>Expiry</strong> &mdash; server cookies are valid for 1 hour based on the embedded timestamp</li>
+      </ul>
+
+      <p className={p}>
+        This protects against off-path spoofing attacks without the overhead of full DNSSEC on every query,
+        and prevents amplification since an attacker cannot forge a valid cookie.
+      </p>
+
+      <h2 className={h2}>Extended DNS Errors (RFC 8914)</h2>
+
+      <p className={p}>
+        Labyrinth attaches Extended DNS Error (EDE) information to responses when the client supports EDNS0.
+        EDE provides machine-readable error codes alongside human-readable text, making diagnostics significantly
+        easier. Currently supported EDE info codes:
+      </p>
+
+      <ul className={ul}>
+        <li><strong>3 &mdash; Stale Answer:</strong> response served from expired cache (serve-stale)</li>
+        <li><strong>6 &mdash; DNSSEC Bogus:</strong> DNSSEC validation failed</li>
+        <li><strong>15 &mdash; Blocked:</strong> domain blocked by blocklist</li>
+        <li><strong>22 &mdash; No Reachable Authority:</strong> all nameservers failed</li>
+        <li><strong>23 &mdash; Network Error:</strong> upstream network failure</li>
+      </ul>
+
+      <p className={p}>
+        All 25 RFC 8914 info codes (0&ndash;24) are defined and available for future use as more resolution
+        paths are instrumented.
+      </p>
+
       <h2 className={h2}>DNSSEC Validation</h2>
 
       <p className={p}>

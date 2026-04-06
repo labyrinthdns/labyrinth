@@ -63,6 +63,7 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"upstream_timeout":      cfg.Resolver.UpstreamTimeout.String(),
 			"upstream_retries":      cfg.Resolver.UpstreamRetries,
 			"qname_minimization":    cfg.Resolver.QMinEnabled,
+			"caps_for_id":           cfg.Resolver.Caps0x20Enabled,
 			"prefer_ipv4":           cfg.Resolver.PreferIPv4,
 			"dnssec_enabled":        cfg.Resolver.DNSSECEnabled,
 			"harden_below_nxdomain": cfg.Resolver.HardenBelowNXDomain,

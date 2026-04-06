@@ -90,12 +90,33 @@ func BuildOPTWithOptions(udpSize uint16, doFlag bool, options []EDNSOption) Reso
 	return rr
 }
 
-// EDE option codes (RFC 8914).
+// EDE info codes (RFC 8914).
 const (
-	EDECodeStaleAnswer   uint16 = 1
-	EDECodeDNSSECBogus   uint16 = 6
-	EDECodeDNSKEYMissing uint16 = 9
-	EDECodeNetworkError  uint16 = 23
+	EDECodeOtherError              uint16 = 0
+	EDECodeUnsupportedDNSKEYAlgo   uint16 = 1
+	EDECodeUnsupportedDSDigestType uint16 = 2
+	EDECodeStaleAnswer             uint16 = 3
+	EDECodeForgedAnswer            uint16 = 4
+	EDECodeDNSSECIndeterminate     uint16 = 5
+	EDECodeDNSSECBogus             uint16 = 6
+	EDECodeSignatureExpired        uint16 = 7
+	EDECodeSignatureNotYetValid    uint16 = 8
+	EDECodeDNSKEYMissing           uint16 = 9
+	EDECodeRRSIGsMissing           uint16 = 10
+	EDECodeNoZoneKeyBitSet         uint16 = 11
+	EDECodeNSECMissing             uint16 = 12
+	EDECodeCachedError             uint16 = 13
+	EDECodeNotReady                uint16 = 14
+	EDECodeBlocked                 uint16 = 15
+	EDECodeCensored                uint16 = 16
+	EDECodeFiltered                uint16 = 17
+	EDECodeProhibited              uint16 = 18
+	EDECodeStaleNXDOMAINAnswer     uint16 = 19
+	EDECodeNotAuthoritative        uint16 = 20
+	EDECodeNotSupported            uint16 = 21
+	EDECodeNoReachableAuthority    uint16 = 22
+	EDECodeNetworkError            uint16 = 23
+	EDECodeInvalidData             uint16 = 24
 )
 
 // EDNS option codes.

@@ -288,12 +288,17 @@ func TestGenerateServerCookie(t *testing.T) {
 	clientCookie := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 
 	cookie1 := h.generateServerCookie(clientCookie, "192.168.1.1")
-	if len(cookie1) != 8 {
-		t.Fatalf("expected 8-byte server cookie, got %d", len(cookie1))
+	// RFC 9018: server cookie = Version(1) + Reserved(3) + Timestamp(4) + Hash(8) = 16 bytes
+	if len(cookie1) != 16 {
+		t.Fatalf("expected 16-byte server cookie (RFC 9018), got %d", len(cookie1))
+	}
+	if cookie1[0] != 1 {
+		t.Errorf("expected Version=1, got %d", cookie1[0])
 	}
 
-	// Same inputs produce same cookie
-	cookie2 := h.generateServerCookie(clientCookie, "192.168.1.1")
+	// Same inputs with same timestamp produce same cookie
+	ts := binary.BigEndian.Uint32(cookie1[4:8])
+	cookie2 := h.generateServerCookieAt(clientCookie, "192.168.1.1", ts)
 	for i := range cookie1 {
 		if cookie1[i] != cookie2[i] {
 			t.Fatal("same inputs should produce same cookie")
@@ -301,7 +306,7 @@ func TestGenerateServerCookie(t *testing.T) {
 	}
 
 	// Different client IP produces different cookie
-	cookie3 := h.generateServerCookie(clientCookie, "10.0.0.1")
+	cookie3 := h.generateServerCookieAt(clientCookie, "10.0.0.1", ts)
 	same := true
 	for i := range cookie1 {
 		if cookie1[i] != cookie3[i] {
@@ -311,6 +316,37 @@ func TestGenerateServerCookie(t *testing.T) {
 	}
 	if same {
 		t.Error("different client IPs should produce different cookies")
+	}
+}
+
+func TestValidateServerCookie(t *testing.T) {
+	h := testHandler()
+	h.cookiesEnabled = true
+	h.cookieSecret = []byte("test-secret-1234")
+
+	clientCookie := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	serverCookie := h.generateServerCookie(clientCookie, "10.0.0.1")
+
+	if !h.validateServerCookie(clientCookie, serverCookie, "10.0.0.1") {
+		t.Error("should validate freshly generated cookie")
+	}
+
+	// Wrong IP
+	if h.validateServerCookie(clientCookie, serverCookie, "10.0.0.2") {
+		t.Error("should reject cookie for different IP")
+	}
+
+	// Wrong version
+	bad := make([]byte, 16)
+	copy(bad, serverCookie)
+	bad[0] = 2
+	if h.validateServerCookie(clientCookie, bad, "10.0.0.1") {
+		t.Error("should reject wrong version")
+	}
+
+	// Too short
+	if h.validateServerCookie(clientCookie, serverCookie[:8], "10.0.0.1") {
+		t.Error("should reject short cookie")
 	}
 }
 
