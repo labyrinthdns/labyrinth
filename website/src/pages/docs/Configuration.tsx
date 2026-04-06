@@ -84,6 +84,7 @@ export default function Configuration({ dark }: Props) {
           { keyName: 'upstream_timeout', type: 'duration', defaultValue: '"2s"', description: 'Per-upstream timeout.' },
           { keyName: 'upstream_retries', type: 'int', defaultValue: '3', description: 'Retry count per upstream query.' },
           { keyName: 'qname_minimization', type: 'bool', defaultValue: 'true', description: 'Enable RFC 9156 QNAME minimization.' },
+          { keyName: 'caps_for_id', type: 'bool', defaultValue: 'false', description: 'Enable RFC 5452 0x20 case randomization for anti-spoofing.' },
           { keyName: 'prefer_ipv4', type: 'bool', defaultValue: 'true', description: 'Prefer IPv4 addresses for upstream contact.' },
           { keyName: 'dnssec_enabled', type: 'bool', defaultValue: 'true', description: 'Enable DNSSEC validation chain.' },
           { keyName: 'harden_below_nxdomain', type: 'bool', defaultValue: 'true', description: 'Enable RFC 8020-style harden-below-NXDOMAIN cache behavior.' },
@@ -105,6 +106,21 @@ export default function Configuration({ dark }: Props) {
           { keyName: 'serve_stale_ttl', type: 'uint32', defaultValue: '30', description: 'TTL value assigned to stale replies.' },
           { keyName: 'prefetch', type: 'bool', defaultValue: 'true', description: 'Enable background prefetch near expiry.' },
           { keyName: 'no_cache_clients', type: 'csv', defaultValue: '""', description: 'Client IPs/CIDRs that bypass cache.' },
+        ]}
+      />
+
+      <h2 className={h2}>security</h2>
+      <SectionTable
+        dark={dark}
+        rows={[
+          { keyName: 'dns_cookies', type: 'bool', defaultValue: 'false', description: 'Enable DNS Cookies (RFC 7873 / RFC 9018) with SipHash-2-4.' },
+          { keyName: 'private_address_filter', type: 'bool', defaultValue: 'true', description: 'Filter private/reserved IP addresses from responses.' },
+          { keyName: 'rate_limit.enabled', type: 'bool', defaultValue: 'true', description: 'Enable per-IP rate limiting.' },
+          { keyName: 'rate_limit.rate', type: 'float64', defaultValue: '50', description: 'Sustained requests per second per IP.' },
+          { keyName: 'rate_limit.burst', type: 'int', defaultValue: '100', description: 'Burst allowance per IP.' },
+          { keyName: 'rrl.enabled', type: 'bool', defaultValue: 'true', description: 'Enable Response Rate Limiting (anti-amplification).' },
+          { keyName: 'rrl.responses_per_second', type: 'float64', defaultValue: '5', description: 'Max identical responses per second.' },
+          { keyName: 'rrl.slip_ratio', type: 'int', defaultValue: '2', description: 'TC slip ratio (1 = always slip, 0 = always drop).' },
         ]}
       />
 

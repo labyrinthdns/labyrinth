@@ -23,6 +23,7 @@ func defaultConfig() *Config {
 			UpstreamTimeout:     2 * time.Second,
 			UpstreamRetries:     3,
 			QMinEnabled:         true,
+			Caps0x20Enabled:     false,
 			PreferIPv4:          true,
 			DNSSECEnabled:       true,
 			HardenBelowNXDomain: true,

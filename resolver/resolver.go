@@ -24,6 +24,7 @@ type ResolverConfig struct {
 	UpstreamTimeout time.Duration
 	UpstreamRetries int
 	QMinEnabled     bool
+	Caps0x20Enabled bool // DNS 0x20 case randomization (RFC 5452)
 	PreferIPv4      bool
 	DNSSECEnabled   bool
 	// UpstreamPort overrides the DNS port for upstream queries (default "53").

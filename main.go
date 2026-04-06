@@ -203,6 +203,7 @@ func run() int {
 		UpstreamTimeout:   cfg.Resolver.UpstreamTimeout,
 		UpstreamRetries:   cfg.Resolver.UpstreamRetries,
 		QMinEnabled:       cfg.Resolver.QMinEnabled,
+		Caps0x20Enabled:   cfg.Resolver.Caps0x20Enabled,
 		PreferIPv4:        cfg.Resolver.PreferIPv4,
 		DNSSECEnabled:     cfg.Resolver.DNSSECEnabled,
 		DNS64Enabled:      cfg.Resolver.DNS64Enabled,

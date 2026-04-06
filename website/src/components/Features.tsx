@@ -55,7 +55,7 @@ const features = [
     icon: Shield,
     title: 'Security First',
     description:
-      'Bailiwick enforcement, JWT auth, rate limiting, RRL, ACL, transaction ID randomization.',
+      'Bailiwick enforcement, 0x20 encoding, DNS Cookies, EDE, JWT auth, rate limiting, RRL, ACL.',
   },
   {
     icon: Activity,
@@ -67,7 +67,7 @@ const features = [
     icon: FileCheck,
     title: 'RFC Compliant',
     description:
-      'Full compliance with RFC 1035, 2308, 3596, 4033-4035, 6891, 8767, 9156.',
+      'Full compliance with RFC 1035, 2308, 3596, 4033-4035, 5452, 6891, 7873, 8767, 8914, 9018, 9156.',
   },
 ]
 

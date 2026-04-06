@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-06
+
+### Added
+- **RFC 5452 — 0x20 case randomization**: opt-in `resolver.caps_for_id` randomly flips the case of each letter in upstream query names and validates the response echoes the same pattern, adding ~26 bits of anti-spoofing entropy on top of TXID + source-port randomization. New `randomizeCase()` and `validateResponseQuestionEx()` with case-sensitive mode.
+- **RFC 9018 — SipHash-2-4 DNS server cookies**: server cookie algorithm upgraded from HMAC-SHA256 truncated to 8 bytes to the RFC 9018 interoperable format: Version(1) + Reserved(3) + Timestamp(4) + SipHash-2-4 Hash(8) = 16-byte server cookie. New `security.SipHash24()` implementation with RFC test-vector validation. `validateServerCookie()` performs constant-time comparison with 1-hour timestamp expiry.
+- **RFC 8914 — full Extended DNS Errors**: all 25 info codes (0–24) defined as constants. Active EDE attachments: code 3 (Stale Answer) on serve-stale responses, code 6 (DNSSEC Bogus) on validation failure, code 15 (Blocked) on blocklist hits, code 22 (No Reachable Authority) on resolver SERVFAIL, code 23 (Network Error) on upstream errors. New `addEDEToRawResponse()` helper for post-build EDE injection.
+- Web UI: Security docs page sections for 0x20 Case Randomization, DNS Cookies (RFC 7873/9018), and Extended DNS Errors (RFC 8914).
+- Web UI: Configuration docs page gains full `security` section table (dns_cookies, private_address_filter, rate_limit.*, rrl.*) and `resolver.caps_for_id` row.
+- SipHash-2-4 test suite: RFC reference vector, empty message, single byte, different keys, deterministic, and all-lengths (0–63) coverage.
+- 0x20 test suite: `randomizeCase` preserves length/non-alpha/case-insensitive equality, produces variation; `validateResponseQuestionEx` case-sensitive/insensitive modes.
+- `validateServerCookie` test: fresh cookie acceptance, wrong IP rejection, wrong version rejection, short cookie rejection.
+
+### Changed
+- Server cookie total size changed from 16 bytes (8 client + 8 server) to 24 bytes (8 client + 16 server) per RFC 9018.
+- Cookie generation uses `security.SipHash24` with raw IP bytes instead of `crypto/hmac` + `crypto/sha256` with string IP.
+
+### Fixed
+- **EDE Stale Answer code**: corrected from 1 (Unsupported DNSKEY Algorithm) to 3 (Stale Answer) per RFC 8914.
+
+### Docs
+- README RFC compliance table expanded from 9 to 14 entries: added RFC 7873, 8020, 8109, 8914, 9018; updated 8767 coverage from "Optional" to "Full".
+- Features component RFC list updated with 5452, 7873, 8914, 9018.
+- Overview security bullet point updated with 0x20, DNS Cookies, EDE.
+- Caching docs stale-serving note mentions EDE info code 3.
+
 ## [0.5.5] - 2026-04-05
 
 ### Added
