@@ -1,9 +1,8 @@
 package server
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"log/slog"
@@ -113,15 +112,62 @@ func (h *MainHandler) SetECS(enabled bool, maxPrefix int) {
 	h.ecsMaxPrefix = maxPrefix
 }
 
-// generateServerCookie computes HMAC-SHA256(clientCookie + clientIP + secret)[:8].
+// nowFunc returns the current Unix timestamp. Overridden in tests.
+var nowFunc = func() uint32 { return uint32(time.Now().Unix()) }
+
+// generateServerCookie produces a 16-byte server cookie per RFC 9018:
+// Version(1) + Reserved(3) + Timestamp(4) + Hash(8).
+// Hash = SipHash-2-4(ClientCookie | Version | Reserved | Timestamp | ClientIP, Secret).
 func (h *MainHandler) generateServerCookie(clientCookie []byte, clientIP string) []byte {
-	mac := hmac.New(sha256.New, h.cookieSecret)
-	mac.Write(clientCookie)
-	mac.Write([]byte(clientIP))
-	sum := mac.Sum(nil)
-	result := make([]byte, 8)
-	copy(result, sum[:8])
-	return result
+	return h.generateServerCookieAt(clientCookie, clientIP, nowFunc())
+}
+
+func (h *MainHandler) generateServerCookieAt(clientCookie []byte, clientIP string, timestamp uint32) []byte {
+	cookie := make([]byte, 16)
+	cookie[0] = 1 // Version = 1 (RFC 9018)
+	// cookie[1:4] = 0 (Reserved)
+	binary.BigEndian.PutUint32(cookie[4:8], timestamp)
+
+	// SipHash input: Client Cookie + header (Version+Reserved+Timestamp) + Client IP bytes
+	ipBytes := parseIPBytes(clientIP)
+	msg := make([]byte, 0, 8+8+len(ipBytes))
+	msg = append(msg, clientCookie...)
+	msg = append(msg, cookie[:8]...) // Version + Reserved + Timestamp
+	msg = append(msg, ipBytes...)
+
+	var key [16]byte
+	copy(key[:], h.cookieSecret)
+	hash := security.SipHash24(key, msg)
+	binary.LittleEndian.PutUint64(cookie[8:16], hash)
+
+	return cookie
+}
+
+// validateServerCookie checks whether a received server cookie is valid and
+// not older than 1 hour per RFC 9018 §4.3.
+func (h *MainHandler) validateServerCookie(clientCookie, serverCookie []byte, clientIP string) bool {
+	if len(serverCookie) != 16 || serverCookie[0] != 1 {
+		return false
+	}
+	timestamp := binary.BigEndian.Uint32(serverCookie[4:8])
+	now := nowFunc()
+	if now > timestamp && now-timestamp > 3600 {
+		return false // expired (1 hour)
+	}
+	expected := h.generateServerCookieAt(clientCookie, clientIP, timestamp)
+	return subtle.ConstantTimeCompare(serverCookie, expected) == 1
+}
+
+// parseIPBytes returns the raw IP bytes for the given address string.
+func parseIPBytes(ipStr string) []byte {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return []byte(ipStr)
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4
+	}
+	return ip.To16()
 }
 
 // addEDEToResponse appends an EDE option to the response OPT record.
@@ -145,6 +191,24 @@ func addEDEToResponse(resp *dns.Message, code uint16, text string) {
 
 	// No OPT record found — create one with EDE
 	resp.Additional = append(resp.Additional, dns.BuildOPTWithOptions(4096, false, []dns.EDNSOption{edeOpt}))
+}
+
+// addEDEToRawResponse parses a wire-format response, appends an EDE option,
+// and re-packs it. Returns the original bytes on any error.
+func addEDEToRawResponse(resp []byte, code uint16, text string) []byte {
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp
+	}
+	addEDEToResponse(msg, code, text)
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
+	packed, packErr := dns.Pack(msg, buf)
+	pool.PutBuffer(bufPtr)
+	if packErr != nil {
+		return resp
+	}
+	return packed
 }
 
 // SetNoCacheClients configures the list of client IPs/CIDRs that should bypass the cache.
@@ -239,6 +303,10 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		resp, err := h.buildBlockedResponse(msg, q)
 		if err != nil {
 			return nil, err
+		}
+		// Add EDE "Blocked" (RFC 8914, info code 15) if client supports EDNS0
+		if msg.EDNS0 != nil {
+			resp = addEDEToRawResponse(resp, dns.EDECodeBlocked, "blocked")
 		}
 		duration := time.Since(start)
 		h.metrics.ObserveQueryDuration(duration)
@@ -343,6 +411,12 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		}
 		if err != nil {
 			h.metrics.IncResponses("SERVFAIL")
+			if msg.EDNS0 != nil {
+				resp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, dns.EDECodeNetworkError, err.Error())
+				if buildErr == nil {
+					return resp, nil
+				}
+			}
 			return h.buildError(query, dns.RCodeServFail)
 		}
 	}
@@ -386,6 +460,11 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	resp, buildErr := h.buildResponse(msg, result)
 	if buildErr != nil {
 		return nil, buildErr
+	}
+
+	// Add EDE for SERVFAIL (no reachable authority) if client supports EDNS0
+	if result.RCODE == dns.RCodeServFail && msg.EDNS0 != nil {
+		resp = addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority, "")
 	}
 
 	// Add cookie response if client sent a cookie option
@@ -699,8 +778,8 @@ func (h *MainHandler) addCookieToResponse(resp []byte, edns *dns.EDNS0, clientIP
 
 	serverCookie := h.generateServerCookie(clientCookie, clientIP)
 
-	// Build cookie response: client cookie (8) + server cookie (8)
-	cookieData := make([]byte, 16)
+	// Build cookie response: client cookie (8) + server cookie (16) per RFC 9018
+	cookieData := make([]byte, 8+len(serverCookie))
 	copy(cookieData[:8], clientCookie)
 	copy(cookieData[8:], serverCookie)
 	cookieOpt := dns.EDNSOption{Code: dns.EDNSOptionCodeCookie, Data: cookieData}

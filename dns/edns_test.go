@@ -246,13 +246,13 @@ func TestBuildEDEOption(t *testing.T) {
 }
 
 func TestBuildEDEOption_NoText(t *testing.T) {
-	opt := BuildEDEOption(1, "")
+	opt := BuildEDEOption(EDECodeStaleAnswer, "")
 	code, text, err := ParseEDEOption(opt.Data)
 	if err != nil {
 		t.Fatalf("ParseEDEOption error: %v", err)
 	}
-	if code != 1 {
-		t.Errorf("info code: expected 1, got %d", code)
+	if code != EDECodeStaleAnswer {
+		t.Errorf("info code: expected %d, got %d", EDECodeStaleAnswer, code)
 	}
 	if text != "" {
 		t.Errorf("extra text: expected empty, got %q", text)
@@ -267,7 +267,17 @@ func TestParseEDEOption_TooShort(t *testing.T) {
 }
 
 func TestBuildEDEOption_AllCodes(t *testing.T) {
-	codes := []uint16{EDECodeStaleAnswer, EDECodeDNSSECBogus, EDECodeDNSKEYMissing, EDECodeNetworkError}
+	codes := []uint16{
+		EDECodeOtherError, EDECodeUnsupportedDNSKEYAlgo, EDECodeUnsupportedDSDigestType,
+		EDECodeStaleAnswer, EDECodeForgedAnswer, EDECodeDNSSECIndeterminate,
+		EDECodeDNSSECBogus, EDECodeSignatureExpired, EDECodeSignatureNotYetValid,
+		EDECodeDNSKEYMissing, EDECodeRRSIGsMissing, EDECodeNoZoneKeyBitSet,
+		EDECodeNSECMissing, EDECodeCachedError, EDECodeNotReady,
+		EDECodeBlocked, EDECodeCensored, EDECodeFiltered,
+		EDECodeProhibited, EDECodeStaleNXDOMAINAnswer, EDECodeNotAuthoritative,
+		EDECodeNotSupported, EDECodeNoReachableAuthority, EDECodeNetworkError,
+		EDECodeInvalidData,
+	}
 	for _, code := range codes {
 		opt := BuildEDEOption(code, "test")
 		parsed, _, err := ParseEDEOption(opt.Data)
@@ -277,6 +287,10 @@ func TestBuildEDEOption_AllCodes(t *testing.T) {
 		if parsed != code {
 			t.Errorf("expected code %d, got %d", code, parsed)
 		}
+	}
+	// Verify we covered all 25 codes (0..24)
+	if len(codes) != 25 {
+		t.Errorf("expected 25 EDE codes, got %d", len(codes))
 	}
 }
 
