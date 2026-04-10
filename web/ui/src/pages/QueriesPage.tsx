@@ -129,6 +129,7 @@ function DomainCell({ domain, qtype, paused }: { domain: string; qtype: string; 
 export default function QueriesPage() {
   const { queries, connected, paused, setPaused, clear } = useQueryStream(200, 0)
   const [totalQueries, setTotalQueries] = useState(0)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const [search, setSearch] = useState('')
   const [onlyBlocked, setOnlyBlocked] = useState(false)
   const [onlyErrors, setOnlyErrors] = useState(false)
@@ -136,7 +137,7 @@ export default function QueriesPage() {
   const tableRef = useRef<HTMLDivElement | null>(null)
 
   const liveWindowStats = useMemo(() => {
-    const cutoff = Date.now() - 10_000
+    const cutoff = nowMs - 10_000
     let count = 0
     let errors = 0
     for (const q of queries) {
@@ -146,7 +147,7 @@ export default function QueriesPage() {
       if (q.blocked || (q.rcode && q.rcode !== 'NOERROR')) errors++
     }
     return { queries10s: count, errors10s: errors }
-  }, [queries])
+  }, [queries, nowMs])
 
   const filteredQueries = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -163,6 +164,11 @@ export default function QueriesPage() {
       ].some((v) => v.toLowerCase().includes(needle))
     })
   }, [queries, search, onlyBlocked, onlyErrors])
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     if (!autoScroll) return

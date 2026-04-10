@@ -2,7 +2,6 @@ package web
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -180,17 +179,4 @@ func completeDashboardPanelOrder(order []string) []string {
 		existing = append(existing, id)
 	}
 	return existing
-}
-
-func validateDashboardLayout(order, hidden []string) error {
-	known := make(map[string]struct{}, len(allowedDashboardPanels))
-	for id := range allowedDashboardPanels {
-		known[id] = struct{}{}
-	}
-	for _, id := range append(order, hidden...) {
-		if _, ok := known[id]; !ok {
-			return fmt.Errorf("unknown dashboard panel: %s", id)
-		}
-	}
-	return nil
 }

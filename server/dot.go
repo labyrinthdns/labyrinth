@@ -143,7 +143,7 @@ func (s *DoTServer) handleDoT(conn net.Conn) {
 			return // EOF or error = done
 		}
 
-		if length < 12 || length > 65535 {
+		if length < 12 {
 			return
 		}
 

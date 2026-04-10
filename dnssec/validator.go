@@ -409,7 +409,6 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 	// Collect RRSIG and NSEC3 records from authority section
 	var rrsigs []*dns.RRSIGRecord
 	var nsec3Records []*dns.NSEC3Record
-	var authorityRRs []dns.ResourceRecord
 
 	for _, rr := range response.Authority {
 		switch rr.Type {
@@ -427,8 +426,6 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 				continue
 			}
 			nsec3Records = append(nsec3Records, parsed)
-		default:
-			authorityRRs = append(authorityRRs, rr)
 		}
 	}
 
