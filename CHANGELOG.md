@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-10
+
+### Added
+- Web UI unit test infrastructure with Vitest + Testing Library (`npm run test`, `npm run test:coverage`).
+- Initial Web UI test suites for auth context, API client behavior (token/header/cache), WebSocket query stream behavior, and utility formatters.
+
+### Changed
+- Web UI build chunking tuned via `manualChunks` for better cacheability and faster incremental loads (`react-vendor`, `router-vendor`, `charts-vendor`, `icons-vendor`).
+- Web UI package versions bumped to `0.6.1` (`web/ui`, `website`).
+
+### Fixed
+- Queries page React purity issue: removed `Date.now()` call from render-path memoization by moving live-window time source into state + interval.
+- Dead code cleanup in core packages (`dnssec`, `server`, `web`) and stale test helpers removed.
+- Removed impossible TCP/DoT branch condition (`uint16 > 65535`) to eliminate unreachable control flow.
+
 ## [0.6.0] - 2026-04-06
 
 ### Added

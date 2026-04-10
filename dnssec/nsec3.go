@@ -14,7 +14,6 @@ var (
 	errUnsupportedHashAlg = errors.New("dnssec: unsupported NSEC3 hash algorithm")
 	errTooManyIterations  = errors.New("dnssec: NSEC3 iterations exceed maximum (150)")
 	errNoNSEC3Records     = errors.New("dnssec: no NSEC3 records provided")
-	errNSEC3ProofFailed   = errors.New("dnssec: NSEC3 denial proof failed")
 )
 
 // MaxNSEC3Iterations is the maximum allowed iterations per RFC 8659.

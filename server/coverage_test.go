@@ -96,22 +96,6 @@ func (h *errHandler) Handle([]byte, net.Addr) ([]byte, error) {
 	return nil, errors.New("synthetic error")
 }
 
-// buildSOARData constructs SOA RDATA in uncompressed wire format.
-func buildSOARData(mname, rname string, serial, refresh, retry, expire, minimum uint32) []byte {
-	mn := dns.BuildPlainName(mname)
-	rn := dns.BuildPlainName(rname)
-	buf := make([]byte, len(mn)+len(rn)+20)
-	copy(buf, mn)
-	copy(buf[len(mn):], rn)
-	off := len(mn) + len(rn)
-	binary.BigEndian.PutUint32(buf[off:], serial)
-	binary.BigEndian.PutUint32(buf[off+4:], refresh)
-	binary.BigEndian.PutUint32(buf[off+8:], retry)
-	binary.BigEndian.PutUint32(buf[off+12:], expire)
-	binary.BigEndian.PutUint32(buf[off+16:], minimum)
-	return buf
-}
-
 // ---------------------------------------------------------------------------
 // 1. handler.go Handle – ACL check branch
 // ---------------------------------------------------------------------------
