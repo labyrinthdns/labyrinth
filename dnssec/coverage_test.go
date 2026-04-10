@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
-	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -1593,24 +1592,6 @@ func TestVerifyRRSIG_RSA_SHA512(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyRRSIG (RSA-SHA512) failed: %v", err)
 	}
-}
-
-// --- mockQuerier that returns errors for specific queries ---
-
-type errorQuerier struct {
-	responses map[string]*dns.Message
-	errors    map[string]error
-}
-
-func (eq *errorQuerier) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.Message, error) {
-	key := fmt.Sprintf("%s|%d", name, qtype)
-	if err, ok := eq.errors[key]; ok {
-		return nil, err
-	}
-	if resp, ok := eq.responses[key]; ok {
-		return resp, nil
-	}
-	return nil, fmt.Errorf("no mock response for %s type %d", name, qtype)
 }
 
 func TestFetchDNSKEYs_NoMatchingRecordsInResponse(t *testing.T) {
