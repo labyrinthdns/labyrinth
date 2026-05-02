@@ -609,7 +609,10 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry)
 	packed, err := dns.Pack(resp, buf)
 	// Return buffer to pool regardless of result
 	pool.PutBuffer(bufPtr)
-	return packed, err
+	if err != nil {
+		return nil, err
+	}
+	return h.maybeTruncateUDP(packed, query), nil
 }
 
 // buildMinimalANYResponse returns a synthetic HINFO response per RFC 8482,
@@ -652,7 +655,10 @@ func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question
 	buf := *bufPtr
 	packed, err := dns.Pack(resp, buf)
 	pool.PutBuffer(bufPtr)
-	return packed, err
+	if err != nil {
+		return nil, err
+	}
+	return h.maybeTruncateUDP(packed, query), nil
 }
 
 func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.ResolveResult) ([]byte, error) {
@@ -691,14 +697,20 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 		return nil, err
 	}
 
-	// Check if response exceeds the effective UDP cap. We honour the
-	// client's advertised buffer but never exceed our own configured
-	// ceiling: even if the client claims it can receive 65535 bytes,
-	// we will not emit oversized UDP responses that would fragment in
-	// transit. RFC 9018 / DNS Flag Day 2020. Setting TC forces TCP
-	// fallback, where reassembly uses 32-bit per-connection sequence
-	// numbers and is not vulnerable to off-path fragment injection
-	// (Brandt et al, USENIX Security 2018).
+	return h.maybeTruncateUDP(packed, query), nil
+}
+
+// maybeTruncateUDP enforces the effective UDP response size cap on a packed
+// DNS message and returns the (possibly-truncated) bytes. The cap is
+// min(client-advertised, h.advertisedUDPBufferSize()): we honour the client's
+// stated buffer but never exceed our own configured ceiling, even if a
+// hostile client claims it can receive 65535 bytes. Oversized responses are
+// truncated per RFC 1035 §4.1.1 — TC bit set, ANCount/NSCount/ARCount
+// zeroed, header+question section only — forcing the client to retry over
+// TCP, where reassembly uses 32-bit per-connection sequence numbers and is
+// structurally immune to off-path fragment-injection (Brandt et al, USENIX
+// Security 2018). RFC 9018 / DNS Flag Day 2020.
+func (h *MainHandler) maybeTruncateUDP(packed []byte, query *dns.Message) []byte {
 	maxSize := 512
 	if query.EDNS0 != nil {
 		maxSize = int(query.EDNS0.UDPSize)
@@ -706,31 +718,31 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 	if ceiling := int(h.advertisedUDPBufferSize()); maxSize > ceiling {
 		maxSize = ceiling
 	}
-	if len(packed) > maxSize {
-		// Set TC bit and send only header + question section (RFC 1035 §4.1.1).
-		// This avoids sending a malformed message with partial records.
-		binary.BigEndian.PutUint16(packed[2:4], binary.BigEndian.Uint16(packed[2:4])|(1<<9))
-		binary.BigEndian.PutUint16(packed[6:8], 0)  // ANCount = 0
-		binary.BigEndian.PutUint16(packed[8:10], 0)  // NSCount = 0
-		binary.BigEndian.PutUint16(packed[10:12], 0) // ARCount = 0
-		// Keep header (12 bytes) + question section only
-		qEnd := 12
-		qdcount := binary.BigEndian.Uint16(packed[4:6])
-		for i := 0; i < int(qdcount) && qEnd < len(packed); i++ {
-			_, n, err := dns.DecodeName(packed, qEnd)
-			if err != nil {
-				break
-			}
-			qEnd = n + 4 // skip QTYPE + QCLASS
-		}
-		if qEnd > maxSize {
-			qEnd = 12 // question itself too big, send header only
-			binary.BigEndian.PutUint16(packed[4:6], 0) // QDCount = 0
-		}
-		packed = packed[:qEnd]
+	if len(packed) <= maxSize {
+		return packed
 	}
 
-	return packed, nil
+	// Set TC bit and send only header + question section (RFC 1035 §4.1.1).
+	// This avoids sending a malformed message with partial records.
+	binary.BigEndian.PutUint16(packed[2:4], binary.BigEndian.Uint16(packed[2:4])|(1<<9))
+	binary.BigEndian.PutUint16(packed[6:8], 0)   // ANCount = 0
+	binary.BigEndian.PutUint16(packed[8:10], 0)  // NSCount = 0
+	binary.BigEndian.PutUint16(packed[10:12], 0) // ARCount = 0
+	// Keep header (12 bytes) + question section only
+	qEnd := 12
+	qdcount := binary.BigEndian.Uint16(packed[4:6])
+	for i := 0; i < int(qdcount) && qEnd < len(packed); i++ {
+		_, n, err := dns.DecodeName(packed, qEnd)
+		if err != nil {
+			break
+		}
+		qEnd = n + 4 // skip QTYPE + QCLASS
+	}
+	if qEnd > maxSize {
+		qEnd = 12                                  // question itself too big, send header only
+		binary.BigEndian.PutUint16(packed[4:6], 0) // QDCount = 0
+	}
+	return packed[:qEnd]
 }
 
 func (h *MainHandler) buildBlockedResponse(query *dns.Message, q dns.Question) ([]byte, error) {
