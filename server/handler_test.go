@@ -10,6 +10,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/resolver"
 )
 
 // testHandler creates a MainHandler with only metrics (for unit tests that don't need full resolver).
@@ -513,5 +514,162 @@ func TestResponseAdvertisesConfiguredDownstreamBuffer(t *testing.T) {
 	}
 	if msg.EDNS0.UDPSize != 4096 {
 		t.Errorf("OPT.UDPSize: got %d, want 4096 (operator override)", msg.EDNS0.UDPSize)
+	}
+}
+
+// --- Outgoing UDP response size cap (RFC 9018 / fragment-injection mitigation) ---
+//
+// These three tests guard the truncation logic in buildResponse, which caps
+// the on-wire UDP response at min(client-advertised, configured-ceiling). The
+// configured ceiling is the same value advertised in our outgoing OPT, so a
+// well-behaved client that honours our advertisement will never see TC=1 from
+// us; a client that ignores the advertisement and asks for more (e.g. 4096)
+// is forced down to our ceiling, denying off-path attackers the predictable
+// large-fragment surface (Brandt et al, USENIX Security 2018) on responses.
+
+// TestBuildResponse_CapsAtServerConfiguredCeiling verifies that a client
+// advertising 4096 cannot induce us to emit a response larger than our
+// 1232-byte default ceiling. The truncated response must have TC=1 and
+// ANCount=0 per RFC 1035 §4.1.1.
+func TestBuildResponse_CapsAtServerConfiguredCeiling(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+	// Note: deliberately NOT calling SetDownstreamUDPBufferSize here.
+	// Default behaviour must cap at 1232.
+
+	queryMsg := &dns.Message{
+		Header: dns.Header{
+			ID:    0xC001,
+			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
+		},
+		Questions: []dns.Question{{
+			Name: "cap.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		}},
+		EDNS0: &dns.EDNS0{UDPSize: 4096},
+	}
+
+	// 200 A records, ~16 bytes wire each → ~3200 bytes uncompressed,
+	// guaranteed to exceed the 1232-byte ceiling.
+	var answers []dns.ResourceRecord
+	for i := 0; i < 200; i++ {
+		answers = append(answers, dns.ResourceRecord{
+			Name: "cap.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 300, RDLength: 4, RData: []byte{10, byte(i >> 8), byte(i), 1},
+		})
+	}
+	result := &resolver.ResolveResult{Answers: answers, RCODE: dns.RCodeNoError}
+
+	resp, err := handler.buildResponse(queryMsg, result)
+	if err != nil {
+		t.Fatalf("buildResponse error: %v", err)
+	}
+	if len(resp) > 1232 {
+		t.Errorf("response not capped: got %d bytes, want <= 1232 (server ceiling)", len(resp))
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags>>9&1 != 1 {
+		t.Error("TC bit must be set on truncated response (RFC 1035 §4.1.1)")
+	}
+	if ancount := binary.BigEndian.Uint16(resp[6:8]); ancount != 0 {
+		t.Errorf("ANCount must be 0 on truncated response, got %d", ancount)
+	}
+}
+
+// TestBuildResponse_HonorsClientWhenSmallerThanCap verifies that a client
+// advertising a buffer smaller than our ceiling still wins — we never emit
+// more than the client said it could receive, even if our ceiling would
+// allow it.
+func TestBuildResponse_HonorsClientWhenSmallerThanCap(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+	// Default ceiling = 1232. Client advertises 600.
+
+	queryMsg := &dns.Message{
+		Header: dns.Header{
+			ID:    0xC002,
+			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
+		},
+		Questions: []dns.Question{{
+			Name: "small-client.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		}},
+		EDNS0: &dns.EDNS0{UDPSize: 600},
+	}
+
+	// 50 A records, ~30 bytes wire each (full FQDN) → comfortably above 600B.
+	var answers []dns.ResourceRecord
+	for i := 0; i < 50; i++ {
+		answers = append(answers, dns.ResourceRecord{
+			Name: "small-client.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 300, RDLength: 4, RData: []byte{10, 0, byte(i), 1},
+		})
+	}
+	result := &resolver.ResolveResult{Answers: answers, RCODE: dns.RCodeNoError}
+
+	resp, err := handler.buildResponse(queryMsg, result)
+	if err != nil {
+		t.Fatalf("buildResponse error: %v", err)
+	}
+	if len(resp) > 600 {
+		t.Errorf("response exceeded client-advertised buffer: got %d bytes, want <= 600", len(resp))
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags>>9&1 != 1 {
+		t.Error("TC bit must be set when truncating to client buffer")
+	}
+}
+
+// TestBuildResponse_AllowsLargeResponseWithOperatorOverride verifies that an
+// operator who has explicitly raised the ceiling to 4096 is honoured — a
+// 1.5KB response goes out untruncated. Without the operator override, the
+// 1232-byte default would have forced TC=1.
+func TestBuildResponse_AllowsLargeResponseWithOperatorOverride(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+	handler.SetDownstreamUDPBufferSize(4096) // raise ceiling
+
+	queryMsg := &dns.Message{
+		Header: dns.Header{
+			ID:    0xC003,
+			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
+		},
+		Questions: []dns.Question{{
+			Name: "override.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		}},
+		EDNS0: &dns.EDNS0{UDPSize: 4096},
+	}
+
+	// ~100 A records: enough to exceed the default 1232 ceiling but well
+	// under 4096, so without the override this would truncate.
+	var answers []dns.ResourceRecord
+	for i := 0; i < 100; i++ {
+		answers = append(answers, dns.ResourceRecord{
+			Name: "override.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 300, RDLength: 4, RData: []byte{10, 0, byte(i), 1},
+		})
+	}
+	result := &resolver.ResolveResult{Answers: answers, RCODE: dns.RCodeNoError}
+
+	resp, err := handler.buildResponse(queryMsg, result)
+	if err != nil {
+		t.Fatalf("buildResponse error: %v", err)
+	}
+	if len(resp) <= 1232 {
+		t.Fatalf("test setup invariant: response %d bytes is not > 1232; the test cannot prove the override matters", len(resp))
+	}
+	if len(resp) > 4096 {
+		t.Errorf("response exceeded operator override: got %d bytes, want <= 4096", len(resp))
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags>>9&1 != 0 {
+		t.Error("TC bit must NOT be set when response fits within operator-configured ceiling")
+	}
+	if ancount := binary.BigEndian.Uint16(resp[6:8]); ancount == 0 {
+		t.Error("ANCount must be > 0 when response is not truncated")
 	}
 }
