@@ -724,11 +724,14 @@ func TestBuildCacheResponse_CapsAtServerCeiling(t *testing.T) {
 	}
 }
 
-// TestBuildMinimalANYResponse_RespectsCap proves the RFC 8482 ANY-collapse
-// path (the second formerly-unbounded code path) is now wired into the
-// truncation helper. We use a deliberately tight client UDPSize to force
-// truncation even on the small synthetic HINFO response.
-func TestBuildMinimalANYResponse_RespectsCap(t *testing.T) {
+// TestBuildMinimalANYResponse_FloorsClientUDPSize proves the RFC 6891 §6.2.5
+// floor is wired through the ANY-collapse path. Client advertises an
+// illegally-small UDPSize=30, but the resolver MUST treat that as 512
+// (the protocol minimum) — meaning the ~57-byte synthetic HINFO response
+// goes out untruncated, with TC=0 and ANCount>0. Without the floor, this
+// path would have set TC=1 and dropped the answer (regression in a5b351c
+// before the floor was introduced).
+func TestBuildMinimalANYResponse_FloorsClientUDPSize(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := cache.NewCache(1000, 5, 86400, 3600, m)
 	res := newTestResolver(c, m)
@@ -741,10 +744,8 @@ func TestBuildMinimalANYResponse_RespectsCap(t *testing.T) {
 			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
 		},
 		Questions: []dns.Question{q},
-		// UDPSize=30 is malformed per RFC 6891 (min 512) but our enforcement
-		// honours whatever the client sends — the point of this test is to
-		// prove the helper is *invoked* on the ANY path, not to validate
-		// the protocol-level minimum.
+		// UDPSize=30 is illegal per RFC 6891 §6.2.5 (minimum 512).
+		// The floor logic in maybeTruncateUDP must ignore this and use 512.
 		EDNS0: &dns.EDNS0{UDPSize: 30},
 	}
 
@@ -752,12 +753,15 @@ func TestBuildMinimalANYResponse_RespectsCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildMinimalANYResponse error: %v", err)
 	}
-	if len(resp) > 30 {
-		t.Errorf("ANY response not capped at client UDPSize=30: got %d bytes", len(resp))
-	}
 	flags := binary.BigEndian.Uint16(resp[2:4])
-	if flags>>9&1 != 1 {
-		t.Error("TC bit must be set when response exceeds client buffer")
+	if flags>>9&1 != 0 {
+		t.Errorf("TC bit must NOT be set: client UDPSize<512 should be floored, got TC=1 (resp=%d bytes)", len(resp))
+	}
+	if ancount := binary.BigEndian.Uint16(resp[6:8]); ancount == 0 {
+		t.Error("ANCount must be > 0: synthetic HINFO answer should be preserved when floored")
+	}
+	if len(resp) <= 12 {
+		t.Errorf("response too small (header-only?): got %d bytes", len(resp))
 	}
 }
 
@@ -803,5 +807,95 @@ func TestMaybeTruncateUDP_NoEDNSCapsAt512(t *testing.T) {
 	flags := binary.BigEndian.Uint16(resp[2:4])
 	if flags>>9&1 != 1 {
 		t.Error("TC bit must be set when truncating to 512-byte default")
+	}
+}
+
+// TestMaybeTruncateUDP_FloorsClientBelowRFCMinimum proves that a client
+// advertising EDNS0 UDPSize < 512 (RFC 6891 §6.2.5 minimum) is not
+// honoured: we use 512 as the floor and emit a full RFC-compliant
+// response. Without the floor, a misconfigured or malicious client
+// could induce TC=1 + TCP retransmit on every response by advertising
+// UDPSize=0, opening a low-effort amplification-via-TCP-fallback DoS.
+func TestMaybeTruncateUDP_FloorsClientBelowRFCMinimum(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+
+	queryMsg := &dns.Message{
+		Header: dns.Header{
+			ID:    0xF100,
+			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
+		},
+		Questions: []dns.Question{{
+			Name: "broken-client.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		}},
+		// Illegal per RFC 6891 §6.2.5 (minimum 512). Floor must ignore.
+		EDNS0: &dns.EDNS0{UDPSize: 30},
+	}
+
+	// 20 A records → ~370 bytes packed. Comfortably under the 512-byte
+	// floor, so a correctly-floored handler must NOT truncate. Without
+	// the floor, a 30-byte cap would force TC=1.
+	var answers []dns.ResourceRecord
+	for i := 0; i < 20; i++ {
+		answers = append(answers, dns.ResourceRecord{
+			Name: "broken-client.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 300, RDLength: 4, RData: []byte{10, 0, byte(i), 1},
+		})
+	}
+	result := &resolver.ResolveResult{Answers: answers, RCODE: dns.RCodeNoError}
+
+	resp, err := handler.buildResponse(queryMsg, result)
+	if err != nil {
+		t.Fatalf("buildResponse error: %v", err)
+	}
+	if len(resp) >= 512 {
+		t.Fatalf("test setup invariant: response %d bytes is not < 512; cannot prove the floor matters", len(resp))
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags>>9&1 != 0 {
+		t.Errorf("TC bit must NOT be set: client UDPSize<512 should be floored to 512 (resp=%d bytes)", len(resp))
+	}
+	if ancount := binary.BigEndian.Uint16(resp[6:8]); ancount == 0 {
+		t.Error("ANCount must be > 0: response should be preserved when floored")
+	}
+}
+
+// TestMaybeTruncateUDP_FloorsZeroUDPSize is the minimal pathological case
+// of the floor: a client advertising UDPSize=0 (or omitting it but sending
+// an OPT). RFC 6891 §6.2.5 says zero is invalid; we treat it as 512.
+func TestMaybeTruncateUDP_FloorsZeroUDPSize(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+
+	queryMsg := &dns.Message{
+		Header: dns.Header{
+			ID:    0xF000,
+			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
+		},
+		Questions: []dns.Question{{
+			Name: "zero-udpsize.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		}},
+		EDNS0: &dns.EDNS0{UDPSize: 0},
+	}
+	answers := []dns.ResourceRecord{{
+		Name: "zero-udpsize.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 300, RDLength: 4, RData: []byte{10, 0, 0, 1},
+	}}
+	result := &resolver.ResolveResult{Answers: answers, RCODE: dns.RCodeNoError}
+
+	resp, err := handler.buildResponse(queryMsg, result)
+	if err != nil {
+		t.Fatalf("buildResponse error: %v", err)
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags>>9&1 != 0 {
+		t.Error("TC bit must NOT be set when client UDPSize=0 is floored to 512")
+	}
+	if ancount := binary.BigEndian.Uint16(resp[6:8]); ancount == 0 {
+		t.Error("ANCount must be > 0: response should be preserved when floored from 0")
 	}
 }

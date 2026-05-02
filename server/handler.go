@@ -704,15 +704,19 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 // DNS message and returns the (possibly-truncated) bytes. The cap is
 // min(client-advertised, h.advertisedUDPBufferSize()): we honour the client's
 // stated buffer but never exceed our own configured ceiling, even if a
-// hostile client claims it can receive 65535 bytes. Oversized responses are
-// truncated per RFC 1035 §4.1.1 — TC bit set, ANCount/NSCount/ARCount
-// zeroed, header+question section only — forcing the client to retry over
-// TCP, where reassembly uses 32-bit per-connection sequence numbers and is
+// hostile client claims it can receive 65535 bytes. Client values below the
+// RFC 6891 §6.2.5 minimum of 512 bytes are ignored and treated as 512: a
+// broken middlebox advertising UDPSize=0 or 30 cannot induce us to truncate
+// fully RFC-compliant responses. Oversized responses are truncated per
+// RFC 1035 §4.1.1 — TC bit set, ANCount/NSCount/ARCount zeroed,
+// header+question section only — forcing the client to retry over TCP,
+// where reassembly uses 32-bit per-connection sequence numbers and is
 // structurally immune to off-path fragment-injection (Brandt et al, USENIX
 // Security 2018). RFC 9018 / DNS Flag Day 2020.
 func (h *MainHandler) maybeTruncateUDP(packed []byte, query *dns.Message) []byte {
-	maxSize := 512
-	if query.EDNS0 != nil {
+	const rfc6891MinUDPSize = 512
+	maxSize := rfc6891MinUDPSize
+	if query.EDNS0 != nil && int(query.EDNS0.UDPSize) >= rfc6891MinUDPSize {
 		maxSize = int(query.EDNS0.UDPSize)
 	}
 	if ceiling := int(h.advertisedUDPBufferSize()); maxSize > ceiling {
