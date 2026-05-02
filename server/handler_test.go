@@ -411,3 +411,107 @@ func buildTestQuery(name string, qtype uint16) []byte {
 	copy(result, packed)
 	return result
 }
+
+// --- EDNS0 advertised UDP buffer size (DNS Flag Day 2020 / RFC 9018) ---
+
+func TestAdvertisedDownstreamUDPBufferSize_DefaultsTo1232WhenZero(t *testing.T) {
+	h := testHandler()
+	if got := h.advertisedUDPBufferSize(); got != 1232 {
+		t.Errorf("zero/unset config must fall back to 1232, got %d", got)
+	}
+}
+
+func TestAdvertisedDownstreamUDPBufferSize_HonorsConfiguredValue(t *testing.T) {
+	cases := []struct {
+		configured int
+		want       uint16
+	}{
+		{512, 512},     // RFC 6891 mandated minimum
+		{1232, 1232},   // DNS Flag Day 2020 default
+		{4096, 4096},   // legacy default — operator may still want it
+		{65535, 65535}, // max valid uint16
+	}
+	for _, c := range cases {
+		h := testHandler()
+		h.SetDownstreamUDPBufferSize(c.configured)
+		if got := h.advertisedUDPBufferSize(); got != c.want {
+			t.Errorf("downstreamUDPBufferSize=%d: got %d, want %d", c.configured, got, c.want)
+		}
+	}
+}
+
+func TestAdvertisedDownstreamUDPBufferSize_RejectsOutOfRange(t *testing.T) {
+	// Pathological values must fall back to the safe 1232 default rather
+	// than be propagated into outgoing OPT records.
+	cases := []int{-1, 0, 1, 511, 65536, 1 << 30}
+	for _, v := range cases {
+		h := testHandler()
+		h.SetDownstreamUDPBufferSize(v)
+		if got := h.advertisedUDPBufferSize(); got != 1232 {
+			t.Errorf("downstreamUDPBufferSize=%d should fall back to 1232, got %d", v, got)
+		}
+	}
+}
+
+// TestResponseAdvertisesDefaultDownstreamBufferWhenUnset verifies that an
+// unconfigured handler still emits the safe 1232-byte buffer in the OPT
+// of its responses, rather than the legacy 4096 default. End-to-end
+// regression guard against silently re-introducing 4096 across all five
+// BuildOPT call sites in the response builders.
+func TestResponseAdvertisesDefaultDownstreamBufferWhenUnset(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	c.Store("default-buf.example.com", dns.TypeA, dns.ClassIN, []dns.ResourceRecord{{
+		Name: "default-buf.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 300, RDLength: 4, RData: []byte{10, 0, 0, 1},
+	}}, nil)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+	// Note: deliberately NOT calling SetDownstreamUDPBufferSize here.
+
+	query := buildTestQueryWithEDNS("default-buf.example.com", dns.TypeA, 4096)
+	resp, err := handler.Handle(query, nil)
+	if err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		t.Fatalf("Unpack error: %v", err)
+	}
+	if msg.EDNS0 == nil {
+		t.Fatal("expected EDNS0/OPT in response")
+	}
+	if msg.EDNS0.UDPSize != 1232 {
+		t.Errorf("OPT.UDPSize: got %d, want 1232 (DNS Flag Day default)", msg.EDNS0.UDPSize)
+	}
+}
+
+// TestResponseAdvertisesConfiguredDownstreamBuffer verifies that an
+// explicit operator override is honoured on the wire, end-to-end.
+func TestResponseAdvertisesConfiguredDownstreamBuffer(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	c.Store("configured-buf.example.com", dns.TypeA, dns.ClassIN, []dns.ResourceRecord{{
+		Name: "configured-buf.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 300, RDLength: 4, RData: []byte{10, 0, 0, 1},
+	}}, nil)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+	handler.SetDownstreamUDPBufferSize(4096)
+
+	query := buildTestQueryWithEDNS("configured-buf.example.com", dns.TypeA, 4096)
+	resp, err := handler.Handle(query, nil)
+	if err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		t.Fatalf("Unpack error: %v", err)
+	}
+	if msg.EDNS0 == nil {
+		t.Fatal("expected EDNS0/OPT in response")
+	}
+	if msg.EDNS0.UDPSize != 4096 {
+		t.Errorf("OPT.UDPSize: got %d, want 4096 (operator override)", msg.EDNS0.UDPSize)
+	}
+}

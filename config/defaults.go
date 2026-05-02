@@ -7,7 +7,7 @@ func defaultConfig() *Config {
 		Server: ServerConfig{
 			ListenAddr:     ":53",
 			MetricsAddr:    "127.0.0.1:9153",
-			MaxUDPSize:     4096,
+			MaxUDPSize:     1232,
 			TCPTimeout:     10 * time.Second,
 			MaxTCPConns:    256,
 			MaxUDPWorkers:  10000,

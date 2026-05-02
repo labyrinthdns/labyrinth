@@ -237,6 +237,9 @@ func run() int {
 	// Security: private address filtering
 	handler.SetPrivateFilter(cfg.Security.PrivateAddressFilter)
 
+	// Security: advertise small EDNS0 buffer (RFC 9018 / DNS Flag Day 2020)
+	handler.SetDownstreamUDPBufferSize(cfg.Server.MaxUDPSize)
+
 	// Cache: harden-below-nxdomain (RFC 8020)
 	c.SetHardenBelowNX(cfg.Resolver.HardenBelowNXDomain)
 
