@@ -48,6 +48,13 @@ type MainHandler struct {
 	ecsEnabled   bool
 	ecsMaxPrefix int
 
+	// downstreamUDPBufferSize is the EDNS0 UDP payload size advertised in
+	// outgoing OPT records on responses to clients. RFC 9018 / DNS Flag Day
+	// 2020 recommends 1232 to avoid IP fragmentation, which closes the
+	// off-path fragment-injection cache-poisoning vector. 0 means "use
+	// the safe default" (1232).
+	downstreamUDPBufferSize int
+
 	// OnQuery is an optional callback invoked after each query is resolved.
 	// Parameters: client IP, qname, qtype, rcode (may be "BLOCKED"), whether served from cache, duration in ms.
 	OnQuery func(client, qname, qtype, rcode string, cached bool, durationMs float64)
@@ -110,6 +117,32 @@ func (h *MainHandler) EnableCookiesWithSecret(secret []byte) {
 func (h *MainHandler) SetECS(enabled bool, maxPrefix int) {
 	h.ecsEnabled = enabled
 	h.ecsMaxPrefix = maxPrefix
+}
+
+// SetDownstreamUDPBufferSize configures the EDNS0 UDP payload size this
+// server advertises to clients in outgoing OPT records. Per RFC 9018 /
+// DNS Flag Day 2020, the safe default is 1232 (IPv6 minimum MTU 1280
+// minus 40-byte IPv6 header minus 8-byte UDP header). Values outside
+// [512, 65535] are silently clamped to 1232 by advertisedUDPBufferSize.
+func (h *MainHandler) SetDownstreamUDPBufferSize(size int) {
+	h.downstreamUDPBufferSize = size
+}
+
+// advertisedUDPBufferSize returns the EDNS0 UDP payload size to put on
+// the wire in outgoing OPT records. Falls back to the RFC 9018 default
+// of 1232 for unset (0) and out-of-range values, so a misconfigured
+// integer can never produce a pathological OPT record.
+func (h *MainHandler) advertisedUDPBufferSize() uint16 {
+	const (
+		defaultSize = 1232
+		minSize     = 512   // RFC 6891 §6.2.5 mandated minimum
+		maxSize     = 65535 // uint16 ceiling
+	)
+	v := h.downstreamUDPBufferSize
+	if v < minSize || v > maxSize {
+		return defaultSize
+	}
+	return uint16(v)
 }
 
 // nowFunc returns the current Unix timestamp. Overridden in tests.
@@ -189,8 +222,12 @@ func addEDEToResponse(resp *dns.Message, code uint16, text string) {
 		}
 	}
 
-	// No OPT record found — create one with EDE
-	resp.Additional = append(resp.Additional, dns.BuildOPTWithOptions(4096, false, []dns.EDNSOption{edeOpt}))
+	// No OPT record found — create one with EDE. 1232 matches the
+	// RFC 9018 / DNS Flag Day 2020 default; this branch only fires
+	// when an upstream response lacked an OPT, so the value here is
+	// effectively a fallback rather than the per-handler-configured
+	// advertisement.
+	resp.Additional = append(resp.Additional, dns.BuildOPTWithOptions(1232, false, []dns.EDNSOption{edeOpt}))
 }
 
 // addEDEToRawResponse parses a wire-format response, appends an EDE option,
@@ -564,7 +601,7 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry)
 
 	// Add OPT if client sent one
 	if query.EDNS0 != nil {
-		resp.Additional = append(resp.Additional, dns.BuildOPT(4096, query.EDNS0.DOFlag))
+		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
 	}
 
 	bufPtr := pool.GetBuffer()
@@ -608,7 +645,7 @@ func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question
 	}
 
 	if query.EDNS0 != nil {
-		resp.Additional = append(resp.Additional, dns.BuildOPT(4096, query.EDNS0.DOFlag))
+		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
 	}
 
 	bufPtr := pool.GetBuffer()
@@ -643,7 +680,7 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 
 	// Add OPT if client sent one
 	if query.EDNS0 != nil {
-		resp.Additional = append(resp.Additional, dns.BuildOPT(4096, query.EDNS0.DOFlag))
+		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
 	}
 
 	bufPtr := pool.GetBuffer()
@@ -804,7 +841,7 @@ func (h *MainHandler) addCookieToResponse(resp []byte, edns *dns.EDNS0, clientIP
 		}
 	}
 	if !found {
-		msg.Additional = append(msg.Additional, dns.BuildOPTWithOptions(4096, false, []dns.EDNSOption{cookieOpt}))
+		msg.Additional = append(msg.Additional, dns.BuildOPTWithOptions(h.advertisedUDPBufferSize(), false, []dns.EDNSOption{cookieOpt}))
 	}
 
 	bufPtr := pool.GetBuffer()

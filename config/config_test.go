@@ -259,6 +259,20 @@ func TestApplyYAML_UpstreamUDPBufferSize(t *testing.T) {
 	}
 }
 
+// TestDefaultMaxUDPSize asserts that the server's advertised EDNS0 UDP
+// buffer size defaults to 1232 bytes (DNS Flag Day 2020 / RFC 9018),
+// matching the resolver's outbound side. The two halves should be in
+// lockstep — having the resolver advertise 1232 to upstreams while
+// the server still advertises 4096 to downstream clients would be an
+// inconsistency and a partial defence at best.
+func TestDefaultMaxUDPSize(t *testing.T) {
+	cfg := defaultConfig()
+	if cfg.Server.MaxUDPSize != 1232 {
+		t.Errorf("default Server.MaxUDPSize: expected 1232 (RFC 9018), got %d",
+			cfg.Server.MaxUDPSize)
+	}
+}
+
 func TestApplyEnv(t *testing.T) {
 	cfg := defaultConfig()
 
