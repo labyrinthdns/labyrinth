@@ -8,6 +8,16 @@ import (
 
 // SanitizeBailiwick removes records from a DNS response that are
 // outside the authority of the responding nameserver's zone.
+//
+// Out-of-bailiwick glue (e.g. a `.com` server returning glue for
+// `ns.evil.org` to back an example.com delegation) is dropped: an
+// out-of-zone responder has no authority to bind a hostname to an
+// address. Such records must be re-resolved through the proper
+// chain of authority. RFC 8499 §7 / RFC 1034 §4.2.1.
+//
+// When zone is empty (the priming/root case), the filter is
+// permissive: the root server is allowed to publish glue for any
+// TLD nameserver, since that is exactly its job.
 func SanitizeBailiwick(msg *dns.Message, zone string) {
 	zone = strings.ToLower(zone)
 
@@ -33,9 +43,17 @@ func SanitizeBailiwick(msg *dns.Message, zone string) {
 			continue
 		}
 		rrName := strings.ToLower(rr.Name)
-		if _, isGlue := nsNames[rrName]; isGlue {
-			filtered = append(filtered, rr)
+		if _, isGlue := nsNames[rrName]; !isGlue {
+			continue
 		}
+		// Reject out-of-bailiwick glue. A server authoritative for
+		// "com." has no business asserting addresses for "ns.evil.org" —
+		// that's a classic cache-poisoning vector. The resolver must
+		// chase such glue through the proper authority chain.
+		if !InZone(rrName, zone) {
+			continue
+		}
+		filtered = append(filtered, rr)
 	}
 	msg.Additional = filtered
 }
