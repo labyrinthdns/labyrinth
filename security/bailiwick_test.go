@@ -172,6 +172,110 @@ func TestSanitizeBailiwick(t *testing.T) {
 	}
 }
 
+// TestSanitizeBailiwick_OutOfBailiwickGlue exercises the cache-poisoning
+// defense for the classic Kashpureff-style attack: a parent-zone server
+// (here ".com") delegates child.example with NS pointing to an attacker-
+// controlled host in a sibling zone, and tries to slip A glue for that
+// host into Additional. The NS record itself is in-bailiwick (example.com
+// is below ".com") so it survives the Authority filter — the glue must
+// nonetheless be rejected because the responder has no authority over
+// "ns.evil.org".
+func TestSanitizeBailiwick_OutOfBailiwickGlue(t *testing.T) {
+	// ".com" server returning a delegation for example.com with two NS:
+	//   - ns2.example.com (in-bailiwick of .com, glue should survive)
+	//   - ns.evil.org    (out-of-bailiwick of .com, glue must be dropped)
+	nsLegit := encodePlainName("ns2.example.com")
+	nsEvil := encodePlainName("ns.evil.org")
+
+	msg := &dns.Message{
+		Authority: []dns.ResourceRecord{
+			{Name: "example.com", Type: dns.TypeNS, Class: dns.ClassIN, TTL: 3600, RDLength: uint16(len(nsLegit)), RData: nsLegit},
+			{Name: "example.com", Type: dns.TypeNS, Class: dns.ClassIN, TTL: 3600, RDLength: uint16(len(nsEvil)), RData: nsEvil},
+		},
+		Additional: []dns.ResourceRecord{
+			// Legit in-bailiwick glue — must survive.
+			{Name: "ns2.example.com", Type: dns.TypeA, Class: dns.ClassIN, TTL: 300, RDLength: 4, RData: []byte{10, 0, 0, 2}},
+			// Poisoning attempt — out-of-bailiwick glue, must be dropped.
+			{Name: "ns.evil.org", Type: dns.TypeA, Class: dns.ClassIN, TTL: 300, RDLength: 4, RData: []byte{6, 6, 6, 6}},
+		},
+	}
+
+	SanitizeBailiwick(msg, "com")
+
+	// Both NS records are valid below .com so both Authority entries survive.
+	if len(msg.Authority) != 2 {
+		t.Fatalf("expected 2 authority records, got %d", len(msg.Authority))
+	}
+
+	// Only the in-bailiwick glue should be kept.
+	if len(msg.Additional) != 1 {
+		t.Fatalf("expected 1 surviving glue record, got %d (%+v)", len(msg.Additional), msg.Additional)
+	}
+	if msg.Additional[0].Name != "ns2.example.com" {
+		t.Errorf("unexpected surviving glue: %q", msg.Additional[0].Name)
+	}
+	for _, rr := range msg.Additional {
+		if rr.Name == "ns.evil.org" {
+			t.Error("out-of-bailiwick glue for ns.evil.org must be rejected")
+		}
+	}
+}
+
+// TestSanitizeBailiwick_RootIsPermissive verifies that priming queries
+// (zone="") keep all glue. The root zone is allowed to publish glue for
+// any TLD nameserver — that is its job.
+func TestSanitizeBailiwick_RootIsPermissive(t *testing.T) {
+	nsCom := encodePlainName("a.gtld-servers.net")
+
+	msg := &dns.Message{
+		Authority: []dns.ResourceRecord{
+			{Name: "com", Type: dns.TypeNS, Class: dns.ClassIN, TTL: 3600, RDLength: uint16(len(nsCom)), RData: nsCom},
+		},
+		Additional: []dns.ResourceRecord{
+			{Name: "a.gtld-servers.net", Type: dns.TypeA, Class: dns.ClassIN, TTL: 3600, RDLength: 4, RData: []byte{192, 5, 6, 30}},
+		},
+	}
+
+	SanitizeBailiwick(msg, "")
+
+	if len(msg.Additional) != 1 {
+		t.Fatalf("priming/root case must keep glue, got %d records", len(msg.Additional))
+	}
+	if msg.Additional[0].Name != "a.gtld-servers.net" {
+		t.Errorf("expected gtld-servers glue preserved, got %q", msg.Additional[0].Name)
+	}
+}
+
+// TestSanitizeBailiwick_NSNotMatchingGlueIsDropped covers the
+// pre-existing "name not in nsNames" path: even an in-bailiwick record
+// in Additional is dropped if no NS in Authority pointed at it. This
+// guards against responders padding the Additional section with
+// unsolicited records.
+func TestSanitizeBailiwick_NSNotMatchingGlueIsDropped(t *testing.T) {
+	nsRData := encodePlainName("ns1.example.com")
+
+	msg := &dns.Message{
+		Authority: []dns.ResourceRecord{
+			{Name: "example.com", Type: dns.TypeNS, Class: dns.ClassIN, TTL: 3600, RDLength: uint16(len(nsRData)), RData: nsRData},
+		},
+		Additional: []dns.ResourceRecord{
+			// Matches NS in Authority — kept.
+			{Name: "ns1.example.com", Type: dns.TypeA, Class: dns.ClassIN, TTL: 300, RDLength: 4, RData: []byte{10, 0, 0, 1}},
+			// In-bailiwick of example.com but NOT named by any NS — dropped.
+			{Name: "extra.example.com", Type: dns.TypeA, Class: dns.ClassIN, TTL: 300, RDLength: 4, RData: []byte{10, 0, 0, 99}},
+		},
+	}
+
+	SanitizeBailiwick(msg, "example.com")
+
+	if len(msg.Additional) != 1 {
+		t.Fatalf("expected 1 surviving record, got %d", len(msg.Additional))
+	}
+	if msg.Additional[0].Name != "ns1.example.com" {
+		t.Errorf("expected only ns1.example.com glue kept, got %q", msg.Additional[0].Name)
+	}
+}
+
 func TestFilterInZoneEmptyZone(t *testing.T) {
 	// Cover filterInZone with zone="" (root zone, everything passes)
 	records := []dns.ResourceRecord{
