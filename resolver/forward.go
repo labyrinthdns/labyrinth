@@ -161,7 +161,7 @@ func (r *Resolver) sendQueryWithRD(nsIP string, name string, qtype uint16, qclas
 	}
 	if withEDNS0 {
 		query.Additional = []dns.ResourceRecord{
-			dns.BuildOPT(4096, r.config.DNSSECEnabled),
+			dns.BuildOPT(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled),
 		}
 	}
 

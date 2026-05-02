@@ -235,6 +235,30 @@ func TestApplyYAML(t *testing.T) {
 	}
 }
 
+// TestDefaultUpstreamUDPBufferSize asserts that the resolver's advertised
+// EDNS0 UDP buffer size defaults to 1232 bytes (DNS Flag Day 2020 / RFC 9018).
+// This is the chief defense against off-path DNS fragment-injection cache
+// poisoning — packets stay below the typical IPv4/IPv6 path MTU and so
+// are not subject to fragment reassembly attacks.
+func TestDefaultUpstreamUDPBufferSize(t *testing.T) {
+	cfg := defaultConfig()
+	if cfg.Resolver.UpstreamUDPBufferSize != 1232 {
+		t.Errorf("default UpstreamUDPBufferSize: expected 1232 (RFC 9018), got %d",
+			cfg.Resolver.UpstreamUDPBufferSize)
+	}
+}
+
+func TestApplyYAML_UpstreamUDPBufferSize(t *testing.T) {
+	cfg := defaultConfig()
+	applyYAML(cfg, map[string]string{
+		"resolver.upstream_udp_buffer_size": "4096",
+	})
+	if cfg.Resolver.UpstreamUDPBufferSize != 4096 {
+		t.Errorf("YAML override should set UpstreamUDPBufferSize=4096, got %d",
+			cfg.Resolver.UpstreamUDPBufferSize)
+	}
+}
+
 func TestApplyEnv(t *testing.T) {
 	cfg := defaultConfig()
 

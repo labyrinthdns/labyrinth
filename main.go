@@ -198,16 +198,17 @@ func run() int {
 	}
 
 	resCfg := resolver.ResolverConfig{
-		MaxDepth:          cfg.Resolver.MaxDepth,
-		MaxCNAMEDepth:     cfg.Resolver.MaxCNAMEDepth,
-		UpstreamTimeout:   cfg.Resolver.UpstreamTimeout,
-		UpstreamRetries:   cfg.Resolver.UpstreamRetries,
-		QMinEnabled:       cfg.Resolver.QMinEnabled,
-		Caps0x20Enabled:   cfg.Resolver.Caps0x20Enabled,
-		PreferIPv4:        cfg.Resolver.PreferIPv4,
-		DNSSECEnabled:     cfg.Resolver.DNSSECEnabled,
-		DNS64Enabled:      cfg.Resolver.DNS64Enabled,
-		FallbackResolvers: cfg.Resolver.FallbackResolvers,
+		MaxDepth:              cfg.Resolver.MaxDepth,
+		MaxCNAMEDepth:         cfg.Resolver.MaxCNAMEDepth,
+		UpstreamTimeout:       cfg.Resolver.UpstreamTimeout,
+		UpstreamRetries:       cfg.Resolver.UpstreamRetries,
+		QMinEnabled:           cfg.Resolver.QMinEnabled,
+		Caps0x20Enabled:       cfg.Resolver.Caps0x20Enabled,
+		PreferIPv4:            cfg.Resolver.PreferIPv4,
+		DNSSECEnabled:         cfg.Resolver.DNSSECEnabled,
+		DNS64Enabled:          cfg.Resolver.DNS64Enabled,
+		FallbackResolvers:     cfg.Resolver.FallbackResolvers,
+		UpstreamUDPBufferSize: cfg.Resolver.UpstreamUDPBufferSize,
 	}
 	if cfg.Resolver.DNS64Enabled {
 		prefix, prefixErr := resolver.ParseDNS64Prefix(cfg.Resolver.DNS64Prefix)
