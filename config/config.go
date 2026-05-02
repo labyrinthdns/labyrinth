@@ -144,6 +144,7 @@ type ResolverConfig struct {
 	Caps0x20Enabled     bool
 	PreferIPv4          bool
 	DNSSECEnabled       bool
+	DNSSECAllowSHA1     bool
 	HardenBelowNXDomain bool
 	RootHintsRefresh    time.Duration
 	ECSEnabled          bool
@@ -351,6 +352,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setBool(&cfg.Resolver.Caps0x20Enabled, "resolver.caps_for_id")
 	setBool(&cfg.Resolver.PreferIPv4, "resolver.prefer_ipv4")
 	setBool(&cfg.Resolver.DNSSECEnabled, "resolver.dnssec_enabled")
+	setBool(&cfg.Resolver.DNSSECAllowSHA1, "resolver.dnssec_allow_sha1")
 	setBool(&cfg.Resolver.HardenBelowNXDomain, "resolver.harden_below_nxdomain")
 	setDuration(&cfg.Resolver.RootHintsRefresh, "resolver.root_hints_refresh")
 	setBool(&cfg.Resolver.ECSEnabled, "resolver.ecs_enabled")

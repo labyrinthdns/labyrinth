@@ -639,7 +639,7 @@ func TestVerifyDNSKEYWithDS_Match(t *testing.T) {
 		{Name: "example.com.", Type: dns.TypeDNSKEY, RData: kskRData},
 	}
 
-	if !verifyDNSKEYWithDS(dnskeys, dsRecords, "example.com.") {
+	if !(&Validator{}).verifyDNSKEYWithDS(dnskeys, dsRecords, "example.com.") {
 		t.Error("verifyDNSKEYWithDS should return true for matching KSK + DS")
 	}
 }
@@ -659,7 +659,7 @@ func TestVerifyDNSKEYWithDS_NoMatch(t *testing.T) {
 		{Name: "example.com.", Type: dns.TypeDNSKEY, RData: kskRData},
 	}
 
-	if verifyDNSKEYWithDS(dnskeys, dsRecords, "example.com.") {
+	if (&Validator{}).verifyDNSKEYWithDS(dnskeys, dsRecords, "example.com.") {
 		t.Error("verifyDNSKEYWithDS should return false when no KSK matches DS")
 	}
 }
@@ -672,7 +672,7 @@ func TestVerifyDNSKEYWithDS_BadRData(t *testing.T) {
 		{Name: "example.com.", Type: dns.TypeDNSKEY, RData: []byte{0}}, // too short
 	}
 
-	if verifyDNSKEYWithDS(dnskeys, dsRecords, "example.com.") {
+	if (&Validator{}).verifyDNSKEYWithDS(dnskeys, dsRecords, "example.com.") {
 		t.Error("verifyDNSKEYWithDS should return false with bad RData")
 	}
 }
@@ -686,7 +686,7 @@ func TestVerifyDNSKEYWithDS_ZSKIgnored(t *testing.T) {
 		{Name: "example.com.", Type: dns.TypeDNSKEY, RData: zskRData},
 	}
 
-	if verifyDNSKEYWithDS(dnskeys, dsRecords, "example.com.") {
+	if (&Validator{}).verifyDNSKEYWithDS(dnskeys, dsRecords, "example.com.") {
 		t.Error("verifyDNSKEYWithDS should skip ZSKs")
 	}
 }
