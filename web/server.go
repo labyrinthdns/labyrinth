@@ -61,6 +61,7 @@ type AdminServer struct {
 	dohEnabled            bool
 	dohHandler            server.Handler
 	certMgr               *certmanager.Manager
+	loginLimiter          *loginLimiter
 }
 
 // NewAdminServer creates a new AdminServer. The bl parameter is optional and
@@ -103,6 +104,7 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		clientQueryNum:        make(map[string]*clientQueryEntry),
 		clientCleanupInterval: cleanupInterval,
 		blocklist:             bl,
+		loginLimiter:          newLoginLimiter(),
 	}, nil
 }
 
@@ -128,6 +130,8 @@ func (s *AdminServer) CertManager() *certmanager.Manager {
 func (s *AdminServer) Start(ctx context.Context) error {
 	// Start client query cleanup goroutine
 	go s.startClientCleanup(ctx)
+	// Start login-limiter idle eviction goroutine
+	go s.loginLimiter.startCleanup(ctx)
 
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
