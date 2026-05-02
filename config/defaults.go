@@ -26,6 +26,7 @@ func defaultConfig() *Config {
 			Caps0x20Enabled:     false,
 			PreferIPv4:          true,
 			DNSSECEnabled:       true,
+			DNSSECAllowSHA1:     false,
 			HardenBelowNXDomain: true,
 			RootHintsRefresh:    12 * time.Hour,
 			ECSEnabled:          false,

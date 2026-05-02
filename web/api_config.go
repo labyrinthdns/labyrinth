@@ -66,6 +66,7 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"caps_for_id":           cfg.Resolver.Caps0x20Enabled,
 			"prefer_ipv4":           cfg.Resolver.PreferIPv4,
 			"dnssec_enabled":        cfg.Resolver.DNSSECEnabled,
+			"dnssec_allow_sha1":     cfg.Resolver.DNSSECAllowSHA1,
 			"harden_below_nxdomain": cfg.Resolver.HardenBelowNXDomain,
 			"root_hints_refresh":    cfg.Resolver.RootHintsRefresh.String(),
 			"ecs_enabled":           cfg.Resolver.ECSEnabled,

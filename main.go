@@ -285,7 +285,9 @@ func run() int {
 		}
 		if cfg.Resolver.DNSSECEnabled {
 			res.EnableDNSSEC(logger)
-			logger.Info("DNSSEC validation enabled")
+			res.SetDNSSECAllowSHA1(cfg.Resolver.DNSSECAllowSHA1)
+			logger.Info("DNSSEC validation enabled",
+				"allow_sha1", cfg.Resolver.DNSSECAllowSHA1)
 		}
 		// Root hints auto-refresh (RFC 8109)
 		if cfg.Resolver.RootHintsRefresh > 0 {

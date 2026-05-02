@@ -163,6 +163,16 @@ func (r *Resolver) EnableDNSSEC(logger *slog.Logger) {
 	r.dnssecValidator = dnssec.NewValidator(r, logger)
 }
 
+// SetDNSSECAllowSHA1 toggles acceptance of weak SHA1-based DNSSEC primitives
+// (RSASHA1 RRSIGs and SHA1 DS digests) on the active validator. Default is
+// false, matching modern resolver behavior. No-op if DNSSEC is not enabled.
+func (r *Resolver) SetDNSSECAllowSHA1(allow bool) {
+	if r.dnssecValidator == nil {
+		return
+	}
+	r.dnssecValidator.AllowSHA1(allow)
+}
+
 // QueryDNSSEC sends a DNS query with the DO bit set. It satisfies the
 // dnssec.Querier interface so the validator can fetch DNSKEY/DS records.
 func (r *Resolver) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.Message, error) {

@@ -66,6 +66,13 @@ type Validator struct {
 	trustAnchors []dns.DSRecord
 	logger       *slog.Logger
 
+	// allowSHA1 enables acceptance of weak SHA1-based primitives:
+	// RSASHA1 (algorithm 5) RRSIGs and SHA1 (digest type 1) DS records.
+	// Default false. Per RFC 8624 / draft-ietf-dnsop-rfc8624-bis these are
+	// "MUST NOT" for signing; modern resolvers (Unbound, BIND ≥ 9.18) reject
+	// them by default. Set true only for legacy zones that have not migrated.
+	allowSHA1 bool
+
 	mu       sync.RWMutex
 	keyCache map[string]*dnskeyCache
 }
@@ -82,6 +89,31 @@ func NewValidator(querier Querier, logger *slog.Logger) *Validator {
 		logger:       logger,
 		keyCache:     make(map[string]*dnskeyCache),
 	}
+}
+
+// AllowSHA1 toggles acceptance of RSASHA1 RRSIGs and SHA1 DS digests.
+// When false (the default), responses that depend on SHA1 are treated as
+// insecure (as if the zone published no signatures we can validate).
+func (v *Validator) AllowSHA1(allow bool) {
+	v.allowSHA1 = allow
+}
+
+// isWeakRRSIGAlg reports whether the algorithm is on the weak/deprecated list
+// the validator rejects by default. Currently only RSASHA1.
+func (v *Validator) isWeakRRSIGAlg(alg uint8) bool {
+	if v.allowSHA1 {
+		return false
+	}
+	return alg == dns.AlgRSASHA1
+}
+
+// isWeakDSDigest reports whether the DS digest type is rejected by default.
+// Currently only DigestSHA1.
+func (v *Validator) isWeakDSDigest(d uint8) bool {
+	if v.allowSHA1 {
+		return false
+	}
+	return d == dns.DigestSHA1
 }
 
 // ValidateResponse validates DNSSEC signatures in a DNS response.
@@ -125,8 +157,21 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 		return Insecure
 	}
 
+	// Track whether any RRSIG was usable (strong algorithm). If all are weak,
+	// per RFC 8624 §3.1 we treat the response as insecure.
+	usableRRSIGs := 0
+
 	// Try to validate each RRSIG.
 	for _, rrsig := range rrsigs {
+		// Algorithm policy: skip RRSIGs we refuse to validate (e.g. RSASHA1).
+		if v.isWeakRRSIGAlg(rrsig.Algorithm) {
+			v.logger.Debug("skipping RRSIG with weak algorithm",
+				"algorithm", rrsig.Algorithm,
+				"signer", rrsig.SignerName)
+			continue
+		}
+		usableRRSIGs++
+
 		// Filter the RRset: records matching the type covered by this RRSIG.
 		rrset := filterRRSet(answerRRs, rrsig.TypeCovered)
 		if len(rrset) == 0 {
@@ -207,6 +252,15 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 		return Secure
 	}
 
+	// All RRSIGs were skipped because they used weak (rejected) algorithms.
+	// Per RFC 8624 §3.1, treat as insecure: the zone is effectively unsigned
+	// from this validator's perspective.
+	if usableRRSIGs == 0 {
+		v.logger.Debug("all RRSIGs used weak algorithms; treating as insecure",
+			"qname", qname, "qtype", qtype)
+		return Insecure
+	}
+
 	// No RRSIG could be validated.
 	return Indeterminate
 }
@@ -251,7 +305,23 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 				return Insecure
 			}
 
-			if !verifyDNSKEYWithDS(zoneKeys, dsRecords, chainZone) {
+			// If every published DS uses a digest type we reject (e.g. SHA1),
+			// treat the chain as insecure rather than bogus: the parent has
+			// authorized the child but only with primitives we don't trust.
+			usableDS := false
+			for _, ds := range dsRecords {
+				if !v.isWeakDSDigest(ds.DigestType) {
+					usableDS = true
+					break
+				}
+			}
+			if !usableDS {
+				v.logger.Debug("all DS records use weak digest types; treating as insecure",
+					"zone", chainZone, "parent", parentZone)
+				return Insecure
+			}
+
+			if !v.verifyDNSKEYWithDS(zoneKeys, dsRecords, chainZone) {
 				v.logger.Debug("DNSKEY does not match DS",
 					"zone", chainZone)
 				return Bogus
@@ -263,7 +333,8 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 }
 
 // verifyAgainstTrustAnchors checks if any DNSKEY for the root zone matches
-// one of the configured trust anchors.
+// one of the configured trust anchors. Trust-anchor DS records using digest
+// types we reject by policy (e.g. SHA1) are skipped.
 func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.ResourceRecord) bool {
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
@@ -274,6 +345,9 @@ func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.Resourc
 			continue
 		}
 		for _, anchor := range v.trustAnchors {
+			if v.isWeakDSDigest(anchor.DigestType) {
+				continue
+			}
 			if VerifyDS(dnskey, &anchor, zone) {
 				return true
 			}
@@ -283,8 +357,9 @@ func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.Resourc
 }
 
 // verifyDNSKEYWithDS checks if any DNSKEY (specifically KSK) matches any
-// of the provided DS records.
-func verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord, ownerName string) bool {
+// of the provided DS records. DS records with digest types rejected by
+// policy (e.g. SHA1) are skipped to prevent algorithm-downgrade attacks.
+func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord, ownerName string) bool {
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
 		if err != nil {
@@ -294,6 +369,9 @@ func verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord,
 			continue
 		}
 		for _, ds := range dsRecords {
+			if v.isWeakDSDigest(ds.DigestType) {
+				continue
+			}
 			if VerifyDS(dnskey, ds, ownerName) {
 				return true
 			}
@@ -488,10 +566,20 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 
 	// Validate RRSIG signatures over NSEC3/SOA records
 	skewI := int64(rrsigClockSkew / time.Second)
+	usableRRSIGs := 0
 	for _, rrsig := range rrsigs {
 		if rrsig.TypeCovered != dns.TypeNSEC3 && rrsig.TypeCovered != dns.TypeSOA {
 			continue
 		}
+
+		// Algorithm policy: skip RRSIGs we refuse to validate (e.g. RSASHA1).
+		if v.isWeakRRSIGAlg(rrsig.Algorithm) {
+			v.logger.Debug("skipping authority RRSIG with weak algorithm",
+				"algorithm", rrsig.Algorithm,
+				"signer", rrsig.SignerName)
+			continue
+		}
+		usableRRSIGs++
 
 		rrset := filterRRSet(response.Authority, rrsig.TypeCovered)
 		if len(rrset) == 0 {
@@ -538,6 +626,15 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 				"key_tag", rrsig.KeyTag, "zone", signerZone, "error", err)
 			return Bogus
 		}
+	}
+
+	// If every authority RRSIG over NSEC3/SOA used a weak algorithm and was
+	// skipped, we have no verified signatures — the zone is effectively
+	// unsigned from this validator's perspective. Treat as Insecure.
+	if usableRRSIGs == 0 {
+		v.logger.Debug("denial response: all authority RRSIGs used weak algorithms",
+			"qname", qname, "qtype", qtype)
+		return Insecure
 	}
 
 	// Validate NSEC3 denial proof using proper hash-range coverage.
