@@ -691,10 +691,20 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 		return nil, err
 	}
 
-	// Check if response exceeds client's UDP buffer
+	// Check if response exceeds the effective UDP cap. We honour the
+	// client's advertised buffer but never exceed our own configured
+	// ceiling: even if the client claims it can receive 65535 bytes,
+	// we will not emit oversized UDP responses that would fragment in
+	// transit. RFC 9018 / DNS Flag Day 2020. Setting TC forces TCP
+	// fallback, where reassembly uses 32-bit per-connection sequence
+	// numbers and is not vulnerable to off-path fragment injection
+	// (Brandt et al, USENIX Security 2018).
 	maxSize := 512
 	if query.EDNS0 != nil {
 		maxSize = int(query.EDNS0.UDPSize)
+	}
+	if ceiling := int(h.advertisedUDPBufferSize()); maxSize > ceiling {
+		maxSize = ceiling
 	}
 	if len(packed) > maxSize {
 		// Set TC bit and send only header + question section (RFC 1035 §4.1.1).
