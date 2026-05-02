@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -177,6 +178,17 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := loginClientIP(r)
+	if s.loginLimiter != nil {
+		if ok, retryAfter := s.loginLimiter.allow(clientIP); !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+			jsonResponse(w, http.StatusTooManyRequests, map[string]string{
+				"error": "too many failed login attempts; try again later",
+			})
+			return
+		}
+	}
+
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -206,6 +218,9 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	passMatch := checkPassword(req.Password, hashToCheck)
 
 	if !userMatch || !passMatch {
+		if s.loginLimiter != nil {
+			s.loginLimiter.recordFailure(clientIP)
+		}
 		jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
@@ -214,6 +229,10 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
 		return
+	}
+
+	if s.loginLimiter != nil {
+		s.loginLimiter.recordSuccess(clientIP)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]string{
