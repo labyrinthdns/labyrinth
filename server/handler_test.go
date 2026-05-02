@@ -673,3 +673,135 @@ func TestBuildResponse_AllowsLargeResponseWithOperatorOverride(t *testing.T) {
 		t.Error("ANCount must be > 0 when response is not truncated")
 	}
 }
+
+// TestBuildCacheResponse_CapsAtServerCeiling proves the cache-hit path now
+// goes through maybeTruncateUDP after the helper-extraction refactor. Before
+// the refactor, buildCacheResponse emitted unbounded UDP regardless of cap
+// — a pathological cache entry could induce 1232 < N bytes responses.
+func TestBuildCacheResponse_CapsAtServerCeiling(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+	// Default ceiling = 1232. Client claims 4096.
+
+	queryMsg := &dns.Message{
+		Header: dns.Header{
+			ID:    0xCAC1,
+			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
+		},
+		Questions: []dns.Question{{
+			Name: "cached.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		}},
+		EDNS0: &dns.EDNS0{UDPSize: 4096},
+	}
+
+	// Construct a pathological cache entry: 200 A records, ~3.2KB
+	// uncompressed. Real-world cache entries are typically 1-2 RRs, but
+	// nothing in the cache layer prevents an entry of this size.
+	var records []dns.ResourceRecord
+	for i := 0; i < 200; i++ {
+		records = append(records, dns.ResourceRecord{
+			Name: "cached.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 300, RDLength: 4, RData: []byte{10, byte(i >> 8), byte(i), 1},
+		})
+	}
+	entry := &cache.Entry{Records: records, RCODE: dns.RCodeNoError}
+
+	resp, err := handler.buildCacheResponse(queryMsg, entry)
+	if err != nil {
+		t.Fatalf("buildCacheResponse error: %v", err)
+	}
+	if len(resp) > 1232 {
+		t.Errorf("cache-hit response not capped: got %d bytes, want <= 1232", len(resp))
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags>>9&1 != 1 {
+		t.Error("TC bit must be set on truncated cache-hit response")
+	}
+	if ancount := binary.BigEndian.Uint16(resp[6:8]); ancount != 0 {
+		t.Errorf("ANCount must be 0 on truncated response, got %d", ancount)
+	}
+}
+
+// TestBuildMinimalANYResponse_RespectsCap proves the RFC 8482 ANY-collapse
+// path (the second formerly-unbounded code path) is now wired into the
+// truncation helper. We use a deliberately tight client UDPSize to force
+// truncation even on the small synthetic HINFO response.
+func TestBuildMinimalANYResponse_RespectsCap(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+
+	q := dns.Question{Name: "any.example.com", Type: dns.TypeANY, Class: dns.ClassIN}
+	queryMsg := &dns.Message{
+		Header: dns.Header{
+			ID:    0xA001,
+			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
+		},
+		Questions: []dns.Question{q},
+		// UDPSize=30 is malformed per RFC 6891 (min 512) but our enforcement
+		// honours whatever the client sends — the point of this test is to
+		// prove the helper is *invoked* on the ANY path, not to validate
+		// the protocol-level minimum.
+		EDNS0: &dns.EDNS0{UDPSize: 30},
+	}
+
+	resp, err := handler.buildMinimalANYResponse(queryMsg, q)
+	if err != nil {
+		t.Fatalf("buildMinimalANYResponse error: %v", err)
+	}
+	if len(resp) > 30 {
+		t.Errorf("ANY response not capped at client UDPSize=30: got %d bytes", len(resp))
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags>>9&1 != 1 {
+		t.Error("TC bit must be set when response exceeds client buffer")
+	}
+}
+
+// TestMaybeTruncateUDP_NoEDNSCapsAt512 verifies the RFC 1035 default: a
+// query without EDNS0 caps the response at 512 bytes regardless of how
+// generous the server-configured ceiling is. Defensive guard against
+// regressions that would forget to floor at 512 for legacy clients.
+func TestMaybeTruncateUDP_NoEDNSCapsAt512(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := cache.NewCache(1000, 5, 86400, 3600, m)
+	res := newTestResolver(c, m)
+	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
+	handler.SetDownstreamUDPBufferSize(4096) // generous server cap
+
+	queryMsg := &dns.Message{
+		Header: dns.Header{
+			ID:    0xC512,
+			Flags: dns.NewFlagBuilder().SetRD(true).Build(),
+		},
+		Questions: []dns.Question{{
+			Name: "legacy.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		}},
+		// No EDNS0: this is a legacy RFC 1035 client.
+	}
+
+	// 50 A records → ~800 bytes uncompressed, well over 512.
+	var answers []dns.ResourceRecord
+	for i := 0; i < 50; i++ {
+		answers = append(answers, dns.ResourceRecord{
+			Name: "legacy.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+			TTL: 300, RDLength: 4, RData: []byte{10, 0, byte(i), 1},
+		})
+	}
+	result := &resolver.ResolveResult{Answers: answers, RCODE: dns.RCodeNoError}
+
+	resp, err := handler.buildResponse(queryMsg, result)
+	if err != nil {
+		t.Fatalf("buildResponse error: %v", err)
+	}
+	if len(resp) > 512 {
+		t.Errorf("non-EDNS response exceeded 512: got %d bytes (RFC 1035 §4.2.1)", len(resp))
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags>>9&1 != 1 {
+		t.Error("TC bit must be set when truncating to 512-byte default")
+	}
+}
