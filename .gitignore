@@ -43,3 +43,5 @@ coverage*.html
 
 # Project spec (not part of source)
 .project/
+
+.dfmt/

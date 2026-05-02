@@ -596,7 +596,7 @@ func TestResolveWithLocalZones(t *testing.T) {
 	c := cache.NewCache(100, 5, 86400, 3600, m)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	r := NewResolver(c, ResolverConfig{MaxDepth: 30, MaxCNAMEDepth: 10}, m, logger)
-	r.ready = true
+	r.ready.Store(true)
 
 	lz := NewLocalZoneTable([]LocalZone{{
 		Name: "myzone.local",

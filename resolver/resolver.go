@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/cache"
@@ -59,7 +60,7 @@ type Resolver struct {
 	config          ResolverConfig
 	metrics         *metrics.Metrics
 	logger          *slog.Logger
-	ready           bool
+	ready           atomic.Bool
 	inflight        *inflight
 	dnssecValidator *dnssec.Validator
 	localZones      *LocalZoneTable
@@ -102,7 +103,7 @@ func (r *Resolver) InfraCache() *InfraCache {
 
 // IsReady returns whether the resolver has completed root hint priming.
 func (r *Resolver) IsReady() bool {
-	return r.ready
+	return r.ready.Load()
 }
 
 // PrimeRootHints queries a root server for . NS to refresh root data.
@@ -126,13 +127,13 @@ func (r *Resolver) PrimeRootHints() error {
 		if len(response.Answers) > 0 {
 			r.cache.Store(".", dns.TypeNS, dns.ClassIN, response.Answers, response.Authority)
 		}
-		r.ready = true
+		r.ready.Store(true)
 		r.logger.Info("root hints primed", "ns", ns.Name)
 		return nil
 	}
 
 	// Even if priming fails, mark as ready so the resolver can still function
-	r.ready = true
+	r.ready.Store(true)
 	return errors.New("root hint priming failed after 3 attempts")
 }
 
