@@ -89,11 +89,11 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		}
 		if len(ecsOptions) > 0 {
 			query.Additional = []dns.ResourceRecord{
-				dns.BuildOPTWithOptions(4096, r.config.DNSSECEnabled, ecsOptions),
+				dns.BuildOPTWithOptions(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled, ecsOptions),
 			}
 		} else {
 			query.Additional = []dns.ResourceRecord{
-				dns.BuildOPT(4096, r.config.DNSSECEnabled),
+				dns.BuildOPT(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled),
 			}
 		}
 	}
@@ -265,4 +265,28 @@ func randomTXID() (uint16, error) {
 		return 0, err
 	}
 	return binary.BigEndian.Uint16(b[:]), nil
+}
+
+// advertisedUDPBufferSize returns the EDNS0 UDP payload size to advertise
+// in outgoing OPT records. DNS Flag Day 2020 (RFC 9018, RFC 8906) recommends
+// 1232 bytes — small enough to avoid IP fragmentation on most paths, which
+// shuts down off-path fragment-injection cache poisoning (Brandt et al,
+// USENIX 2018). Larger buffers (the legacy 4096 default) let an attacker
+// race a forged second IP fragment ahead of the legitimate response and
+// stitch it into the resolver's reassembly buffer.
+//
+// If the operator configured an out-of-range or zero value we fall back
+// to 1232 rather than honoring obviously broken settings. The minimum
+// 512 bound is RFC 6891's mandated DNS payload floor.
+func (r *Resolver) advertisedUDPBufferSize() uint16 {
+	const (
+		defaultSize = 1232
+		minSize     = 512
+		maxSize     = 65535
+	)
+	v := r.config.UpstreamUDPBufferSize
+	if v < minSize || v > maxSize {
+		return defaultSize
+	}
+	return uint16(v)
 }

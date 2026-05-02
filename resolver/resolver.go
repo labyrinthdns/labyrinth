@@ -42,6 +42,11 @@ type ResolverConfig struct {
 	// FallbackResolvers is a list of backup recursive DNS servers (e.g. 8.8.8.8, 1.1.1.1).
 	// When primary resolution returns SERVFAIL, one randomly-picked fallback is tried once.
 	FallbackResolvers []string
+	// UpstreamUDPBufferSize is the EDNS0 UDP payload size advertised in
+	// outgoing OPT records. RFC 9018 / DNS Flag Day 2020 recommends 1232
+	// to avoid IP fragmentation, which closes the off-path fragment-
+	// injection cache-poisoning vector. 0 means "use the safe default".
+	UpstreamUDPBufferSize int
 }
 
 // ResolveResult holds the outcome of a recursive resolution.

@@ -136,22 +136,23 @@ type ServerConfig struct {
 
 // ResolverConfig holds resolver settings.
 type ResolverConfig struct {
-	MaxDepth            int
-	MaxCNAMEDepth       int
-	UpstreamTimeout     time.Duration
-	UpstreamRetries     int
-	QMinEnabled         bool
-	Caps0x20Enabled     bool
-	PreferIPv4          bool
-	DNSSECEnabled       bool
-	DNSSECAllowSHA1     bool
-	HardenBelowNXDomain bool
-	RootHintsRefresh    time.Duration
-	ECSEnabled          bool
-	ECSMaxPrefix        int
-	DNS64Enabled        bool
-	DNS64Prefix         string
-	FallbackResolvers   []string
+	MaxDepth              int
+	MaxCNAMEDepth         int
+	UpstreamTimeout       time.Duration
+	UpstreamRetries       int
+	QMinEnabled           bool
+	Caps0x20Enabled       bool
+	PreferIPv4            bool
+	DNSSECEnabled         bool
+	DNSSECAllowSHA1       bool
+	HardenBelowNXDomain   bool
+	RootHintsRefresh      time.Duration
+	ECSEnabled            bool
+	ECSMaxPrefix          int
+	DNS64Enabled          bool
+	DNS64Prefix           string
+	FallbackResolvers     []string
+	UpstreamUDPBufferSize int
 }
 
 // CacheConfig holds cache settings.
@@ -360,6 +361,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setBool(&cfg.Resolver.DNS64Enabled, "resolver.dns64_enabled")
 	setString(&cfg.Resolver.DNS64Prefix, "resolver.dns64_prefix")
 	setCSV(&cfg.Resolver.FallbackResolvers, "resolver.fallback_resolvers")
+	setInt(&cfg.Resolver.UpstreamUDPBufferSize, "resolver.upstream_udp_buffer_size")
 
 	// Cache
 	setInt(&cfg.Cache.MaxEntries, "cache.max_entries")
