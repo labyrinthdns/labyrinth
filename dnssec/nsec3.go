@@ -12,12 +12,18 @@ import (
 
 var (
 	errUnsupportedHashAlg = errors.New("dnssec: unsupported NSEC3 hash algorithm")
-	errTooManyIterations  = errors.New("dnssec: NSEC3 iterations exceed maximum (150)")
+	errTooManyIterations  = errors.New("dnssec: NSEC3 iterations exceed maximum (100)")
 	errNoNSEC3Records     = errors.New("dnssec: no NSEC3 records provided")
 )
 
-// MaxNSEC3Iterations is the maximum allowed iterations per RFC 8659.
-const MaxNSEC3Iterations = 150
+// MaxNSEC3Iterations is the hard ceiling on the NSEC3 iteration count this
+// resolver will honour, per RFC 9276 §3.2 (August 2022): "validating
+// resolvers SHOULD return an insecure response when processing NSEC3
+// records with iterations larger than 100." High iteration counts give
+// no real cryptographic benefit but let an attacker amplify CPU cost
+// per query (NSEC3 hash-walk DoS) and slow down legitimate validation.
+// Aligns with BIND 9.18+ and Unbound 1.16+ defaults.
+const MaxNSEC3Iterations = 100
 
 // nsec3Base32 is the extended hex base32 encoding used by NSEC3 (RFC 4648 §7),
 // without padding.

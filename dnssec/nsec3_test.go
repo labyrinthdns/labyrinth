@@ -47,6 +47,35 @@ func TestComputeNSEC3Hash_MaxIterations(t *testing.T) {
 	}
 }
 
+// TestMaxNSEC3IterationsIs100 pins the constant to 100 numerically per
+// RFC 9276 §3.2. Bumping the constant back up to 150 (or any value >100)
+// should fail this test — it's a regression guard, not a tautology.
+func TestMaxNSEC3IterationsIs100(t *testing.T) {
+	if MaxNSEC3Iterations != 100 {
+		t.Errorf("MaxNSEC3Iterations must be 100 per RFC 9276 §3.2, got %d", MaxNSEC3Iterations)
+	}
+}
+
+// TestComputeNSEC3Hash_RejectsAbove100 verifies the iteration limit drops
+// at the RFC 9276 §3.2 boundary: iterations=101 must be rejected.
+func TestComputeNSEC3Hash_RejectsAbove100(t *testing.T) {
+	_, err := ComputeNSEC3Hash("example.com.", 1, 101, nil)
+	if err != errTooManyIterations {
+		t.Errorf("iterations=101 must be rejected (RFC 9276 §3.2), got err=%v", err)
+	}
+}
+
+// TestComputeNSEC3Hash_AcceptsExactly100 verifies the inclusive boundary:
+// iterations=100 (the RFC 9276 ceiling itself) must still be accepted.
+// Pinned numerically rather than via MaxNSEC3Iterations so a future bump
+// of the constant doesn't silently relax this test.
+func TestComputeNSEC3Hash_AcceptsExactly100(t *testing.T) {
+	_, err := ComputeNSEC3Hash("example.com.", 1, 100, nil)
+	if err != nil {
+		t.Errorf("iterations=100 must be accepted (inclusive ceiling), got err=%v", err)
+	}
+}
+
 func TestComputeNSEC3Hash_EmptySalt(t *testing.T) {
 	hash, err := ComputeNSEC3Hash("example.com.", 1, 0, nil)
 	if err != nil {
