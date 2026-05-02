@@ -260,7 +260,7 @@ func TestResolve_FallbackOnServFail(t *testing.T) {
 	}, m, logger)
 
 	r.rootServers = []NameServer{{Name: "mock.root", IPv4: mock.ip}}
-	r.ready = true
+	r.ready.Store(true)
 
 	result, err := r.Resolve("example.com", dns.TypeA, dns.ClassIN)
 	if err != nil {
@@ -319,7 +319,7 @@ func TestResolve_NoFallbackOnSuccess(t *testing.T) {
 	}, m, logger)
 
 	r.rootServers = []NameServer{{Name: "mock.root", IPv4: primaryMock.ip}}
-	r.ready = true
+	r.ready.Store(true)
 
 	result, err := r.Resolve("example.com", dns.TypeA, dns.ClassIN)
 	if err != nil {
@@ -367,7 +367,7 @@ func TestResolve_NoFallbackOnNXDOMAIN(t *testing.T) {
 	}, m, logger)
 
 	r.rootServers = []NameServer{{Name: "mock.root", IPv4: primaryMock.ip}}
-	r.ready = true
+	r.ready.Store(true)
 
 	result, err := r.Resolve("nonexistent.test", dns.TypeA, dns.ClassIN)
 	if err != nil {
@@ -434,7 +434,7 @@ func TestResolve_ForwardZone_FallbackOnServFail(t *testing.T) {
 	}, m, logger)
 
 	r.rootServers = []NameServer{{Name: "mock.root", IPv4: mock.ip}}
-	r.ready = true
+	r.ready.Store(true)
 	r.SetForwardTable(NewForwardTable([]ForwardZone{
 		{Name: "example.com", Addrs: []string{mock.ip}, IsStub: false},
 	}))
@@ -506,7 +506,7 @@ func TestResolve_ForwardZone_FallbackRecovers(t *testing.T) {
 	}, m, logger)
 
 	r.rootServers = []NameServer{{Name: "mock.root", IPv4: mock.ip}}
-	r.ready = true
+	r.ready.Store(true)
 	r.SetForwardTable(NewForwardTable([]ForwardZone{
 		{Name: "example.com", Addrs: []string{mock.ip}, IsStub: false},
 	}))
@@ -577,7 +577,7 @@ func TestResolve_StubZone_FallbackOnServFail(t *testing.T) {
 	}, m, logger)
 
 	r.rootServers = []NameServer{{Name: "mock.root", IPv4: mock.ip}}
-	r.ready = true
+	r.ready.Store(true)
 	r.SetForwardTable(NewForwardTable([]ForwardZone{
 		{Name: "internal.corp", Addrs: []string{mock.ip}, IsStub: true},
 	}))

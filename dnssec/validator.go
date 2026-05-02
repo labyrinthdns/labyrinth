@@ -10,6 +10,11 @@ import (
 	"github.com/labyrinthdns/labyrinth/dns"
 )
 
+// rrsigClockSkew is the symmetric tolerance applied to RRSIG inception and
+// expiration checks. Real-world clocks drift; without this many otherwise
+// valid signatures fail near their boundaries.
+const rrsigClockSkew = 60 * time.Second
+
 // ValidationResult represents the outcome of DNSSEC validation.
 type ValidationResult int
 
@@ -131,23 +136,38 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 			continue
 		}
 
-		// Check RRSIG time validity.
-		now := uint32(time.Now().Unix())
-		if now < rrsig.Inception {
+		// Check RRSIG time validity (with small clock-skew tolerance).
+		// Promote to int64 to avoid uint32 wrap when Expiration is near 0xFFFFFFFF
+		// (e.g. test fixtures or signatures with very long lifetimes).
+		nowI := time.Now().Unix()
+		incI := int64(rrsig.Inception)
+		expI := int64(rrsig.Expiration)
+		skewI := int64(rrsigClockSkew / time.Second)
+		if nowI+skewI < incI {
 			v.logger.Debug("RRSIG not yet valid",
 				"inception", rrsig.Inception,
-				"now", now)
+				"now", nowI)
 			return Bogus
 		}
-		if now > rrsig.Expiration {
+		if nowI > expI+skewI {
 			v.logger.Debug("RRSIG expired",
 				"expiration", rrsig.Expiration,
-				"now", now)
+				"now", nowI)
+			return Bogus
+		}
+
+		// Bailiwick check: the signer must be an ancestor (or equal to) qname.
+		// Refuses cross-zone signature attacks where an attacker injects an
+		// RRSIG whose SignerName points to an unrelated zone they control.
+		signerZone := normalizeName(rrsig.SignerName)
+		if !isInBailiwick(qname, signerZone) {
+			v.logger.Debug("RRSIG signer not in bailiwick of qname",
+				"signer", signerZone,
+				"qname", qname)
 			return Bogus
 		}
 
 		// Fetch DNSKEY for the signer zone.
-		signerZone := normalizeName(rrsig.SignerName)
 		dnskeys, err := v.fetchDNSKEYs(signerZone)
 		if err != nil {
 			v.logger.Debug("failed to fetch DNSKEYs",
@@ -402,13 +422,36 @@ func normalizeName(name string) string {
 	return name
 }
 
+// isInBailiwick reports whether signer is an ancestor of (or equal to) qname.
+// Both inputs must be already normalized (lowercase, trailing dot). The root
+// "." is a valid signer for every qname.
+func isInBailiwick(qname, signer string) bool {
+	q := strings.ToLower(normalizeName(qname))
+	s := strings.ToLower(normalizeName(signer))
+	if s == "." {
+		return true
+	}
+	if q == s {
+		return true
+	}
+	return strings.HasSuffix(q, "."+s)
+}
+
 // validateDenialResponse validates NSEC3 proofs in NXDOMAIN/NODATA responses.
 // It first checks for RRSIG signatures in the authority section, then validates
 // NSEC3 records to prove the queried name does not exist or the type is absent.
+//
+// Unlike a positive answer, the absence of a verifiable NSEC/NSEC3 denial
+// proof is *not* a benign condition once RRSIGs are present in the authority
+// section: a signed-but-unverified denial response is treated as Bogus, not
+// Insecure, because the zone has clearly opted into DNSSEC.
 func (v *Validator) validateDenialResponse(response *dns.Message, qname string, qtype uint16) ValidationResult {
-	// Collect RRSIG and NSEC3 records from authority section
+	// Collect RRSIG and NSEC3 records from authority section. We retain the
+	// raw ResourceRecord for NSEC3 entries so that the NSEC3 owner-name hash
+	// (which lives in the RR's owner name, not the parsed RDATA) is
+	// available for proper hash-range coverage checks.
 	var rrsigs []*dns.RRSIGRecord
-	var nsec3Records []*dns.NSEC3Record
+	var nsec3WithOwners []NSEC3RecordWithOwner
 
 	for _, rr := range response.Authority {
 		switch rr.Type {
@@ -425,7 +468,16 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 				v.logger.Debug("failed to parse NSEC3", "error", err)
 				continue
 			}
-			nsec3Records = append(nsec3Records, parsed)
+			ownerHash, err := nsec3OwnerHashFromName(rr.Name)
+			if err != nil {
+				v.logger.Debug("NSEC3 owner-name not a valid base32hex hash",
+					"name", rr.Name, "error", err)
+				continue
+			}
+			nsec3WithOwners = append(nsec3WithOwners, NSEC3RecordWithOwner{
+				NSEC3Record: *parsed,
+				OwnerHash:   ownerHash,
+			})
 		}
 	}
 
@@ -434,7 +486,8 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 		return Insecure
 	}
 
-	// Validate RRSIG signatures over NSEC3 records
+	// Validate RRSIG signatures over NSEC3/SOA records
+	skewI := int64(rrsigClockSkew / time.Second)
 	for _, rrsig := range rrsigs {
 		if rrsig.TypeCovered != dns.TypeNSEC3 && rrsig.TypeCovered != dns.TypeSOA {
 			continue
@@ -445,16 +498,27 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 			continue
 		}
 
-		// Check time validity
-		now := uint32(time.Now().Unix())
-		if now < rrsig.Inception || now > rrsig.Expiration {
+		// Check time validity (with clock-skew tolerance). Promote to int64 to
+		// avoid uint32 wrap when Expiration is near 0xFFFFFFFF.
+		nowI := time.Now().Unix()
+		incI := int64(rrsig.Inception)
+		expI := int64(rrsig.Expiration)
+		if nowI+skewI < incI || nowI > expI+skewI {
 			v.logger.Debug("authority RRSIG time invalid",
 				"inception", rrsig.Inception,
-				"expiration", rrsig.Expiration)
+				"expiration", rrsig.Expiration,
+				"now", nowI)
 			return Bogus
 		}
 
 		signerZone := normalizeName(rrsig.SignerName)
+		// Bailiwick check: signer must be an ancestor of qname.
+		if !isInBailiwick(qname, signerZone) {
+			v.logger.Debug("authority RRSIG signer not in bailiwick",
+				"signer", signerZone, "qname", qname)
+			return Bogus
+		}
+
 		dnskeys, err := v.fetchDNSKEYs(signerZone)
 		if err != nil {
 			v.logger.Debug("failed to fetch DNSKEYs for denial validation",
@@ -476,9 +540,9 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 		}
 	}
 
-	// Validate NSEC3 denial proof
-	if len(nsec3Records) > 0 {
-		denied, err := VerifyNSEC3Denial(qname, nsec3Records)
+	// Validate NSEC3 denial proof using proper hash-range coverage.
+	if len(nsec3WithOwners) > 0 {
+		denied, err := VerifyNSEC3DenialFull(qname, nsec3WithOwners)
 		if err != nil {
 			v.logger.Debug("NSEC3 denial verification error",
 				"qname", qname, "error", err)
@@ -488,16 +552,33 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 			v.logger.Debug("NSEC3 denial proof valid", "qname", qname)
 			return Secure
 		}
-		v.logger.Debug("NSEC3 denial proof inconclusive", "qname", qname)
+		v.logger.Debug("NSEC3 denial proof inconclusive — covering NSEC3 not found",
+			"qname", qname)
 	}
 
-	// RRSIG validated but no NSEC3 proof — the signed authority section is enough
-	// for a basic Secure result on NXDOMAIN/NODATA with SOA+RRSIG.
-	for _, rrsig := range rrsigs {
-		if rrsig.TypeCovered == dns.TypeSOA {
-			return Secure
-		}
-	}
+	// RRSIG present but no verifiable NSEC/NSEC3 denial proof. A signed zone
+	// that returns a denial without proving it is forging — return Bogus.
+	// (Previous behavior treated SOA+RRSIG alone as Secure; that allows an
+	// attacker to replay the public SOA RRSIG and forge any NXDOMAIN.)
+	v.logger.Debug("signed denial response without verifiable NSEC/NSEC3 proof",
+		"qname", qname, "qtype", qtype)
+	return Bogus
+}
 
-	return Insecure
+// nsec3OwnerHashFromName decodes the first label of an NSEC3 owner name as
+// base32hex into raw hash bytes. The owner name format per RFC 5155 is
+// `<base32hex-hash>.<zone>.`, so we extract the leading label and decode it.
+func nsec3OwnerHashFromName(name string) ([]byte, error) {
+	trimmed := strings.TrimSuffix(name, ".")
+	if trimmed == "" {
+		return nil, fmt.Errorf("nsec3: empty owner name")
+	}
+	dot := strings.IndexByte(trimmed, '.')
+	var label string
+	if dot < 0 {
+		label = trimmed
+	} else {
+		label = trimmed[:dot]
+	}
+	return nsec3StringToHash(label)
 }

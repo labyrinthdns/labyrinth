@@ -494,7 +494,13 @@ func TestValidateDenialResponse_BogusSignatureFailure(t *testing.T) {
 	}
 }
 
-func TestValidateDenialResponse_SecureWithSOAOnly(t *testing.T) {
+// TestValidateDenialResponse_BogusWithSOAOnly verifies that a denial
+// response signed only over SOA (no NSEC/NSEC3 proof) is rejected as
+// Bogus. The previous behavior treated SOA+RRSIG alone as Secure, which
+// allowed an attacker to replay a public SOA RRSIG and forge any
+// NXDOMAIN. RFC 6840 mandates Bogus for absent denial proofs in signed
+// zones.
+func TestValidateDenialResponse_BogusWithSOAOnly(t *testing.T) {
 	s := newFullTestSetup(t)
 
 	// Set up DNSKEY for example.com
@@ -534,8 +540,8 @@ func TestValidateDenialResponse_SecureWithSOAOnly(t *testing.T) {
 	}
 
 	result := s.v.ValidateResponse(resp, "nonexist.example.com.", dns.TypeA)
-	if result != Secure {
-		t.Errorf("got %v, want Secure (valid SOA+RRSIG)", result)
+	if result != Bogus {
+		t.Errorf("got %v, want Bogus (signed denial without NSEC/NSEC3 proof)", result)
 	}
 }
 
@@ -551,22 +557,31 @@ func TestValidateDenialResponse_SecureWithNSEC3DenialProof(t *testing.T) {
 	}
 
 	salt := []byte{0xAA}
-	// Compute hash of the query name
 	targetHash, err := ComputeNSEC3Hash("nonexist.example.com.", 1, 0, salt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Build NSEC3 with NextHash different from targetHash
-	differentHash := make([]byte, len(targetHash))
-	copy(differentHash, targetHash)
-	differentHash[0] ^= 0xFF
 
-	nsec3RData := buildNSEC3RData(1, 0, 0, salt, differentHash, []uint16{dns.TypeA})
-	nsec3RR := dns.ResourceRecord{
-		Name: ".", Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 300, RData: nsec3RData,
+	// Bracket targetHash with all-zero owner hash and all-FF next hash so
+	// coversHashFull(owner, next, target) is unconditionally true.
+	ownerHash := make([]byte, len(targetHash))
+	nextHash := make([]byte, len(targetHash))
+	for i := range nextHash {
+		nextHash[i] = 0xFF
 	}
 
-	// Sign the NSEC3 records
+	nsec3RData := buildNSEC3RData(1, 0, 0, salt, nextHash, []uint16{dns.TypeA})
+	// NSEC3 RR owner name MUST encode the owner hash as base32hex in its
+	// first label — that is how RFC 5155 names NSEC3 records, and how the
+	// validator recovers the owner hash for range-coverage checks.
+	nsec3RR := dns.ResourceRecord{
+		Name:  NSEC3HashToString(ownerHash) + ".",
+		Type:  dns.TypeNSEC3,
+		Class: dns.ClassIN,
+		TTL:   300,
+		RData: nsec3RData,
+	}
+
 	rrsig := &dns.RRSIGRecord{
 		TypeCovered: dns.TypeNSEC3,
 		Algorithm:   dns.AlgED25519,
@@ -607,10 +622,18 @@ func TestValidateDenialResponse_NSEC3DenialError(t *testing.T) {
 		},
 	}
 
-	// Build NSEC3 with unsupported hash algorithm to trigger error in VerifyNSEC3Denial
+	// Build NSEC3 with unsupported hash algorithm to trigger error in
+	// VerifyNSEC3DenialFull -> ComputeNSEC3Hash. The owner name still has
+	// to be a valid base32hex first label so the validator collects the
+	// record (otherwise it would be skipped before the error path runs).
+	ownerHash := make([]byte, 20) // SHA-1-sized zero hash
 	nsec3RData := buildNSEC3RData(2, 0, 0, nil, []byte{0x01}, nil) // alg=2 unsupported
 	nsec3RR := dns.ResourceRecord{
-		Name: ".", Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 300, RData: nsec3RData,
+		Name:  NSEC3HashToString(ownerHash) + ".",
+		Type:  dns.TypeNSEC3,
+		Class: dns.ClassIN,
+		TTL:   300,
+		RData: nsec3RData,
 	}
 
 	rrsig := &dns.RRSIGRecord{
@@ -653,16 +676,25 @@ func TestValidateDenialResponse_NSEC3DenialInconclusive(t *testing.T) {
 		},
 	}
 
-	// Build NSEC3 where the hash matches NextHash (so coversHash returns false)
+	// Build an NSEC3 whose [ownerHash, NextHash) range does NOT bracket
+	// targetHash, so coversHashFull returns false: ownerHash is all-zero,
+	// NextHash equals targetHash exactly (so the qname falls *on* the
+	// upper boundary, which the open interval excludes).
 	salt := []byte{0xDD}
 	targetHash, err := ComputeNSEC3Hash("nonexist.example.com.", 1, 0, salt)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	nsec3RData := buildNSEC3RData(1, 0, 0, salt, targetHash, nil) // NextHash == target -> not denied
+	ownerHash := make([]byte, len(targetHash)) // all zero, less than targetHash
+
+	nsec3RData := buildNSEC3RData(1, 0, 0, salt, targetHash, nil)
 	nsec3RR := dns.ResourceRecord{
-		Name: ".", Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 300, RData: nsec3RData,
+		Name:  NSEC3HashToString(ownerHash) + ".",
+		Type:  dns.TypeNSEC3,
+		Class: dns.ClassIN,
+		TTL:   300,
+		RData: nsec3RData,
 	}
 
 	rrsig := &dns.RRSIGRecord{
@@ -688,11 +720,11 @@ func TestValidateDenialResponse_NSEC3DenialInconclusive(t *testing.T) {
 		},
 	}
 
-	// Even though NSEC3 is inconclusive, RRSIG validated. Since there's no
-	// SOA RRSIG, it should return Insecure.
+	// RRSIG validates but NSEC3 does not actually cover the qname, so the
+	// signed denial has no verifiable proof — Bogus per RFC 6840.
 	result := s.v.ValidateResponse(resp, "nonexist.example.com.", dns.TypeA)
-	if result != Insecure {
-		t.Errorf("got %v, want Insecure (NSEC3 inconclusive, no SOA RRSIG)", result)
+	if result != Bogus {
+		t.Errorf("got %v, want Bogus (NSEC3 inconclusive, signed denial without proof)", result)
 	}
 }
 
@@ -793,8 +825,8 @@ func TestValidateDenialResponse_RRSIGSkipsNonNSEC3NonSOA(t *testing.T) {
 	}
 
 	result := s.v.ValidateResponse(resp, "nonexist.example.com.", dns.TypeA)
-	if result != Secure {
-		t.Errorf("got %v, want Secure (NS RRSIG skipped, SOA RRSIG validated)", result)
+	if result != Bogus {
+		t.Errorf("got %v, want Bogus (NS RRSIG skipped, SOA RRSIG validated but no NSEC/NSEC3 proof)", result)
 	}
 }
 
@@ -1014,8 +1046,8 @@ func TestValidateDenialResponse_RRSIGForEmptyRRSet(t *testing.T) {
 	}
 
 	result := s.v.ValidateResponse(resp, "nonexist.example.com.", dns.TypeA)
-	// No NSEC3 in authority, rrset empty -> loop continues, no SOA RRSIG found -> Insecure
-	if result != Insecure {
-		t.Errorf("got %v, want Insecure (RRSIG with empty rrset)", result)
+	// No NSEC3 in authority, RRSIG present but no verifiable denial proof -> Bogus.
+	if result != Bogus {
+		t.Errorf("got %v, want Bogus (RRSIG with empty rrset, no denial proof)", result)
 	}
 }

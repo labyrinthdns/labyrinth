@@ -281,7 +281,7 @@ func TestForwardZoneAllAddrsFail(t *testing.T) {
 		PreferIPv4:      true,
 	}, m, logger)
 	r.SetForwardTable(ft)
-	r.ready = true
+	r.ready.Store(true)
 
 	_, err := r.Resolve("test.fail.example.com", dns.TypeA, dns.ClassIN)
 	if err == nil {
@@ -349,7 +349,7 @@ func testResolverWithForward(t *testing.T, mock *mockDNSServer) *Resolver {
 		PreferIPv4:      true,
 		UpstreamPort:    mock.port,
 	}, m, logger)
-	r.ready = true
+	r.ready.Store(true)
 
 	// Configure forward zone pointing at the mock server
 	r.SetForwardTable(NewForwardTable([]ForwardZone{
@@ -374,7 +374,7 @@ func testResolverWithStub(t *testing.T, mock *mockDNSServer) *Resolver {
 		PreferIPv4:      true,
 		UpstreamPort:    mock.port,
 	}, m, logger)
-	r.ready = true
+	r.ready.Store(true)
 
 	// Configure stub zone pointing at the mock server
 	r.SetForwardTable(NewForwardTable([]ForwardZone{

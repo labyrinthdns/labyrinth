@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,10 +19,36 @@ import (
 // jwtHeader is the fixed JWT header for HS256.
 var jwtHeaderB64 = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 
+// dummyBcryptHash is a precomputed bcrypt hash used for constant-time
+// comparison when the supplied username does not match the configured one.
+// It is generated once at package init so unknown-user login attempts run
+// the same bcrypt work as known-user attempts (defeats username enumeration
+// via response-time side channel).
+var dummyBcryptHash []byte
+
+func init() {
+	// Cost 10 matches bcrypt.DefaultCost; a constant placeholder password is
+	// fine because the resulting hash is only used as a timing absorber.
+	h, err := bcrypt.GenerateFromPassword([]byte("labyrinth-timing-absorber"), bcrypt.DefaultCost)
+	if err != nil {
+		// Generating a bcrypt hash with a constant input cannot realistically
+		// fail; if it does the security posture of the binary is degraded so
+		// fail loudly rather than ship a vulnerable login path.
+		panic("web: failed to precompute dummy bcrypt hash: " + err.Error())
+	}
+	dummyBcryptHash = h
+}
+
 type jwtPayload struct {
 	Sub string `json:"sub"`
 	Iat int64  `json:"iat"`
 	Exp int64  `json:"exp"`
+}
+
+// jwtHeader is the parsed shape of a JWT header. Only HS256 is accepted.
+type jwtHeader struct {
+	Alg string `json:"alg"`
+	Typ string `json:"typ"`
 }
 
 // generateJWT creates a JWT token with a 24-hour expiry using HMAC-SHA256.
@@ -50,10 +77,29 @@ func generateJWT(username string, secret []byte) (string, error) {
 }
 
 // validateJWT verifies a JWT token and returns the username (sub) claim.
+// The header is parsed and the algorithm must be exactly "HS256"; "none"
+// and any other algorithm (including unknown asymmetric ones) are rejected.
 func validateJWT(tokenStr string, secret []byte) (string, error) {
 	parts := strings.SplitN(tokenStr, ".", 3)
 	if len(parts) != 3 {
 		return "", errors.New("invalid token format")
+	}
+
+	// Pin the alg header before doing any cryptographic work. This blocks
+	// the classic alg=none / alg-confusion family of attacks.
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", errors.New("invalid header encoding")
+	}
+	var hdr jwtHeader
+	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
+		return "", errors.New("invalid header JSON")
+	}
+	if hdr.Alg != "HS256" {
+		return "", errors.New("unsupported algorithm")
+	}
+	if hdr.Typ != "" && hdr.Typ != "JWT" {
+		return "", errors.New("unsupported token type")
 	}
 
 	signingInput := parts[0] + "." + parts[1]
@@ -148,7 +194,18 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username != cfgUser || !checkPassword(req.Password, cfgHash) {
+	// Constant-time username comparison and unconditional bcrypt verification
+	// to prevent username enumeration via response-time side channel. When the
+	// supplied username is wrong we still run bcrypt against a precomputed
+	// dummy hash so the timing matches a known-user-wrong-password path.
+	userMatch := subtle.ConstantTimeCompare([]byte(req.Username), []byte(cfgUser)) == 1
+	hashToCheck := cfgHash
+	if !userMatch || hashToCheck == "" {
+		hashToCheck = string(dummyBcryptHash)
+	}
+	passMatch := checkPassword(req.Password, hashToCheck)
+
+	if !userMatch || !passMatch {
 		jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
@@ -282,7 +339,8 @@ func updatePasswordInConfigAtPath(configPath, newHash string) error {
 		return err
 	}
 
-	// Preserve existing permissive mode behavior expected by tests/deployments.
-	_ = os.Chmod(configPath, 0644)
+	// The config file holds a bcrypt hash (and other sensitive values).
+	// Restrict to owner-only access so co-tenants can't read it.
+	_ = os.Chmod(configPath, 0600)
 	return nil
 }
