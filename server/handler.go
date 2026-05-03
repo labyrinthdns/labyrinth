@@ -204,8 +204,9 @@ func parseIPBytes(ipStr string) []byte {
 }
 
 // addEDEToResponse appends an EDE option to the response OPT record.
-// If no OPT record exists, one is created.
-func addEDEToResponse(resp *dns.Message, code uint16, text string) {
+// If no OPT record exists, one is created using the handler's advertised
+// UDP buffer size (RFC 9018 / DNS Flag Day 2020 ceiling).
+func (h *MainHandler) addEDEToResponse(resp *dns.Message, code uint16, text string) {
 	edeOpt := dns.BuildEDEOption(code, text)
 
 	// Look for existing OPT record in Additional
@@ -222,22 +223,21 @@ func addEDEToResponse(resp *dns.Message, code uint16, text string) {
 		}
 	}
 
-	// No OPT record found — create one with EDE. 1232 matches the
-	// RFC 9018 / DNS Flag Day 2020 default; this branch only fires
-	// when an upstream response lacked an OPT, so the value here is
-	// effectively a fallback rather than the per-handler-configured
-	// advertisement.
-	resp.Additional = append(resp.Additional, dns.BuildOPTWithOptions(1232, false, []dns.EDNSOption{edeOpt}))
+	// No OPT record found — create one with EDE using the handler's
+	// advertised UDP buffer size (RFC 9018 / DNS Flag Day 2020 ceiling).
+	// This branch only fires when an upstream response lacked an OPT,
+	// so the value is a fallback rather than a per-query advertisement.
+	resp.Additional = append(resp.Additional, dns.BuildOPTWithOptions(h.advertisedUDPBufferSize(), false, []dns.EDNSOption{edeOpt}))
 }
 
 // addEDEToRawResponse parses a wire-format response, appends an EDE option,
 // and re-packs it. Returns the original bytes on any error.
-func addEDEToRawResponse(resp []byte, code uint16, text string) []byte {
+func (h *MainHandler) addEDEToRawResponse(resp []byte, code uint16, text string) []byte {
 	msg, err := dns.Unpack(resp)
 	if err != nil {
 		return resp
 	}
-	addEDEToResponse(msg, code, text)
+	h.addEDEToResponse(msg, code, text)
 	bufPtr := pool.GetBuffer()
 	buf := *bufPtr
 	packed, packErr := dns.Pack(msg, buf)
@@ -343,7 +343,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		}
 		// Add EDE "Blocked" (RFC 8914, info code 15) if client supports EDNS0
 		if msg.EDNS0 != nil {
-			resp = addEDEToRawResponse(resp, dns.EDECodeBlocked, "blocked")
+			resp = h.addEDEToRawResponse(resp, dns.EDECodeBlocked, "blocked")
 		}
 		duration := time.Since(start)
 		h.metrics.ObserveQueryDuration(duration)
@@ -420,7 +420,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 				if msg.EDNS0 != nil {
 					staleResp, parseErr := dns.Unpack(resp)
 					if parseErr == nil {
-						addEDEToResponse(staleResp, dns.EDECodeStaleAnswer, "serve-stale")
+						h.addEDEToResponse(staleResp, dns.EDECodeStaleAnswer, "serve-stale")
 						bufPtr := pool.GetBuffer()
 						defer pool.PutBuffer(bufPtr)
 						buf := *bufPtr
@@ -501,7 +501,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 
 	// Add EDE for SERVFAIL (no reachable authority) if client supports EDNS0
 	if result.RCODE == dns.RCodeServFail && msg.EDNS0 != nil {
-		resp = addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority, "")
+		resp = h.addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority, "")
 	}
 
 	// Add cookie response if client sent a cookie option
@@ -812,7 +812,7 @@ func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint1
 	if parseErr != nil {
 		return resp, nil // fallback to plain error
 	}
-	addEDEToResponse(msg, edeCode, edeText)
+	h.addEDEToResponse(msg, edeCode, edeText)
 	bufPtr := pool.GetBuffer()
 	buf := *bufPtr
 	packed, packErr := dns.Pack(msg, buf)
