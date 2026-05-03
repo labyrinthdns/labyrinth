@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"strings"
@@ -96,14 +97,22 @@ func NewMainHandler(
 }
 
 // EnableCookies enables DNS cookie support (RFC 7873).
-// A random 16-byte server secret is generated at startup.
-func (h *MainHandler) EnableCookies() {
-	h.cookiesEnabled = true
-	h.cookieSecret = make([]byte, 16)
-	if _, err := rand.Read(h.cookieSecret); err != nil {
-		// Fallback: use a fixed secret (should not happen in practice)
-		h.cookieSecret = []byte("labyrinth-secret")
+// A random 16-byte server secret is generated at startup. M-6: if the OS
+// RNG fails we refuse to enable cookies rather than fall back to a public
+// literal (which would defeat the anti-spoofing property entirely).
+func (h *MainHandler) EnableCookies() error {
+	secret := make([]byte, 16)
+	if _, err := rand.Read(secret); err != nil {
+		h.cookiesEnabled = false
+		h.cookieSecret = nil
+		if h.logger != nil {
+			h.logger.Error("DNS cookies disabled: failed to generate server secret", "error", err)
+		}
+		return fmt.Errorf("dns cookies: secret generation failed: %w", err)
 	}
+	h.cookiesEnabled = true
+	h.cookieSecret = secret
+	return nil
 }
 
 // EnableCookiesWithSecret enables DNS cookies with a specific secret (for testing).

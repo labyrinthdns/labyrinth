@@ -41,9 +41,10 @@ func (s *AdminServer) handleRecentQueries(w http.ResponseWriter, r *http.Request
 // handleQueryStreamWS handles WebSocket upgrade for live query streaming.
 // On connect, sends the last 50 entries as backfill, then streams new entries.
 func (s *AdminServer) handleQueryStreamWS(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // Allow connections from any origin for dashboard
-	})
+	// H-2: enforce same-origin for WS upgrade. nhooyr/websocket compares
+	// Origin to Host when InsecureSkipVerify is false; missing Origin
+	// (non-browser clients) is allowed.
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
 	if err != nil {
 		s.logger.Error("websocket accept failed", "error", err)
 		return

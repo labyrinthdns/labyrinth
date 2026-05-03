@@ -87,6 +87,12 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		topTrackingLimitDomains = 1000
 	}
 
+	// SECURITY (C-1): seed setupDone from on-disk config so that
+	// /api/setup/complete cannot be replayed on every restart of an
+	// already-provisioned server. The handler still gates on this flag,
+	// but it now defaults to true whenever auth credentials exist.
+	setupDone := cfg.Web.Auth.Username != "" && cfg.Web.Auth.PasswordHash != ""
+
 	s := &AdminServer{
 		cache:                 c,
 		metrics:               m,
@@ -97,6 +103,7 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		timeSeries:            NewTimeSeriesAggregator(),
 		logger:                logger,
 		jwtSecret:             secret,
+		setupDone:             setupDone,
 		topClients:            NewTopTracker(topTrackingLimitClients),
 		topDomains:            NewTopTracker(topTrackingLimitDomains),
 		clientQueryNum:        make(map[string]*clientQueryEntry),
@@ -152,8 +159,27 @@ func (s *AdminServer) Start(ctx context.Context) error {
 
 	autoTLS := s.certMgr != nil
 
+	// H-1 advisory: warn when bound to a non-loopback address without auth.
+	// We do not refuse to start (would break test fixtures and explicit
+	// "behind reverse proxy with mTLS" deployments), but the operator
+	// should see this clearly in logs.
+	if s.config.Web.Auth.Username == "" {
+		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
+			ip := net.ParseIP(host)
+			if ip == nil || (!ip.IsLoopback() && host != "localhost") {
+				s.logger.Warn("admin dashboard bound to non-loopback without auth — every endpoint is unauthenticated",
+					"addr", addr,
+					"hint", "set web.auth.username/password_hash, or bind web.addr to 127.0.0.1")
+			}
+		}
+	}
+
 	var h3Server *http3.Server
-	baseHandler := http.Handler(mux)
+	tlsActive := func() bool {
+		return autoTLS || (s.config.Web.TLSEnabled && s.config.Web.TLSCertFile != "" && s.config.Web.TLSKeyFile != "")
+	}
+	// H-3: emit security response headers globally.
+	baseHandler := securityHeaders(tlsActive)(mux)
 
 	if s.config.Web.DoH3Enabled {
 		if !autoTLS && (!s.config.Web.TLSEnabled || s.config.Web.TLSCertFile == "" || s.config.Web.TLSKeyFile == "") {
@@ -162,7 +188,7 @@ func (s *AdminServer) Start(ctx context.Context) error {
 
 		h3Server = &http3.Server{
 			Addr:    addr,
-			Handler: mux,
+			Handler: securityHeaders(tlsActive)(mux),
 		}
 		if autoTLS {
 			h3Server.TLSConfig = s.certMgr.TLSConfig()

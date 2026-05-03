@@ -2,9 +2,11 @@ package blocklist
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -107,10 +109,45 @@ func NewManager(cfg ManagerConfig, logger *slog.Logger) *Manager {
 		refreshInterval: refreshInterval,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+			// H-10: SSRF guard. Reject redirects that change scheme away
+			// from https/http or that resolve to internal IP space
+			// (loopback, RFC1918, link-local, multicast, IPv4-mapped
+			// IPv6). Blocklist URLs are operator-supplied today, but a
+			// compromised publisher (or a hijacked CDN) can redirect to
+			// http://127.0.0.1:8080/api/... or 169.254.169.254 metadata.
+			CheckRedirect: blocklistCheckRedirect,
 		},
 		logger: logger,
 	}
 	return mgr
+}
+
+// blocklistCheckRedirect implements the H-10 SSRF guard.
+func blocklistCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return errors.New("too many redirects (>5)")
+	}
+	scheme := strings.ToLower(req.URL.Scheme)
+	if scheme != "https" && scheme != "http" {
+		return fmt.Errorf("blocked redirect to disallowed scheme %q", scheme)
+	}
+	host := req.URL.Hostname()
+	// Resolve and reject any IP that lands in private / loopback /
+	// link-local / multicast / IPv4-mapped ranges. Multiple A/AAAA
+	// records → reject if ANY answer is internal (DNS-rebinding-style
+	// defence).
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("redirect host %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+			ip.IsMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("blocked redirect to internal address %s (%s)", host, ip)
+		}
+	}
+	return nil
 }
 
 // Start runs the background refresh loop. It performs an immediate refresh
