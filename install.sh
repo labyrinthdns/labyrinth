@@ -97,22 +97,64 @@ BINARY_NAME="labyrinth-${OS}-${ARCH}"
 BENCH_NAME="labyrinth-bench-${OS}-${ARCH}"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY_NAME}"
 BENCH_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BENCH_NAME}"
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
+
+# C-3: integrity verification. The release pipeline produces checksums.txt;
+# verify the downloaded binary against it before installing. Refuse to
+# install if the checksum cannot be obtained or does not match. (Long term:
+# replace with cosign signature verification.)
+SHA_TOOL=""
+if command -v sha256sum &>/dev/null; then
+  SHA_TOOL="sha256sum"
+elif command -v shasum &>/dev/null; then
+  SHA_TOOL="shasum -a 256"
+fi
+
+if [[ -z "$SHA_TOOL" ]]; then
+  fail "Neither sha256sum nor shasum found — cannot verify download integrity. Aborting."
+fi
+
+TMP_CHECKSUMS=$(mktemp)
+info "Fetching checksums.txt..."
+if ! curl -fsSL -o "$TMP_CHECKSUMS" "$CHECKSUMS_URL"; then
+  rm -f "$TMP_CHECKSUMS"
+  fail "Could not download checksums.txt from ${CHECKSUMS_URL}. Refusing to install unverified binary."
+fi
+
+verify_sha() {
+  local file="$1"
+  local name="$2"
+  local expected
+  expected=$(grep -E "[[:space:]]\\*?${name}\$" "$TMP_CHECKSUMS" | awk '{print $1}' | head -n1)
+  if [[ -z "$expected" ]]; then
+    fail "No checksum entry for ${name} in checksums.txt"
+  fi
+  local actual
+  actual=$($SHA_TOOL "$file" | awk '{print $1}')
+  if [[ "$expected" != "$actual" ]]; then
+    fail "Checksum mismatch for ${name}: expected ${expected}, got ${actual}"
+  fi
+  ok "Checksum verified: ${name}"
+}
 
 TMP_FILE=$(mktemp)
 info "Downloading labyrinth..."
 if ! curl -fsSL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
-  rm -f "$TMP_FILE"
+  rm -f "$TMP_FILE" "$TMP_CHECKSUMS"
   fail "Download failed: ${DOWNLOAD_URL}"
 fi
+
+verify_sha "$TMP_FILE" "$BINARY_NAME"
 
 chmod +x "$TMP_FILE"
 mv "$TMP_FILE" "${INSTALL_DIR}/labyrinth"
 ok "Binary installed: ${INSTALL_DIR}/labyrinth"
 
-# Download bench tool (optional, don't fail)
+# Download bench tool (optional, don't fail) — but if downloaded, it MUST verify.
 TMP_BENCH=$(mktemp)
 info "Downloading labyrinth-bench..."
 if curl -fsSL -o "$TMP_BENCH" "$BENCH_URL" 2>/dev/null; then
+  verify_sha "$TMP_BENCH" "$BENCH_NAME"
   chmod +x "$TMP_BENCH"
   mv "$TMP_BENCH" "${INSTALL_DIR}/labyrinth-bench"
   ok "Bench tool installed: ${INSTALL_DIR}/labyrinth-bench"
@@ -120,6 +162,8 @@ else
   rm -f "$TMP_BENCH"
   warn "Bench tool not available (optional)"
 fi
+
+rm -f "$TMP_CHECKSUMS"
 
 # Verify
 INSTALLED_VERSION=$("${INSTALL_DIR}/labyrinth" version 2>&1 | head -1)

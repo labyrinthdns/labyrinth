@@ -84,12 +84,22 @@ func (s *AdminServer) handleSetupComplete(w http.ResponseWriter, r *http.Request
 		req.LogFormat = "json"
 	}
 
-	// Write config file
-	cfgPath := "labyrinth.yaml"
+	// Write config file at the configured path (not a hardcoded relative
+	// "labyrinth.yaml"). Refuse if a usable file already exists at that
+	// path — defence in depth for C-1 in case setupDone was somehow not
+	// seeded (older configs, manual flag flips, etc.).
+	cfgPath := s.configFilePath()
+	if info, statErr := os.Stat(cfgPath); statErr == nil && !info.IsDir() && info.Size() > 0 {
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": "config already exists; refusing to overwrite"})
+		return
+	}
 	if err := writeConfigYAML(cfgPath, req, passwordHash); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to write config: " + err.Error()})
 		return
 	}
+	// L-2: tighten permissions on the file containing the bcrypt hash.
+	// Best-effort — Windows permissions semantics differ; ignore failure.
+	_ = os.Chmod(cfgPath, 0o600)
 
 	s.setupDone = true
 	s.logger.Info("setup completed, config written", "path", cfgPath)

@@ -48,7 +48,12 @@ var (
 	updateTickerFactory = func(d time.Duration) *time.Ticker {
 		return time.NewTicker(d)
 	}
-	updateHTTPGet      = http.Get
+	// H-11: dedicated client with a hard timeout so a hung GitHub or
+	// asset CDN cannot pin a goroutine + temp file forever. Replaces the
+	// previous `http.Get` (=> http.DefaultClient => no timeout).
+	updateHTTPClient = &http.Client{Timeout: 60 * time.Second}
+	updateHTTPGet    = func(url string) (*http.Response, error) { return updateHTTPClient.Get(url) }
+
 	updateExecutable   = os.Executable
 	updateEvalSymlinks = filepath.EvalSymlinks
 	updateCreateTemp   = os.CreateTemp
@@ -58,6 +63,11 @@ var (
 	updateSleep        = time.Sleep
 	updateRestartSelf  = restartSelf
 )
+
+// maxUpdateBodyBytes caps how large a downloaded binary may be. 200 MiB is
+// well above any realistic Labyrinth release size and well below
+// disk-pressure DoS territory.
+const maxUpdateBodyBytes = 200 << 20
 
 func isReadOnlyFS(err error) bool {
 	if err == nil {
@@ -234,7 +244,8 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 	tmpPath := tmpFile.Name()
 
-	_, err = io.Copy(tmpFile, resp.Body)
+	// H-11: cap the download to avoid disk-pressure DoS via a hostile redirect.
+	_, err = io.Copy(tmpFile, io.LimitReader(resp.Body, maxUpdateBodyBytes))
 	tmpFile.Close()
 	if err != nil {
 		updateRemove(tmpPath)

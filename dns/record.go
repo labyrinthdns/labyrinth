@@ -107,9 +107,12 @@ func UnpackRR(msg []byte, offset int) (ResourceRecord, int, error) {
 
 	case TypeRRSIG:
 		// Fixed fields are 18 bytes, then signer name (possibly compressed), then signature.
+		// H-8: DecodeName walks the whole message buffer, not the RDATA window,
+		// so a crafted RR with embedded forward labels can yield nameEnd > newOffset.
+		// Without the sign check, sigLen goes negative and `make([]byte, ...)` panics.
 		if wireRDLength >= 18 {
 			signerName, nameEnd, nameErr := DecodeName(msg, rdataStart+18)
-			if nameErr == nil {
+			if nameErr == nil && nameEnd <= newOffset {
 				fixedFields := make([]byte, 18)
 				copy(fixedFields, msg[rdataStart:rdataStart+18])
 				nameBytes := encodePlainName(signerName)
@@ -129,8 +132,9 @@ func UnpackRR(msg []byte, offset int) (ResourceRecord, int, error) {
 
 	case TypeNSEC:
 		// Next domain name (possibly compressed) followed by type bitmaps.
+		// H-8: same nameEnd > newOffset guard as RRSIG above.
 		name, nameEnd, nameErr := DecodeName(msg, rdataStart)
-		if nameErr == nil {
+		if nameErr == nil && nameEnd <= newOffset {
 			nameBytes := encodePlainName(name)
 			bitmapLen := newOffset - nameEnd
 			rr.RData = make([]byte, len(nameBytes)+bitmapLen)

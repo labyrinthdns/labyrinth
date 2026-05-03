@@ -119,9 +119,8 @@ func parseTSSubscription(mode, windowStr, intervalStr string) (*tsSubscription, 
 // handleTimeSeriesWS handles WebSocket connections for time-series streaming.
 // Query params: mode=live|history, window=15m|1h|24h, interval=1m|2m|5m|15m|30m|1h
 func (s *AdminServer) handleTimeSeriesWS(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	})
+	// H-2: enforce same-origin for WS upgrade.
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
 	if err != nil {
 		s.logger.Error("timeseries ws accept failed", "error", err)
 		return
