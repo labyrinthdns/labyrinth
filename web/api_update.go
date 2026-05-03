@@ -1,7 +1,10 @@
 package web
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -198,11 +201,26 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Find the download URL for the correct asset
+	// Find the download URL for the correct asset.
+	// C-2 (interim): also resolve the URL of the release-bundled
+	// checksums.txt so we can verify integrity before swapping the
+	// running binary. release.yml already produces this file; the audit
+	// findings C-2/C-3 flagged that nothing on the client side consumed
+	// it. The follow-up is cosign/minisign release signatures (the
+	// checksum still trusts the GitHub asset host); this commit adds
+	// the missing verification step.
 	assetName := info.AssetName
-	downloadURL, err := findAssetURL(assetName)
+	downloadURL, checksumsURL, err := findAssetURLWithChecksums(assetName)
 	if err != nil {
 		jsonResponse(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("failed to find asset: %v", err)})
+		return
+	}
+
+	// Pre-fetch the expected SHA-256 BEFORE the binary download so a
+	// missing checksums.txt aborts the flow without touching disk.
+	expectedSHA, shaErr := fetchExpectedSHA256(checksumsURL, assetName)
+	if shaErr != nil {
+		jsonResponse(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("checksum lookup failed: %v", shaErr)})
 		return
 	}
 
@@ -245,11 +263,26 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 	tmpPath := tmpFile.Name()
 
 	// H-11: cap the download to avoid disk-pressure DoS via a hostile redirect.
-	_, err = io.Copy(tmpFile, io.LimitReader(resp.Body, maxUpdateBodyBytes))
+	// C-2 (interim): hash while we copy so we don't have to re-read the file.
+	hasher := sha256.New()
+	tee := io.TeeReader(io.LimitReader(resp.Body, maxUpdateBodyBytes), hasher)
+	_, err = io.Copy(tmpFile, tee)
 	tmpFile.Close()
 	if err != nil {
 		updateRemove(tmpPath)
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to write update: %v", err)})
+		return
+	}
+
+	// C-2 (interim): refuse to install if the SHA-256 does not match the
+	// release-bundled checksums.txt entry. Constant-time compare to be
+	// safe even though the hashes are not secret.
+	actualSHA := hex.EncodeToString(hasher.Sum(nil))
+	if !secureCompareHex(expectedSHA, actualSHA) {
+		updateRemove(tmpPath)
+		jsonResponse(w, http.StatusBadGateway, map[string]string{
+			"error": fmt.Sprintf("checksum mismatch: expected %s, got %s — refusing to install unverified binary", expectedSHA, actualSHA),
+		})
 		return
 	}
 
@@ -383,28 +416,102 @@ func checkForUpdate() (*UpdateInfo, error) {
 
 // findAssetURL fetches the latest release and finds the download URL for the given asset name.
 func findAssetURL(assetName string) (string, error) {
+	url, _, err := findAssetURLWithChecksums(assetName)
+	return url, err
+}
+
+// findAssetURLWithChecksums returns both the asset download URL and the
+// URL of the release's checksums.txt sidecar. Both come from the same
+// GitHub release JSON to ensure they refer to the same artifacts. C-2.
+func findAssetURLWithChecksums(assetName string) (string, string, error) {
 	resp, err := updateHTTPGet(githubReleasesURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch release info: %w", err)
+		return "", "", fmt.Errorf("failed to fetch release info: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+		return "", "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
 	}
 
 	var release githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", fmt.Errorf("failed to parse release info: %w", err)
+		return "", "", fmt.Errorf("failed to parse release info: %w", err)
 	}
 
+	var assetURL, checksumsURL string
 	for _, asset := range release.Assets {
-		if asset.Name == assetName {
-			return asset.BrowserDownloadURL, nil
+		switch {
+		case asset.Name == assetName:
+			assetURL = asset.BrowserDownloadURL
+		case strings.EqualFold(asset.Name, "checksums.txt"):
+			checksumsURL = asset.BrowserDownloadURL
 		}
 	}
+	if assetURL == "" {
+		return "", "", fmt.Errorf("asset %q not found in release", assetName)
+	}
+	if checksumsURL == "" {
+		return "", "", fmt.Errorf("checksums.txt not found in release — refusing unverified install")
+	}
+	return assetURL, checksumsURL, nil
+}
 
-	return "", fmt.Errorf("asset %q not found in release", assetName)
+// fetchExpectedSHA256 downloads checksums.txt and returns the SHA-256
+// hex digest line corresponding to assetName. Returns an error if the
+// file cannot be fetched, parsed, or the asset entry is missing — in any
+// of those cases the update flow MUST be aborted (fail-closed).
+func fetchExpectedSHA256(checksumsURL, assetName string) (string, error) {
+	resp, err := updateHTTPGet(checksumsURL)
+	if err != nil {
+		return "", fmt.Errorf("fetch checksums.txt: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("checksums.txt returned status %d", resp.StatusCode)
+	}
+	// 1 MiB cap is plenty for a checksums.txt with hundreds of assets.
+	scanner := bufio.NewScanner(io.LimitReader(resp.Body, 1<<20))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Format: "<hex>  <name>" or "<hex> *<name>" (sha256sum binary mode).
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.TrimPrefix(fields[len(fields)-1], "*")
+		if name == assetName {
+			sha := strings.ToLower(fields[0])
+			if len(sha) != 64 {
+				return "", fmt.Errorf("malformed sha256 entry for %q", assetName)
+			}
+			if _, decodeErr := hex.DecodeString(sha); decodeErr != nil {
+				return "", fmt.Errorf("malformed sha256 entry for %q: %w", assetName, decodeErr)
+			}
+			return sha, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("read checksums.txt: %w", err)
+	}
+	return "", fmt.Errorf("no checksum entry for %q in checksums.txt", assetName)
+}
+
+// secureCompareHex constant-time compares two hex strings (lowercased).
+func secureCompareHex(a, b string) bool {
+	a = strings.ToLower(strings.TrimSpace(a))
+	b = strings.ToLower(strings.TrimSpace(b))
+	if len(a) != len(b) {
+		return false
+	}
+	var diff byte
+	for i := 0; i < len(a); i++ {
+		diff |= a[i] ^ b[i]
+	}
+	return diff == 0
 }
 
 // compareSemver compares two semantic version strings.

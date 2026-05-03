@@ -33,8 +33,13 @@ func (s *AdminServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 
-		// Fall back to ?token= query parameter
-		if token == "" {
+		// H-4 (partial): only honour ?token= for WebSocket upgrade requests.
+		// Browsers cannot set Authorization on `new WebSocket(...)`, so the
+		// query-string fallback is needed there until the SPA migrates to
+		// Sec-WebSocket-Protocol auth. For ordinary HTTP routes, refusing
+		// ?token= prevents JWTs leaking via Referer / proxy access logs /
+		// browser history.
+		if token == "" && isWebSocketUpgrade(r) {
 			token = r.URL.Query().Get("token")
 		}
 
@@ -52,6 +57,20 @@ func (s *AdminServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		ctx := context.WithValue(r.Context(), ctxKeyUser, username)
 		next(w, r.WithContext(ctx))
 	}
+}
+
+// isWebSocketUpgrade reports whether the request is a WebSocket upgrade.
+// RFC 6455 §4.1: requires Upgrade: websocket and Connection: Upgrade.
+func isWebSocketUpgrade(r *http.Request) bool {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, tok := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(tok), "Upgrade") {
+			return true
+		}
+	}
+	return false
 }
 
 // jsonResponse writes a JSON response with the given status code and data.
