@@ -204,6 +204,8 @@ export const api = {
   cacheNegative: (limit = 100) =>
     request<{ entries: NegativeCacheEntry[] }>(`/api/cache/negative?limit=${limit}`),
 
+  fallbackEvents: () => request<FallbackEventsResponse>('/api/fallback-events'),
+
   checkUpdate: (force = false) => {
     if (force) {
       clearCached('system.update.check')

@@ -46,6 +46,24 @@ export interface TimeSeriesBucket {
   errors: number
   avg_latency_ms: number
   cache_hit_ratio: number
+  fallback_queries?: number
+  fallback_recoveries?: number
+}
+
+export interface FallbackEvent {
+  timestamp: string
+  query_name: string
+  qtype: number
+  qclass: number
+  resolver_addr: string
+  recovered: boolean
+  rcode: number
+  error?: string
+}
+
+export interface FallbackEventsResponse {
+  count: number
+  events: FallbackEvent[]
 }
 
 export interface TimeSeriesResponse {

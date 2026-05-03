@@ -12,23 +12,27 @@ const (
 
 // Bucket represents an aggregated time-series data point.
 type Bucket struct {
-	Timestamp     string  `json:"timestamp"`
-	Queries       int64   `json:"queries"`
-	CacheHits     int64   `json:"cache_hits"`
-	CacheMisses   int64   `json:"cache_misses"`
-	Errors        int64   `json:"errors"`
-	AvgLatencyMs  float64 `json:"avg_latency_ms"`
-	CacheHitRatio float64 `json:"cache_hit_ratio"`
+	Timestamp          string  `json:"timestamp"`
+	Queries            int64   `json:"queries"`
+	CacheHits          int64   `json:"cache_hits"`
+	CacheMisses        int64   `json:"cache_misses"`
+	Errors             int64   `json:"errors"`
+	AvgLatencyMs       float64 `json:"avg_latency_ms"`
+	CacheHitRatio      float64 `json:"cache_hit_ratio"`
+	FallbackQueries    int64   `json:"fallback_queries"`
+	FallbackRecoveries int64   `json:"fallback_recoveries"`
 }
 
 // activeBucket holds the mutable counters for the current time window.
 type activeBucket struct {
-	ts           time.Time
-	queries      int64
-	cacheHits    int64
-	cacheMisses  int64
-	errors       int64
-	totalLatency float64
+	ts                time.Time
+	queries           int64
+	cacheHits         int64
+	cacheMisses       int64
+	errors            int64
+	totalLatency      float64
+	fallbackQueries   int64
+	fallbackRecoveries int64
 }
 
 // TimeSeriesAggregator collects rolling 1-hour bucketed counters at 1-second intervals.
@@ -47,12 +51,10 @@ func NewTimeSeriesAggregator() *TimeSeriesAggregator {
 
 // Record records a single query into the current time bucket.
 func (ts *TimeSeriesAggregator) Record(cached bool, latencyMs float64, isError bool) {
-	now := time.Now()
-
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	ts.rotateLocked(now)
+	ts.rotateLocked(time.Now())
 
 	ts.current.queries++
 	ts.current.totalLatency += latencyMs
@@ -64,6 +66,17 @@ func (ts *TimeSeriesAggregator) Record(cached bool, latencyMs float64, isError b
 	if isError {
 		ts.current.errors++
 	}
+}
+
+// RecordFallback records one fallback query attempt and optionally one recovery.
+func (ts *TimeSeriesAggregator) RecordFallback(query, recovery int64) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	ts.rotateLocked(time.Now())
+
+	ts.current.fallbackQueries += query
+	ts.current.fallbackRecoveries += recovery
 }
 
 // rotateLocked flushes the current bucket and starts a new one if the interval has elapsed.
@@ -101,12 +114,14 @@ func (ts *TimeSeriesAggregator) flushCurrentLocked() {
 	} else {
 		avgLatency := ts.current.totalLatency / float64(ts.current.queries)
 		b := Bucket{
-			Timestamp:    ts.current.ts.UTC().Format(time.RFC3339),
-			Queries:      ts.current.queries,
-			CacheHits:    ts.current.cacheHits,
-			CacheMisses:  ts.current.cacheMisses,
-			Errors:       ts.current.errors,
-			AvgLatencyMs: avgLatency,
+			Timestamp:          ts.current.ts.UTC().Format(time.RFC3339),
+			Queries:            ts.current.queries,
+			CacheHits:          ts.current.cacheHits,
+			CacheMisses:        ts.current.cacheMisses,
+			Errors:             ts.current.errors,
+			AvgLatencyMs:       avgLatency,
+			FallbackQueries:    ts.current.fallbackQueries,
+			FallbackRecoveries: ts.current.fallbackRecoveries,
 		}
 		ts.buckets = append(ts.buckets, b)
 	}
@@ -145,12 +160,14 @@ func (ts *TimeSeriesAggregator) Snapshot(window time.Duration) []Bucket {
 	if ts.current != nil && ts.current.queries > 0 {
 		avgLatency := ts.current.totalLatency / float64(ts.current.queries)
 		cur := Bucket{
-			Timestamp:    ts.current.ts.UTC().Format(time.RFC3339),
-			Queries:      ts.current.queries,
-			CacheHits:    ts.current.cacheHits,
-			CacheMisses:  ts.current.cacheMisses,
-			Errors:       ts.current.errors,
-			AvgLatencyMs: avgLatency,
+			Timestamp:          ts.current.ts.UTC().Format(time.RFC3339),
+			Queries:            ts.current.queries,
+			CacheHits:          ts.current.cacheHits,
+			CacheMisses:        ts.current.cacheMisses,
+			Errors:             ts.current.errors,
+			AvgLatencyMs:       avgLatency,
+			FallbackQueries:    ts.current.fallbackQueries,
+			FallbackRecoveries: ts.current.fallbackRecoveries,
 		}
 		t := ts.current.ts
 		if t.After(cutoff) || t.Equal(cutoff) {
@@ -180,12 +197,14 @@ func (ts *TimeSeriesAggregator) SnapshotAggregated(window, interval time.Duratio
 
 	intervalSec := int64(interval.Seconds())
 	type acc struct {
-		bucketStart  int64
-		queries      int64
-		cacheHits    int64
-		cacheMisses  int64
-		errors       int64
-		totalLatency float64
+		bucketStart        int64
+		queries            int64
+		cacheHits          int64
+		cacheMisses        int64
+		errors             int64
+		totalLatency       float64
+		fallbackQueries    int64
+		fallbackRecoveries int64
 	}
 
 	var groups []acc
@@ -207,6 +226,8 @@ func (ts *TimeSeriesAggregator) SnapshotAggregated(window, interval time.Duratio
 		g.cacheMisses += b.CacheMisses
 		g.errors += b.Errors
 		g.totalLatency += b.AvgLatencyMs * float64(b.Queries)
+		g.fallbackQueries += b.FallbackQueries
+		g.fallbackRecoveries += b.FallbackRecoveries
 	}
 
 	out := make([]Bucket, 0, len(groups))
@@ -221,13 +242,15 @@ func (ts *TimeSeriesAggregator) SnapshotAggregated(window, interval time.Duratio
 			hitRatio = float64(g.cacheHits) / float64(total)
 		}
 		out = append(out, Bucket{
-			Timestamp:     time.Unix(g.bucketStart, 0).UTC().Format(time.RFC3339),
-			Queries:       g.queries,
-			CacheHits:     g.cacheHits,
-			CacheMisses:   g.cacheMisses,
-			Errors:        g.errors,
-			AvgLatencyMs:  avgLat,
-			CacheHitRatio: hitRatio,
+			Timestamp:          time.Unix(g.bucketStart, 0).UTC().Format(time.RFC3339),
+			Queries:            g.queries,
+			CacheHits:          g.cacheHits,
+			CacheMisses:        g.cacheMisses,
+			Errors:             g.errors,
+			AvgLatencyMs:       avgLat,
+			CacheHitRatio:      hitRatio,
+			FallbackQueries:    g.fallbackQueries,
+			FallbackRecoveries: g.fallbackRecoveries,
 		})
 	}
 	return out
