@@ -205,6 +205,7 @@ func BenchmarkResolveCached(b *testing.B) {
 }
 
 func TestAddEDEToResponse(t *testing.T) {
+	h := testHandler()
 	resp := &dns.Message{
 		Header: dns.Header{
 			ID: 0x1234,
@@ -222,7 +223,7 @@ func TestAddEDEToResponse(t *testing.T) {
 	// Add OPT first
 	resp.Additional = append(resp.Additional, dns.BuildOPT(4096, false))
 
-	addEDEToResponse(resp, dns.EDECodeDNSSECBogus, "DNSSEC validation failure")
+	h.addEDEToResponse(resp, dns.EDECodeDNSSECBogus, "DNSSEC validation failure")
 
 	// Check that the OPT record now has EDE data
 	if len(resp.Additional) != 1 {
@@ -260,6 +261,7 @@ func TestAddEDEToResponse(t *testing.T) {
 }
 
 func TestAddEDEToResponse_NoOPT(t *testing.T) {
+	h := testHandler()
 	resp := &dns.Message{
 		Header: dns.Header{
 			ID: 0x1234,
@@ -270,7 +272,7 @@ func TestAddEDEToResponse_NoOPT(t *testing.T) {
 		},
 	}
 
-	addEDEToResponse(resp, dns.EDECodeStaleAnswer, "serve-stale")
+	h.addEDEToResponse(resp, dns.EDECodeStaleAnswer, "serve-stale")
 
 	// Should create an OPT record
 	if len(resp.Additional) != 1 {
