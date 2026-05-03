@@ -466,7 +466,30 @@ func TestRequireAuth_ValidBearerToken(t *testing.T) {
 	}
 }
 
-func TestRequireAuth_ValidQueryToken(t *testing.T) {
+// H-4: ?token= is now accepted ONLY on WebSocket upgrade requests.
+// On plain HTTP routes the query-string fallback is rejected so JWTs
+// don't leak via Referer / proxy access logs / browser history.
+func TestRequireAuth_QueryTokenRejectedOnPlainHTTP(t *testing.T) {
+	srv, _ := testAdminServerWithAuth(t)
+	token, _ := generateJWT("admin", srv.jwtSecret)
+
+	handler := srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler must not be reached on plain HTTP ?token=")
+	})
+
+	req := httptest.NewRequest("GET", "/api/test?token="+token, nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401 for ?token= on plain HTTP, got %d", w.Code)
+	}
+}
+
+// H-4: ?token= remains accepted on WebSocket upgrades because browsers
+// cannot set custom headers on `new WebSocket(...)`. Detection requires
+// both Upgrade: websocket AND Connection: Upgrade.
+func TestRequireAuth_QueryTokenAcceptedOnWebSocketUpgrade(t *testing.T) {
 	srv, _ := testAdminServerWithAuth(t)
 	token, _ := generateJWT("admin", srv.jwtSecret)
 
@@ -476,12 +499,14 @@ func TestRequireAuth_ValidQueryToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	req := httptest.NewRequest("GET", "/api/test?token="+token, nil)
+	req := httptest.NewRequest("GET", "/api/queries/stream?token="+token, nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
 	w := httptest.NewRecorder()
 	handler(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d", w.Code)
+		t.Fatalf("want 200 on WS upgrade with ?token=, got %d", w.Code)
 	}
 	if gotUser != "admin" {
 		t.Fatalf("want admin, got %q", gotUser)

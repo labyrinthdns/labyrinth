@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -42,13 +44,48 @@ func withUpdateHooksReset(t *testing.T) {
 	})
 }
 
+// releaseJSON now always includes a checksums.txt asset entry because
+// C-2 (interim) makes its presence mandatory for handleApplyUpdate.
 func releaseJSON(assetName string) string {
 	return `{
 		"tag_name":"v0.4.2",
 		"html_url":"https://example/release",
 		"body":"notes",
-		"assets":[{"name":"` + assetName + `","browser_download_url":"https://example/download"}]
+		"assets":[
+			{"name":"` + assetName + `","browser_download_url":"https://example/download"},
+			{"name":"checksums.txt","browser_download_url":"https://example/checksums.txt"}
+		]
 	}`
+}
+
+// checksumsBody returns a sha256sum-style line for assetName matching body.
+func checksumsBody(assetName string, body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:]) + "  " + assetName + "\n"
+}
+
+// stringHTTP is jsonHTTP's text-content sibling; used for checksums.txt
+// and binary asset bodies.
+func stringHTTP(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+// classifyUpdateURL tells a mock transport whether the requested URL is
+// (a) the GitHub releases JSON, (b) the checksums.txt asset, or (c) the
+// binary asset. Lets tests dispatch by URL instead of brittle call counts.
+func classifyUpdateURL(rawURL string) string {
+	switch {
+	case strings.Contains(rawURL, "api.github.com/repos") || strings.Contains(rawURL, "/releases/latest"):
+		return "release"
+	case strings.HasSuffix(rawURL, "checksums.txt"):
+		return "checksums"
+	default:
+		return "asset"
+	}
 }
 
 func TestCheckForUpdate_HTTPAndDecodeErrors(t *testing.T) {
@@ -223,19 +260,15 @@ func TestHandleApplyUpdate_SuccessPathWithoutExit(t *testing.T) {
 		assetName += ".exe"
 	}
 
-	call := int32(0)
+	binaryBody := []byte("new-binary-bytes")
 	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
-		c := atomic.AddInt32(&call, 1)
-		switch c {
-		case 1, 2:
-			return jsonHTTP(http.StatusOK, `{
-				"tag_name":"v0.4.2",
-				"html_url":"https://example/release",
-				"body":"notes",
-				"assets":[{"name":"`+assetName+`","browser_download_url":"https://example/download"}]
-			}`), nil
+		switch classifyUpdateURL(r.URL.String()) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
 		default:
-			return jsonHTTP(http.StatusOK, "new-binary-bytes"), nil
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
 		}
 	})
 
@@ -248,6 +281,7 @@ func TestHandleApplyUpdate_SuccessPathWithoutExit(t *testing.T) {
 	updateExecutable = func() (string, error) { return exePath, nil }
 	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
 	updateSleep = func(time.Duration) {}
+	_ = binaryBody // referenced via the closure above
 
 	restartCalled := make(chan struct{}, 1)
 	updateRestartSelf = func() error {
@@ -291,6 +325,63 @@ func TestHandleApplyUpdate_SuccessPathWithoutExit(t *testing.T) {
 	}
 }
 
+// TestHandleApplyUpdate_ChecksumMismatch verifies C-2: an attacker-controlled
+// asset host returning a different binary than the one named in
+// checksums.txt is refused.
+func TestHandleApplyUpdate_ChecksumMismatch(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	expectedBody := []byte("expected-good-binary")
+	tamperedBody := []byte("attacker-replacement-payload")
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		switch classifyUpdateURL(r.URL.String()) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			// Advertise the SHA-256 of expectedBody...
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, expectedBody)), nil
+		default:
+			// ...but serve tamperedBody from the asset host.
+			return stringHTTP(http.StatusOK, string(tamperedBody)), nil
+		}
+	})
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("orig"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for checksum mismatch, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if !strings.Contains(fmt.Sprint(body["error"]), "checksum mismatch") {
+		t.Fatalf("expected checksum-mismatch error, got %#v", body["error"])
+	}
+	// Original binary must NOT have been overwritten.
+	contents, _ := os.ReadFile(exePath)
+	if string(contents) != "orig" {
+		t.Fatalf("binary was overwritten on checksum mismatch: %q", string(contents))
+	}
+}
+
 func TestHandleApplyUpdate_CreateTempError(t *testing.T) {
 	srv := testAdminServer(t)
 	withUpdateHooksReset(t)
@@ -304,18 +395,16 @@ func TestHandleApplyUpdate_CreateTempError(t *testing.T) {
 		assetName += ".exe"
 	}
 
-	call := int32(0)
+	binaryBody := []byte("new-binary-bytes")
 	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
-		c := atomic.AddInt32(&call, 1)
-		if c <= 2 {
-			return jsonHTTP(http.StatusOK, `{
-				"tag_name":"v0.4.2",
-				"html_url":"https://example/release",
-				"body":"notes",
-				"assets":[{"name":"`+assetName+`","browser_download_url":"https://example/download"}]
-			}`), nil
+		switch classifyUpdateURL(r.URL.String()) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
 		}
-		return jsonHTTP(http.StatusOK, "new-binary-bytes"), nil
 	})
 
 	tmpDir := t.TempDir()
@@ -350,18 +439,16 @@ func TestHandleApplyUpdate_CreateTempReadOnly(t *testing.T) {
 		assetName += ".exe"
 	}
 
-	call := int32(0)
+	binaryBody := []byte("new-binary-bytes")
 	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
-		c := atomic.AddInt32(&call, 1)
-		if c <= 2 {
-			return jsonHTTP(http.StatusOK, `{
-				"tag_name":"v0.4.2",
-				"html_url":"https://example/release",
-				"body":"notes",
-				"assets":[{"name":"`+assetName+`","browser_download_url":"https://example/download"}]
-			}`), nil
+		switch classifyUpdateURL(r.URL.String()) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
 		}
-		return jsonHTTP(http.StatusOK, "new-binary-bytes"), nil
 	})
 
 	tmpDir := t.TempDir()
@@ -400,17 +487,16 @@ func TestHandleApplyUpdate_ExecutableAndEvalErrors(t *testing.T) {
 		assetName += ".exe"
 	}
 
-	call := int32(0)
+	binaryBody := []byte("new-binary")
 	updateHTTPGet = func(url string) (*http.Response, error) {
-		c := atomic.AddInt32(&call, 1)
-		if c <= 2 {
+		switch classifyUpdateURL(url) {
+		case "release":
 			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("new-binary")),
-		}, nil
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
@@ -422,7 +508,6 @@ func TestHandleApplyUpdate_ExecutableAndEvalErrors(t *testing.T) {
 		t.Fatalf("expected 500 for executable error, got %d", rec.Code)
 	}
 
-	call = 0
 	tmpDir := t.TempDir()
 	exePath := filepath.Join(tmpDir, "labyrinth.exe")
 	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
@@ -460,17 +545,21 @@ func TestHandleApplyUpdate_CopyAndRenameErrors(t *testing.T) {
 	updateExecutable = func() (string, error) { return exePath, nil }
 	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
 
-	call := int32(0)
-	updateHTTPGet = func(string) (*http.Response, error) {
-		c := atomic.AddInt32(&call, 1)
-		if c <= 2 {
+	binaryBody := []byte("new-binary")
+	updateHTTPGet = func(url string) (*http.Response, error) {
+		switch classifyUpdateURL(url) {
+		case "release":
 			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			// Body that errors mid-read for the io.Copy failure path.
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(errReader{}),
+			}, nil
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(errReader{}),
-		}, nil
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
@@ -480,17 +569,15 @@ func TestHandleApplyUpdate_CopyAndRenameErrors(t *testing.T) {
 		t.Fatalf("expected 500 for io.Copy error, got %d", rec.Code)
 	}
 
-	call = 0
-	updateHTTPGet = func(string) (*http.Response, error) {
-		c := atomic.AddInt32(&call, 1)
-		if c <= 2 {
+	updateHTTPGet = func(url string) (*http.Response, error) {
+		switch classifyUpdateURL(url) {
+		case "release":
 			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("new-binary")),
-		}, nil
 	}
 	updateRename = func(oldpath, newpath string) error {
 		if strings.Contains(newpath, ".old") || newpath == exePath {
@@ -528,17 +615,16 @@ func TestHandleApplyUpdate_RenameReadOnly(t *testing.T) {
 	updateExecutable = func() (string, error) { return exePath, nil }
 	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
 
-	call := int32(0)
-	updateHTTPGet = func(string) (*http.Response, error) {
-		c := atomic.AddInt32(&call, 1)
-		if c <= 2 {
+	binaryBody := []byte("new-binary")
+	updateHTTPGet = func(url string) (*http.Response, error) {
+		switch classifyUpdateURL(url) {
+		case "release":
 			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("new-binary")),
-		}, nil
 	}
 	updateRename = func(oldpath, newpath string) error {
 		if newpath == exePath || strings.Contains(newpath, ".old") {

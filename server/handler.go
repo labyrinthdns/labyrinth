@@ -247,14 +247,29 @@ func (h *MainHandler) addEDEToRawResponse(resp []byte, code uint16, text string)
 		return resp
 	}
 	h.addEDEToResponse(msg, code, text)
-	bufPtr := pool.GetBuffer()
-	buf := *bufPtr
-	packed, packErr := dns.Pack(msg, buf)
-	pool.PutBuffer(bufPtr)
+	out, packErr := h.packToOwnedBytes(msg)
 	if packErr != nil {
 		return resp
 	}
-	return packed
+	return out
+}
+
+// packToOwnedBytes packs msg using a pooled buffer and returns an owned
+// copy of the wire bytes. The pooled buffer is always released before
+// return. H-5: closes the use-after-pool race where concurrent goroutines
+// would receive each other's response payload because `dns.Pack` returns
+// a slice into the pooled buffer's backing array.
+func (h *MainHandler) packToOwnedBytes(msg *dns.Message) ([]byte, error) {
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
+	packed, err := dns.Pack(msg, buf)
+	if err != nil {
+		pool.PutBuffer(bufPtr)
+		return nil, err
+	}
+	out := append([]byte(nil), packed...)
+	pool.PutBuffer(bufPtr)
+	return out, nil
 }
 
 // SetNoCacheClients configures the list of client IPs/CIDRs that should bypass the cache.
@@ -430,11 +445,11 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 					staleResp, parseErr := dns.Unpack(resp)
 					if parseErr == nil {
 						h.addEDEToResponse(staleResp, dns.EDECodeStaleAnswer, "serve-stale")
-						bufPtr := pool.GetBuffer()
-						defer pool.PutBuffer(bufPtr)
-						buf := *bufPtr
-						if packed, packErr := dns.Pack(staleResp, buf); packErr == nil {
-							resp = packed
+						// H-5: copy packed bytes off the pooled buffer before the
+						// caller (UDP/TCP listener) reads them. packToOwnedBytes
+						// copies and returns the buffer to the pool atomically.
+						if owned, packErr := h.packToOwnedBytes(staleResp); packErr == nil {
+							resp = owned
 						}
 					}
 				}
@@ -475,7 +490,17 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 
 	if !bypassCache {
 		if result.RCODE == dns.RCodeNoError && len(result.Answers) > 0 {
-			h.cache.Store(q.Name, q.Type, q.Class, result.Answers, result.Authority)
+			// H-6: filter private addresses BEFORE inserting into the
+			// cache. Previously the filter only ran in buildResponse,
+			// so a first query that admitted a private IP would poison
+			// the cache for every later client (DNS-rebinding bypass).
+			// Filtering at the write site means subsequent cache hits
+			// (buildCacheResponse) are clean by construction.
+			answersToCache := result.Answers
+			if h.privateFilter {
+				answersToCache = security.FilterPrivateAddresses(answersToCache)
+			}
+			h.cache.Store(q.Name, q.Type, q.Class, answersToCache, result.Authority)
 		} else if result.RCODE == dns.RCodeNXDomain {
 			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority)
 		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
@@ -542,8 +567,11 @@ func (h *MainHandler) buildError(query []byte, rcode uint8) ([]byte, error) {
 		return buf, nil
 	}
 
+	// H-5: this function previously did `defer pool.PutBuffer(bufPtr)`
+	// and returned `buf[:N]` — a slice into the pooled buffer that the
+	// caller continues using after the defer fires. We now copy before
+	// release so the caller owns its bytes.
 	bufPtr := pool.GetBuffer()
-	defer pool.PutBuffer(bufPtr)
 	buf := *bufPtr
 	copy(buf, query[:12])
 
@@ -565,7 +593,9 @@ func (h *MainHandler) buildError(query []byte, rcode uint8) ([]byte, error) {
 	for i := 0; i < int(qdcount) && offset < len(query); i++ {
 		_, newOffset, err := dns.DecodeName(query, offset)
 		if err != nil {
-			return buf[:12], nil
+			out := append([]byte(nil), buf[:12]...)
+			pool.PutBuffer(bufPtr)
+			return out, nil
 		}
 		offset = newOffset + 4
 	}
@@ -574,7 +604,9 @@ func (h *MainHandler) buildError(query []byte, rcode uint8) ([]byte, error) {
 		offset = len(query)
 	}
 	copy(buf[12:], query[12:offset])
-	return buf[:offset], nil
+	out := append([]byte(nil), buf[:offset]...)
+	pool.PutBuffer(bufPtr)
+	return out, nil
 }
 
 // buildSlipResponse creates a minimal response with TC=1 (truncated) to force
@@ -613,11 +645,8 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry)
 		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
 	}
 
-	bufPtr := pool.GetBuffer()
-	buf := *bufPtr
-	packed, err := dns.Pack(resp, buf)
-	// Return buffer to pool regardless of result
-	pool.PutBuffer(bufPtr)
+	// H-5: pack into an owned slice so the caller doesn't read pooled memory.
+	packed, err := h.packToOwnedBytes(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -660,10 +689,8 @@ func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question
 		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
 	}
 
-	bufPtr := pool.GetBuffer()
-	buf := *bufPtr
-	packed, err := dns.Pack(resp, buf)
-	pool.PutBuffer(bufPtr)
+	// H-5: pack into an owned slice (was: dns.Pack into pooled buf, then PutBuffer, then return slice).
+	packed, err := h.packToOwnedBytes(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -698,10 +725,8 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
 	}
 
-	bufPtr := pool.GetBuffer()
-	buf := *bufPtr
-	packed, err := dns.Pack(resp, buf)
-	pool.PutBuffer(bufPtr)
+	// H-5: pack into an owned slice.
+	packed, err := h.packToOwnedBytes(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -802,11 +827,8 @@ func (h *MainHandler) buildBlockedResponse(query *dns.Message, q dns.Question) (
 	}
 	// default: nxdomain - already set
 
-	bufPtr := pool.GetBuffer()
-	buf := *bufPtr
-	packed, err := dns.Pack(resp, buf)
-	pool.PutBuffer(bufPtr)
-	return packed, err
+	// H-5: pack into an owned slice.
+	return h.packToOwnedBytes(resp)
 }
 
 // buildErrorWithEDE creates an error response with an Extended DNS Error option.
@@ -822,14 +844,12 @@ func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint1
 		return resp, nil // fallback to plain error
 	}
 	h.addEDEToResponse(msg, edeCode, edeText)
-	bufPtr := pool.GetBuffer()
-	buf := *bufPtr
-	packed, packErr := dns.Pack(msg, buf)
-	pool.PutBuffer(bufPtr)
+	// H-5: pack into an owned slice.
+	out, packErr := h.packToOwnedBytes(msg)
 	if packErr != nil {
 		return resp, nil
 	}
-	return packed, nil
+	return out, nil
 }
 
 // addCookieToResponse processes DNS cookie options in the response.
@@ -879,14 +899,12 @@ func (h *MainHandler) addCookieToResponse(resp []byte, edns *dns.EDNS0, clientIP
 		msg.Additional = append(msg.Additional, dns.BuildOPTWithOptions(h.advertisedUDPBufferSize(), false, []dns.EDNSOption{cookieOpt}))
 	}
 
-	bufPtr := pool.GetBuffer()
-	buf := *bufPtr
-	packed, packErr := dns.Pack(msg, buf)
-	pool.PutBuffer(bufPtr)
+	// H-5: pack into an owned slice.
+	out, packErr := h.packToOwnedBytes(msg)
 	if packErr != nil {
 		return resp
 	}
-	return packed
+	return out
 }
 
 func extractIP(addr net.Addr) string {

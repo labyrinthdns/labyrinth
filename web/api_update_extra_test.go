@@ -67,6 +67,8 @@ func TestCheckForUpdate_Success(t *testing.T) {
 }
 
 func TestFindAssetURL(t *testing.T) {
+	// C-2: the release JSON must now include checksums.txt — without it,
+	// findAssetURLWithChecksums fails closed (intentional).
 	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
 		return jsonHTTP(http.StatusOK, `{
 			"tag_name":"v0.4.9",
@@ -74,7 +76,8 @@ func TestFindAssetURL(t *testing.T) {
 			"body":"notes",
 			"assets":[
 				{"name":"labyrinth-linux-amd64","browser_download_url":"https://example/linux-amd64"},
-				{"name":"labyrinth-windows-amd64.exe","browser_download_url":"https://example/windows-amd64.exe"}
+				{"name":"labyrinth-windows-amd64.exe","browser_download_url":"https://example/windows-amd64.exe"},
+				{"name":"checksums.txt","browser_download_url":"https://example/checksums.txt"}
 			]
 		}`), nil
 	})
@@ -89,6 +92,23 @@ func TestFindAssetURL(t *testing.T) {
 
 	if _, err := findAssetURL("missing-asset"); err == nil {
 		t.Fatalf("expected error for missing asset")
+	}
+}
+
+// C-2: confirm fail-closed when checksums.txt is missing.
+func TestFindAssetURL_MissingChecksumsTxtRejected(t *testing.T) {
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return jsonHTTP(http.StatusOK, `{
+			"tag_name":"v0.4.9",
+			"html_url":"https://example/release",
+			"body":"notes",
+			"assets":[
+				{"name":"labyrinth-linux-amd64","browser_download_url":"https://example/linux-amd64"}
+			]
+		}`), nil
+	})
+	if _, err := findAssetURL("labyrinth-linux-amd64"); err == nil {
+		t.Fatalf("expected fail-closed when checksums.txt is absent")
 	}
 }
 
