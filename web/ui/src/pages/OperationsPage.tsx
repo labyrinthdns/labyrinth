@@ -46,6 +46,7 @@ export default function OperationsPage() {
   const [profile, setProfile] = useState<SystemProfileResponse | null>(null)
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [tlsStatus, setTlsStatus] = useState<TLSStatusResponse | null>(null)
+  const [fallbackEvents, setFallbackEvents] = useState<FallbackEvent[]>([])
   const [errorThresholdPct, setErrorThresholdPct] = useState(5)
   const [latencyThresholdMs, setLatencyThresholdMs] = useState(250)
   const [error, setError] = useState('')
@@ -124,6 +125,20 @@ export default function OperationsPage() {
     return () => { cancelled = true }
   }, [])
 
+  /* ── fallback events polling ─────────────────────────────────── */
+  useEffect(() => {
+    let cancelled = false
+    const load = () => {
+      if (cancelled) return
+      api.fallbackEvents()
+        .then((r) => { if (!cancelled) setFallbackEvents(r.events) })
+        .catch(() => {})
+    }
+    load()
+    const id = setInterval(load, 10_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+
   /* ── chart data (stable, max 30 points) ──────────────────────── */
   const chartData = useMemo(() => {
     return (tsBuckets || [])
@@ -139,6 +154,8 @@ export default function OperationsPage() {
           cacheHits: b.cache_hits || 0,
           cacheMisses: b.cache_misses || 0,
           cacheHitRatio: b.cache_hit_ratio || 0,
+          fallbackQueries: b.fallback_queries || 0,
+          fallbackRecoveries: b.fallback_recoveries || 0,
         }
       })
       .sort((a, b) => a.ts.localeCompare(b.ts))
@@ -467,6 +484,30 @@ export default function OperationsPage() {
                   name="Errors"
                   isAnimationActive={false}
                 />
+                {chartData.some((b) => b.fallbackQueries > 0) && (
+                  <>
+                    <Line
+                      yAxisId="q"
+                      type="monotone"
+                      dataKey="fallbackQueries"
+                      stroke="#f59e0b"
+                      strokeWidth={1.5}
+                      dot={false}
+                      name="Fallback Queries"
+                      isAnimationActive={false}
+                    />
+                    <Line
+                      yAxisId="q"
+                      type="monotone"
+                      dataKey="fallbackRecoveries"
+                      stroke="#10b981"
+                      strokeWidth={1.5}
+                      dot={false}
+                      name="Fallback Recoveries"
+                      isAnimationActive={false}
+                    />
+                  </>
+                )}
                 {maxErrors > 0 && (
                   <ReferenceLine
                     yAxisId="e"
@@ -634,6 +675,37 @@ export default function OperationsPage() {
           )}
         </div>
       )}
+
+      {/* Fallback Event Log */}
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Recent Fallback Events</h2>
+          {fallbackEvents.length > 0 && (
+            <span className="text-xs text-slate-400">{fallbackEvents.length} event{fallbackEvents.length !== 1 ? 's' : ''}</span>
+          )}
+        </div>
+        {fallbackEvents.length === 0 ? (
+          <p className="text-sm text-slate-400">No fallback events recorded.</p>
+        ) : (
+          <div className="space-y-1.5 text-xs font-mono max-h-48 overflow-y-auto">
+            {[...fallbackEvents].reverse().map((ev, i) => (
+              <div key={i} className="flex gap-3 items-start rounded bg-slate-50 dark:bg-slate-900 px-3 py-2">
+                <span className="text-slate-400 shrink-0">{new Date(ev.timestamp).toLocaleTimeString()}</span>
+                <span className="text-slate-600 dark:text-slate-300 truncate max-w-[180px]">{ev.query_name}</span>
+                <span className="text-slate-400">T={ev.qtype}</span>
+                <span className="text-slate-400">via {ev.resolver_addr}</span>
+                {ev.recovered ? (
+                  <span className="text-emerald-600 dark:text-emerald-400">OK rcode={ev.rcode}</span>
+                ) : ev.error ? (
+                  <span className="text-red-500 dark:text-red-400">ERR {ev.error.slice(0, 40)}</span>
+                ) : (
+                  <span className="text-amber-500">SERVFAIL</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

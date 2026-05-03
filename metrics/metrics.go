@@ -9,6 +9,58 @@ import (
 	"time"
 )
 
+// FallbackEvent records a single fallback query attempt.
+type FallbackEvent struct {
+	Timestamp    time.Time
+	QueryName    string
+	QType        uint16
+	QClass       uint16
+	ResolverAddr string
+	Recovered   bool
+	RCODE       uint8
+	Error       string
+}
+
+// FallbackEventRing is a thread-safe, bounded ring buffer of FallbackEvents.
+// Pre-allocated [100]FallbackEvent array — no heap growth after init.
+type FallbackEventRing struct {
+	events [100]FallbackEvent
+	head   atomic.Uint64
+	count  atomic.Uint64
+	mu     sync.Mutex
+}
+
+// NewFallbackEventRing creates a new FallbackEventRing.
+func NewFallbackEventRing() *FallbackEventRing {
+	return &FallbackEventRing{}
+}
+
+// Add appends an event to the ring buffer, overwriting the oldest when full.
+func (r *FallbackEventRing) Add(e FallbackEvent) {
+	r.mu.Lock()
+	idx := r.head.Load() % 100
+	r.events[idx] = e
+	r.head.Store(r.head.Load() + 1)
+	c := r.count.Load()
+	if c < 100 {
+		r.count.Store(c + 1)
+	}
+	r.mu.Unlock()
+}
+
+// Events returns all events in oldest-to-newest order.
+func (r *FallbackEventRing) Events() []FallbackEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := int(r.count.Load())
+	out := make([]FallbackEvent, 0, n)
+	start := r.head.Load() - uint64(n)
+	for i := uint64(0); i < uint64(n); i++ {
+		out = append(out, r.events[(start+i)%100])
+	}
+	return out
+}
+
 // Metrics holds all application metrics using lock-free atomic counters.
 type Metrics struct {
 	queriesTotal   map[string]*atomic.Int64
@@ -26,6 +78,13 @@ type Metrics struct {
 	fallbackQueries   atomic.Int64
 	fallbackRecoveries atomic.Int64
 
+	fallbackEventRing *FallbackEventRing
+
+	// RecordFallbackFunc is an optional callback invoked each time a fallback
+	// query fires (query=1) or recovers (recovery=1). Set by the web package
+	// to route fallback events into the time-series aggregator.
+	RecordFallbackFunc func(query, recovery int64)
+
 	queryDurations *histogram
 
 	startTime time.Time
@@ -40,6 +99,7 @@ func NewMetrics() *Metrics {
 		responsesTotal: make(map[string]*atomic.Int64),
 		startTime:      time.Now(),
 		queryDurations: newHistogram([]float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0}),
+		fallbackEventRing: NewFallbackEventRing(),
 	}
 }
 
@@ -62,6 +122,9 @@ func (m *Metrics) IncDNSSECBogus()     { m.dnssecBogus.Add(1) }
 func (m *Metrics) IncBlockedQueries()     { m.blockedQueries.Add(1) }
 func (m *Metrics) IncFallbackQueries()    { m.fallbackQueries.Add(1) }
 func (m *Metrics) IncFallbackRecoveries() { m.fallbackRecoveries.Add(1) }
+
+// FallbackEventRing returns the fallback event ring buffer.
+func (m *Metrics) FallbackEventRing() *FallbackEventRing { return m.fallbackEventRing }
 
 func (m *Metrics) IncCacheEvictions(reason string) {
 	m.cacheEvictions.Add(1)

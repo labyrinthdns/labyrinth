@@ -2,8 +2,10 @@ package resolver
 
 import (
 	"math/rand/v2"
+	"time"
 
 	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/metrics"
 )
 
 // queryFallback picks one random fallback resolver and sends a single
@@ -16,10 +18,23 @@ func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16) *Reso
 
 	addr := r.config.FallbackResolvers[rand.IntN(len(r.config.FallbackResolvers))]
 	r.metrics.IncFallbackQueries()
+	if r.metrics.RecordFallbackFunc != nil {
+		r.metrics.RecordFallbackFunc(1, 0)
+	}
 	r.logger.Debug("trying fallback resolver", "addr", addr, "name", name, "qtype", qtype)
+
+	event := metrics.FallbackEvent{
+		Timestamp:    time.Now(),
+		QueryName:    name,
+		QType:        qtype,
+		QClass:       qclass,
+		ResolverAddr: addr,
+	}
 
 	msg, err := r.sendForwardQueryOnce(addr, name, qtype, qclass)
 	if err != nil {
+		event.Error = err.Error()
+		r.metrics.FallbackEventRing().Add(event)
 		r.logger.Debug("fallback resolver failed", "addr", addr, "error", err)
 		return nil
 	}
@@ -28,7 +43,17 @@ func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16) *Reso
 	// SERVFAIL from fallback means the domain genuinely has issues.
 	rcode := msg.Header.RCODE()
 	if rcode == dns.RCodeServFail {
+		event.RCODE = rcode
+		r.metrics.FallbackEventRing().Add(event)
 		return nil
+	}
+
+	event.Recovered = true
+	event.RCODE = rcode
+	r.metrics.FallbackEventRing().Add(event)
+
+	if r.metrics.RecordFallbackFunc != nil {
+		r.metrics.RecordFallbackFunc(0, 1)
 	}
 
 	r.metrics.IncFallbackRecoveries()

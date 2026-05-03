@@ -72,13 +72,11 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		bufSize = 1000
 	}
 
-	// Generate a random JWT secret - this is required
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return nil, fmt.Errorf("failed to generate JWT secret: %w", err)
 	}
 
-	// Determine cleanup interval, default to 5 minutes
 	cleanupInterval := 5 * time.Minute
 	topTrackingLimitClients := cfg.Web.TopClientsLimit
 	if topTrackingLimitClients < 1000 {
@@ -89,7 +87,7 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		topTrackingLimitDomains = 1000
 	}
 
-	return &AdminServer{
+	s := &AdminServer{
 		cache:                 c,
 		metrics:               m,
 		resolver:              r,
@@ -105,10 +103,21 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		clientCleanupInterval: cleanupInterval,
 		blocklist:             bl,
 		loginLimiter:          newLoginLimiter(),
-	}, nil
+	}
+
+	// Wire fallback time-series: route fallback events into the aggregator.
+	s.wireFallbackTimeSeries()
+
+	return s, nil
 }
 
-// SetConfigPath sets the path used by config edit endpoints.
+func (s *AdminServer) wireFallbackTimeSeries() {
+	m := s.metrics
+	ts := s.timeSeries
+	m.RecordFallbackFunc = func(query, recovery int64) {
+		ts.RecordFallback(query, recovery)
+	}
+}
 func (s *AdminServer) SetConfigPath(path string) {
 	if path == "" {
 		return
@@ -410,6 +419,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/update/check", s.requireAuth(s.handleCheckUpdate))
 	mux.HandleFunc("/api/system/update/apply", s.requireAuth(s.handleApplyUpdate))
 	mux.HandleFunc("/api/blocklist/stats", s.requireAuth(s.handleBlocklistStats))
+	mux.HandleFunc("/api/fallback-events", s.requireAuth(s.handleFallbackEvents))
 	mux.HandleFunc("/api/blocklist/lists", s.requireAuth(s.handleBlocklistLists))
 	mux.HandleFunc("/api/blocklist/refresh", s.requireAuth(s.handleBlocklistRefresh))
 	mux.HandleFunc("/api/blocklist/block", s.requireAuth(s.handleBlocklistBlock))

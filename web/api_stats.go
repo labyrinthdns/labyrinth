@@ -102,3 +102,40 @@ func (s *AdminServer) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		"buckets":        buckets,
 	})
 }
+
+// handleFallbackEvents handles GET /api/fallback-events — returns recent fallback events.
+func (s *AdminServer) handleFallbackEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	events := s.metrics.FallbackEventRing().Events()
+	type jsonEvent struct {
+		Timestamp    string `json:"timestamp"`
+		QueryName    string `json:"query_name"`
+		QType        uint16 `json:"qtype"`
+		QClass       uint16 `json:"qclass"`
+		ResolverAddr string `json:"resolver_addr"`
+		Recovered    bool   `json:"recovered"`
+		RCODE        uint8  `json:"rcode"`
+		Error        string `json:"error,omitempty"`
+	}
+	out := make([]jsonEvent, len(events))
+	for i, e := range events {
+		out[i] = jsonEvent{
+			Timestamp:    e.Timestamp.UTC().Format(time.RFC3339),
+			QueryName:    e.QueryName,
+			QType:        e.QType,
+			QClass:       e.QClass,
+			ResolverAddr: e.ResolverAddr,
+			Recovered:    e.Recovered,
+			RCODE:        e.RCODE,
+			Error:        e.Error,
+		}
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"count":  len(out),
+		"events": out,
+	})
+}
