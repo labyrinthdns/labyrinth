@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-05-04
+
+### Security
+- Comprehensive security audit remediation across 12 finding categories (C-1/2/3, H-1/2/3/4/5/6/7/8/9/10/11, L-2, M-6).
+- Server: floor client EDNS UDPSize at RFC 6891 §6.2.5 minimum (1232 bytes).
+- Server: apply UDP response cap to cache-hit and ANY query paths.
+- Server: advertise 1232-byte EDNS0 buffer to downstream clients.
+- DNSSEC: tighten NSEC3 iteration limit to 100 per RFC 9276 guidance.
+- DNSSEC: reject weak SHA1 primitives by default.
+- Resolver: advertise 1232-byte EDNS0 buffer to defang fragment injection attacks.
+- Resolver: reject out-of-bailiwick glue in upstream responses.
+- Web: rate-limit `/api/auth/login` by client IP.
+- Web: harden DNSSEC denial path and reserved-IP filter.
+
+### Added
+- Fallback resolver per-query logging in UI and Prometheus metrics.
+- `addEDEToResponse` refactored as `MainHandler` method for cleaner code organization.
+
+### Changed
+- Full security audit report documentation added (4-phase pipeline).
+
 ## [0.6.1] - 2026-04-10
 
 ### Added
