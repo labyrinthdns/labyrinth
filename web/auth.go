@@ -2,6 +2,7 @@ package web
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -44,6 +46,7 @@ type jwtPayload struct {
 	Sub string `json:"sub"`
 	Iat int64  `json:"iat"`
 	Exp int64  `json:"exp"`
+	Jti string `json:"jti,omitempty"`
 }
 
 // jwtHeader is the parsed shape of a JWT header. Only HS256 is accepted.
@@ -53,12 +56,18 @@ type jwtHeader struct {
 }
 
 // generateJWT creates a JWT token with a 24-hour expiry using HMAC-SHA256.
+// It generates a unique jti for each token to support revocation.
 func generateJWT(username string, secret []byte) (string, error) {
 	now := time.Now().Unix()
+	jtiBytes := make([]byte, 16)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return "", fmt.Errorf("failed to generate jti: %w", err)
+	}
 	payload := jwtPayload{
 		Sub: username,
 		Iat: now,
 		Exp: now + 86400, // 24 hours
+		Jti: base64.RawURLEncoding.EncodeToString(jtiBytes),
 	}
 
 	payloadJSON, err := json.Marshal(payload)
@@ -80,7 +89,8 @@ func generateJWT(username string, secret []byte) (string, error) {
 // validateJWT verifies a JWT token and returns the username (sub) claim.
 // The header is parsed and the algorithm must be exactly "HS256"; "none"
 // and any other algorithm (including unknown asymmetric ones) are rejected.
-func validateJWT(tokenStr string, secret []byte) (string, error) {
+// It also checks that the token's jti is not in the revokedTokens blocklist.
+func validateJWT(tokenStr string, secret []byte, revokedTokens *sync.Map) (string, error) {
 	parts := strings.SplitN(tokenStr, ".", 3)
 	if len(parts) != 3 {
 		return "", errors.New("invalid token format")
@@ -137,6 +147,18 @@ func validateJWT(tokenStr string, secret []byte) (string, error) {
 
 	if payload.Sub == "" {
 		return "", errors.New("missing subject claim")
+	}
+
+	// Reject tokens without a jti — prevents empty-string bypass of revocation.
+	if payload.Jti == "" {
+		return "", errors.New("missing jti claim")
+	}
+
+	// Check revocation blocklist (tokens issued before a password change)
+	if revokedTokens != nil {
+		if _, revoked := revokedTokens.Load(payload.Jti); revoked {
+			return "", errors.New("token has been revoked")
+		}
 	}
 
 	return payload.Sub, nil
@@ -290,7 +312,24 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Update config in memory
+	// Rotate JWT secret to invalidate all outstanding tokens (M-1 fix).
+	// Clear revocation blocklist — the new secret supersedes it.
+	newSecret := make([]byte, 32)
+	if _, err := rand.Read(newSecret); err != nil {
+		// crypto/rand failure is fatal — abort the entire password change
+		// rather than leave an inconsistent state where the password is
+		// rotated but existing JWTs remain valid.
+		s.logger.Error("failed to rotate JWT secret during password change", "error", err)
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to rotate session secret; password not changed"})
+		return
+	}
+	s.jwtSecret = newSecret
+	s.revokedTokens.Range(func(k, _ any) bool {
+		s.revokedTokens.Delete(k)
+		return true
+	})
+
+	// Update config in memory — only after secret rotation succeeded.
 	s.config.Web.Auth.PasswordHash = newHash
 
 	// Update YAML config file on disk

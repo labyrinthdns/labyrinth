@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // handleRecentQueries handles GET /api/queries/recent?limit=50.

@@ -238,8 +238,10 @@ func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveRe
 	}
 
 	// Fallback resolver: on SERVFAIL (not DNSSEC bogus), try one backup resolver.
-	if shouldFallback(result, err) {
-		if fbResult := r.queryFallback(name, qtype, qclass); fbResult != nil {
+	if fb := shouldFallback(result, err); fb.triggered {
+		r.logger.Info("primary resolver failed, trying fallback",
+			"name", name, "qtype", qtype, "reason", fb.reason)
+		if fbResult := r.queryFallback(name, qtype, qclass, fb.reason); fbResult != nil {
 			return fbResult, nil
 		}
 	}

@@ -55,6 +55,7 @@ export interface FallbackEvent {
   query_name: string
   qtype: number
   qclass: number
+  primary_failure_reason: string
   resolver_addr: string
   recovered: boolean
   rcode: number

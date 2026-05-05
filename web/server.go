@@ -46,8 +46,9 @@ type AdminServer struct {
 	queryLog              *QueryLog
 	timeSeries            *TimeSeriesAggregator
 	logger                *slog.Logger
-	jwtSecret             []byte
-	setupDone             bool
+	jwtSecret          []byte
+	revokedTokens     sync.Map // maps revoked jti string → bool; cleared on secret rotation
+	setupDone         bool
 	nextID                atomic.Uint64
 	topClients            *TopTracker
 	topDomains            *TopTracker

@@ -15,6 +15,10 @@ type FallbackEvent struct {
 	QueryName    string
 	QType        uint16
 	QClass       uint16
+	// PrimaryFailureReason describes why the primary resolver failed:
+	// e.g. "SERVFAIL", "connection refused", "timeout", "nil result".
+	PrimaryFailureReason string
+	// ResolverAddr is the fallback resolver address that handled this query.
 	ResolverAddr string
 	Recovered   bool
 	RCODE       uint8

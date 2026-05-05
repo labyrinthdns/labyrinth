@@ -14,40 +14,55 @@ import (
 
 func TestShouldFallback_ServFail(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail}
-	if !shouldFallback(result, nil) {
+	fb := shouldFallback(result, nil)
+	if !fb.triggered {
 		t.Error("expected shouldFallback=true for SERVFAIL")
+	}
+	if fb.reason != "SERVFAIL" {
+		t.Errorf("expected reason SERVFAIL, got %q", fb.reason)
 	}
 }
 
 func TestShouldFallback_Error(t *testing.T) {
-	if !shouldFallback(nil, errTXIDMismatch) {
+	fb := shouldFallback(nil, errTXIDMismatch)
+	if !fb.triggered {
 		t.Error("expected shouldFallback=true for non-nil error")
+	}
+	if fb.reason != errTXIDMismatch.Error() {
+		t.Errorf("expected reason %q, got %q", errTXIDMismatch.Error(), fb.reason)
 	}
 }
 
 func TestShouldFallback_NilResult(t *testing.T) {
-	if !shouldFallback(nil, nil) {
+	fb := shouldFallback(nil, nil)
+	if !fb.triggered {
 		t.Error("expected shouldFallback=true for nil result")
+	}
+	if fb.reason != "nil result" {
+		t.Errorf("expected reason 'nil result', got %q", fb.reason)
 	}
 }
 
 func TestShouldFallback_NoError(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeNoError}
-	if shouldFallback(result, nil) {
+	fb := shouldFallback(result, nil)
+	if fb.triggered {
 		t.Error("expected shouldFallback=false for NOERROR")
 	}
 }
 
 func TestShouldFallback_NXDOMAIN(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeNXDomain}
-	if shouldFallback(result, nil) {
+	fb := shouldFallback(result, nil)
+	if fb.triggered {
 		t.Error("expected shouldFallback=false for NXDOMAIN")
 	}
 }
 
 func TestShouldFallback_DNSSECBogus(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}
-	if shouldFallback(result, nil) {
+	fb := shouldFallback(result, nil)
+	if fb.triggered {
 		t.Error("expected shouldFallback=false for DNSSEC bogus")
 	}
 }
@@ -63,7 +78,7 @@ func TestQueryFallback_NotConfigured(t *testing.T) {
 		UpstreamRetries: 1,
 	}, m, logger)
 
-	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN)
+	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN, "test")
 	if result != nil {
 		t.Error("expected nil when no fallback resolvers configured")
 	}
@@ -106,7 +121,7 @@ func TestQueryFallback_Success(t *testing.T) {
 		FallbackResolvers: []string{fallbackMock.ip},
 	}, m, logger)
 
-	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN)
+	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN, "test")
 	if result == nil {
 		t.Fatal("expected non-nil result from fallback")
 	}
@@ -154,7 +169,7 @@ func TestQueryFallback_FallbackAlsoFails(t *testing.T) {
 		FallbackResolvers: []string{fallbackMock.ip},
 	}, m, logger)
 
-	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN)
+	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN, "test")
 	if result != nil {
 		t.Error("expected nil when fallback also returns SERVFAIL")
 	}
@@ -197,7 +212,7 @@ func TestQueryFallback_NXDOMAIN_IsRecovery(t *testing.T) {
 		FallbackResolvers: []string{fallbackMock.ip},
 	}, m, logger)
 
-	result := r.queryFallback("nonexistent.example.com", dns.TypeA, dns.ClassIN)
+	result := r.queryFallback("nonexistent.example.com", dns.TypeA, dns.ClassIN, "test")
 	if result == nil {
 		t.Fatal("expected non-nil result for NXDOMAIN from fallback")
 	}
@@ -615,7 +630,7 @@ func TestQueryFallback_NetworkError(t *testing.T) {
 		FallbackResolvers: []string{"192.0.2.1"}, // RFC 5737 TEST-NET, unreachable
 	}, m, logger)
 
-	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN)
+	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN, "test")
 	if result != nil {
 		t.Error("expected nil when fallback resolver is unreachable")
 	}
@@ -663,7 +678,7 @@ func TestQueryFallback_MultipleResolvers_PicksOne(t *testing.T) {
 		FallbackResolvers: []string{fallbackMock.ip, fallbackMock.ip, fallbackMock.ip},
 	}, m, logger)
 
-	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN)
+	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN, "test")
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}

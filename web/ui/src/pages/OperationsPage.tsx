@@ -21,7 +21,7 @@ import {
   ReferenceLine,
 } from 'recharts'
 import { api } from '@/api/client'
-import type { StatsResponse, SystemProfileResponse, TLSStatusResponse } from '@/api/types'
+import type { StatsResponse, SystemProfileResponse, TLSStatusResponse, FallbackEvent } from '@/api/types'
 import { formatNumber } from '@/lib/utils'
 import { useTimeSeriesStream } from '@/hooks/useTimeSeriesStream'
 
@@ -700,6 +700,9 @@ export default function OperationsPage() {
                   <span className="text-red-500 dark:text-red-400">ERR {ev.error.slice(0, 40)}</span>
                 ) : (
                   <span className="text-amber-500">SERVFAIL</span>
+                )}
+                {ev.primary_failure_reason && (
+                  <span className="text-slate-400 text-[10px]">← {ev.primary_failure_reason}</span>
                 )}
               </div>
             ))}

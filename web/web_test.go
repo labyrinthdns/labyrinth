@@ -26,7 +26,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/quic-go/quic-go/http3"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // ---------------------------------------------------------------------------
@@ -293,7 +293,7 @@ func TestGenerateAndValidateJWT(t *testing.T) {
 		t.Fatal("empty token")
 	}
 
-	user, err := validateJWT(token, secret)
+	user, err := validateJWT(token, secret, nil)
 	if err != nil {
 		t.Fatalf("validateJWT: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestValidateJWT_ExpiredToken(t *testing.T) {
 	sig := signHS256(signingInput, secret)
 	expiredToken := signingInput + "." + sig
 
-	_, err := validateJWT(expiredToken, secret)
+	_, err := validateJWT(expiredToken, secret, nil)
 	if err == nil {
 		t.Fatal("expected error for expired token")
 	}
@@ -325,7 +325,7 @@ func TestValidateJWT_ExpiredToken(t *testing.T) {
 }
 
 func TestValidateJWT_InvalidFormat(t *testing.T) {
-	_, err := validateJWT("not-a-jwt", []byte("secret"))
+	_, err := validateJWT("not-a-jwt", []byte("secret"), nil)
 	if err == nil {
 		t.Fatal("expected error for bad format")
 	}
@@ -346,7 +346,7 @@ func TestValidateJWT_TamperedSignature(t *testing.T) {
 		flipped = 'A'
 	}
 	tampered := parts[0] + "." + parts[1] + "." + string(flipped) + sig[1:]
-	_, err := validateJWT(tampered, secret)
+	_, err := validateJWT(tampered, secret, nil)
 	if err == nil {
 		t.Fatal("expected error for tampered signature")
 	}
@@ -354,7 +354,7 @@ func TestValidateJWT_TamperedSignature(t *testing.T) {
 
 func TestValidateJWT_WrongSecret(t *testing.T) {
 	token, _ := generateJWT("dave", []byte("secret-A"))
-	_, err := validateJWT(token, []byte("secret-B"))
+	_, err := validateJWT(token, []byte("secret-B"), nil)
 	if err == nil {
 		t.Fatal("expected error for wrong secret")
 	}
@@ -372,7 +372,7 @@ func TestValidateJWT_MissingSubject(t *testing.T) {
 	sig := signHS256(signingInput, secret)
 	token := signingInput + "." + sig
 
-	_, err := validateJWT(token, secret)
+	_, err := validateJWT(token, secret, nil)
 	if err == nil {
 		t.Fatal("expected error for missing subject")
 	}
