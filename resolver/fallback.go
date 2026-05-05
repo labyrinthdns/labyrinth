@@ -10,8 +10,8 @@ import (
 
 // queryFallback picks one random fallback resolver and sends a single
 // recursive (RD=1) query. Returns nil if fallback is not configured or
-// the fallback also fails.
-func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16) *ResolveResult {
+// the fallback also fails. fbReason describes why primary resolver failed.
+func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16, fbReason string) *ResolveResult {
 	if len(r.config.FallbackResolvers) == 0 {
 		return nil
 	}
@@ -24,11 +24,12 @@ func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16) *Reso
 	r.logger.Debug("trying fallback resolver", "addr", addr, "name", name, "qtype", qtype)
 
 	event := metrics.FallbackEvent{
-		Timestamp:    time.Now(),
-		QueryName:    name,
-		QType:        qtype,
-		QClass:       qclass,
-		ResolverAddr: addr,
+		Timestamp:            time.Now(),
+		QueryName:           name,
+		QType:               qtype,
+		QClass:              qclass,
+		PrimaryFailureReason: fbReason,
+		ResolverAddr:         addr,
 	}
 
 	msg, err := r.sendForwardQueryOnce(addr, name, qtype, qclass)
@@ -67,21 +68,27 @@ func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16) *Reso
 	}
 }
 
-// shouldFallback returns true if the resolution result warrants a
-// fallback attempt: SERVFAIL that isn't caused by DNSSEC validation.
-func shouldFallback(result *ResolveResult, err error) bool {
+// fallbackReason describes why fallback was triggered.
+type fallbackReason struct {
+	triggered bool
+	reason    string
+}
+
+// shouldFallback returns whether fallback is warranted and the reason for it:
+// SERVFAIL, upstream error, or nil result (not DNSSEC bogus).
+func shouldFallback(result *ResolveResult, err error) fallbackReason {
 	if err != nil {
-		return true
+		return fallbackReason{triggered: true, reason: err.Error()}
 	}
 	if result == nil {
-		return true
+		return fallbackReason{triggered: true, reason: "nil result"}
 	}
 	if result.RCODE != dns.RCodeServFail {
-		return false
+		return fallbackReason{triggered: false, reason: ""}
 	}
 	// Don't bypass DNSSEC validation failures — those are intentional.
 	if result.DNSSECStatus == "bogus" {
-		return false
+		return fallbackReason{triggered: false, reason: ""}
 	}
-	return true
+	return fallbackReason{triggered: true, reason: "SERVFAIL"}
 }

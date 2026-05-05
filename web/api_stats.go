@@ -112,26 +112,28 @@ func (s *AdminServer) handleFallbackEvents(w http.ResponseWriter, r *http.Reques
 
 	events := s.metrics.FallbackEventRing().Events()
 	type jsonEvent struct {
-		Timestamp    string `json:"timestamp"`
-		QueryName    string `json:"query_name"`
-		QType        uint16 `json:"qtype"`
-		QClass       uint16 `json:"qclass"`
-		ResolverAddr string `json:"resolver_addr"`
-		Recovered    bool   `json:"recovered"`
-		RCODE        uint8  `json:"rcode"`
-		Error        string `json:"error,omitempty"`
+		Timestamp             string `json:"timestamp"`
+		QueryName             string `json:"query_name"`
+		QType                 uint16 `json:"qtype"`
+		QClass                uint16 `json:"qclass"`
+		PrimaryFailureReason  string `json:"primary_failure_reason"`
+		ResolverAddr          string `json:"resolver_addr"`
+		Recovered             bool   `json:"recovered"`
+		RCODE                 uint8  `json:"rcode"`
+		Error                 string `json:"error,omitempty"`
 	}
 	out := make([]jsonEvent, len(events))
 	for i, e := range events {
 		out[i] = jsonEvent{
-			Timestamp:    e.Timestamp.UTC().Format(time.RFC3339),
-			QueryName:    e.QueryName,
-			QType:        e.QType,
-			QClass:       e.QClass,
-			ResolverAddr: e.ResolverAddr,
-			Recovered:    e.Recovered,
-			RCODE:        e.RCODE,
-			Error:        e.Error,
+			Timestamp:            e.Timestamp.UTC().Format(time.RFC3339),
+			QueryName:            e.QueryName,
+			QType:                e.QType,
+			QClass:               e.QClass,
+			PrimaryFailureReason: e.PrimaryFailureReason,
+			ResolverAddr:         e.ResolverAddr,
+			Recovered:            e.Recovered,
+			RCODE:                e.RCODE,
+			Error:                e.Error,
 		}
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{

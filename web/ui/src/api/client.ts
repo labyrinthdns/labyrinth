@@ -16,6 +16,7 @@ import type {
   LoginResponse,
   TLSStatusResponse,
   DNSGuideResponse,
+  FallbackEventsResponse,
 } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'

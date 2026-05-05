@@ -13,7 +13,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/metrics"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // ===========================================================================

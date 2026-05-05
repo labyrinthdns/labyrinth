@@ -23,7 +23,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // ===========================================================================
@@ -1751,7 +1751,7 @@ func TestValidateJWT_InvalidPayloadEncoding(t *testing.T) {
 	sig := signHS256(signingInput, secret)
 	token := signingInput + "." + sig
 
-	_, err := validateJWT(token, secret)
+	_, err := validateJWT(token, secret, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid payload encoding")
 	}
@@ -1765,7 +1765,7 @@ func TestValidateJWT_InvalidPayloadJSON(t *testing.T) {
 	sig := signHS256(signingInput, secret)
 	token := signingInput + "." + sig
 
-	_, err := validateJWT(token, secret)
+	_, err := validateJWT(token, secret, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid payload JSON")
 	}
@@ -1778,7 +1778,7 @@ func TestValidateJWT_InvalidSignatureEncoding(t *testing.T) {
 	// Replace signature with invalid base64
 	token = parts[0] + "." + parts[1] + ".!!!invalid!!!"
 
-	_, err := validateJWT(token, secret)
+	_, err := validateJWT(token, secret, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid signature encoding")
 	}

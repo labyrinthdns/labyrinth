@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // tsSubscription holds the current subscription parameters for a time-series WS client.
