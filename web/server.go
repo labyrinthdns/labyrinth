@@ -452,6 +452,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/blocklist/block", s.requireAuth(s.handleBlocklistBlock))
 	mux.HandleFunc("/api/blocklist/unblock", s.requireAuth(s.handleBlocklistUnblock))
 	mux.HandleFunc("/api/blocklist/check", s.requireAuth(s.handleBlocklistCheck))
+	mux.HandleFunc("/api/blocklist/domains", s.requireAuth(s.handleBlocklistDomains))
 	mux.HandleFunc("/api/system/tls", s.requireAuth(s.handleTLSStatus))
 	mux.HandleFunc("/api/system/tls/renew", s.requireAuth(s.handleTLSRenew))
 

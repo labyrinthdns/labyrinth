@@ -461,6 +461,24 @@ func (mgr *Manager) Stats() Stats {
 	}
 }
 
+// BlockedDomains returns snapshots of custom block and allow rules.
+func (mgr *Manager) BlockedDomains() (blocks []string, allows []string) {
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+
+	blocks = make([]string, 0, len(mgr.customBlocks))
+	for d := range mgr.customBlocks {
+		blocks = append(blocks, d)
+	}
+
+	allows = make([]string, 0, len(mgr.customAllows))
+	for d := range mgr.customAllows {
+		allows = append(allows, d)
+	}
+
+	return blocks, allows
+}
+
 // Sources returns a snapshot of the current list sources.
 func (mgr *Manager) Sources() []*ListSource {
 	mgr.mu.RLock()

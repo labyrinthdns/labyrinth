@@ -6,6 +6,7 @@ import type {
   UpdateInfo,
   BlocklistStats,
   BlocklistListEntry,
+  BlocklistDomainsResponse,
   ConfigRawResponse,
   ConfigValidateResponse,
   ConfigSaveResponse,
@@ -232,6 +233,7 @@ export const api = {
   blocklistBlock: (domain: string) => request<{ status: string }>('/api/blocklist/block', { method: 'POST', body: JSON.stringify({ domain }) }),
   blocklistUnblock: (domain: string) => request<{ status: string }>('/api/blocklist/unblock', { method: 'POST', body: JSON.stringify({ domain }) }),
   blocklistCheck: (domain: string) => request<{ domain: string; blocked: boolean }>(`/api/blocklist/check?domain=${domain}`),
+  blocklistDomains: () => request<BlocklistDomainsResponse>('/api/blocklist/domains'),
 
   tlsStatus: () => request<TLSStatusResponse>('/api/system/tls'),
   tlsRenew: () => request<{ status: string }>('/api/system/tls/renew', { method: 'POST' }),
