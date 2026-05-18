@@ -60,11 +60,16 @@ func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16, fbRea
 	r.metrics.IncFallbackRecoveries()
 	r.logger.Info("fallback resolver recovered query", "addr", addr, "name", name, "rcode", rcode)
 
+	status := ""
+	if r.config.DNSSECEnabled && msg.Header.AD() {
+		status = "secure"
+	}
 	return &ResolveResult{
-		Answers:    msg.Answers,
-		Authority:  msg.Authority,
-		Additional: msg.Additional,
-		RCODE:      rcode,
+		Answers:      msg.Answers,
+		Authority:    msg.Authority,
+		Additional:   msg.Additional,
+		RCODE:        rcode,
+		DNSSECStatus: status,
 	}
 }
 
@@ -77,6 +82,11 @@ type fallbackReason struct {
 // shouldFallback returns whether fallback is warranted and the reason for it:
 // SERVFAIL, upstream error, or nil result (not DNSSEC bogus).
 func shouldFallback(result *ResolveResult, err error) fallbackReason {
+	// Prefer result.Error over err since resolveIterativeFrom preserves
+	// the underlying upstream error even when returning SERVFAIL.
+	if result != nil && result.Error != nil {
+		return fallbackReason{triggered: true, reason: result.Error.Error()}
+	}
 	if err != nil {
 		return fallbackReason{triggered: true, reason: err.Error()}
 	}

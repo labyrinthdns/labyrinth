@@ -500,7 +500,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 			if h.privateFilter {
 				answersToCache = security.FilterPrivateAddresses(answersToCache)
 			}
-			h.cache.Store(q.Name, q.Type, q.Class, answersToCache, result.Authority)
+			h.cache.StoreWithStatus(q.Name, q.Type, q.Class, answersToCache, result.Authority, result.DNSSECStatus)
 		} else if result.RCODE == dns.RCodeNXDomain {
 			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority)
 		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
@@ -625,6 +625,27 @@ func (h *MainHandler) buildSlipResponse(query []byte) ([]byte, error) {
 }
 
 func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry) ([]byte, error) {
+	// RFC 4035 §3.2.2: a recursive name server MUST clear the AD bit on a
+	// response unless and until it itself verified the data; if it did verify
+	// (or the client opted out of verification with CD=1), AD propagates.
+	// RFC 4035 §3.2.2 also says the server MUST copy the CD bit from the
+	// query to the response so the client knows whether validation was
+	// performed.
+	setAD := entry.DNSSECStatus == "secure" && !query.Header.CD()
+
+	// RFC 4035 §3.2.1: strip DNSSEC RRs for non-DO clients (see buildResponse
+	// comment for the full rationale).
+	answers := entry.Records
+	authority := entry.Authority
+	qtype := uint16(0)
+	if len(query.Questions) > 0 {
+		qtype = query.Questions[0].Type
+	}
+	if !clientWantsDNSSEC(query) {
+		answers = stripDNSSECRRs(answers, qtype)
+		authority = stripDNSSECRRs(authority, qtype)
+	}
+
 	resp := &dns.Message{
 		Header: dns.Header{
 			ID: query.Header.ID,
@@ -632,12 +653,14 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry)
 				SetQR(true).
 				SetRD(query.Header.RD()).
 				SetRA(true).
+				SetAD(setAD).
+				SetCD(query.Header.CD()).
 				SetRCODE(entry.RCODE).
 				Build(),
 		},
 		Questions: query.Questions,
-		Answers:   entry.Records,
-		Authority: entry.Authority,
+		Answers:   answers,
+		Authority: authority,
 	}
 
 	// Add OPT if client sent one
@@ -703,7 +726,28 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 	if h.privateFilter {
 		answers = security.FilterPrivateAddresses(answers)
 	}
+	authority := result.Authority
+	additional := result.Additional
 
+	// RFC 4035 §3.2.1: when the client did not signal DNSSEC support (no
+	// EDNS or DO=0), the server MUST NOT include DNSSEC RR types in the
+	// response unless the client explicitly asked for them by qtype.
+	// Sending RRSIGs to a non-DO client wastes bandwidth and confuses
+	// strict legacy stubs.
+	qtype := uint16(0)
+	if len(query.Questions) > 0 {
+		qtype = query.Questions[0].Type
+	}
+	if !clientWantsDNSSEC(query) {
+		answers = stripDNSSECRRs(answers, qtype)
+		authority = stripDNSSECRRs(authority, qtype)
+		additional = stripDNSSECRRs(additional, qtype)
+	}
+
+	// RFC 4035 §3.2.2: set AD only when this resolver validated the data
+	// as Secure. The CD bit MUST be copied from the query to the response.
+	// AD is never set when the client requested validation-bypass (CD=1).
+	setAD := result.DNSSECStatus == "secure" && !query.Header.CD()
 	resp := &dns.Message{
 		Header: dns.Header{
 			ID: query.Header.ID,
@@ -711,13 +755,15 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 				SetQR(true).
 				SetRD(query.Header.RD()).
 				SetRA(true).
+				SetAD(setAD).
+				SetCD(query.Header.CD()).
 				SetRCODE(result.RCODE).
 				Build(),
 		},
 		Questions:  query.Questions,
 		Answers:    answers,
-		Authority:  result.Authority,
-		Additional: result.Additional,
+		Authority:  authority,
+		Additional: additional,
 	}
 
 	// Add OPT if client sent one
@@ -903,6 +949,45 @@ func (h *MainHandler) addCookieToResponse(resp []byte, edns *dns.EDNS0, clientIP
 	out, packErr := h.packToOwnedBytes(msg)
 	if packErr != nil {
 		return resp
+	}
+	return out
+}
+
+// clientWantsDNSSEC returns true if the client signalled DNSSEC support by
+// including an EDNS0 OPT record with the DO bit set.
+func clientWantsDNSSEC(query *dns.Message) bool {
+	return query.EDNS0 != nil && query.EDNS0.DOFlag
+}
+
+// isDNSSECRRType reports whether t is one of the DNSSEC-meta RR types that
+// must be stripped from responses to clients that did not opt in via DO.
+func isDNSSECRRType(t uint16) bool {
+	switch t {
+	case dns.TypeRRSIG, dns.TypeDNSKEY, dns.TypeDS, dns.TypeNSEC,
+		dns.TypeNSEC3, dns.TypeNSEC3PARAM:
+		return true
+	}
+	return false
+}
+
+// stripDNSSECRRs filters DNSSEC-meta records out of rrs unless they match the
+// client's query type (e.g. an explicit `RRSIG example.com` query keeps the
+// RRSIG records, but an `A example.com` query without DO does not).
+// Implements RFC 4035 §3.2.1.
+func stripDNSSECRRs(rrs []dns.ResourceRecord, qtype uint16) []dns.ResourceRecord {
+	if len(rrs) == 0 {
+		return rrs
+	}
+	// For an RRSIG query, also keep RRSIGs whose covered type matches the
+	// implicit intent; but the simplest correct rule is to keep RRs whose
+	// own rr.Type equals qtype. That covers the qtype==RRSIG / qtype==DNSKEY
+	// etc. direct query case without surprising heuristics.
+	out := make([]dns.ResourceRecord, 0, len(rrs))
+	for _, rr := range rrs {
+		if isDNSSECRRType(rr.Type) && rr.Type != qtype {
+			continue
+		}
+		out = append(out, rr)
 	}
 	return out
 }
