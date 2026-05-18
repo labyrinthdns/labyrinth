@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-05-19
+
+### Fixed
+- **DNSSEC validation correctness pass** — fixes signed-zone resolution for downstream recursors (notably `systemd-resolved 127.0.0.53` with `DNSSEC=allow-downgrade`). Symptom was `SERVFAIL`/no-record on CNAME-chained signed names such as `acme-v02.api.letsencrypt.org`.
+- Resolver: `QueryDNSSEC` now resolves iteratively instead of issuing a single root NS query; the validator was effectively inoperative for most names prior.
+- Resolver: `extractCNAMERecords` now preserves the covering `RRSIG(CNAME)` — dropping it broke downstream validators chasing CNAME chains because the chain ended up partially signed.
+- Resolver: DNAME branch preserves `RRSIG(DNAME)` identically.
+- Resolver: CNAME/DNAME hops now validate each upstream response and combine the per-hop verdict (RFC 4035 §3.2.3 — AD only when every RRset on the chain is Authentic).
+- Resolver: `queryForward` / `queryFallback` propagate the upstream AD bit when DNSSEC is enabled, so forwarded zones keep their security indication.
+- Resolver: `cacheDelegation` preserves `RRSIG(NS)` so a later cache-served NS lookup remains independently verifiable.
+- Resolver: stale-served cache entries (RFC 8767) drop their `DNSSECStatus` because RRSIGs may be expired.
+- Resolver: `activeECS` becomes `atomic.Pointer[dns.ECSOption]` to remove a data race between config reload and concurrent upstream queries.
+- DNSSEC: RRsets are filtered by owner before signature check (RFC 4034 §3); a multi-owner RRset can no longer be falsely validated.
+- DNSSEC: every covering RRSIG is tried before declaring Bogus (RFC 4035 §5.3.3); an in-flight KSK rollover no longer breaks validation on the first bad signature.
+- DNSSEC: unsupported algorithms (e.g. ED448) now classify as Insecure rather than Bogus, per RFC 6840 §5.2.
+- DNSSEC: denial path tracks authenticated (owner, type) pairs and filters NSEC3 records to verified-only before running the closest-encloser proof — closes a forgery vector where unverified NSEC3 could be used.
+- DNSSEC: DNSKEY/DS fetches gain a singleflight guard, removing thundering-herd on the same trust anchor.
+- DNSSEC: negative DNSKEY cache TTL capped at 60s; SERVFAIL/REFUSED returns an error instead of caching emptiness for an hour.
+- Server: `buildResponse` / `buildCacheResponse` set AD/CD per RFC 4035 §3.2.2.
+- Server: DO=0 clients get DNSSEC RRs stripped from responses (RFC 4035 §3.2.1).
+- Server: cache writes carry `DNSSECStatus` through `StoreWithStatus` so AD survives re-serving.
+- Web UI: BlocklistPage now displays custom blocked/allowed domain rules.
+- Web UI: `client.ts` adds missing `BlocklistDomainsResponse` import.
+
+### Tests
+- Unit tests for `extractCNAMERecords`, `extractRRsForOwnerWithRRSIG`, `verdictToStatus`, `combineDNSSECStatus`, `isDNSSECRRType`, `stripDNSSECRRs` — all six new helpers at 100% line coverage.
+
 ## [0.6.2] - 2026-05-04
 
 ### Security
