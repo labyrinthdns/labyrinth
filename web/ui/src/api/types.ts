@@ -293,6 +293,11 @@ export interface BlocklistListEntry {
   error?: string
 }
 
+export interface BlocklistDomainsResponse {
+  blocked_domains: string[]
+  allowed_domains: string[]
+}
+
 export interface ConfigRawResponse {
   path: string
   content: string

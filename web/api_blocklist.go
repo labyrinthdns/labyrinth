@@ -109,3 +109,23 @@ func (s *AdminServer) handleBlocklistCheck(w http.ResponseWriter, r *http.Reques
 	blocked := s.blocklist.CheckDomain(domain)
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"blocked": blocked, "domain": domain})
 }
+
+func (s *AdminServer) handleBlocklistDomains(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.blocklist == nil {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"blocked_domains":  []string{},
+			"allowed_domains":  []string{},
+		})
+		return
+	}
+
+	blocks, allows := s.blocklist.BlockedDomains()
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"blocked_domains": blocks,
+		"allowed_domains": allows,
+	})
+}

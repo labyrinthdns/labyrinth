@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type FormEvent } fro
 import { useNavigate } from 'react-router-dom'
 import { Shield, Trash2, RefreshCw, Search, Check, X, Loader2, Download } from 'lucide-react'
 import { api } from '@/api/client'
-import type { BlocklistStats, BlocklistListEntry } from '@/api/types'
+import type { BlocklistStats, BlocklistListEntry, BlocklistDomainsResponse } from '@/api/types'
 import { formatNumber } from '@/lib/utils'
 
 function StatCard({
@@ -26,6 +26,7 @@ export default function BlocklistPage() {
   const navigate = useNavigate()
   const [stats, setStats] = useState<BlocklistStats | null>(null)
   const [lists, setLists] = useState<BlocklistListEntry[]>([])
+  const [domains, setDomains] = useState<BlocklistDomainsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [message, setMessage] = useState('')
@@ -61,12 +62,14 @@ export default function BlocklistPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, listsRes] = await Promise.all([
+      const [statsRes, listsRes, domainsRes] = await Promise.all([
         api.blocklistStats(),
         api.blocklistLists(),
+        api.blocklistDomains(),
       ])
       setStats(statsRes)
       setLists(listsRes.lists || [])
+      setDomains(domainsRes)
     } catch {
       // silently ignore
     } finally {
@@ -485,6 +488,54 @@ export default function BlocklistPage() {
               )}
             </div>
           </div>
+
+          {/* Custom blocked/allowed domains */}
+          {domains && (domains.blocked_domains.length > 0 || domains.allowed_domains.length > 0) && (
+            <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+              <div className="p-4 border-b border-slate-200 dark:border-slate-700">
+                <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                  <Shield size={16} />
+                  Custom Rules
+                </h2>
+              </div>
+              <div className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                {domains.blocked_domains.length > 0 && (
+                  <div className="p-4">
+                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase mb-2">
+                      Blocked ({domains.blocked_domains.length})
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {domains.blocked_domains.map((domain) => (
+                        <span
+                          key={domain}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400"
+                        >
+                          {domain}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {domains.allowed_domains.length > 0 && (
+                  <div className="p-4">
+                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase mb-2">
+                      Allowed ({domains.allowed_domains.length})
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {domains.allowed_domains.map((domain) => (
+                        <span
+                          key={domain}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400"
+                        >
+                          {domain}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
