@@ -84,8 +84,10 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 	if withEDNS0 {
 		// If ECS is enabled and there's an active ECS option, include it
 		var ecsOptions []dns.EDNSOption
-		if r.config.ECSEnabled && r.activeECS != nil {
-			ecsOptions = append(ecsOptions, dns.BuildECS(r.activeECS))
+		if r.config.ECSEnabled {
+			if ecs := r.activeECS.Load(); ecs != nil {
+				ecsOptions = append(ecsOptions, dns.BuildECS(ecs))
+			}
 		}
 		if len(ecsOptions) > 0 {
 			query.Additional = []dns.ResourceRecord{

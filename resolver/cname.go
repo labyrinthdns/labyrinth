@@ -45,12 +45,52 @@ func extractDNAMETarget(msg *dns.Message, qname string) string {
 	return ""
 }
 
-// extractCNAMERecords returns all CNAME records matching qname from the message.
+// extractCNAMERecords returns all CNAME records matching qname from the
+// message, together with any RRSIG records that cover the CNAME RRset at the
+// same owner. Dropping the covering RRSIG breaks downstream DNSSEC validation
+// in clients (e.g. systemd-resolved) chasing CNAME chains, because the chain
+// ends up partially signed (signature for the final answer only) — which is
+// indistinguishable from a forgery and makes the whole response unverifiable.
 func extractCNAMERecords(msg *dns.Message, qname string) []dns.ResourceRecord {
 	var result []dns.ResourceRecord
 	for _, rr := range msg.Answers {
-		if rr.Type == dns.TypeCNAME && strings.ToLower(rr.Name) == qname {
+		if strings.ToLower(rr.Name) != qname {
+			continue
+		}
+		switch rr.Type {
+		case dns.TypeCNAME:
 			result = append(result, rr)
+		case dns.TypeRRSIG:
+			parsed, err := dns.ParseRRSIG(rr.RData, 0)
+			if err == nil && parsed.TypeCovered == dns.TypeCNAME {
+				result = append(result, rr)
+			}
+		}
+	}
+	return result
+}
+
+// extractRRsForOwnerWithRRSIG returns every record matching qname whose type
+// is in the keep set, plus RRSIG records at qname whose TypeCovered is in the
+// keep set. Used when forwarding parts of an upstream response that must
+// remain independently verifiable by a downstream validator.
+func extractRRsForOwnerWithRRSIG(msg *dns.Message, qname string, keep map[uint16]struct{}) []dns.ResourceRecord {
+	var result []dns.ResourceRecord
+	for _, rr := range msg.Answers {
+		if strings.ToLower(rr.Name) != qname {
+			continue
+		}
+		if _, ok := keep[rr.Type]; ok {
+			result = append(result, rr)
+			continue
+		}
+		if rr.Type == dns.TypeRRSIG {
+			parsed, err := dns.ParseRRSIG(rr.RData, 0)
+			if err == nil {
+				if _, ok := keep[parsed.TypeCovered]; ok {
+					result = append(result, rr)
+				}
+			}
 		}
 	}
 	return result

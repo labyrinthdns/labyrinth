@@ -202,6 +202,12 @@ func (c *Cache) SetPrefetchFunc(fn func(name string, qtype, qclass uint16)) {
 
 // GetStale retrieves an expired entry from the cache for serve-stale (RFC 8767).
 // Returns the entry with staleTTL if serve-stale is enabled and the entry exists but is expired.
+//
+// The returned entry's DNSSECStatus is cleared: when records are served past
+// their TTL the covering RRSIGs may also be past their signature-inception/
+// expiration window, so we cannot honestly carry over the original "secure"
+// verdict. Downstream validators that care will re-verify; the AD bit on a
+// stale serve would be a lie.
 func (c *Cache) GetStale(name string, qtype uint16, class uint16) (*Entry, bool) {
 	if !c.serveStale {
 		return nil, false
@@ -225,13 +231,22 @@ func (c *Cache) GetStale(name string, qtype uint16, class uint16) (*Entry, bool)
 		return nil, false
 	}
 
-	// Return with stale TTL
+	// Return with stale TTL; suppress DNSSEC verdict (see method comment).
 	stale := entry.WithDecayedTTL(c.staleTTL)
+	stale.DNSSECStatus = ""
 	return stale, true
 }
 
 // Store caches a positive DNS result.
 func (c *Cache) Store(name string, qtype uint16, class uint16, answers []dns.ResourceRecord, authority []dns.ResourceRecord) {
+	c.StoreWithStatus(name, qtype, class, answers, authority, "")
+}
+
+// StoreWithStatus caches a positive DNS result together with the validator's
+// verdict ("secure", "insecure", "bogus", or ""). The status is consumed by
+// the server to set the AD bit on cache-served responses without re-running
+// DNSSEC validation per lookup.
+func (c *Cache) StoreWithStatus(name string, qtype uint16, class uint16, answers []dns.ResourceRecord, authority []dns.ResourceRecord, dnssecStatus string) {
 	name = strings.ToLower(name)
 	key := cacheKey{name: name, qtype: qtype, class: class}
 	idx := c.shardIndex(name)
@@ -240,10 +255,11 @@ func (c *Cache) Store(name string, qtype uint16, class uint16, answers []dns.Res
 	ttl = c.clampTTL(ttl)
 
 	entry := &Entry{
-		Records:    cloneRRs(answers),
-		Authority:  cloneRRs(authority),
-		InsertedAt: time.Now(),
-		OrigTTL:    ttl,
+		Records:      cloneRRs(answers),
+		Authority:    cloneRRs(authority),
+		InsertedAt:   time.Now(),
+		OrigTTL:      ttl,
+		DNSSECStatus: dnssecStatus,
 	}
 
 	s := &c.shards[idx]

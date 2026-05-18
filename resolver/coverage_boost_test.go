@@ -527,7 +527,7 @@ func TestSetActiveECS(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	r := NewResolver(c, ResolverConfig{MaxDepth: 30}, m, logger)
 
-	if r.activeECS != nil {
+	if r.activeECS.Load() != nil {
 		t.Error("activeECS should be nil initially")
 	}
 
@@ -538,12 +538,12 @@ func TestSetActiveECS(t *testing.T) {
 		Address:         net.ParseIP("192.168.1.0").To4(),
 	}
 	r.SetActiveECS(ecs)
-	if r.activeECS == nil {
+	if r.activeECS.Load() == nil {
 		t.Error("activeECS should be set")
 	}
 
 	r.SetActiveECS(nil)
-	if r.activeECS != nil {
+	if r.activeECS.Load() != nil {
 		t.Error("activeECS should be nil after clear")
 	}
 }

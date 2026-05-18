@@ -27,6 +27,12 @@ type Entry struct {
 	SOA        *dns.ResourceRecord
 	RCODE      uint8
 
+	// DNSSECStatus records the validator's verdict on the cached records:
+	// "secure", "insecure", "bogus", or "" (unknown). Used by the server
+	// to set the AD bit on responses served from cache without re-running
+	// validation.
+	DNSSECStatus string
+
 	// prefetched is set atomically to 1 the first time a prefetch is
 	// triggered for this entry, preventing duplicate background fetches.
 	prefetched atomic.Int32
@@ -55,14 +61,15 @@ func (e *Entry) Expired() bool {
 // WithDecayedTTL returns a deep copy of the entry with TTL adjusted.
 func (e *Entry) WithDecayedTTL(remaining uint32) *Entry {
 	decayed := &Entry{
-		Records:    make([]dns.ResourceRecord, len(e.Records)),
-		Authority:  make([]dns.ResourceRecord, len(e.Authority)),
-		InsertedAt: e.InsertedAt,
-		OrigTTL:    e.OrigTTL,
-		Negative:   e.Negative,
-		NegType:    e.NegType,
-		SOA:        e.SOA,
-		RCODE:      e.RCODE,
+		Records:      make([]dns.ResourceRecord, len(e.Records)),
+		Authority:    make([]dns.ResourceRecord, len(e.Authority)),
+		InsertedAt:   e.InsertedAt,
+		OrigTTL:      e.OrigTTL,
+		Negative:     e.Negative,
+		NegType:      e.NegType,
+		SOA:          e.SOA,
+		RCODE:        e.RCODE,
+		DNSSECStatus: e.DNSSECStatus,
 	}
 
 	copy(decayed.Records, e.Records)

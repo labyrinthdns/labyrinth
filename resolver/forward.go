@@ -75,6 +75,14 @@ func (r *Resolver) resolveStub(name string, qtype uint16, qclass uint16, fz *For
 
 // queryForward sends a recursive (RD=1) query to the forward zone upstreams.
 // It tries each address in order and returns the first successful result.
+//
+// Forward zones are configured to point at trusted validating resolvers
+// (RFC 8499 §6 forwarder). When the upstream signals validation success via
+// the AD bit AND we ourselves sent DO=1 (so the upstream understood we want
+// DNSSEC), we propagate that verdict to our caller so the eventual response
+// to the client carries AD=1. The upstream's AD is otherwise ignored: an
+// unsigned channel to an unauthenticated server cannot prove anything, but
+// forward-zone upstreams are operator-trusted by configuration.
 func (r *Resolver) queryForward(addrs []string, name string, qtype uint16, qclass uint16) (*ResolveResult, error) {
 	var lastErr error
 	for _, addr := range addrs {
@@ -84,11 +92,16 @@ func (r *Resolver) queryForward(addrs []string, name string, qtype uint16, qclas
 			r.logger.Debug("forward query error", "addr", addr, "name", name, "error", err)
 			continue
 		}
+		status := ""
+		if r.config.DNSSECEnabled && msg.Header.AD() {
+			status = "secure"
+		}
 		return &ResolveResult{
-			Answers:    msg.Answers,
-			Authority:  msg.Authority,
-			Additional: msg.Additional,
-			RCODE:      msg.Header.RCODE(),
+			Answers:      msg.Answers,
+			Authority:    msg.Authority,
+			Additional:   msg.Additional,
+			RCODE:        msg.Header.RCODE(),
+			DNSSECStatus: status,
 		}, nil
 	}
 	if lastErr != nil {

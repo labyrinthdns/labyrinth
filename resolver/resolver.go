@@ -56,6 +56,7 @@ type ResolveResult struct {
 	Additional   []dns.ResourceRecord
 	RCODE        uint8
 	DNSSECStatus string // "secure", "insecure", "bogus", ""
+	Error        error  // underlying error if resolution failed
 }
 
 // Resolver implements recursive DNS resolution.
@@ -74,13 +75,21 @@ type Resolver struct {
 
 	// activeECS holds the ECS option to include in upstream queries.
 	// Set per-query when ECS forwarding is enabled; nil otherwise.
-	activeECS *dns.ECSOption
+	//
+	// Stored via atomic.Pointer to keep concurrent Set/read safe — the
+	// underlying field is process-global on the Resolver (one slot
+	// across N concurrent client queries). The current shape of the
+	// API does not support per-query ECS, so racy callers would otherwise
+	// leak one client's subnet onto another's outbound query. Once the
+	// ECS path is plumbed through context this whole field should go
+	// away; until then atomic prevents the data race.
+	activeECS atomic.Pointer[dns.ECSOption]
 }
 
 // SetActiveECS sets the EDNS Client Subnet option for the next query.
 // Pass nil to clear.
 func (r *Resolver) SetActiveECS(ecs *dns.ECSOption) {
-	r.activeECS = ecs
+	r.activeECS.Store(ecs)
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -178,11 +187,67 @@ func (r *Resolver) SetDNSSECAllowSHA1(allow bool) {
 	r.dnssecValidator.AllowSHA1(allow)
 }
 
-// QueryDNSSEC sends a DNS query with the DO bit set. It satisfies the
-// dnssec.Querier interface so the validator can fetch DNSKEY/DS records.
+// QueryDNSSEC fetches a DNS record for DNSSEC chain validation. It satisfies
+// the dnssec.Querier interface used by the validator to fetch DNSKEY and DS
+// records.
+//
+// The previous implementation only sent a single query to a random root
+// server, which works only for ".", root-zone DNSKEY, and TLD DS records.
+// For any deeper zone the root server returns a referral, not the requested
+// records, so the validator could never assemble a chain past the TLD and
+// fell back to Indeterminate for almost every signed zone.
+//
+// This implementation does proper iterative resolution from the roots,
+// reusing the standard resolver pipeline but bypassing the resolver's own
+// DNSSEC validator on the result. The validator is bypassed because this
+// method is called from within the validator itself — running it again
+// would recurse infinitely. The validator performs its own signature
+// verification on the records this method returns, which is the only
+// correctness guarantee that matters.
 func (r *Resolver) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.Message, error) {
-	idx := rand.IntN(len(r.rootServers))
-	return r.queryUpstream(r.rootServers[idx].IPv4, name, qtype, qclass)
+	normalized := strings.ToLower(strings.TrimSuffix(name, "."))
+
+	// Cache check first. DNSKEY/DS records are large; chain validation
+	// otherwise re-fetches them for every signed answer.
+	if entry, ok := r.cache.Get(normalized, qtype, qclass); ok {
+		return &dns.Message{
+			Header: dns.Header{
+				Flags: dns.NewFlagBuilder().SetQR(true).SetRA(true).
+					SetRCODE(entry.RCODE).Build(),
+			},
+			Questions: []dns.Question{{Name: normalized, Type: qtype, Class: qclass}},
+			Answers:   entry.Records,
+			Authority: entry.Authority,
+		}, nil
+	}
+
+	result, err := r.resolveIterativeFromInner(
+		normalized, qtype, qclass, 0, newVisitedSet(),
+		toNameServerList(r.rootServers), "",
+		true, // skipValidation: validator is calling us, prevent recursion
+	)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, errors.New("dnssec query: empty result")
+	}
+
+	// Cache positive answers so repeated chain walks reuse them.
+	if result.RCODE == dns.RCodeNoError && len(result.Answers) > 0 {
+		r.cache.Store(normalized, qtype, qclass, result.Answers, result.Authority)
+	}
+
+	return &dns.Message{
+		Header: dns.Header{
+			Flags: dns.NewFlagBuilder().SetQR(true).SetRA(true).
+				SetRCODE(result.RCODE).Build(),
+		},
+		Questions:  []dns.Question{{Name: normalized, Type: qtype, Class: qclass}},
+		Answers:    result.Answers,
+		Authority:  result.Authority,
+		Additional: result.Additional,
+	}, nil
 }
 
 // SetLocalZones configures the resolver's local zone table. Queries
@@ -256,9 +321,12 @@ func (r *Resolver) resolveIterative(
 	cnameDepth int,
 	visited *visitedSet,
 ) (*ResolveResult, error) {
-	return r.resolveIterativeFrom(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "")
+	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "", false)
 }
 
+// resolveIterativeFrom keeps the public-ish signature stable for callers like
+// the forward/stub paths and tests; it always runs DNSSEC validation on the
+// terminal answer.
 func (r *Resolver) resolveIterativeFrom(
 	name string,
 	qtype uint16,
@@ -268,6 +336,23 @@ func (r *Resolver) resolveIterativeFrom(
 	initialNS []nsEntry,
 	initialZone string,
 ) (*ResolveResult, error) {
+	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, initialNS, initialZone, false)
+}
+
+// resolveIterativeFromInner drives the iterative resolution loop. When
+// skipValidation is true the validator call on the terminal answer is bypassed
+// — used by QueryDNSSEC to fetch DNSKEY/DS records without recursing back into
+// the validator that called it.
+func (r *Resolver) resolveIterativeFromInner(
+	name string,
+	qtype uint16,
+	qclass uint16,
+	cnameDepth int,
+	visited *visitedSet,
+	initialNS []nsEntry,
+	initialZone string,
+	skipValidation bool,
+) (*ResolveResult, error) {
 
 	if cnameDepth > r.config.MaxCNAMEDepth {
 		return nil, errors.New("CNAME chain too long")
@@ -275,12 +360,14 @@ func (r *Resolver) resolveIterativeFrom(
 
 	nameservers := initialNS
 	currentZone := initialZone
+	var lastErr error
 
 	for depth := 0; depth < r.config.MaxDepth; depth++ {
 		// Pick a nameserver
 		_, nsIP, err := r.selectAndResolveNS(nameservers, visited, currentZone)
 		if err != nil {
-			return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+			lastErr = err
+			return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
 		}
 
 		// Loop detection: include currentZone so that querying the same NS IP
@@ -290,7 +377,8 @@ func (r *Resolver) resolveIterativeFrom(
 		queryKey := nsIP + "|" + name + "|" + currentZone
 		if visited.Has(queryKey) {
 			r.logger.Warn("loop detected", "ns", nsIP, "name", name, "zone", currentZone)
-			return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+			lastErr = errors.New("loop detected")
+			return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
 		}
 		visited.Add(queryKey)
 
@@ -307,9 +395,10 @@ func (r *Resolver) resolveIterativeFrom(
 		if err != nil {
 			r.infraCache.RecordFailure(nsIP)
 			r.logger.Debug("upstream error", "ns", nsIP, "error", err)
+			lastErr = err
 			nameservers = removeNSByIP(nameservers, nsIP)
 			if len(nameservers) == 0 {
-				return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+				return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
 			}
 			continue
 		}
@@ -332,9 +421,10 @@ func (r *Resolver) resolveIterativeFrom(
 			response, err = r.queryUpstream(nsIP, name, qtype, qclass)
 			if err != nil {
 				r.logger.Debug("qmin fallback upstream error", "ns", nsIP, "error", err)
+				lastErr = err
 				nameservers = removeNSByIP(nameservers, nsIP)
 				if len(nameservers) == 0 {
-					return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+					return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
 				}
 				continue
 			}
@@ -350,7 +440,7 @@ func (r *Resolver) resolveIterativeFrom(
 				Additional: response.Additional,
 				RCODE:      dns.RCodeNoError,
 			}
-			if r.dnssecValidator != nil {
+			if r.dnssecValidator != nil && !skipValidation {
 				vr := r.dnssecValidator.ValidateResponse(response, name, qtype)
 				switch vr {
 				case dnssec.Secure:
@@ -379,21 +469,37 @@ func (r *Resolver) resolveIterativeFrom(
 			}
 			visited.AddCNAME(target)
 
-			// Cache CNAME
-			for _, rr := range response.Answers {
-				if rr.Type == dns.TypeCNAME && strings.ToLower(rr.Name) == name {
-					r.cache.Store(name, dns.TypeCNAME, qclass, []dns.ResourceRecord{rr}, nil)
-					break
+			// Validate the CNAME RRset BEFORE descending so a forged CNAME
+			// cannot redirect the chain off-zone undetected. The full chain's
+			// verdict is the AND of every hop's verdict (RFC 4035 §3.2.3:
+			// AD set only if every RRset in the answer is Authentic).
+			cnameVerdict := dnssec.Insecure
+			if r.dnssecValidator != nil && !skipValidation {
+				cnameVerdict = r.dnssecValidator.ValidateResponse(response, name, dns.TypeCNAME)
+				if cnameVerdict == dnssec.Bogus {
+					r.metrics.IncDNSSECBogus()
+					return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
 				}
 			}
 
-			result, err := r.resolveIterative(target, qtype, qclass, cnameDepth+1, visited)
+			// Cache the CNAME together with its covering RRSIG so a cache hit
+			// later returns a verifiable record set to downstream validators.
+			cnameWithSig := extractCNAMERecords(response, name)
+			if len(cnameWithSig) > 0 {
+				r.cache.Store(name, dns.TypeCNAME, qclass, cnameWithSig, nil)
+			}
+
+			result, err := r.resolveIterativeFromInner(
+				target, qtype, qclass, cnameDepth+1, visited,
+				toNameServerList(r.rootServers), "", skipValidation,
+			)
 			if err != nil {
 				return nil, err
 			}
 
 			cnameRRs := extractCNAMERecords(response, name)
 			result.Answers = append(cnameRRs, result.Answers...)
+			result.DNSSECStatus = combineDNSSECStatus(verdictToStatus(cnameVerdict), result.DNSSECStatus)
 			return result, nil
 
 		case responseDNAME:
@@ -408,16 +514,43 @@ func (r *Resolver) resolveIterativeFrom(
 			}
 			visited.AddCNAME(target)
 
-			result, err := r.resolveIterative(target, qtype, qclass, cnameDepth+1, visited)
+			// Same chain-validation logic as for CNAME: a forged DNAME would
+			// redirect the entire subtree below the owner.
+			dnameVerdict := dnssec.Insecure
+			if r.dnssecValidator != nil && !skipValidation {
+				dnameVerdict = r.dnssecValidator.ValidateResponse(response, name, dns.TypeDNAME)
+				if dnameVerdict == dnssec.Bogus {
+					r.metrics.IncDNSSECBogus()
+					return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
+				}
+			}
+
+			result, err := r.resolveIterativeFromInner(
+				target, qtype, qclass, cnameDepth+1, visited,
+				toNameServerList(r.rootServers), "", skipValidation,
+			)
 			if err != nil {
 				return nil, err
 			}
+			result.DNSSECStatus = combineDNSSECStatus(verdictToStatus(dnameVerdict), result.DNSSECStatus)
 
-			// Prepend DNAME + synthesized CNAME records
+			// Prepend DNAME + synthesized CNAME records together with any
+			// RRSIGs covering DNAME or CNAME. RRSIG(DNAME) is required for
+			// downstream validators; RRSIG(CNAME) on a synthesized CNAME is
+			// not produced by signers (RFC 6672 §5.3) but if the upstream
+			// included one we preserve it.
 			var dnameRRs []dns.ResourceRecord
 			for _, rr := range response.Answers {
 				if rr.Type == dns.TypeDNAME || rr.Type == dns.TypeCNAME {
 					dnameRRs = append(dnameRRs, rr)
+					continue
+				}
+				if rr.Type == dns.TypeRRSIG {
+					parsed, perr := dns.ParseRRSIG(rr.RData, 0)
+					if perr == nil && (parsed.TypeCovered == dns.TypeDNAME ||
+						parsed.TypeCovered == dns.TypeCNAME) {
+						dnameRRs = append(dnameRRs, rr)
+					}
 				}
 			}
 			result.Answers = append(dnameRRs, result.Answers...)
@@ -485,7 +618,7 @@ func (r *Resolver) resolveIterativeFrom(
 		}
 	}
 
-	return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+	return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
 }
 
 func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet, currentZone string) (string, string, error) {
@@ -674,15 +807,78 @@ func (r *Resolver) dnsPort() string {
 	return "53"
 }
 
-// cacheDelegation stores NS records from a referral response.
+// verdictToStatus maps the validator's enum verdict onto the string
+// representation stored on ResolveResult. Indeterminate is collapsed onto
+// "insecure" because the resolver-side switch treats it as non-failing but
+// non-Authentic — the same semantics as "insecure" for AD-bit decisions.
+func verdictToStatus(v dnssec.ValidationResult) string {
+	switch v {
+	case dnssec.Secure:
+		return "secure"
+	case dnssec.Bogus:
+		return "bogus"
+	default:
+		return "insecure"
+	}
+}
+
+// combineDNSSECStatus returns the AND of two DNSSEC verdicts along a chain.
+// Per RFC 4035 §3.2.3 the AD bit may only be set when every RRset in the
+// Answer/Authority sections is Authentic; a chain is therefore only Secure
+// when each hop is Secure. Any "bogus" link poisons the whole result.
+func combineDNSSECStatus(a, b string) string {
+	if a == "bogus" || b == "bogus" {
+		return "bogus"
+	}
+	if a == "secure" && b == "secure" {
+		return "secure"
+	}
+	// Either side is "insecure" (or unknown empty); the chain is not
+	// fully Authentic, so report Insecure. Empty stays empty only when
+	// validator is disabled on both sides — caller treats empty as
+	// insecure for AD purposes anyway.
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return "insecure"
+}
+
+// cacheDelegation stores NS records from a referral response, together with
+// any RRSIG records that cover the NS RRset at the same owner. The covering
+// RRSIG is signed by the parent zone; it lets a downstream validator (or a
+// later direct `NS <zone>` query served from cache) confirm the delegation
+// without re-querying the parent.
 func (r *Resolver) cacheDelegation(response *dns.Message, zone string) {
-	var nsRecords []dns.ResourceRecord
+	zoneLower := strings.ToLower(zone)
+	var nsAndSigs []dns.ResourceRecord
 	for _, rr := range response.Authority {
-		if rr.Type == dns.TypeNS {
-			nsRecords = append(nsRecords, rr)
+		rrNameLower := strings.ToLower(rr.Name)
+		if rrNameLower != zoneLower {
+			continue
+		}
+		switch rr.Type {
+		case dns.TypeNS:
+			nsAndSigs = append(nsAndSigs, rr)
+		case dns.TypeRRSIG:
+			parsed, err := dns.ParseRRSIG(rr.RData, 0)
+			if err == nil && parsed.TypeCovered == dns.TypeNS {
+				nsAndSigs = append(nsAndSigs, rr)
+			}
 		}
 	}
-	if len(nsRecords) > 0 {
-		r.cache.Store(zone, dns.TypeNS, dns.ClassIN, nsRecords, nil)
+	// Only cache if we actually saw NS records (we may have collected only
+	// stray RRSIGs otherwise — useless without their covered rrset).
+	hasNS := false
+	for _, rr := range nsAndSigs {
+		if rr.Type == dns.TypeNS {
+			hasNS = true
+			break
+		}
+	}
+	if hasNS {
+		r.cache.Store(zone, dns.TypeNS, dns.ClassIN, nsAndSigs, nil)
 	}
 }
