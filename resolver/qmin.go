@@ -9,6 +9,24 @@ import (
 // minimizeQName returns a minimized query name and type for the current
 // delegation level, implementing RFC 9156 QNAME minimization.
 func (r *Resolver) minimizeQName(fullName string, qtype uint16, currentZone string) (string, uint16) {
+	// Root-zone query (qname is root itself) — never minimize, ask the
+	// real qtype directly. Without this guard, asking for "." DNSKEY at
+	// the root would be rewritten into an NS query and the chain-of-trust
+	// walker would never see the root DNSKEY RRset, breaking every
+	// DNSSEC validation downstream.
+	if fullName == "" {
+		return fullName, qtype
+	}
+	// DS records are published by the PARENT zone, not the child. Qmin's
+	// rewrite-to-NS step takes the resolver one delegation step too far —
+	// it ends up at the child's authoritative server, which has no DS for
+	// itself, and the response is NODATA. The natural iterative descent
+	// without minimization stops at the parent exactly where the DS lives,
+	// so skip qmin for TypeDS. Without this, every chain-of-trust walk
+	// fails at the first non-root level (RFC 9156 §3 / §4.1).
+	if qtype == dns.TypeDS {
+		return fullName, qtype
+	}
 	if currentZone == "" {
 		// At root: extract TLD
 		labels := strings.Split(fullName, ".")

@@ -417,7 +417,13 @@ func (r *Resolver) resolveIterativeFromInner(
 		// zone — we follow that. Anything else (answer for the minimized
 		// name, NXDOMAIN, NODATA, ServFail) means we should ask the
 		// full question to get the real delegation or answer.
-		if r.config.QMinEnabled && queryName != name && rtype != responseReferral {
+		//
+		// Type change matters too: if qmin rewrote the qtype (e.g. into NS
+		// for an intermediate step), an "answer" classified against the
+		// rewritten type would carry the wrong RRset back to the caller
+		// (root NS records instead of root DNSKEY, breaking DNSSEC).
+		minimized := queryName != name || queryType != qtype
+		if r.config.QMinEnabled && minimized && rtype != responseReferral {
 			response, err = r.queryUpstream(nsIP, name, qtype, qclass)
 			if err != nil {
 				r.logger.Debug("qmin fallback upstream error", "ns", nsIP, "error", err)
@@ -596,18 +602,28 @@ func (r *Resolver) resolveIterativeFromInner(
 			continue
 
 		case responseNXDomain:
-			r.cache.StoreNegative(name, qtype, qclass, cache.NegNXDomain, dns.RCodeNXDomain, response.Authority)
-			return &ResolveResult{
+			result := &ResolveResult{
 				Authority: response.Authority,
 				RCODE:     dns.RCodeNXDomain,
-			}, nil
+			}
+			result.DNSSECStatus = r.validateDenialIfEnabled(response, name, qtype, skipValidation)
+			if result.DNSSECStatus == "bogus" {
+				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
+			}
+			r.cache.StoreNegative(name, qtype, qclass, cache.NegNXDomain, dns.RCodeNXDomain, response.Authority)
+			return result, nil
 
 		case responseNoData:
-			r.cache.StoreNegative(name, qtype, qclass, cache.NegNoData, dns.RCodeNoError, response.Authority)
-			return &ResolveResult{
+			result := &ResolveResult{
 				Authority: response.Authority,
 				RCODE:     dns.RCodeNoError,
-			}, nil
+			}
+			result.DNSSECStatus = r.validateDenialIfEnabled(response, name, qtype, skipValidation)
+			if result.DNSSECStatus == "bogus" {
+				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
+			}
+			r.cache.StoreNegative(name, qtype, qclass, cache.NegNoData, dns.RCodeNoError, response.Authority)
+			return result, nil
 
 		case responseServFail:
 			nameservers = removeNSByIP(nameservers, nsIP)
@@ -816,6 +832,30 @@ func verdictToStatus(v dnssec.ValidationResult) string {
 	case dnssec.Secure:
 		return "secure"
 	case dnssec.Bogus:
+		return "bogus"
+	default:
+		return "insecure"
+	}
+}
+
+// validateDenialIfEnabled runs the DNSSEC validator over an NXDOMAIN or
+// NODATA upstream response and returns the corresponding DNSSECStatus
+// string ("secure", "insecure", "bogus", or "" when validation is off).
+// Empty string keeps the result unsigned, leaving the caller free to
+// classify it as "insecure" by default.
+func (r *Resolver) validateDenialIfEnabled(response *dns.Message, name string, qtype uint16, skipValidation bool) string {
+	if r.dnssecValidator == nil || skipValidation {
+		return ""
+	}
+	switch r.dnssecValidator.ValidateResponse(response, name, qtype) {
+	case dnssec.Secure:
+		r.metrics.IncDNSSECSecure()
+		return "secure"
+	case dnssec.Insecure:
+		r.metrics.IncDNSSECInsecure()
+		return "insecure"
+	case dnssec.Bogus:
+		r.metrics.IncDNSSECBogus()
 		return "bogus"
 	default:
 		return "insecure"

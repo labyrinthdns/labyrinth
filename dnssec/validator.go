@@ -766,6 +766,7 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 	var rrsigs []rrsigWithOwner
 	var nsec3WithOwners []NSEC3RecordWithOwner
 	var nsec3RRNames []string
+	var nsecWithOwners []NSECRecordWithOwner
 
 	for _, rr := range response.Authority {
 		switch rr.Type {
@@ -793,6 +794,16 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 				OwnerHash:   ownerHash,
 			})
 			nsec3RRNames = append(nsec3RRNames, rr.Name)
+		case dns.TypeNSEC:
+			parsed, err := dns.ParseNSEC(rr.RData, 0)
+			if err != nil {
+				v.logger.Debug("failed to parse NSEC", "error", err)
+				continue
+			}
+			nsecWithOwners = append(nsecWithOwners, NSECRecordWithOwner{
+				NSECRecord: *parsed,
+				OwnerName:  rr.Name,
+			})
 		}
 	}
 
@@ -826,7 +837,9 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 
 	for _, rs := range rrsigs {
 		rrsig := rs.rrsig
-		if rrsig.TypeCovered != dns.TypeNSEC3 && rrsig.TypeCovered != dns.TypeSOA {
+		if rrsig.TypeCovered != dns.TypeNSEC3 &&
+			rrsig.TypeCovered != dns.TypeNSEC &&
+			rrsig.TypeCovered != dns.TypeSOA {
 			continue
 		}
 
@@ -959,6 +972,31 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 			return Secure
 		}
 		v.logger.Debug("NSEC3 denial proof inconclusive — covering NSEC3 not found",
+			"qname", qname)
+	}
+
+	// Validate NSEC denial proof using only authenticated records. NSEC is
+	// what online signers such as Cloudflare emit (compact denial / black
+	// lies); without this path every Cloudflare-hosted DNSSEC zone falls
+	// over the moment it returns NXDOMAIN or NODATA.
+	verifiedNSECs := make([]NSECRecordWithOwner, 0, len(nsecWithOwners))
+	for _, n := range nsecWithOwners {
+		if authenticRRsets[makeKey(n.OwnerName, dns.TypeNSEC)] {
+			verifiedNSECs = append(verifiedNSECs, n)
+		}
+	}
+	if len(verifiedNSECs) > 0 {
+		denied, err := VerifyNSECDenial(qname, qtype, response.Header.RCODE(), verifiedNSECs)
+		if err != nil {
+			v.logger.Debug("NSEC denial verification error",
+				"qname", qname, "error", err)
+			return Indeterminate
+		}
+		if denied {
+			v.logger.Debug("NSEC denial proof valid", "qname", qname)
+			return Secure
+		}
+		v.logger.Debug("NSEC denial proof inconclusive — covering NSEC not found",
 			"qname", qname)
 	}
 
