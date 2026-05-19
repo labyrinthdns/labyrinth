@@ -15,6 +15,7 @@
 - **Single binary** — DNS resolver + web dashboard + auth, everything in one 6.8 MB executable
 - **Web dashboard** — Real-time DNS monitoring, cache management, live query stream, dark/light theme
 - **Operator-first dashboard** — Compact high-signal matrix, expandable secondary metrics, and inline cache query modal from top domains
+- **DNS Lookup Diagnostics** — Live pipeline trace for any name: each iterative step, CNAME chase, and per-RRSIG DNSSEC verdict streamed over WebSocket so you can see exactly which stage failed and why. Toggle cache bypass / DNSSEC skip to localise issues in seconds.
 - **Smooth live charts** — Dashboard trend charts redraw every second to stay responsive during bursty traffic changes
 - **Zero-config start** — Interactive setup wizard on first run, sane defaults for everything
 - **Recursive only** — Navigates root → TLD → authoritative, caches results

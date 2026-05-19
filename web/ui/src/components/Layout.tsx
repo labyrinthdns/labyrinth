@@ -8,6 +8,7 @@ import {
   Settings,
   BarChart3,
   FileText,
+  Bug,
   Info,
   Sun,
   Moon,
@@ -32,6 +33,7 @@ const mainNavItems = [
   { to: '/blocklist', icon: Shield, label: 'Blocklist' },
   { to: '/config', icon: Settings, label: 'Config' },
   { to: '/reports', icon: FileText, label: 'Reports' },
+  { to: '/diagnostics', icon: Bug, label: 'Diagnostics' },
 ]
 const aboutNavItem = { to: '/about', icon: Info, label: 'About & Updates' }
 

@@ -243,7 +243,11 @@ func TestHashForAlgorithm(t *testing.T) {
 		{"RSASHA256", dns.AlgRSASHA256, crypto.SHA256, false},
 		{"RSASHA512", dns.AlgRSASHA512, crypto.SHA512, false},
 		{"ECDSAP256", dns.AlgECDSAP256, crypto.SHA256, false},
-		{"ECDSAP384", dns.AlgECDSAP384, crypto.SHA512, false},
+		// RFC 6605 §2.1: algorithm 14 (ECDSA P-384) MUST use SHA-384.
+		// The earlier table here mistakenly expected SHA-512, which locked in
+		// the bug that made every fedoraproject.org-style algorithm-14 zone
+		// validate Bogus.
+		{"ECDSAP384", dns.AlgECDSAP384, crypto.SHA384, false},
 		{"ED25519", dns.AlgED25519, 0, false},
 		{"unknown algorithm 99", 99, 0, true},
 		{"unknown algorithm 0", 0, 0, true},
@@ -751,5 +755,192 @@ func TestCanonicalRRSetWire_FiltersByType(t *testing.T) {
 	singleRecordLen := len(nameWire) + 10 + 4
 	if len(wire) != singleRecordLen {
 		t.Errorf("wire length: got %d, want %d (expected only 1 A record)", len(wire), singleRecordLen)
+	}
+}
+
+// canonicalWildcardOwner: regression test for the wildcard expansion fix.
+// When the queried name has strictly more labels than RRSIG.Labels, the
+// canonical owner used for signature verification must be
+// "*.<closest_encloser>", not the queried name (RFC 4035 §5.3.2). This
+// codepath was previously broken and caused every wildcard-served zone
+// (e.g. *.fedoraproject.org → wildcard.fedoraproject.org) to validate Bogus.
+func TestCanonicalWildcardOwner(t *testing.T) {
+	cases := []struct {
+		name         string
+		signedLabels uint8
+		want         string
+	}{
+		// Non-wildcard: rr.Name labels equal signedLabels — used as-is.
+		{"example.com.", 2, "example.com."},
+		{"example.com.", 2, "example.com."},
+		// Wildcard expansion: 3 labels in rr.Name vs 2 in signature.
+		// Trailing dot is stripped during reconstruction; canonicalNameWire
+		// re-strips before encoding so the wire form is identical either way.
+		{"wildcard.example.com.", 2, "*.example.com"},
+		// Deeper wildcard expansion: 4 labels vs 2.
+		{"a.b.example.com.", 2, "*.example.com"},
+		// Root-zone signature: Labels=0 means no wildcard semantics.
+		{".", 0, "."},
+		// Already at signed depth without trailing dot.
+		{"example.com", 2, "example.com"},
+		// Pathological: signedLabels > actual labels — keep as-is.
+		{"example.com.", 5, "example.com."},
+	}
+	for _, c := range cases {
+		got := canonicalWildcardOwner(c.name, c.signedLabels)
+		if got != c.want {
+			t.Errorf("canonicalWildcardOwner(%q, %d) = %q; want %q",
+				c.name, c.signedLabels, got, c.want)
+		}
+	}
+}
+
+// TestCanonicalRRSetWire_WildcardExpansion verifies that a wildcard-expanded
+// answer reconstructs the "*.<closest_encloser>" owner in the canonical wire
+// form. Without this, the signed-data bytes diverge from what the auth
+// server signed and every wildcard answer becomes a false Bogus.
+func TestCanonicalRRSetWire_WildcardExpansion(t *testing.T) {
+	rrset := []dns.ResourceRecord{
+		{
+			// Queried name returned by the resolver — looks like a concrete
+			// child of example.com but was synthesised from "*.example.com".
+			Name:  "wildcard.example.com.",
+			Type:  dns.TypeA,
+			Class: dns.ClassIN,
+			TTL:   300,
+			RData: []byte{10, 0, 0, 1},
+		},
+	}
+	rrsig := &dns.RRSIGRecord{
+		TypeCovered: dns.TypeA,
+		OrigTTL:     300,
+		Labels:      2, // signed under *.example.com (2 labels excluding wildcard label)
+	}
+
+	wire := canonicalRRSetWire(rrset, rrsig)
+
+	wantOwner := canonicalNameWire("*.example.com.")
+	if !bytes.HasPrefix(wire, wantOwner) {
+		t.Fatalf("canonical wire should start with *.example.com wire form; got %v", wire)
+	}
+	// Reject the broken-before-fix encoding under the queried name.
+	badOwner := canonicalNameWire("wildcard.example.com.")
+	if bytes.HasPrefix(wire, badOwner) {
+		t.Fatalf("canonical wire still encodes the queried name instead of the wildcard owner")
+	}
+}
+
+// canonicalRData: regression test for RFC 4034 §6.2 item 3 — domain names
+// embedded in RDATA for specific RR types must be lowercased before signing
+// or verifying. The previous code appended rr.RData verbatim, so any auth
+// server emitting uppercase characters in wire (e.g. fedoraproject.org's
+// path that produced verify-failed for the mirrormanager CNAME hop) made
+// signature verification fail for a perfectly legitimate response.
+func TestCanonicalRData_CNAMELowercased(t *testing.T) {
+	// Wire format of "Wildcard.FedoraProject.ORG" (mixed case).
+	rdata := dns.BuildPlainName("Wildcard.FedoraProject.ORG")
+	got := canonicalRData(rdata, dns.TypeCNAME)
+	want := dns.BuildPlainName("wildcard.fedoraproject.org")
+	if !bytes.Equal(got, want) {
+		t.Errorf("CNAME RDATA not lowercased.\n got:  %v\n want: %v", got, want)
+	}
+	// Length must be preserved (ASCII lowercase preserves byte length).
+	if len(got) != len(rdata) {
+		t.Errorf("canonicalRData changed length: got %d want %d", len(got), len(rdata))
+	}
+}
+
+func TestCanonicalRData_LeavesNonNameTypesAlone(t *testing.T) {
+	// A record RDATA is a 4-byte IP; lowercasing has no meaning. Must be
+	// returned untouched (even with byte values that overlap ASCII letters).
+	rdata := []byte{'A', 'B', 'C', 'D'}
+	got := canonicalRData(rdata, dns.TypeA)
+	if !bytes.Equal(got, rdata) {
+		t.Errorf("non-name-bearing type was modified: got %v want %v", got, rdata)
+	}
+}
+
+func TestCanonicalRData_MXLowercased(t *testing.T) {
+	// MX RDATA: 2-byte preference + name. Preference bytes must NOT be
+	// touched even if they happen to contain ASCII-letter byte values.
+	pref := []byte{0x00, 0x0A}
+	name := dns.BuildPlainName("Mail.EXAMPLE.com")
+	rdata := append(append([]byte{}, pref...), name...)
+
+	got := canonicalRData(rdata, dns.TypeMX)
+	wantName := dns.BuildPlainName("mail.example.com")
+	want := append(append([]byte{}, pref...), wantName...)
+	if !bytes.Equal(got, want) {
+		t.Errorf("MX RDATA not canonicalised correctly.\n got:  %v\n want: %v", got, want)
+	}
+}
+
+// TestHashForAlgorithm_ECDSAP384UsesSHA384 regression-locks the algorithm 14
+// (ECDSA P-384) → SHA-384 pairing fixed by RFC 6605 §2.1. The previous code
+// mapped this algorithm to SHA-512 (because it was grouped in the same case
+// arm as RSASHA512), which silently broke validation for every zone published
+// with algorithm 14 — including fedoraproject.org, where the mirrormanager
+// CNAME chain came out Bogus despite valid signatures.
+func TestHashForAlgorithm_ECDSAP384UsesSHA384(t *testing.T) {
+	h, err := hashForAlgorithm(dns.AlgECDSAP384)
+	if err != nil {
+		t.Fatalf("hashForAlgorithm(ECDSAP384) returned error: %v", err)
+	}
+	if h != crypto.SHA384 {
+		t.Errorf("hashForAlgorithm(ECDSAP384) = %v; want SHA-384 (per RFC 6605 §2.1)", h)
+	}
+}
+
+func TestHashForAlgorithm_RFC6605Pairings(t *testing.T) {
+	cases := []struct {
+		alg  uint8
+		want crypto.Hash
+	}{
+		{dns.AlgRSASHA1, crypto.SHA1},
+		{dns.AlgRSASHA256, crypto.SHA256},
+		{dns.AlgRSASHA512, crypto.SHA512},
+		{dns.AlgECDSAP256, crypto.SHA256},
+		{dns.AlgECDSAP384, crypto.SHA384},
+	}
+	for _, c := range cases {
+		got, err := hashForAlgorithm(c.alg)
+		if err != nil {
+			t.Errorf("hashForAlgorithm(%d) error: %v", c.alg, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("hashForAlgorithm(%d) = %v; want %v", c.alg, got, c.want)
+		}
+	}
+}
+
+func TestCanonicalRData_RRSIGLowercasesSignerOnly(t *testing.T) {
+	// RRSIG RDATA: 18 fixed bytes + signer name + signature blob. Only the
+	// signer name is a domain name — the fixed header and signature must
+	// remain byte-identical, including any byte values overlapping ASCII letters.
+	header := make([]byte, 18)
+	for i := range header {
+		header[i] = byte('A' + i%26) // letter values, MUST stay uppercase
+	}
+	signer := dns.BuildPlainName("Fedoraproject.ORG")
+	sig := []byte{'A', 'B', 'C', 'D', 'E', 'F'} // signature bytes — leave alone
+	rdata := append(append(append([]byte{}, header...), signer...), sig...)
+
+	got := canonicalRData(rdata, dns.TypeRRSIG)
+
+	// First 18 bytes untouched.
+	if !bytes.Equal(got[:18], header) {
+		t.Errorf("RRSIG fixed header was modified: got %v want %v", got[:18], header)
+	}
+	// Signer lowercased.
+	wantSigner := dns.BuildPlainName("fedoraproject.org")
+	if !bytes.Equal(got[18:18+len(wantSigner)], wantSigner) {
+		t.Errorf("RRSIG signer not lowercased: got %v want %v",
+			got[18:18+len(wantSigner)], wantSigner)
+	}
+	// Signature bytes untouched.
+	gotSig := got[18+len(wantSigner):]
+	if !bytes.Equal(gotSig, sig) {
+		t.Errorf("RRSIG signature bytes modified: got %v want %v", gotSig, sig)
 	}
 }

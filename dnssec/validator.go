@@ -154,23 +154,67 @@ func (v *Validator) isWeakDSDigest(d uint8) bool {
 	return d == dns.DigestSHA1
 }
 
+// ValidationStep captures one RRSIG-attempt outcome inside a validation pass.
+// It is produced by ValidateResponseDetailed and exposed to diagnostic tools
+// (the DNS lookup trace UI) so an operator can see exactly which signature
+// the validator considered, what it covered, and why it was accepted or
+// rejected. Plain ValidateResponse callers do not pay for this — they get the
+// same single verdict as before.
+type ValidationStep struct {
+	Stage       string // "skip-weak", "skip-unsupported", "no-rrset", "expired", "not-yet", "out-of-bailiwick", "no-dnskey", "no-matching-key", "verify-failed", "verify-ok", "trust-chain"
+	Signer      string
+	Owner       string
+	KeyTag      uint16
+	Algorithm   uint8
+	TypeCovered uint16
+	Labels      uint8
+	Outcome     string // "ok", "bogus", "insecure", "indeterminate", "skipped"
+	Detail      string
+}
+
 // ValidateResponse validates DNSSEC signatures in a DNS response.
 // It checks RRSIG records in the answer section and validates the
 // trust chain from the signer back to the root trust anchors.
 // For NXDOMAIN/NODATA responses, it also validates NSEC3 proofs.
 func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype uint16) ValidationResult {
+	verdict, _ := v.validateResponseImpl(response, qname, qtype, false)
+	return verdict
+}
+
+// ValidateResponseDetailed returns the same verdict as ValidateResponse plus
+// a per-RRSIG step log for diagnostic UIs. Each step records the algorithm,
+// key tag, signer, type covered, labels, and outcome so a human can see why
+// the validator settled on Secure / Insecure / Bogus / Indeterminate.
+//
+// Plain ValidateResponse callers do not pay for this — they get the same
+// single verdict and no allocated step slice.
+func (v *Validator) ValidateResponseDetailed(response *dns.Message, qname string, qtype uint16) (ValidationResult, []ValidationStep) {
+	return v.validateResponseImpl(response, qname, qtype, true)
+}
+
+// validateResponseImpl is the unified routine behind both public entrypoints.
+// When collect is false `steps` is left nil — the hot path stays allocation-free.
+func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qtype uint16, collect bool) (ValidationResult, []ValidationStep) {
+	var steps []ValidationStep
+	push := func(s ValidationStep) {
+		if collect {
+			steps = append(steps, s)
+		}
+	}
 	if response == nil {
-		return Insecure
+		return Insecure, steps
 	}
 
 	// Handle NXDOMAIN/NODATA: validate NSEC3 proofs in authority section
 	rcode := response.Header.RCODE()
 	if rcode == dns.RCodeNXDomain || (rcode == dns.RCodeNoError && len(response.Answers) == 0) {
-		return v.validateDenialResponse(response, qname, qtype)
+		verdict := v.validateDenialResponse(response, qname, qtype)
+		push(ValidationStep{Stage: "denial", Outcome: verdictToOutcome(verdict), Detail: "NSEC/NSEC3 denial proof"})
+		return verdict, steps
 	}
 
 	if len(response.Answers) == 0 {
-		return Insecure
+		return Insecure, steps
 	}
 
 	// Collect RRSIG records together with their owner names, plus the
@@ -188,6 +232,7 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 			parsed, err := dns.ParseRRSIG(rr.RData, 0)
 			if err != nil {
 				v.logger.Debug("failed to parse RRSIG", "error", err)
+				push(ValidationStep{Stage: "parse-rrsig", Outcome: "skipped", Detail: err.Error()})
 				continue
 			}
 			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name})
@@ -198,7 +243,8 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 
 	// No RRSIG records at all means unsigned (insecure) zone.
 	if len(rrsigs) == 0 {
-		return Insecure
+		push(ValidationStep{Stage: "no-rrsigs", Outcome: "insecure", Detail: "answer section has no RRSIG"})
+		return Insecure, steps
 	}
 
 	// RFC 4035 §5.3.3: a Secure RRset is one for which AT LEAST ONE valid
@@ -223,16 +269,34 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 		// or that use an algorithm we cannot verify (ED448). Either way the
 		// effect on `usableRRSIGs` is the same — without a verifiable
 		// signature the validator falls back to Insecure per RFC 6840 §5.2.
+		baseStep := ValidationStep{
+			Signer:      normalizeName(rrsig.SignerName),
+			Owner:       rs.owner,
+			KeyTag:      rrsig.KeyTag,
+			Algorithm:   rrsig.Algorithm,
+			TypeCovered: rrsig.TypeCovered,
+			Labels:      rrsig.Labels,
+		}
 		if v.isWeakRRSIGAlg(rrsig.Algorithm) {
 			v.logger.Debug("skipping RRSIG with weak algorithm",
 				"algorithm", rrsig.Algorithm,
 				"signer", rrsig.SignerName)
+			step := baseStep
+			step.Stage = "skip-weak"
+			step.Outcome = "skipped"
+			step.Detail = "algorithm on weak/deprecated list"
+			push(step)
 			continue
 		}
 		if v.isUnsupportedRRSIGAlg(rrsig.Algorithm) {
 			v.logger.Debug("skipping RRSIG with unsupported algorithm",
 				"algorithm", rrsig.Algorithm,
 				"signer", rrsig.SignerName)
+			step := baseStep
+			step.Stage = "skip-unsupported"
+			step.Outcome = "skipped"
+			step.Detail = "no verifier for this algorithm"
+			push(step)
 			continue
 		}
 		usableRRSIGs++
@@ -247,6 +311,11 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 				"type_covered", rrsig.TypeCovered,
 				"owner", rs.owner,
 				"signer", rrsig.SignerName)
+			step := baseStep
+			step.Stage = "no-rrset"
+			step.Outcome = "skipped"
+			step.Detail = "no RRs match (type, owner) of this RRSIG"
+			push(step)
 			continue
 		}
 
@@ -259,12 +328,22 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 			v.logger.Debug("RRSIG not yet valid; trying next",
 				"inception", rrsig.Inception, "now", nowI)
 			sawBogus = true
+			step := baseStep
+			step.Stage = "not-yet"
+			step.Outcome = "bogus"
+			step.Detail = fmt.Sprintf("inception=%d > now=%d", rrsig.Inception, nowI)
+			push(step)
 			continue
 		}
 		if nowI > expI+skewI {
 			v.logger.Debug("RRSIG expired; trying next",
 				"expiration", rrsig.Expiration, "now", nowI)
 			sawBogus = true
+			step := baseStep
+			step.Stage = "expired"
+			step.Outcome = "bogus"
+			step.Detail = fmt.Sprintf("expiration=%d < now=%d", rrsig.Expiration, nowI)
+			push(step)
 			continue
 		}
 
@@ -276,6 +355,11 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 			v.logger.Debug("RRSIG signer not in bailiwick of qname; trying next",
 				"signer", signerZone, "qname", qname)
 			sawBogus = true
+			step := baseStep
+			step.Stage = "out-of-bailiwick"
+			step.Outcome = "bogus"
+			step.Detail = fmt.Sprintf("signer %q not ancestor of %q", signerZone, qname)
+			push(step)
 			continue
 		}
 
@@ -285,6 +369,11 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 			v.logger.Debug("failed to fetch DNSKEYs; trying next",
 				"zone", signerZone, "error", err)
 			sawIndeterminate = true
+			step := baseStep
+			step.Stage = "no-dnskey"
+			step.Outcome = "indeterminate"
+			step.Detail = fmt.Sprintf("DNSKEY fetch failed: %v", err)
+			push(step)
 			continue
 		}
 
@@ -294,6 +383,11 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 			v.logger.Debug("no matching DNSKEY found; trying next",
 				"key_tag", rrsig.KeyTag, "zone", signerZone)
 			sawIndeterminate = true
+			step := baseStep
+			step.Stage = "no-matching-key"
+			step.Outcome = "indeterminate"
+			step.Detail = fmt.Sprintf("no DNSKEY with key_tag=%d alg=%d at %s", rrsig.KeyTag, rrsig.Algorithm, signerZone)
+			push(step)
 			continue
 		}
 
@@ -302,6 +396,11 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 			v.logger.Debug("RRSIG verification failed; trying next",
 				"key_tag", rrsig.KeyTag, "zone", signerZone, "error", err)
 			sawBogus = true
+			step := baseStep
+			step.Stage = "verify-failed"
+			step.Outcome = "bogus"
+			step.Detail = fmt.Sprintf("crypto verify: %v", err)
+			push(step)
 			continue
 		}
 
@@ -309,12 +408,23 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 		// RRset have signers in one zone — the chain result is the same for
 		// any of them, so the first signature that survives this point
 		// determines the verdict.
+		verifyStep := baseStep
+		verifyStep.Stage = "verify-ok"
+		verifyStep.Outcome = "ok"
+		verifyStep.Detail = "RRSIG cryptographic verification succeeded"
+		push(verifyStep)
+
 		result := v.validateTrustChain(signerZone, dnskeys)
 		if result == Secure {
 			v.logger.Debug("DNSSEC validation successful",
 				"zone", signerZone, "key_tag", rrsig.KeyTag)
 		}
-		return result
+		chainStep := baseStep
+		chainStep.Stage = "trust-chain"
+		chainStep.Outcome = verdictToOutcome(result)
+		chainStep.Detail = fmt.Sprintf("trust chain from %s to root: %s", signerZone, result)
+		push(chainStep)
+		return result, steps
 	}
 
 	// All RRSIGs were skipped because they used weak (rejected) algorithms.
@@ -323,18 +433,30 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 	if usableRRSIGs == 0 {
 		v.logger.Debug("all RRSIGs used weak algorithms; treating as insecure",
 			"qname", qname, "qtype", qtype)
-		return Insecure
+		return Insecure, steps
 	}
 
 	// No RRSIG fully validated. Prefer Bogus over Indeterminate so a real
 	// signature forgery does not get downgraded to a soft-fail.
 	if sawBogus {
-		return Bogus
+		return Bogus, steps
 	}
 	if sawIndeterminate {
-		return Indeterminate
+		return Indeterminate, steps
 	}
-	return Indeterminate
+	return Indeterminate, steps
+}
+
+func verdictToOutcome(v ValidationResult) string {
+	switch v {
+	case Secure:
+		return "ok"
+	case Insecure:
+		return "insecure"
+	case Bogus:
+		return "bogus"
+	}
+	return "indeterminate"
 }
 
 // validateTrustChain validates the DNSKEY trust chain from the given zone

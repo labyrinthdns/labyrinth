@@ -260,3 +260,10 @@ export function createTimeSeriesWebSocket(mode: string, tsWindow: string, interv
   const url = `${protocol}//${window.location.host}/api/stats/timeseries/ws?${params.toString()}`
   return new WebSocket(url)
 }
+
+export function createDiagnosticsTraceSocket(): WebSocket {
+  const token = getToken()
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const url = `${protocol}//${window.location.host}/api/diagnostics/trace${token ? `?token=${token}` : ''}`
+  return new WebSocket(url)
+}

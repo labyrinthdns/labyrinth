@@ -321,3 +321,48 @@ export interface DashboardLayoutResponse {
   path?: string
   storage?: string
 }
+
+export type TraceStatus = 'info' | 'ok' | 'warn' | 'error'
+
+export interface TraceEvent {
+  seq: number
+  stage: string
+  status: TraceStatus
+  time: string
+  elapsed_ms: number
+  message: string
+  details?: Record<string, unknown>
+}
+
+export interface TraceRR {
+  name: string
+  type: string
+  ttl: number
+  class: number
+  data: string
+}
+
+export interface TraceResult {
+  name: string
+  type: string
+  rcode: string
+  dnssec_status?: string
+  answers?: TraceRR[]
+  authority?: TraceRR[]
+  elapsed_ms: number
+  error?: string
+}
+
+export type TraceServerMsg =
+  | { kind: 'event'; event: TraceEvent }
+  | { kind: 'result'; result: TraceResult }
+  | { kind: 'error'; error: string }
+  | { kind: 'busy'; error: string }
+
+export interface TraceClientMsg {
+  action: 'start' | 'cancel'
+  name?: string
+  type?: string
+  bypass_cache?: boolean
+  skip_dnssec?: boolean
+}

@@ -276,8 +276,10 @@ func TestVerifyECDSA_P384(t *testing.T) {
 	wireKey := ecdsaWireKey(&privKey.PublicKey, 48)
 
 	data := []byte("test data for P-384 ECDSA")
-	// hashForAlgorithm returns crypto.SHA512 for AlgECDSAP384.
-	h := crypto.SHA512.New()
+	// RFC 6605 §2.1 pairs ECDSAP384 with SHA-384, not SHA-512. The old
+	// fixture used SHA-512 and only passed because the validator had the
+	// same bug; both ends were wrong by the same amount.
+	h := crypto.SHA384.New()
 	h.Write(data)
 	hashed := h.Sum(nil)
 	r, s, err := ecdsa.Sign(rand.Reader, privKey, hashed)
@@ -1476,8 +1478,8 @@ func TestVerifyRRSIG_ECDSA_P384(t *testing.T) {
 	}
 
 	signedData := buildSignedData(rrset, rrsig)
-	// hashForAlgorithm returns crypto.SHA512 for AlgECDSAP384.
-	hasher := crypto.SHA512.New()
+	// RFC 6605 §2.1: algorithm 14 = ECDSA P-384 with SHA-384.
+	hasher := crypto.SHA384.New()
 	hasher.Write(signedData)
 	hashed := hasher.Sum(nil)
 	r, s, err := ecdsa.Sign(rand.Reader, privKey, hashed)
