@@ -38,15 +38,37 @@ function DomainCell({ domain, qtype, paused }: { domain: string; qtype: string; 
   const [showPopover, setShowPopover] = useState(false)
   const [copied, setCopied] = useState(false)
   const [cache, setCache] = useState<CacheResult>({ status: 'idle' })
-  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const popoverRef = useRef<HTMLDivElement | null>(null)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const cancelClose = useCallback(() => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = undefined
+    }
+  }, [])
+
+  const openPopover = useCallback(() => {
+    cancelClose()
+    setShowPopover(true)
+  }, [cancelClose])
+
+  // Delay closing so the cursor can travel from the trigger to the popover
+  // without the popover unmounting in the gap between them.
+  const scheduleClose = useCallback(() => {
+    cancelClose()
+    closeTimerRef.current = setTimeout(() => {
+      setShowPopover(false)
+      setCopied(false)
+    }, 150)
+  }, [cancelClose])
 
   const handleCopy = useCallback(async () => {
     const ok = await copyTextToClipboard(domain)
     if (ok) {
       setCopied(true)
-      clearTimeout(timerRef.current)
-      timerRef.current = setTimeout(() => setCopied(false), 1200)
+      clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = setTimeout(() => setCopied(false), 1200)
     }
   }, [domain])
 
@@ -65,7 +87,10 @@ function DomainCell({ domain, qtype, paused }: { domain: string; qtype: string; 
   }, [domain, qtype])
 
   useEffect(() => {
-    return () => clearTimeout(timerRef.current)
+    return () => {
+      clearTimeout(copyTimerRef.current)
+      clearTimeout(closeTimerRef.current)
+    }
   }, [])
 
   if (!paused) {
@@ -75,51 +100,55 @@ function DomainCell({ domain, qtype, paused }: { domain: string; qtype: string; 
   return (
     <div
       className="relative group"
-      onMouseEnter={() => { setShowPopover(true); setCache({ status: 'idle' }) }}
-      onMouseLeave={() => { setShowPopover(false); setCopied(false) }}
+      onMouseEnter={() => { openPopover(); setCache({ status: 'idle' }) }}
+      onMouseLeave={scheduleClose}
     >
       <span className="truncate block max-w-xs cursor-default">{domain}</span>
       {showPopover && (
+        // Outer wrapper anchors at top-full with NO gap and provides a 4px
+        // transparent padding-top bridge so the cursor doesn't fall through
+        // dead space between the trigger and the visible card.
         <div
-          ref={popoverRef}
-          className="absolute left-0 top-full mt-1 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 min-w-[180px]"
-          onMouseEnter={() => setShowPopover(true)}
-          onMouseLeave={() => setShowPopover(false)}
+          className="absolute left-0 top-full z-50 pt-1"
+          onMouseEnter={openPopover}
+          onMouseLeave={scheduleClose}
         >
-          <div className="flex items-center gap-1 mb-1">
-            <button
-              onClick={handleCopy}
-              className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-            >
-              {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-            <button
-              onClick={handleCacheLookup}
-              disabled={cache.status === 'loading'}
-              className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
-            >
-              {cache.status === 'loading' ? <Loader2 size={12} className="animate-spin" /> : <Database size={12} />}
-              Cache Query
-            </button>
-          </div>
-          {cache.status === 'found' && cache.records && (
-            <div className="border-t border-slate-200 dark:border-slate-700 pt-1.5 mt-1 space-y-0.5">
-              {cache.records.slice(0, 5).map((r, i) => (
-                <div key={i} className="text-[11px] font-mono text-slate-600 dark:text-slate-300 flex items-center gap-2">
-                  <span className="text-slate-400 w-8 shrink-0">{r.type}</span>
-                  <span className="truncate">{r.rdata}</span>
-                  <span className="text-slate-400 ml-auto shrink-0">{r.ttl}s</span>
-                </div>
-              ))}
-              {cache.records.length > 5 && (
-                <p className="text-[10px] text-slate-400">+{cache.records.length - 5} more</p>
-              )}
+          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 min-w-[180px]">
+            <div className="flex items-center gap-1 mb-1">
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+              >
+                {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+              <button
+                onClick={handleCacheLookup}
+                disabled={cache.status === 'loading'}
+                className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
+              >
+                {cache.status === 'loading' ? <Loader2 size={12} className="animate-spin" /> : <Database size={12} />}
+                Cache Query
+              </button>
             </div>
-          )}
-          {cache.status === 'miss' && (
-            <p className="border-t border-slate-200 dark:border-slate-700 pt-1.5 mt-1 text-[11px] text-slate-400">Not in cache</p>
-          )}
+            {cache.status === 'found' && cache.records && (
+              <div className="border-t border-slate-200 dark:border-slate-700 pt-1.5 mt-1 space-y-0.5">
+                {cache.records.slice(0, 5).map((r, i) => (
+                  <div key={i} className="text-[11px] font-mono text-slate-600 dark:text-slate-300 flex items-center gap-2">
+                    <span className="text-slate-400 w-8 shrink-0">{r.type}</span>
+                    <span className="truncate">{r.rdata}</span>
+                    <span className="text-slate-400 ml-auto shrink-0">{r.ttl}s</span>
+                  </div>
+                ))}
+                {cache.records.length > 5 && (
+                  <p className="text-[10px] text-slate-400">+{cache.records.length - 5} more</p>
+                )}
+              </div>
+            )}
+            {cache.status === 'miss' && (
+              <p className="border-t border-slate-200 dark:border-slate-700 pt-1.5 mt-1 text-[11px] text-slate-400">Not in cache</p>
+            )}
+          </div>
         </div>
       )}
     </div>

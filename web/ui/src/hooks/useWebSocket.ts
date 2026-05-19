@@ -19,16 +19,38 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
   const connect = useCallback(function connectImpl() {
     if (unmountedRef.current) return
     if (!visibleRef.current) return
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+
+    // Cancel any pending reconnect timer — a new connect supersedes it.
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+
+    // Tear down any existing socket. Do NOT trust readyState === OPEN as a
+    // signal that the connection is alive: after sleep/network drop the
+    // browser may keep the socket in OPEN state for minutes before noticing
+    // the peer is gone (zombie connection).
+    const stale = wsRef.current
+    if (stale) {
+      stale.onopen = null
+      stale.onclose = null
+      stale.onerror = null
+      stale.onmessage = null
+      try { stale.close() } catch { /* noop */ }
+    }
 
     const ws = createQueryWebSocket()
     wsRef.current = ws
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return
       reconnectAttemptRef.current = 0
       if (!unmountedRef.current) setConnected(true)
     }
     ws.onclose = () => {
+      // Ignore close events from sockets we've already discarded.
+      if (wsRef.current !== ws) return
+      wsRef.current = null
       if (unmountedRef.current) return
       setConnected(false)
       if (!visibleRef.current) return
@@ -40,7 +62,9 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
         connectImpl()
       }, delay)
     }
-    ws.onerror = () => ws.close()
+    ws.onerror = () => {
+      try { ws.close() } catch { /* noop */ }
+    }
     ws.onmessage = (event) => {
       if (pausedRef.current) return
       try {
@@ -56,6 +80,9 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
     const onVisibility = () => {
       visibleRef.current = !document.hidden
       if (visibleRef.current) {
+        // Reset backoff so the user-visible reconnect happens immediately,
+        // not after a 30s exponential wait carried over from while-hidden.
+        reconnectAttemptRef.current = 0
         connect()
         return
       }
@@ -67,10 +94,19 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
       wsRef.current = null
       setConnected(false)
     }
+    const onOnline = () => {
+      if (!visibleRef.current) return
+      reconnectAttemptRef.current = 0
+      connect()
+    }
     document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('focus', onOnline)
     return () => {
       unmountedRef.current = true
       document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('focus', onOnline)
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null

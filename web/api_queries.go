@@ -72,10 +72,25 @@ func (s *AdminServer) handleQueryStreamWS(w http.ResponseWriter, r *http.Request
 	subID, ch := s.queryLog.Subscribe()
 	defer s.queryLog.Unsubscribe(subID)
 
+	// Keepalive: send a websocket ping every 30s. This both surfaces dead
+	// peers quickly (browser tab in background, laptop asleep, NAT/proxy
+	// idle timeout) and keeps intermediaries from silently dropping the
+	// connection. Without this, clients can sit on a zombie OPEN socket
+	// until TCP RST eventually arrives — minutes later.
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-pingTicker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				return
+			}
 		case entry, ok := <-ch:
 			if !ok {
 				return
