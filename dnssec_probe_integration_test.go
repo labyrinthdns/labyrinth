@@ -24,7 +24,7 @@ import (
 func newProbeResolver(t *testing.T) *resolver.Resolver {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level: slog.LevelError,
 	}))
 	c := cache.NewCache(10000, 1, 86400, 600, metrics.NewMetrics())
 	cfg := resolver.ResolverConfig{
@@ -40,9 +40,7 @@ func newProbeResolver(t *testing.T) *resolver.Resolver {
 	if err := r.PrimeRootHints(); err != nil {
 		t.Fatalf("priming root hints: %v", err)
 	}
-	if !testing.Short() {
-		r.EnableDNSSEC(logger)
-	}
+	r.EnableDNSSEC(logger)
 
 	// Start root refresh just to mirror real config; cancel right after.
 	ctx, cancel := context.WithCancel(context.Background())

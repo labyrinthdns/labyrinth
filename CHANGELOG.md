@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-05-19
+
+### Fixed
+- **NSEC denial validation** — Cloudflare-hosted DNSSEC zones (and every other online-signer using compact denial of existence / "black lies") now resolve. Previously every negative answer from a Cloudflare-signed zone — NXDOMAIN or NODATA — turned into `Bogus` → `SERVFAIL` because `validateDenialResponse` only handled NSEC3 and silently rejected NSEC. New [dnssec/nsec.go](dnssec/nsec.go) implements three proof forms:
+  - **NODATA** (RFC 4035 §5.4) — NSEC owner == qname, qtype & CNAME absent from bitmap, delegation NSEC (NS set without SOA) rejected.
+  - **NXDOMAIN with closest-encloser proof** (RFC 4035 §5.4) — covering NSEC for qname + covering NSEC for `*.closest_encloser`; closest encloser derived as the longest ancestor of qname shared with either side of the covering NSEC.
+  - **Compact denial of existence** (draft-ietf-dnsop-compact-denial-of-existence, deployed by Cloudflare et al.) — NXDOMAIN RCODE with NSEC at qname whose bitmap excludes CNAME/DNAME; treated as a valid denial proof.
+- DNSSEC: `validateDenialResponse` collects NSEC records from the authority section, accepts `RRSIG(NSEC)` alongside `RRSIG(NSEC3)`/`RRSIG(SOA)` in the authenticity filter, and runs NSEC verification against the RRSIG-authenticated subset.
+- Resolver: `QueryDNSSEC` for the root zone (`.`) no longer gets rewritten by qmin into an `NS` query, which had silently broken the chain-of-trust walker — the validator never saw the root DNSKEY RRset and every DNSSEC verdict downstream collapsed.
+- Resolver: `DS` queries now bypass qmin. DS records live at the parent zone, not the child; qmin's "rewrite to NS, follow referral" step took the resolver one delegation deeper than the DS, the child returned NODATA, and the chain walker reported "insecure delegation" for every non-root zone. (RFC 9156 §3 / §4.1.)
+- Resolver: qmin fallback now also triggers when the rewrite changed `qtype` (not just `qname`). Closes a defense-in-depth gap behind the two fixes above — if any future qmin step changes the qtype, an "answer" classified against the rewritten type would otherwise carry the wrong RRset back to the caller.
+- Resolver: `responseNXDomain` and `responseNoData` branches now run the DNSSEC validator. Previously both returned immediately, so `validateDenialResponse` (and its new NSEC path) was dead code from the resolver's perspective and every signed negative answer was reported with empty `DNSSECStatus`.
+
+### Tests
+- `dnssec/nsec_test.go` — 14 unit tests covering NODATA owner-match, qtype-in-bitmap rejection, CNAME rejection, parent-delegation rejection, apex NSEC, compact denial NXDOMAIN, classic two-NSEC name-error proof, missing-covering-NSEC rejection, canonical name comparison (case folding, root-dot normalization, label-length ordering), open-interval coverage (incl. wrap-around), closest-encloser derivation.
+- `dnssec_probe_integration_test.go` (`-tags=integration`) — end-to-end probe against real public DNSSEC zones: IANA baseline, Cloudflare A/AAAA positive, Cloudflare NODATA + NSEC, and two Cloudflare compact-denial NXDOMAIN cases. All six return `DNSSECStatus="secure"`.
+
 ## [0.6.3] - 2026-05-19
 
 ### Fixed
