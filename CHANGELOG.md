@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-05-19
+
+### Fixed
+- **Flaky `TestSnapshotAggregated_WeightedLatency`** — test created buckets at `time.Now().Truncate(time.Minute).Add(-2s|-1s)`, both in the previous wall-clock minute, then called `SnapshotAggregated(time.Minute, time.Minute)`. When the test ran in the last ~2 seconds of a minute, `Snapshot`'s `cutoff = time.Now() - 1m` slipped past the older bucket and dropped it, leaving 5 queries instead of 15. Widened the window to `2*time.Minute` so the cutoff is unaffected by where in the minute the test runs. Aggregation still groups both source buckets into the same minute super-bucket, so the assertions are unchanged. Caught by the v0.6.5 release-workflow run.
+
+### Released
+- v0.6.5 binaries (the workflow failed on this flake before uploading artifacts; v0.6.6 is the first tag that actually publishes the WS-reconnect + popover fixes from v0.6.5 along with the deps bump in `888615c`).
+
 ## [0.6.5] - 2026-05-19
 
 ### Fixed
