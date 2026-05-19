@@ -95,6 +95,12 @@ func TestSnapshotAggregated_Aggregation(t *testing.T) {
 func TestSnapshotAggregated_WeightedLatency(t *testing.T) {
 	ts := NewTimeSeriesAggregator()
 
+	// now is the start of the current wall-clock minute, so the buckets at
+	// now-2s and now-1s sit in the previous minute. The window must be wide
+	// enough to cover (wall_now - truncated_now) + 2s in the worst case
+	// (~62s, when the test runs in the last second of a minute), otherwise
+	// Snapshot's cutoff = wall_now - window drops the older bucket and the
+	// test fails with "expected 15 queries, got 5". 2m is a safe ceiling.
 	now := time.Now().Truncate(time.Minute)
 	ts.mu.Lock()
 	// Two 1s buckets in the same minute:
@@ -117,7 +123,7 @@ func TestSnapshotAggregated_WeightedLatency(t *testing.T) {
 	})
 	ts.mu.Unlock()
 
-	result := ts.SnapshotAggregated(time.Minute, time.Minute)
+	result := ts.SnapshotAggregated(2*time.Minute, time.Minute)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 aggregated bucket, got %d", len(result))
 	}
