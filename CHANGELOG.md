@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-05-19
+
+### Fixed
+- **Dashboard stops streaming after tab idle / laptop wake** — the live-queries and time-series WebSocket hooks treated `readyState === OPEN` as proof of liveness, so a zombie socket (laptop sleep, NAT/proxy idle drop, network blip) blocked any reconnect attempt on visibility return. The page sat frozen until manual refresh. Both [useWebSocket.ts](web/ui/src/hooks/useWebSocket.ts) and [useTimeSeriesStream.ts](web/ui/src/hooks/useTimeSeriesStream.ts) now:
+  - Always tear down the prior socket (null handlers, then `close()`) before opening a new one — never trust readyState.
+  - Guard `onopen`/`onclose` with an identity check so orphaned sockets can't schedule reconnects against a live one.
+  - Cancel pending reconnect timers when a new `connect()` runs.
+  - Reset the exponential-backoff counter on visibility return so the user-visible reconnect is immediate, not delayed.
+  - Listen for `window`'s `online` and `focus` events for additional recovery paths.
+- **Time-series watchdog** — server pushes every 1s in live mode (10s in history); `useTimeSeriesStream` now force-reconnects if no message arrived for 30s while the tab is visible. Catches silent proxy/NAT timeouts that don't deliver a close frame.
+- **Server-side WS keepalive** — [api_queries.go](web/api_queries.go) and [timeseries_ws.go](web/timeseries_ws.go) now send a `conn.Ping` every 30s. Surfaces dead peers quickly and prevents reverse-proxy idle timeouts from silently killing connections.
+- **Queries page: domain hover popover unusable when paused** — the popover sat at `top-full mt-1`, leaving a 4px gap where the cursor would briefly enter dead space, fire `onMouseLeave` on the trigger, and unmount the popover before the mouse could reach it. [QueriesPage.tsx](web/ui/src/pages/QueriesPage.tsx) wraps the card in an outer `pt-1` bridge anchored at `top-full` (hover area is now contiguous) and adds a 150 ms close delay so cursor jitter doesn't trip the close.
+
 ## [0.6.4] - 2026-05-19
 
 ### Fixed

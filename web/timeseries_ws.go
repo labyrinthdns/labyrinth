@@ -169,11 +169,22 @@ func (s *AdminServer) handleTimeSeriesWS(w http.ResponseWriter, r *http.Request)
 	ticker := time.NewTicker(sub.PushEvery)
 	defer ticker.Stop()
 
+	// Keepalive ping — see handleQueryStreamWS for rationale.
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
 	var lastPush time.Duration
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-pingTicker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				return
+			}
 		case <-ticker.C:
 			subMu.Lock()
 			currentSub := *sub
