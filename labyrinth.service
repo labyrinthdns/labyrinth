@@ -8,7 +8,10 @@ Wants=network-online.target
 Type=simple
 User=labyrinth
 Group=labyrinth
-ExecStart=/usr/local/bin/labyrinth -config /etc/labyrinth/labyrinth.yaml
+# Binary lives under a labyrinth-owned dir so the web-UI self-update path can
+# rewrite it without root privileges. /usr/local/bin/labyrinth is kept as a
+# symlink for shell PATH compatibility — see install.sh / update.sh.
+ExecStart=/opt/labyrinth/bin/labyrinth -config /etc/labyrinth/labyrinth.yaml
 ExecReload=/bin/kill -SIGUSR1 $MAINPID
 Restart=on-failure
 RestartSec=5s
@@ -18,7 +21,11 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadOnlyPaths=/etc/labyrinth
+# /etc/labyrinth: live config reload writes labyrinth.yaml from the admin API.
+# /opt/labyrinth/bin: self-update rename target (not strictly needed because
+# ProtectSystem=strict only protects /, /usr, /boot, /etc — listed for clarity
+# and to survive a future tightening to ProtectSystem=full which also covers /opt).
+ReadWritePaths=/etc/labyrinth /opt/labyrinth/bin
 PrivateTmp=true
 PrivateDevices=true
 

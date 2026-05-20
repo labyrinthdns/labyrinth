@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-05-20
+
+### Changed
+- **`security.private_address_filter` default is now `false`** — previously `true`, which silently dropped A/AAAA records pointing at RFC1918 / loopback / link-local / CGNAT / etc. from every response. That made internal/split-horizon zones (e.g. `internal.corp` resolving to `10.x.x.x`) appear unresolvable to clients: the resolver returned NOERROR with an empty answer section, indistinguishable from NODATA. Operators who serve only public names and want the DNS-rebinding defense should set `security.private_address_filter: true` explicitly. The diagnostic trace is not affected — it reports the upstream answer before the handler-side strip — so this change closes a long-standing "trace says answers=1, dig says nothing" discrepancy.
+
+### Added
+- **Live config reload for hot-applicable settings** — `PUT /api/config/raw` now invokes a runtime applier after validating and writing the new YAML, so changes to `security.private_address_filter` take effect immediately without a restart. The response carries a new `live_applied: true` field; `restart_required` stays `true` because most other settings (listen addresses, TLS material, web bind) still need a process restart. Wire-up: [`AdminServer.SetRuntimeApplier`](web/server.go) registered from [`main_runtime_helpers.go`](main_runtime_helpers.go), calls [`handler.SetPrivateFilter`](server/handler.go). Future hot-reloadable flags go in the same applier closure.
+- **Autonomous self-update from the web UI** — the `POST /api/system/update/apply` endpoint and its dashboard button have existed since 0.4, but every install produced by [install.sh](install.sh) was structurally unable to use them: the binary was at `/usr/local/bin/labyrinth` (root-owned, parent dir not writable by the `labyrinth` service user) and the systemd unit had `ProtectSystem=strict` + `ReadOnlyPaths=/etc/labyrinth` (blocking both the binary swap and the live-config-reload above). Fixed by moving to a service-user-owned install layout:
+  - Binary now lives at `/opt/labyrinth/bin/labyrinth`, owned by `labyrinth:labyrinth`. `/usr/local/bin/labyrinth` becomes a symlink so `which labyrinth` and existing shell scripts keep working.
+  - [labyrinth.service](labyrinth.service) and the unit embedded in [install.sh](install.sh) now use `ExecStart=/opt/labyrinth/bin/labyrinth` and `ReadWritePaths=/etc/labyrinth /opt/labyrinth/bin`. The `ReadOnlyPaths=/etc/labyrinth` entry that blocked live reload is removed.
+  - [update.sh](update.sh) now performs an idempotent migration: detects the legacy layout (real binary at `/usr/local/bin/labyrinth`, no `/opt/labyrinth/bin`, or unit missing `ReadWritePaths=/opt/labyrinth/bin`), moves the binary, drops a symlink at the legacy path (`.pre-migration.bak` kept), patches the unit (`*.bak` kept), and `daemon-reload`s. Safe to re-run.
+  - After a single `sudo bash update.sh` on an existing 0.6.x install, all subsequent updates can be applied from the dashboard's "About / Updates" page with a single click — the daemon downloads the asset, verifies its SHA-256 against `checksums.txt`, atomically renames into place, and `syscall.Exec`s into the new binary (same PID, systemd doesn't even see a restart).
+
 ## [0.6.7] - 2026-05-20
 
 ### Fixed

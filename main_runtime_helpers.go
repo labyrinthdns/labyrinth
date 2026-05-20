@@ -50,6 +50,15 @@ func startHTTPServices(
 		}
 		adminServer.SetConfigPath(configPath)
 
+		// Hot-reload hook: settings that can be applied without restart.
+		// Anything not listed here still requires a process restart to take effect.
+		adminServer.SetRuntimeApplier(func(newCfg *config.Config) {
+			handler.SetPrivateFilter(newCfg.Security.PrivateAddressFilter)
+			logger.Info("config hot-applied",
+				"private_address_filter", newCfg.Security.PrivateAddressFilter,
+			)
+		})
+
 		// Auto-TLS: create certificate manager if enabled
 		if cfg.Web.AutoTLS {
 			cm := certmanager.New(

@@ -359,9 +359,16 @@ func (s *AdminServer) handleConfigRaw(w http.ResponseWriter, r *http.Request) {
 		// Keep API responses in sync with the last validated file content.
 		s.config = parsedCfg
 
+		liveApplied := false
+		if s.runtimeApplier != nil {
+			s.runtimeApplier(parsedCfg)
+			liveApplied = true
+		}
+
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"status":           "saved",
 			"path":             path,
+			"live_applied":     liveApplied,
 			"restart_required": true,
 		})
 	default:
