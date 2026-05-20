@@ -175,7 +175,7 @@ func TestApplyYAMLCacheNegMaxTTL(t *testing.T) {
 func TestApplyYAMLSecurityFields(t *testing.T) {
 	cfg := defaultConfig()
 	values := map[string]string{
-		"security.private_address_filter": "false",
+		"security.private_address_filter": "true",
 		"security.dns_cookies":            "true",
 		"security.rrl.enabled":            "true",
 		"security.rrl.responses_per_second": "10",
@@ -183,8 +183,8 @@ func TestApplyYAMLSecurityFields(t *testing.T) {
 	}
 	applyYAML(cfg, values)
 
-	if cfg.Security.PrivateAddressFilter {
-		t.Error("PrivateAddressFilter should be false")
+	if !cfg.Security.PrivateAddressFilter {
+		t.Error("PrivateAddressFilter should be true")
 	}
 	if !cfg.Security.DNSCookies {
 		t.Error("DNSCookies should be true")

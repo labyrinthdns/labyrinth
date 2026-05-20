@@ -30,6 +30,10 @@ cache:
   # no_cache_clients: 192.168.1.100, 10.0.0.0/24
 
 security:
+  # Strip A/AAAA records pointing at RFC1918 / reserved ranges from responses
+  # (DNS-rebinding protection). Default: false — many internal zones legitimately
+  # resolve to private IPs. Set to true if this resolver only serves public names.
+  private_address_filter: false
   rate_limit:
     enabled: false
     rate: 5000

@@ -63,6 +63,7 @@ type AdminServer struct {
 	dohHandler            server.Handler
 	certMgr               *certmanager.Manager
 	loginLimiter          *loginLimiter
+	runtimeApplier        func(*config.Config)
 }
 
 // NewAdminServer creates a new AdminServer. The bl parameter is optional and
@@ -136,6 +137,15 @@ func (s *AdminServer) SetConfigPath(path string) {
 // SetCertManager sets the auto-TLS certificate manager.
 func (s *AdminServer) SetCertManager(cm *certmanager.Manager) {
 	s.certMgr = cm
+}
+
+// SetRuntimeApplier registers a callback invoked after a successful
+// /api/config/raw save. The runtime uses it to hot-apply settings that do
+// not require a process restart (e.g. security.private_address_filter,
+// blocklist toggles). Settings the runtime cannot reload at runtime
+// (listen addresses, TLS material, web server bind) still need a restart.
+func (s *AdminServer) SetRuntimeApplier(fn func(*config.Config)) {
+	s.runtimeApplier = fn
 }
 
 // CertManager returns the auto-TLS certificate manager (may be nil).

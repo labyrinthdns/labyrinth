@@ -114,7 +114,7 @@ export default function Configuration({ dark }: Props) {
         dark={dark}
         rows={[
           { keyName: 'dns_cookies', type: 'bool', defaultValue: 'false', description: 'Enable DNS Cookies (RFC 7873 / RFC 9018) with SipHash-2-4.' },
-          { keyName: 'private_address_filter', type: 'bool', defaultValue: 'true', description: 'Filter private/reserved IP addresses from responses.' },
+          { keyName: 'private_address_filter', type: 'bool', defaultValue: 'false', description: 'Strip A/AAAA records pointing at RFC1918/reserved ranges (DNS-rebinding protection). Default off; enable when serving only public names. Hot-reloadable from /api/config/raw.' },
           { keyName: 'rate_limit.enabled', type: 'bool', defaultValue: 'true', description: 'Enable per-IP rate limiting.' },
           { keyName: 'rate_limit.rate', type: 'float64', defaultValue: '50', description: 'Sustained requests per second per IP.' },
           { keyName: 'rate_limit.burst', type: 'int', defaultValue: '100', description: 'Burst allowance per IP.' },

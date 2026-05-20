@@ -6,7 +6,12 @@ set -euo pipefail
 # Or:    bash install.sh [--no-service] [--version v0.5.1]
 
 REPO="labyrinthdns/labyrinth"
-INSTALL_DIR="/usr/local/bin"
+# Binary lives in a labyrinth-owned dir so the web-UI self-update can
+# rewrite it as the service user. /usr/local/bin/labyrinth is a symlink for
+# shell PATH compatibility — older installs that used /usr/local/bin directly
+# are migrated by update.sh.
+INSTALL_DIR="/opt/labyrinth/bin"
+PATH_LINK_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/labyrinth"
 CONFIG_FILE="${CONFIG_DIR}/labyrinth.yaml"
 SERVICE_USER="labyrinth"
@@ -85,12 +90,16 @@ fi
 
 info "Installing Labyrinth ${VERSION}..."
 
-# Check if already installed
+# Check if already installed (resolve symlink so we report the real binary)
 if command -v labyrinth &>/dev/null; then
-  CURRENT=$("${INSTALL_DIR}/labyrinth" version 2>&1 | head -1 || echo "unknown")
+  EXISTING=$(command -v labyrinth)
+  CURRENT=$("$EXISTING" version 2>&1 | head -1 || echo "unknown")
   warn "Labyrinth already installed: ${CURRENT}"
   warn "Continuing with forced reinstall (same version is allowed)."
 fi
+
+# Ensure target dirs exist before we download into them.
+mkdir -p "$INSTALL_DIR"
 
 # Download binaries
 BINARY_NAME="labyrinth-${OS}-${ARCH}"
@@ -150,6 +159,15 @@ chmod +x "$TMP_FILE"
 mv "$TMP_FILE" "${INSTALL_DIR}/labyrinth"
 ok "Binary installed: ${INSTALL_DIR}/labyrinth"
 
+# Maintain a PATH-visible symlink. If an old install left a real binary at
+# the symlink path, replace it (its content has just been re-deployed to
+# INSTALL_DIR via the verified download).
+if [[ -e "${PATH_LINK_DIR}/labyrinth" && ! -L "${PATH_LINK_DIR}/labyrinth" ]]; then
+  rm -f "${PATH_LINK_DIR}/labyrinth"
+fi
+ln -sf "${INSTALL_DIR}/labyrinth" "${PATH_LINK_DIR}/labyrinth"
+ok "Symlink: ${PATH_LINK_DIR}/labyrinth -> ${INSTALL_DIR}/labyrinth"
+
 # Download bench tool (optional, don't fail) — but if downloaded, it MUST verify.
 TMP_BENCH=$(mktemp)
 info "Downloading labyrinth-bench..."
@@ -158,6 +176,10 @@ if curl -fsSL -o "$TMP_BENCH" "$BENCH_URL" 2>/dev/null; then
   chmod +x "$TMP_BENCH"
   mv "$TMP_BENCH" "${INSTALL_DIR}/labyrinth-bench"
   ok "Bench tool installed: ${INSTALL_DIR}/labyrinth-bench"
+  if [[ -e "${PATH_LINK_DIR}/labyrinth-bench" && ! -L "${PATH_LINK_DIR}/labyrinth-bench" ]]; then
+    rm -f "${PATH_LINK_DIR}/labyrinth-bench"
+  fi
+  ln -sf "${INSTALL_DIR}/labyrinth-bench" "${PATH_LINK_DIR}/labyrinth-bench"
 else
   rm -f "$TMP_BENCH"
   warn "Bench tool not available (optional)"
@@ -263,6 +285,9 @@ else
   fi
 
   chown -R "$SERVICE_USER":"$SERVICE_USER" "$CONFIG_DIR" 2>/dev/null || true
+  # /opt/labyrinth/bin must be writable by the service user so the web UI
+  # self-update can atomically swap the binary without needing root.
+  chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
 
   if command -v systemctl &>/dev/null; then
     cat > "$SERVICE_FILE" << 'SERVICE'
@@ -276,7 +301,9 @@ Wants=network-online.target
 Type=simple
 User=labyrinth
 Group=labyrinth
-ExecStart=/usr/local/bin/labyrinth -config /etc/labyrinth/labyrinth.yaml
+# Binary lives in /opt/labyrinth/bin so the web-UI self-update can rewrite
+# it as the service user. /usr/local/bin/labyrinth is a symlink for PATH compat.
+ExecStart=/opt/labyrinth/bin/labyrinth -config /etc/labyrinth/labyrinth.yaml
 ExecReload=/bin/kill -SIGUSR1 $MAINPID
 Restart=on-failure
 RestartSec=5s
@@ -286,7 +313,9 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/etc/labyrinth
+# /etc/labyrinth: live config reload writes labyrinth.yaml from the admin API.
+# /opt/labyrinth/bin: self-update rename target (also writable by service user).
+ReadWritePaths=/etc/labyrinth /opt/labyrinth/bin
 PrivateTmp=true
 PrivateDevices=true
 
@@ -324,6 +353,7 @@ echo -e "${GREEN}║  Labyrinth installed successfully!    ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════╝${NC}"
 echo ""
 echo "  Binary:    ${INSTALL_DIR}/labyrinth"
+echo "  Symlink:   ${PATH_LINK_DIR}/labyrinth -> ${INSTALL_DIR}/labyrinth"
 echo "  Config:    ${CONFIG_FILE}"
 echo "  Dashboard: http://127.0.0.1:9153"
 echo ""

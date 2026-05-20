@@ -46,7 +46,7 @@ func defaultConfig() *Config {
 			Prefetch:      true,
 		},
 		Security: SecurityConfig{
-			PrivateAddressFilter: true,
+			PrivateAddressFilter: false,
 			DNSCookies:           false,
 			RateLimit: RateLimitConfig{
 				Enabled: true,
