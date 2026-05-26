@@ -272,11 +272,21 @@ func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveRe
 func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*ResolveResult, error) {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
 
-	// Check local zones before going recursive.
+	// Operator-configured local zones win over the RFC 6761 short-circuit:
+	// an admin who configured `myzone.local` or `something.test` knows what
+	// they want, and the special-use rule says "if no other local data
+	// authoritatively answers." Order matters.
 	if r.localZones != nil {
 		if result := r.localZones.Lookup(name, qtype, qclass); result != nil {
 			return result, nil
 		}
+	}
+
+	// RFC 6761 / RFC 7686 / RFC 8375 special-use names (.onion, .invalid,
+	// .test, .example TLD, .local, home.arpa) must never leave the
+	// resolver. .onion in particular is a Tor privacy hazard if leaked.
+	if result := specialUseResponse(name, qtype, qclass); result != nil {
+		return result, nil
 	}
 
 	// Check forward/stub zones before normal recursive resolution.
@@ -737,9 +747,7 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 			}
 
 			result, err := r.resolveNSAddr(ns.hostname, dns.TypeA)
-			if err == nil {
-				// Scan all answers for an A record (answers may include
-				// CNAME records before the final A record).
+			if err == nil && !nsHasCNAMERedirect(ns.hostname, result.Answers) {
 				for _, rr := range result.Answers {
 					if rr.Type == dns.TypeA {
 						ip, parseErr := dns.ParseA(rr.RData)
@@ -751,7 +759,7 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 			}
 			// Fallback to AAAA (always try, even with PreferIPv4 — it's a last resort)
 			result, err = r.resolveNSAddr(ns.hostname, dns.TypeAAAA)
-			if err == nil {
+			if err == nil && !nsHasCNAMERedirect(ns.hostname, result.Answers) {
 				for _, rr := range result.Answers {
 					if rr.Type == dns.TypeAAAA {
 						ip, parseErr := dns.ParseAAAA(rr.RData)
@@ -765,6 +773,32 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 	}
 
 	return "", "", errors.New("no reachable nameserver")
+}
+
+// nsHasCNAMERedirect reports whether the answer set for an NS-hostname
+// A/AAAA lookup contains a CNAME whose owner matches the NS hostname.
+// RFC 2181 §10.3: "The domain name used as the value of a NS resource
+// record [...] must not be an alias. Not only is the specification
+// clear on this point, but using an alias in one of these positions
+// neither works as well as might be hoped, nor well fulfills the ambition
+// that may have led to this approach."
+//
+// An attacker who controls a zone could otherwise publish
+// `ns1.example.com CNAME evil.attacker.com` and have us silently follow
+// the alias to attacker-controlled glue. We refuse to use any NS whose
+// hostname resolves through a CNAME and let the caller try the next NS
+// in the delegation set.
+func nsHasCNAMERedirect(nsHostname string, answers []dns.ResourceRecord) bool {
+	owner := strings.ToLower(strings.TrimSuffix(nsHostname, "."))
+	for _, rr := range answers {
+		if rr.Type != dns.TypeCNAME {
+			continue
+		}
+		if strings.ToLower(strings.TrimSuffix(rr.Name, ".")) == owner {
+			return true
+		}
+	}
+	return false
 }
 
 // visitedSet tracks visited nameservers and CNAME targets for loop detection.

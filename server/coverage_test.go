@@ -247,7 +247,7 @@ func TestHandleServeStale(t *testing.T) {
 	// Pre-populate cache with an entry that will expire after ~1 second.
 	c.Store("stale.example.com", dns.TypeA, dns.ClassIN, []dns.ResourceRecord{{
 		Name: "stale.example.com", Type: dns.TypeA, Class: dns.ClassIN,
-		TTL: 0, RDLength: 4, RData: []byte{10, 0, 0, 1},
+		TTL: 1, RDLength: 4, RData: []byte{10, 0, 0, 1},
 	}}, nil)
 
 	// Wait for the entry to expire (minTTL clamped to 1).

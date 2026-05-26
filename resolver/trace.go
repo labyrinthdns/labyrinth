@@ -105,7 +105,8 @@ func (r *Resolver) Trace(
 		"resolver_ready":  r.IsReady(),
 	})
 
-	// 1. Local zones.
+	// 1. Local zones (operator-configured authoritative data wins over the
+	// RFC 6761 short-circuit).
 	if r.localZones != nil {
 		if result := r.localZones.Lookup(name, qtype, qclass); result != nil {
 			t.emit("local-zones", TraceStatusOK, "answered from local zone", map[string]any{
@@ -118,6 +119,17 @@ func (r *Resolver) Trace(
 		t.emit("local-zones", TraceStatusInfo, "no local zone match", nil)
 	} else {
 		t.emit("local-zones", TraceStatusInfo, "local zones disabled", nil)
+	}
+
+	// 1.5 RFC 6761 / 7686 / 8375 special-use names — short-circuit AFTER
+	// local-zone lookup so admins can override (e.g. operator-defined
+	// .test or .local zones still resolve).
+	if result := specialUseResponse(name, qtype, qclass); result != nil {
+		t.emit("local-zones", TraceStatusOK, "answered from special-use short-circuit (RFC 6761/7686/8375)", map[string]any{
+			"rcode": rcodeName(result.RCODE),
+		})
+		t.emit("finish", TraceStatusOK, "done (special-use)", nil)
+		return result, nil
 	}
 
 	// 2. Cache short-circuit (unless bypassed).

@@ -247,6 +247,11 @@ func (c *Cache) Store(name string, qtype uint16, class uint16, answers []dns.Res
 // the server to set the AD bit on cache-served responses without re-running
 // DNSSEC validation per lookup.
 func (c *Cache) StoreWithStatus(name string, qtype uint16, class uint16, answers []dns.ResourceRecord, authority []dns.ResourceRecord, dnssecStatus string) {
+	// RFC 2181 §8: TTL=0 means "use for the current transaction only and
+	// do NOT cache." Honour that here rather than promoting up to minTTL.
+	if c.extractTTL(answers) == 0 {
+		return
+	}
 	name = strings.ToLower(name)
 	key := cacheKey{name: name, qtype: qtype, class: class}
 	idx := c.shardIndex(name)
@@ -285,6 +290,10 @@ func (c *Cache) StoreWithECSStatus(
 		c.StoreWithStatus(name, qtype, class, answers, authority, dnssecStatus)
 		return
 	}
+	// RFC 2181 §8 — same TTL=0 don't-cache rule as the global path.
+	if c.extractTTL(answers) == 0 {
+		return
+	}
 	name = strings.ToLower(name)
 	key := cacheKey{name: name, qtype: qtype, class: class, ecsPrefix: ecsPrefix}
 	idx := c.shardIndex(name)
@@ -313,6 +322,13 @@ func (c *Cache) StoreWithECSStatus(
 // NXDOMAIN applies to the entire name (RFC 2308 §3) so it is stored
 // with qtype=0 as a sentinel. NODATA is type-specific.
 func (c *Cache) StoreNegative(name string, qtype uint16, class uint16, negType NegativeType, rcode uint8, authority []dns.ResourceRecord) {
+	// RFC 2181 §8 / RFC 2308 §4: a TTL of zero on the SOA Minimum field
+	// or the SOA RR itself means the negative answer is for this query
+	// only and MUST NOT be cached.
+	rawTTL := c.extractNegativeTTL(authority)
+	if rawTTL == 0 {
+		return
+	}
 	name = strings.ToLower(name)
 	storeType := qtype
 	if negType == NegNXDomain {
@@ -321,8 +337,7 @@ func (c *Cache) StoreNegative(name string, qtype uint16, class uint16, negType N
 	key := cacheKey{name: name, qtype: storeType, class: class}
 	idx := c.shardIndex(name)
 
-	ttl := c.extractNegativeTTL(authority)
-	ttl = c.clampNegativeTTL(ttl)
+	ttl := c.clampNegativeTTL(rawTTL)
 
 	var soa *dns.ResourceRecord
 	for i, rr := range authority {
@@ -354,13 +369,28 @@ func (c *Cache) extractTTL(records []dns.ResourceRecord) uint32 {
 	if len(records) == 0 {
 		return c.minTTL
 	}
-	minTTL := records[0].TTL
+	minTTL := sanitizeWireTTL(records[0].TTL)
 	for _, rr := range records[1:] {
-		if rr.TTL < minTTL {
-			minTTL = rr.TTL
+		t := sanitizeWireTTL(rr.TTL)
+		if t < minTTL {
+			minTTL = t
 		}
 	}
 	return minTTL
+}
+
+// sanitizeWireTTL applies the RFC 2181 §8 ceiling to a TTL value read off
+// the wire. The on-wire TTL field is a 32-bit *signed* integer but is
+// transmitted in the unsigned half; values with the most-significant bit
+// set (≥ 2^31) MUST be treated as if the entire value were zero. Without
+// this clamp a hostile authoritative server could ship a ~68-year TTL,
+// making a cache entry effectively permanent and giving cache-poisoning
+// attempts unbounded persistence.
+func sanitizeWireTTL(ttl uint32) uint32 {
+	if ttl&0x80000000 != 0 {
+		return 0
+	}
+	return ttl
 }
 
 func (c *Cache) extractNegativeTTL(authority []dns.ResourceRecord) uint32 {
@@ -371,14 +401,17 @@ func (c *Cache) extractNegativeTTL(authority []dns.ResourceRecord) uint32 {
 			soa, err := dns.ParseSOA(rr.RData, 0)
 			if err == nil {
 				// RFC 2308: use min(SOA RR TTL, SOA.Minimum)
-				ttl := rr.TTL
-				if soa.Minimum < ttl {
-					ttl = soa.Minimum
+				// Both fields go through sanitizeWireTTL so a hostile
+				// authoritative cannot smuggle a ≥2^31 value past the
+				// negative-cache path either (RFC 2181 §8).
+				ttl := sanitizeWireTTL(rr.TTL)
+				if m := sanitizeWireTTL(soa.Minimum); m < ttl {
+					ttl = m
 				}
 				return ttl
 			}
 			// Fallback to RR TTL if SOA parse fails
-			return rr.TTL
+			return sanitizeWireTTL(rr.TTL)
 		}
 	}
 	return negativeTTLFallback // fallback: 1 minute
