@@ -308,8 +308,18 @@ func (h *MainHandler) validateServerCookie(clientCookie, serverCookie []byte, cl
 	}
 	timestamp := binary.BigEndian.Uint32(serverCookie[4:8])
 	now := nowFunc()
+	// RFC 9018 §4.3 / §4.4: reject both stale (older than 1 hour) AND
+	// future timestamps. A future timestamp can only come from server-
+	// clock skew at issuance or from an attacker probing the validation
+	// window; either way it has no place being accepted. A 5-minute
+	// forward tolerance accommodates normal NTP jitter without opening
+	// a meaningful window for replay/forge attempts.
+	const futureSkewTolerance uint32 = 300
 	if now > timestamp && now-timestamp > 3600 {
-		return false // expired (1 hour)
+		return false // expired
+	}
+	if timestamp > now && timestamp-now > futureSkewTolerance {
+		return false // future
 	}
 	expected := h.generateServerCookieAt(clientCookie, clientIP, timestamp)
 	return subtle.ConstantTimeCompare(serverCookie, expected) == 1
@@ -498,6 +508,31 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	if len(msg.Questions) != 1 {
 		h.metrics.IncResponses("FORMERR")
 		return h.buildError(query, dns.RCodeFormErr)
+	}
+
+	// RFC 6891 §6.1.1: "If a query message with more than one OPT RR is
+	// received, a FORMERR (RCODE=1) MUST be returned." Our wire parser
+	// keeps only the first OPT, so without this guard a multi-OPT query
+	// would silently proceed.
+	optCount := 0
+	for _, rr := range msg.Additional {
+		if rr.Type == dns.TypeOPT {
+			optCount++
+		}
+	}
+	if optCount > 1 {
+		h.metrics.IncResponses("FORMERR")
+		return h.buildError(query, dns.RCodeFormErr)
+	}
+
+	// RFC 6891 §6.1.3: "If the requestor's EDNS version is greater than
+	// the responder's supported version, the responder MUST respond with
+	// RCODE=BADVERS (16) ... [and] MUST include an EDNS OPT pseudo-RR in
+	// the response, with its version set to the highest EDNS version the
+	// responder supports." We only support version 0.
+	if msg.EDNS0 != nil && msg.EDNS0.Version != 0 {
+		h.metrics.IncResponses("BADVERS")
+		return h.buildBadVersResponse(query)
 	}
 
 	q := msg.Questions[0]
@@ -1099,6 +1134,33 @@ func (h *MainHandler) buildBlockedResponse(query *dns.Message, q dns.Question) (
 
 	// H-5: pack into an owned slice.
 	return h.packToOwnedBytes(resp)
+}
+
+// buildBadVersResponse synthesizes the RFC 6891 §6.1.3 mandated reply for a
+// query whose EDNS version is greater than what we support (we support 0).
+//
+// The 12-bit Extended RCODE 16 (BADVERS) is split per RFC 6891 §6.1.3:
+//   - low 4 bits → DNS header RCODE field (= 0)
+//   - high 8 bits → OPT-record TTL byte 0 (= 1)
+//
+// The OPT record we emit carries our highest supported EDNS version (0),
+// so the requester can downgrade. The OPT MUST be present per the RFC —
+// without it, the BADVERS extended RCODE has no place to live.
+func (h *MainHandler) buildBadVersResponse(query []byte) ([]byte, error) {
+	resp, err := h.buildError(query, dns.RCodeNoError)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp, nil //nolint:nilerr // fall back rather than mask
+	}
+	// Build OPT with ExtRCODE byte (high byte of TTL) = 1 → composes
+	// BADVERS (16) with header RCODE=0. Our Version stays at 0.
+	opt := dns.BuildOPT(h.advertisedUDPBufferSize(), false)
+	opt.TTL = uint32(1) << 24 // ExtRCODE=1, Version=0, no DO, Z=0
+	msg.Additional = append(msg.Additional, opt)
+	return h.packToOwnedBytes(msg)
 }
 
 // buildErrorWithEDE creates an error response with an Extended DNS Error option.

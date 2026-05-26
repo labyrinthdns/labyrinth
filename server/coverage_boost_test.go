@@ -550,7 +550,7 @@ func TestHandleServeStaleWithEDNS(t *testing.T) {
 
 	c.Store("stale-edns.example.com", dns.TypeA, dns.ClassIN, []dns.ResourceRecord{{
 		Name: "stale-edns.example.com", Type: dns.TypeA, Class: dns.ClassIN,
-		TTL: 0, RDLength: 4, RData: []byte{10, 0, 0, 2},
+		TTL: 1, RDLength: 4, RData: []byte{10, 0, 0, 2},
 	}}, nil)
 
 	time.Sleep(1500 * time.Millisecond)
@@ -595,7 +595,7 @@ func TestHandleServeStaleWithOnQuery(t *testing.T) {
 
 	c.Store("stale-cb.example.com", dns.TypeA, dns.ClassIN, []dns.ResourceRecord{{
 		Name: "stale-cb.example.com", Type: dns.TypeA, Class: dns.ClassIN,
-		TTL: 0, RDLength: 4, RData: []byte{10, 0, 0, 3},
+		TTL: 1, RDLength: 4, RData: []byte{10, 0, 0, 3},
 	}}, nil)
 
 	time.Sleep(1500 * time.Millisecond)

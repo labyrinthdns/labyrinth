@@ -52,19 +52,30 @@ func TestCacheTTLClamping(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := NewCache(1000, 5, 86400, 3600, m)
 
-	// TTL=0 should be clamped to minTTL=5
-	answers := []dns.ResourceRecord{{
+	// RFC 2181 §8: TTL=0 means "do not cache" — Store must skip it
+	// rather than promote up to minTTL.
+	zero := []dns.ResourceRecord{{
 		Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN,
 		TTL: 0, RDLength: 4, RData: []byte{1, 2, 3, 4},
 	}}
-	c.Store("zero.com", dns.TypeA, dns.ClassIN, answers, nil)
+	c.Store("zero.com", dns.TypeA, dns.ClassIN, zero, nil)
+	if _, ok := c.Get("zero.com", dns.TypeA, dns.ClassIN); ok {
+		t.Error("TTL=0 record was cached — violates RFC 2181 §8")
+	}
 
-	entry, ok := c.Get("zero.com", dns.TypeA, dns.ClassIN)
+	// A small positive TTL below minTTL is still cached and promoted
+	// to minTTL on serve (the original "clamp" semantic).
+	low := []dns.ResourceRecord{{
+		Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN,
+		TTL: 1, RDLength: 4, RData: []byte{1, 2, 3, 4},
+	}}
+	c.Store("low.com", dns.TypeA, dns.ClassIN, low, nil)
+	entry, ok := c.Get("low.com", dns.TypeA, dns.ClassIN)
 	if !ok {
-		t.Fatal("expected cache hit")
+		t.Fatal("expected cache hit for non-zero TTL")
 	}
 	if entry.Records[0].TTL == 0 {
-		t.Error("TTL should be clamped from 0 to minTTL")
+		t.Error("served TTL should not be 0")
 	}
 }
 
