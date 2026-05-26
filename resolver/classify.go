@@ -56,6 +56,7 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 		hasRequestedType := false
 		hasCNAME := false
 		hasDNAME := false
+		cnameCount := 0
 
 		for _, rr := range msg.Answers {
 			rrName := strings.ToLower(rr.Name)
@@ -64,11 +65,24 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 			}
 			if rrName == qname && rr.Type == dns.TypeCNAME {
 				hasCNAME = true
+				cnameCount++
 			}
 			// DNAME: owner is a parent of qname (RFC 6672)
 			if rr.Type == dns.TypeDNAME && strings.HasSuffix(qname, "."+rrName) {
 				hasDNAME = true
 			}
+		}
+
+		// RFC 2181 §10.1: "There may be only one such [CNAME] record per
+		// domain name." A response carrying multiple distinct CNAME RRs
+		// at a single owner is structurally illegal — either the
+		// authoritative is misconfigured or someone is mixing a real
+		// CNAME with a forged second one to redirect the chain. Either
+		// case the resolver cannot pick safely (extractCNAMETarget would
+		// take whichever appeared first), so refuse the whole response
+		// and let the iterative loop try a sibling NS.
+		if cnameCount > 1 {
+			return responseServFail
 		}
 
 		// RFC 1034 §3.7 / RFC 2181 §6.1: an authoritative server MUST set
