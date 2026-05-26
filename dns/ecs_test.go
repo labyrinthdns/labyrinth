@@ -172,3 +172,73 @@ func TestBuildECS_ZeroPrefixLen(t *testing.T) {
 		t.Errorf("expected 4 bytes (header only), got %d", len(opt.Data))
 	}
 }
+
+func TestExtractECSFromOPT(t *testing.T) {
+	ecs := &ECSOption{
+		Family:          1,
+		SourcePrefixLen: 24,
+		ScopePrefixLen:  0,
+		Address:         net.ParseIP("203.0.113.0").To4(),
+	}
+	opt := BuildOPTWithOptions(1232, false, []EDNSOption{BuildECS(ecs)})
+	parsedOPT, err := ParseOPT(&opt)
+	if err != nil {
+		t.Fatalf("ParseOPT: %v", err)
+	}
+	got, err := ExtractECSFromOPT(parsedOPT)
+	if err != nil {
+		t.Fatalf("ExtractECSFromOPT: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil ECS")
+	}
+	if got.SourcePrefixLen != 24 {
+		t.Errorf("source prefix len: want 24, got %d", got.SourcePrefixLen)
+	}
+}
+
+func TestExtractECSFromOPT_NoECS(t *testing.T) {
+	opt := BuildOPT(1232, false)
+	parsedOPT, err := ParseOPT(&opt)
+	if err != nil {
+		t.Fatalf("ParseOPT: %v", err)
+	}
+	got, err := ExtractECSFromOPT(parsedOPT)
+	if err != nil {
+		t.Fatalf("ExtractECSFromOPT: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil when no ECS, got %+v", got)
+	}
+}
+
+func TestExtractECSFromOPT_Nil(t *testing.T) {
+	got, err := ExtractECSFromOPT(nil)
+	if err != nil {
+		t.Fatalf("ExtractECSFromOPT: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for nil input, got %+v", got)
+	}
+}
+
+func TestECS_CacheKey(t *testing.T) {
+	cases := []struct {
+		name string
+		ecs  *ECSOption
+		want string
+	}{
+		{"nil", nil, ""},
+		{"zero-prefix (opt-out)", &ECSOption{Family: 1, SourcePrefixLen: 0, Address: net.ParseIP("0.0.0.0").To4()}, ""},
+		{"v4 /24", &ECSOption{Family: 1, SourcePrefixLen: 24, Address: net.ParseIP("203.0.113.45").To4()}, "203.0.113.0/24"},
+		{"v6 /56", &ECSOption{Family: 2, SourcePrefixLen: 56, Address: net.ParseIP("2001:db8:abcd:ef01::1").To16()}, "2001:db8:abcd:ef00::/56"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := c.ecs.CacheKey()
+			if got != c.want {
+				t.Errorf("CacheKey: want %q, got %q", c.want, got)
+			}
+		})
+	}
+}

@@ -12,7 +12,18 @@ import (
 	"github.com/labyrinthdns/labyrinth/dns"
 )
 
+// queryUpstream is the legacy entry point used by code paths that have no
+// client context (root priming, glue resolution, DNSSEC chain fetches,
+// trace/fallback). It forwards no ECS option upstream.
 func (r *Resolver) queryUpstream(nsIP string, name string, qtype uint16, qclass uint16) (*dns.Message, error) {
+	return r.queryUpstreamECS(nsIP, name, qtype, qclass, nil)
+}
+
+// queryUpstreamECS is the ECS-aware variant. clientECS, when non-nil and
+// the operator policy enables ECS forwarding, is included as an EDNS Client
+// Subnet option (RFC 7871) in the outgoing OPT record so the authoritative
+// server can geo-tailor its response.
+func (r *Resolver) queryUpstreamECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
 	r.metrics.IncUpstreamQueries()
 
 	retries := r.config.UpstreamRetries
@@ -22,7 +33,7 @@ func (r *Resolver) queryUpstream(nsIP string, name string, qtype uint16, qclass 
 
 	var lastErr error
 	for attempt := 0; attempt < retries; attempt++ {
-		msg, err := r.queryUpstreamOnce(nsIP, name, qtype, qclass)
+		msg, err := r.queryUpstreamOnceECS(nsIP, name, qtype, qclass, clientECS)
 		if err == nil {
 			return msg, nil
 		}
@@ -37,15 +48,21 @@ func (r *Resolver) queryUpstream(nsIP string, name string, qtype uint16, qclass 
 var randTXIDFunc = randomTXID
 
 func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qclass uint16) (*dns.Message, error) {
-	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true)
+	return r.queryUpstreamOnceECS(nsIP, name, qtype, qclass, nil)
+}
+
+func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
+	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS)
 	if err != nil {
 		return nil, err
 	}
 
 	// RFC 6891 §7: If the server returns FORMERR (doesn't understand EDNS0),
-	// retry without the OPT record.
+	// retry without the OPT record. This also drops any ECS option we may
+	// have sent — a server that FORMERRs on plain EDNS0 will certainly
+	// reject an OPT carrying ECS sub-options.
 	if msg.Header.RCODE() == dns.RCodeFormErr {
-		msg, err = r.sendQuery(nsIP, name, qtype, qclass, false)
+		msg, err = r.sendQuery(nsIP, name, qtype, qclass, false, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -55,7 +72,10 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 }
 
 // sendQuery builds, sends and validates a single upstream DNS query.
-func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool) (*dns.Message, error) {
+// When clientECS is non-nil and withEDNS0 is true, the OPT record carries
+// an EDNS Client Subnet option (RFC 7871). The outgoing ECS always has
+// SCOPE PREFIX-LENGTH = 0 — only authoritative answers set that field.
+func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption) (*dns.Message, error) {
 	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
@@ -82,12 +102,16 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		}},
 	}
 	if withEDNS0 {
-		// If ECS is enabled and there's an active ECS option, include it
+		// Per-query ECS, taken from the caller's clientECS argument rather
+		// than from global state. This is the fix for the previous
+		// activeECS atomic.Pointer design which leaked one client's subnet
+		// onto another's outbound query under concurrency.
 		var ecsOptions []dns.EDNSOption
-		if r.config.ECSEnabled {
-			if ecs := r.activeECS.Load(); ecs != nil {
-				ecsOptions = append(ecsOptions, dns.BuildECS(ecs))
-			}
+		if r.config.ECSEnabled && clientECS != nil {
+			// RFC 7871 §6: outgoing queries set SCOPE PREFIX-LENGTH = 0.
+			outgoing := *clientECS
+			outgoing.ScopePrefixLen = 0
+			ecsOptions = append(ecsOptions, dns.BuildECS(&outgoing))
 		}
 		if len(ecsOptions) > 0 {
 			query.Additional = []dns.ResourceRecord{
@@ -203,6 +227,33 @@ func (r *Resolver) queryTCP(nsIP string, query []byte) ([]byte, error) {
 	}
 
 	return resp, nil
+}
+
+// extractResponseECS parses the OPT record from a DNS response message and
+// returns the EDNS Client Subnet option if the authoritative server included
+// one. The returned option's SCOPE PREFIX-LENGTH is the authoritative cache
+// key shape per RFC 7871 §7.3 (scope=0 means global, scope>0 means subnet
+// specific). Returns nil when the response has no OPT or no ECS option.
+func extractResponseECS(msg *dns.Message) *dns.ECSOption {
+	if msg == nil {
+		return nil
+	}
+	for i := range msg.Additional {
+		rr := &msg.Additional[i]
+		if rr.Type != dns.TypeOPT {
+			continue
+		}
+		opt, err := dns.ParseOPT(rr)
+		if err != nil || opt == nil {
+			return nil
+		}
+		ecs, err := dns.ExtractECSFromOPT(opt)
+		if err != nil {
+			return nil
+		}
+		return ecs
+	}
+	return nil
 }
 
 // validateResponseQuestion checks that the response carries exactly the

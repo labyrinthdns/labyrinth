@@ -54,8 +54,12 @@ func startHTTPServices(
 		// Anything not listed here still requires a process restart to take effect.
 		adminServer.SetRuntimeApplier(func(newCfg *config.Config) {
 			handler.SetPrivateFilter(newCfg.Security.PrivateAddressFilter)
+			handler.SetECSPrefixes(newCfg.Resolver.ECSEnabled, newCfg.Resolver.ECSMaxPrefix, newCfg.Resolver.ECSMaxPrefixV6)
 			logger.Info("config hot-applied",
 				"private_address_filter", newCfg.Security.PrivateAddressFilter,
+				"ecs_enabled", newCfg.Resolver.ECSEnabled,
+				"ecs_max_prefix", newCfg.Resolver.ECSMaxPrefix,
+				"ecs_max_prefix_v6", newCfg.Resolver.ECSMaxPrefixV6,
 			)
 		})
 

@@ -71,6 +71,7 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"root_hints_refresh":    cfg.Resolver.RootHintsRefresh.String(),
 			"ecs_enabled":           cfg.Resolver.ECSEnabled,
 			"ecs_max_prefix":        cfg.Resolver.ECSMaxPrefix,
+			"ecs_max_prefix_v6":     cfg.Resolver.ECSMaxPrefixV6,
 			"dns64_enabled":         cfg.Resolver.DNS64Enabled,
 			"dns64_prefix":          cfg.Resolver.DNS64Prefix,
 			"fallback_resolvers":    cfg.Resolver.FallbackResolvers,

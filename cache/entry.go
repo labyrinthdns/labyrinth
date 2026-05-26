@@ -33,6 +33,13 @@ type Entry struct {
 	// validation.
 	DNSSECStatus string
 
+	// ECSScope is the SCOPE PREFIX-LENGTH the authoritative server
+	// returned in its ECS option (RFC 7871 §6). Echoed back to the client
+	// in the response OPT when the client itself sent ECS. Zero means the
+	// answer is not subnet-scoped (global cache entry shared across all
+	// clients).
+	ECSScope uint8
+
 	// prefetched is set atomically to 1 the first time a prefetch is
 	// triggered for this entry, preventing duplicate background fetches.
 	prefetched atomic.Int32
@@ -70,6 +77,7 @@ func (e *Entry) WithDecayedTTL(remaining uint32) *Entry {
 		SOA:          e.SOA,
 		RCODE:        e.RCODE,
 		DNSSECStatus: e.DNSSECStatus,
+		ECSScope:     e.ECSScope,
 	}
 
 	copy(decayed.Records, e.Records)

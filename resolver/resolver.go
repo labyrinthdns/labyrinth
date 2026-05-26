@@ -57,6 +57,15 @@ type ResolveResult struct {
 	RCODE        uint8
 	DNSSECStatus string // "secure", "insecure", "bogus", ""
 	Error        error  // underlying error if resolution failed
+
+	// UpstreamECS is the EDNS Client Subnet option that the authoritative
+	// (or forward) server included in its response, if any. The SCOPE
+	// PREFIX-LENGTH field (RFC 7871 §6) determines the cache key shape: a
+	// scope of 0 means the answer is global and can be shared across all
+	// clients; a non-zero scope means the answer is subnet-specific and
+	// must be cached under the matching ECS-keyed entry. Nil when the
+	// upstream did not include ECS in its response.
+	UpstreamECS *dns.ECSOption
 }
 
 // Resolver implements recursive DNS resolution.
@@ -72,24 +81,6 @@ type Resolver struct {
 	localZones      *LocalZoneTable
 	forwardTable    *ForwardTable
 	infraCache      *InfraCache
-
-	// activeECS holds the ECS option to include in upstream queries.
-	// Set per-query when ECS forwarding is enabled; nil otherwise.
-	//
-	// Stored via atomic.Pointer to keep concurrent Set/read safe — the
-	// underlying field is process-global on the Resolver (one slot
-	// across N concurrent client queries). The current shape of the
-	// API does not support per-query ECS, so racy callers would otherwise
-	// leak one client's subnet onto another's outbound query. Once the
-	// ECS path is plumbed through context this whole field should go
-	// away; until then atomic prevents the data race.
-	activeECS atomic.Pointer[dns.ECSOption]
-}
-
-// SetActiveECS sets the EDNS Client Subnet option for the next query.
-// Pass nil to clear.
-func (r *Resolver) SetActiveECS(ecs *dns.ECSOption) {
-	r.activeECS.Store(ecs)
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -225,6 +216,7 @@ func (r *Resolver) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.M
 		normalized, qtype, qclass, 0, newVisitedSet(),
 		toNameServerList(r.rootServers), "",
 		true, // skipValidation: validator is calling us, prevent recursion
+		nil,  // DNSSEC chain fetches never carry client subnet
 	)
 	if err != nil {
 		return nil, err
@@ -257,8 +249,27 @@ func (r *Resolver) SetLocalZones(lz *LocalZoneTable) {
 }
 
 // Resolve performs recursive resolution for the given query.
-// Concurrent requests for the same name+type are coalesced.
+// Concurrent requests for the same name+type are coalesced. This wrapper
+// retains the legacy signature for callers (and the broad test suite) that
+// do not carry client subnet context.
 func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveResult, error) {
+	return r.ResolveWithECS(name, qtype, qclass, nil)
+}
+
+// ResolveWithECS performs recursive resolution while carrying the client's
+// EDNS Client Subnet option (RFC 7871) end-to-end. clientECS is propagated
+// to every authoritative or forward upstream query so the upstream may
+// geo-tailor its response, and the upstream's returned scope is surfaced
+// in ResolveResult.UpstreamECS so the caller can pick the appropriate
+// cache key. Pass nil for clientECS to disable ECS for this resolution
+// (equivalent to Resolve).
+//
+// Note: ECS is intentionally NOT propagated through the in-flight coalescer
+// key. A coalescer that mixes subnets would serve client A's geo-tailored
+// answer to client B; the coalescer therefore only fires for the no-ECS
+// path. ECS-bearing queries always run independently — correctness over
+// dedup throughput.
+func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*ResolveResult, error) {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
 
 	// Check local zones before going recursive.
@@ -276,20 +287,29 @@ func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveRe
 		if !fz.IsStub {
 			// Forward zone: send directly to configured upstreams with RD=1.
 			r.logger.Debug("forward zone match", "name", name, "zone", fz.Name)
-			result, err = r.queryForward(fz.Addrs, name, qtype, qclass)
+			result, err = r.queryForwardECS(fz.Addrs, name, qtype, qclass, clientECS)
 		} else {
 			// Stub zone: start iterative resolution using configured addrs as initial NS.
 			r.logger.Debug("stub zone match", "name", name, "zone", fz.Name)
-			key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
-			result, err = r.inflight.do(key, func() (*ResolveResult, error) {
-				return r.resolveStub(name, qtype, qclass, fz)
-			})
+			if clientECS != nil {
+				// Skip the coalescer when carrying client subnet — see comment above.
+				result, err = r.resolveStubECS(name, qtype, qclass, fz, clientECS)
+			} else {
+				key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
+				result, err = r.inflight.do(key, func() (*ResolveResult, error) {
+					return r.resolveStub(name, qtype, qclass, fz)
+				})
+			}
 		}
 	} else {
-		key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
-		result, err = r.inflight.do(key, func() (*ResolveResult, error) {
-			return r.resolveIterative(name, qtype, qclass, 0, newVisitedSet())
-		})
+		if clientECS != nil {
+			result, err = r.resolveIterativeECS(name, qtype, qclass, 0, newVisitedSet(), clientECS)
+		} else {
+			key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
+			result, err = r.inflight.do(key, func() (*ResolveResult, error) {
+				return r.resolveIterative(name, qtype, qclass, 0, newVisitedSet())
+			})
+		}
 	}
 
 	// DNS64 synthesis (RFC 6147): if an AAAA query returned NODATA (no
@@ -321,7 +341,18 @@ func (r *Resolver) resolveIterative(
 	cnameDepth int,
 	visited *visitedSet,
 ) (*ResolveResult, error) {
-	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "", false)
+	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "", false, nil)
+}
+
+func (r *Resolver) resolveIterativeECS(
+	name string,
+	qtype uint16,
+	qclass uint16,
+	cnameDepth int,
+	visited *visitedSet,
+	clientECS *dns.ECSOption,
+) (*ResolveResult, error) {
+	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "", false, clientECS)
 }
 
 // resolveIterativeFrom keeps the public-ish signature stable for callers like
@@ -336,13 +367,15 @@ func (r *Resolver) resolveIterativeFrom(
 	initialNS []nsEntry,
 	initialZone string,
 ) (*ResolveResult, error) {
-	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, initialNS, initialZone, false)
+	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, initialNS, initialZone, false, nil)
 }
 
 // resolveIterativeFromInner drives the iterative resolution loop. When
 // skipValidation is true the validator call on the terminal answer is bypassed
 // — used by QueryDNSSEC to fetch DNSKEY/DS records without recursing back into
-// the validator that called it.
+// the validator that called it. clientECS, when non-nil, is forwarded as an
+// EDNS Client Subnet option to each upstream query and the authoritative
+// scope is captured on the terminal result for downstream cache keying.
 func (r *Resolver) resolveIterativeFromInner(
 	name string,
 	qtype uint16,
@@ -352,6 +385,7 @@ func (r *Resolver) resolveIterativeFromInner(
 	initialNS []nsEntry,
 	initialZone string,
 	skipValidation bool,
+	clientECS *dns.ECSOption,
 ) (*ResolveResult, error) {
 
 	if cnameDepth > r.config.MaxCNAMEDepth {
@@ -391,7 +425,7 @@ func (r *Resolver) resolveIterativeFromInner(
 
 		// Send upstream query
 		queryStart := time.Now()
-		response, err := r.queryUpstream(nsIP, queryName, queryType, qclass)
+		response, err := r.queryUpstreamECS(nsIP, queryName, queryType, qclass, clientECS)
 		if err != nil {
 			r.infraCache.RecordFailure(nsIP)
 			r.logger.Debug("upstream error", "ns", nsIP, "error", err)
@@ -424,7 +458,7 @@ func (r *Resolver) resolveIterativeFromInner(
 		// (root NS records instead of root DNSKEY, breaking DNSSEC).
 		minimized := queryName != name || queryType != qtype
 		if r.config.QMinEnabled && minimized && rtype != responseReferral {
-			response, err = r.queryUpstream(nsIP, name, qtype, qclass)
+			response, err = r.queryUpstreamECS(nsIP, name, qtype, qclass, clientECS)
 			if err != nil {
 				r.logger.Debug("qmin fallback upstream error", "ns", nsIP, "error", err)
 				lastErr = err
@@ -445,6 +479,11 @@ func (r *Resolver) resolveIterativeFromInner(
 				Authority:  response.Authority,
 				Additional: response.Additional,
 				RCODE:      dns.RCodeNoError,
+				// Capture the authoritative ECS scope so the caller can pick
+				// the correct cache key shape (RFC 7871 §7.3): scope=0 means
+				// share globally, scope>0 means store under the truncated
+				// client subnet.
+				UpstreamECS: extractResponseECS(response),
 			}
 			if r.dnssecValidator != nil && !skipValidation {
 				vr := r.dnssecValidator.ValidateResponse(response, name, qtype)
@@ -498,6 +537,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			result, err := r.resolveIterativeFromInner(
 				target, qtype, qclass, cnameDepth+1, visited,
 				toNameServerList(r.rootServers), "", skipValidation,
+				clientECS, // carry the client's subnet across the CNAME hop
 			)
 			if err != nil {
 				return nil, err
@@ -534,6 +574,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			result, err := r.resolveIterativeFromInner(
 				target, qtype, qclass, cnameDepth+1, visited,
 				toNameServerList(r.rootServers), "", skipValidation,
+				clientECS, // carry the client's subnet across the DNAME hop
 			)
 			if err != nil {
 				return nil, err
@@ -603,8 +644,9 @@ func (r *Resolver) resolveIterativeFromInner(
 
 		case responseNXDomain:
 			result := &ResolveResult{
-				Authority: response.Authority,
-				RCODE:     dns.RCodeNXDomain,
+				Authority:   response.Authority,
+				RCODE:       dns.RCodeNXDomain,
+				UpstreamECS: extractResponseECS(response),
 			}
 			result.DNSSECStatus = r.validateDenialIfEnabled(response, name, qtype, skipValidation)
 			if result.DNSSECStatus == "bogus" {
@@ -615,8 +657,9 @@ func (r *Resolver) resolveIterativeFromInner(
 
 		case responseNoData:
 			result := &ResolveResult{
-				Authority: response.Authority,
-				RCODE:     dns.RCodeNoError,
+				Authority:   response.Authority,
+				RCODE:       dns.RCodeNoError,
+				UpstreamECS: extractResponseECS(response),
 			}
 			result.DNSSECStatus = r.validateDenialIfEnabled(response, name, qtype, skipValidation)
 			if result.DNSSECStatus == "bogus" {

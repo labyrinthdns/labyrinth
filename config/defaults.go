@@ -31,6 +31,7 @@ func defaultConfig() *Config {
 			RootHintsRefresh:      12 * time.Hour,
 			ECSEnabled:            false,
 			ECSMaxPrefix:          24,
+			ECSMaxPrefixV6:        56,
 			DNS64Enabled:          false,
 			DNS64Prefix:           "64:ff9b::/96",
 			UpstreamUDPBufferSize: 1232,

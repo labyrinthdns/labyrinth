@@ -89,6 +89,50 @@ func BuildECS(ecs *ECSOption) EDNSOption {
 	}
 }
 
+// ExtractECSFromOPT walks the OPT record options and returns the first
+// EDNS Client Subnet option found, or nil if none is present. Parse errors
+// are reported so callers can FORMERR-fail a malformed option per RFC 7871
+// §6 (unrecognized FAMILY → SERVFAIL). Missing-ECS is the common case and
+// returns (nil, nil).
+func ExtractECSFromOPT(opt *EDNS0) (*ECSOption, error) {
+	if opt == nil {
+		return nil, nil
+	}
+	for _, o := range opt.Options {
+		if o.Code != EDNSOptionCodeECS {
+			continue
+		}
+		return ParseECS(o.Data)
+	}
+	return nil, nil
+}
+
+// CacheKey returns the canonical string used to key ECS-scoped cache
+// entries: "<address>/<prefix>" where address is truncated to prefix.
+// Returns "" when ecs is nil or SourcePrefixLen is 0 (global scope), so
+// callers can distinguish global from ECS-scoped entries by emptiness.
+func (ecs *ECSOption) CacheKey() string {
+	if ecs == nil || ecs.SourcePrefixLen == 0 {
+		return ""
+	}
+	truncated := TruncateIP(ecs.Address, ecs.SourcePrefixLen)
+	return truncated.String() + "/" + itoaECS(int(ecs.SourcePrefixLen))
+}
+
+func itoaECS(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [4]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[pos:])
+}
+
 // TruncateIP truncates an IP address to the given prefix length,
 // zeroing out any bits beyond the prefix.
 func TruncateIP(ip net.IP, prefixLen uint8) net.IP {
