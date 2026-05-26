@@ -26,7 +26,20 @@ var (
 	errEmptyRRSet       = errors.New("dnssec: empty RRset")
 	errNoSignature      = errors.New("dnssec: RRSIG has no signature data")
 	errInvalidKeyLength = errors.New("dnssec: invalid key length")
+	errMalformedLabels  = errors.New("dnssec: RRSIG Labels field exceeds owner label count (RFC 4034 §3.1.3)")
 )
+
+// labelCountExcludingRoot returns the number of labels in name, excluding
+// the implicit empty root label. Matches the semantics of RRSIG.Labels per
+// RFC 4034 §3.1.3 ("the number of labels in the original RRSIG RR owner
+// name, not counting the null label").
+func labelCountExcludingRoot(name string) int {
+	name = strings.TrimSuffix(name, ".")
+	if name == "" {
+		return 0
+	}
+	return strings.Count(name, ".") + 1
+}
 
 // VerifyRRSIG verifies an RRSIG signature over an RRset using a DNSKEY.
 // It builds the signed data (RRSIG RDATA without signature + canonical RRset)
@@ -37,6 +50,22 @@ func VerifyRRSIG(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord, dnskey *dns
 	}
 	if len(rrsig.Signature) == 0 {
 		return errNoSignature
+	}
+
+	// RFC 4034 §3.1.3: "The value of the Labels field MUST be less than or
+	// equal to the number of labels in the RRSIG owner name." A larger
+	// Labels value is structurally malformed — there is no plausible
+	// owner-name canonicalisation that would have produced it during
+	// signing. Accepting it would also let an attacker probe the verifier
+	// with crafted Labels values that drive `canonicalWildcardOwner` into
+	// unexpected fallbacks. Reject the RRSIG outright; the validator's
+	// outer loop will treat this as one signature failure and try the next
+	// RRSIG (rollover-safe).
+	for _, rr := range rrset {
+		ownerLabels := uint8(labelCountExcludingRoot(rr.Name))
+		if rrsig.Labels > ownerLabels {
+			return errMalformedLabels
+		}
 	}
 
 	// Build the signature input: RRSIG RDATA (without signature) + canonical RRset wire form.

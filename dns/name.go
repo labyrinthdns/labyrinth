@@ -136,6 +136,36 @@ func EncodeName(w *wireWriter, name string) error {
 	return w.writeBytes([]byte{0x00})
 }
 
+// EncodeNameToBytes returns the uncompressed wire-format encoding of a
+// domain name: a sequence of length-prefixed labels terminated by a zero
+// byte (e.g. "foo.example.com" → 3 'f' 'o' 'o' 7 'e'...'m' 0). Used for
+// callers that need to produce stand-alone RData bytes — DNAME→CNAME
+// synthesis, hand-built test fixtures — without the message-level
+// compression dictionary that EncodeName depends on. Returns an error on
+// labels longer than 63 octets (RFC 1035 §2.3.4) or full names longer
+// than 255 octets including the root terminator.
+func EncodeNameToBytes(name string) ([]byte, error) {
+	if name == "" || name == "." {
+		return []byte{0x00}, nil
+	}
+	labels := splitLabels(name)
+	out := make([]byte, 0, len(name)+2)
+	total := 1 // root terminator
+	for _, label := range labels {
+		if len(label) > maxLabelLength {
+			return nil, errLabelTooLong
+		}
+		total += 1 + len(label)
+		if total > 255 {
+			return nil, errNameTooLong
+		}
+		out = append(out, byte(len(label)))
+		out = append(out, label...)
+	}
+	out = append(out, 0x00)
+	return out, nil
+}
+
 func splitLabels(name string) []string {
 	name = strings.TrimSuffix(name, ".")
 	if name == "" {

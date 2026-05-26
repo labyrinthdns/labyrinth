@@ -720,15 +720,18 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 				return resp, nil
 			}
 		}
-		// Check for DNSSEC bogus — add EDE info code 6. RFC 4035 §3.2.2
-		// makes one exception: when the client sets CD=1 it has asked us
-		// to skip the validation gate, so a Bogus verdict MUST NOT mask
-		// the answer behind SERVFAIL. The AD bit is already cleared by
-		// the response-builder under CD=1, which communicates the
-		// non-validation state to the client; the data itself flows
-		// through unfiltered.
+		// Check for DNSSEC bogus — add EDE info code 6 by default, or a
+		// granular RFC 8914 §4 code when the validator pinpointed the
+		// cause (signature expired/not-yet-valid → 7/8, missing DNSKEY → 9,
+		// unsupported algorithm → 1, …). RFC 4035 §3.2.2 makes one
+		// exception: when the client sets CD=1 it has asked us to skip the
+		// validation gate, so a Bogus verdict MUST NOT mask the answer
+		// behind SERVFAIL. The AD bit is already cleared by the response-
+		// builder under CD=1, which communicates the non-validation state
+		// to the client; the data itself flows through unfiltered.
 		if result != nil && result.DNSSECStatus == "bogus" && !msg.Header.CD() && msg.EDNS0 != nil {
-			bogusResp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, dns.EDECodeDNSSECBogus, "DNSSEC validation failure")
+			edeCode, edeText := bogusReasonToEDE(result.DNSSECReason)
+			bogusResp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, edeCode, edeText)
 			if buildErr == nil {
 				h.metrics.IncResponses("SERVFAIL")
 				return bogusResp, nil

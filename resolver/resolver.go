@@ -56,7 +56,14 @@ type ResolveResult struct {
 	Additional   []dns.ResourceRecord
 	RCODE        uint8
 	DNSSECStatus string // "secure", "insecure", "bogus", ""
-	Error        error  // underlying error if resolution failed
+	// DNSSECReason carries a stable token classifying the cause when
+	// DNSSECStatus is "bogus" or "insecure" due to a specific RFC condition.
+	// The server uses it to pick a granular RFC 8914 EDE info code
+	// (signature-expired → 7, dnskey-missing → 9, etc.) instead of always
+	// emitting the generic EDE 6. Empty string when no specific cause is
+	// recorded. See dnssec.FailureReason.
+	DNSSECReason string
+	Error        error // underlying error if resolution failed
 
 	// UpstreamECS is the EDNS Client Subnet option that the authoritative
 	// (or forward) server included in its response, if any. The SCOPE
@@ -537,7 +544,7 @@ func (r *Resolver) resolveIterativeFromInner(
 				UpstreamECS: extractResponseECS(response),
 			}
 			if r.dnssecValidator != nil && !skipValidation {
-				vr := r.dnssecValidator.ValidateResponse(response, name, qtype)
+				vr, reason := r.dnssecValidator.ValidateResponseWithReason(response, name, qtype)
 				switch vr {
 				case dnssec.Secure:
 					r.metrics.IncDNSSECSecure()
@@ -545,11 +552,17 @@ func (r *Resolver) resolveIterativeFromInner(
 				case dnssec.Insecure:
 					r.metrics.IncDNSSECInsecure()
 					result.DNSSECStatus = "insecure"
+					result.DNSSECReason = reason.String()
 				case dnssec.Bogus:
 					r.metrics.IncDNSSECBogus()
-					return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
+					return &ResolveResult{
+						RCODE:        dns.RCodeServFail,
+						DNSSECStatus: "bogus",
+						DNSSECReason: reason.String(),
+					}, nil
 				default:
 					result.DNSSECStatus = "insecure"
+					result.DNSSECReason = reason.String()
 				}
 			}
 			return result, nil
@@ -571,10 +584,15 @@ func (r *Resolver) resolveIterativeFromInner(
 			// AD set only if every RRset in the answer is Authentic).
 			cnameVerdict := dnssec.Insecure
 			if r.dnssecValidator != nil && !skipValidation {
-				cnameVerdict = r.dnssecValidator.ValidateResponse(response, name, dns.TypeCNAME)
+				var cnameReason dnssec.FailureReason
+				cnameVerdict, cnameReason = r.dnssecValidator.ValidateResponseWithReason(response, name, dns.TypeCNAME)
 				if cnameVerdict == dnssec.Bogus {
 					r.metrics.IncDNSSECBogus()
-					return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
+					return &ResolveResult{
+						RCODE:        dns.RCodeServFail,
+						DNSSECStatus: "bogus",
+						DNSSECReason: cnameReason.String(),
+					}, nil
 				}
 			}
 
@@ -615,10 +633,15 @@ func (r *Resolver) resolveIterativeFromInner(
 			// redirect the entire subtree below the owner.
 			dnameVerdict := dnssec.Insecure
 			if r.dnssecValidator != nil && !skipValidation {
-				dnameVerdict = r.dnssecValidator.ValidateResponse(response, name, dns.TypeDNAME)
+				var dnameReason dnssec.FailureReason
+				dnameVerdict, dnameReason = r.dnssecValidator.ValidateResponseWithReason(response, name, dns.TypeDNAME)
 				if dnameVerdict == dnssec.Bogus {
 					r.metrics.IncDNSSECBogus()
-					return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
+					return &ResolveResult{
+						RCODE:        dns.RCodeServFail,
+						DNSSECStatus: "bogus",
+						DNSSECReason: dnameReason.String(),
+					}, nil
 				}
 			}
 
@@ -638,9 +661,22 @@ func (r *Resolver) resolveIterativeFromInner(
 			// not produced by signers (RFC 6672 §5.3) but if the upstream
 			// included one we preserve it.
 			var dnameRRs []dns.ResourceRecord
+			var sawCNAMEForQname bool
+			var dnameTTL uint32
+			lowerName := strings.ToLower(name)
 			for _, rr := range response.Answers {
-				if rr.Type == dns.TypeDNAME || rr.Type == dns.TypeCNAME {
+				if rr.Type == dns.TypeDNAME {
 					dnameRRs = append(dnameRRs, rr)
+					if dnameTTL == 0 {
+						dnameTTL = rr.TTL
+					}
+					continue
+				}
+				if rr.Type == dns.TypeCNAME {
+					dnameRRs = append(dnameRRs, rr)
+					if strings.ToLower(rr.Name) == lowerName {
+						sawCNAMEForQname = true
+					}
 					continue
 				}
 				if rr.Type == dns.TypeRRSIG {
@@ -649,6 +685,28 @@ func (r *Resolver) resolveIterativeFromInner(
 						parsed.TypeCovered == dns.TypeCNAME) {
 						dnameRRs = append(dnameRRs, rr)
 					}
+				}
+			}
+			// RFC 6672 §5.3: when the upstream answers with a DNAME but
+			// omits the companion synthesized CNAME, the resolver must
+			// synthesize one before passing the chain to the client.
+			// Without this, stub resolvers and downstream applications that
+			// only know how to follow CNAME aliases (the common case) cannot
+			// finish the redirection and the lookup fails. The TTL is
+			// inherited from the DNAME RR (RFC 6672 §5.3.3); the synthesized
+			// CNAME is intentionally NOT signed — RFC 6672 §3.2 forbids
+			// signing it because the DNAME RRSIG already authenticates the
+			// substitution rule.
+			if !sawCNAMEForQname && dnameTTL > 0 {
+				if rdata, err := dns.EncodeNameToBytes(target); err == nil {
+					dnameRRs = append(dnameRRs, dns.ResourceRecord{
+						Name:     name,
+						Type:     dns.TypeCNAME,
+						Class:    qclass,
+						TTL:      dnameTTL,
+						RDLength: uint16(len(rdata)),
+						RData:    rdata,
+					})
 				}
 			}
 			result.Answers = append(dnameRRs, result.Answers...)
