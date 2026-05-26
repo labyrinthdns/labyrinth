@@ -178,6 +178,47 @@ func (r *Resolver) SetDNSSECAllowSHA1(allow bool) {
 	r.dnssecValidator.AllowSHA1(allow)
 }
 
+// supportedDNSSECAlgorithms returns the list of DNSKEY/RRSIG algorithm
+// numbers this resolver advertises in the RFC 6975 DAU option. The list
+// reflects what the validator will actually accept — RSASHA1 is omitted
+// unless the operator has explicitly opted into SHA-1 acceptance, and
+// ED448 (alg 16) is omitted because Go's stdlib has no verifier and we
+// don't carry an external crypto dep.
+func (r *Resolver) supportedDNSSECAlgorithms() []uint8 {
+	algs := []uint8{
+		dns.AlgRSASHA256,
+		dns.AlgRSASHA512,
+		dns.AlgECDSAP256,
+		dns.AlgECDSAP384,
+		dns.AlgED25519,
+	}
+	if r.dnssecValidator != nil && r.dnssecValidator.SHA1Allowed() {
+		algs = append(algs, dns.AlgRSASHA1)
+	}
+	return algs
+}
+
+// supportedDSDigests returns the DS digest type numbers this resolver
+// accepts (RFC 6975 DHU option payload). SHA-1 is conditionally included
+// per the same allowSHA1 gate used by the validator.
+func (r *Resolver) supportedDSDigests() []uint8 {
+	digests := []uint8{
+		dns.DigestSHA256,
+		dns.DigestSHA384,
+	}
+	if r.dnssecValidator != nil && r.dnssecValidator.SHA1Allowed() {
+		digests = append(digests, dns.DigestSHA1)
+	}
+	return digests
+}
+
+// supportedNSEC3Hashes returns the NSEC3 hash algorithm numbers this
+// resolver accepts (RFC 6975 N3U option payload). Only SHA-1 (algorithm
+// 1) is currently defined for NSEC3 (RFC 5155 §8) so the list is fixed.
+func (r *Resolver) supportedNSEC3Hashes() []uint8 {
+	return []uint8{1}
+}
+
 // QueryDNSSEC fetches a DNS record for DNSSEC chain validation. It satisfies
 // the dnssec.Querier interface used by the validator to fetch DNSKEY and DS
 // records.

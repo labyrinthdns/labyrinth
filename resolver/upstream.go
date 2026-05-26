@@ -110,16 +110,31 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		// than from global state. This is the fix for the previous
 		// activeECS atomic.Pointer design which leaked one client's subnet
 		// onto another's outbound query under concurrency.
-		var ecsOptions []dns.EDNSOption
+		var ednsOpts []dns.EDNSOption
 		if r.config.ECSEnabled && clientECS != nil {
 			// RFC 7871 §6: outgoing queries set SCOPE PREFIX-LENGTH = 0.
 			outgoing := *clientECS
 			outgoing.ScopePrefixLen = 0
-			ecsOptions = append(ecsOptions, dns.BuildECS(&outgoing))
+			ednsOpts = append(ednsOpts, dns.BuildECS(&outgoing))
 		}
-		if len(ecsOptions) > 0 {
+		// RFC 6975: advertise the DNSSEC algorithms / DS digest types /
+		// NSEC3 hash algorithms this resolver can validate. Multi-signed
+		// zones (key rollovers, dual-algorithm publishing) use this to
+		// pick which signature to ship — without DAU they must include
+		// every signature, inflating both the response and the resolver's
+		// amplification footprint. Only emitted when DNSSEC is enabled
+		// (DO bit set), since RFC 6975 §2 ties the option to validating
+		// queries.
+		if r.config.DNSSECEnabled {
+			ednsOpts = append(ednsOpts,
+				dns.BuildDAUOption(r.supportedDNSSECAlgorithms()),
+				dns.BuildDHUOption(r.supportedDSDigests()),
+				dns.BuildN3UOption(r.supportedNSEC3Hashes()),
+			)
+		}
+		if len(ednsOpts) > 0 {
 			query.Additional = []dns.ResourceRecord{
-				dns.BuildOPTWithOptions(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled, ecsOptions),
+				dns.BuildOPTWithOptions(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled, ednsOpts),
 			}
 		} else {
 			query.Additional = []dns.ResourceRecord{

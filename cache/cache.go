@@ -259,9 +259,17 @@ func (c *Cache) StoreWithStatus(name string, qtype uint16, class uint16, answers
 	ttl := c.extractTTL(answers)
 	ttl = c.clampTTL(ttl)
 
+	clonedAnswers := cloneRRs(answers)
+	clonedAuthority := cloneRRs(authority)
+	// RFC 2181 §5.2: all records within an RRset share a single TTL —
+	// the minimum, if the wire copy diverges. Apply on the cloned copy
+	// so the caller's slice is untouched.
+	normalizeRRSetTTLs(clonedAnswers)
+	normalizeRRSetTTLs(clonedAuthority)
+
 	entry := &Entry{
-		Records:      cloneRRs(answers),
-		Authority:    cloneRRs(authority),
+		Records:      clonedAnswers,
+		Authority:    clonedAuthority,
 		InsertedAt:   time.Now(),
 		OrigTTL:      ttl,
 		DNSSECStatus: dnssecStatus,
@@ -301,9 +309,14 @@ func (c *Cache) StoreWithECSStatus(
 	ttl := c.extractTTL(answers)
 	ttl = c.clampTTL(ttl)
 
+	clonedAnswers := cloneRRs(answers)
+	clonedAuthority := cloneRRs(authority)
+	normalizeRRSetTTLs(clonedAnswers)
+	normalizeRRSetTTLs(clonedAuthority)
+
 	entry := &Entry{
-		Records:      cloneRRs(answers),
-		Authority:    cloneRRs(authority),
+		Records:      clonedAnswers,
+		Authority:    clonedAuthority,
 		InsertedAt:   time.Now(),
 		OrigTTL:      ttl,
 		DNSSECStatus: dnssecStatus,
@@ -785,4 +798,47 @@ func cloneRRs(rrs []dns.ResourceRecord) []dns.ResourceRecord {
 		}
 	}
 	return cloned
+}
+
+// normalizeRRSetTTLs enforces RFC 2181 §5.2: "If any of the records in the
+// [RR]set have different TTLs, then a receiver must either ignore some of
+// those records or treat them as if they all had the same TTL — the lowest
+// of those TTLs." We pick the lowest. RRsets are grouped by (name, type,
+// class) — the canonical definition — so that a response carrying a CNAME
+// chain whose individual rrsets have different TTLs is normalized
+// per-rrset, not collapsed into one global minimum.
+//
+// Records pass through unchanged when an rrset has only one entry or when
+// all entries already share a TTL. This protects against the long-tail
+// authoritative misbehaviour where an admin manually edits one TTL and
+// forgets the others; rather than honour the highest (potentially attacker-
+// controlled) value we honour the most conservative one in the rrset.
+//
+// The input slice is mutated in place after cloneRRs has already produced
+// an owned copy — there is no aliasing back to the caller.
+func normalizeRRSetTTLs(rrs []dns.ResourceRecord) {
+	type rrsetKey struct {
+		name  string
+		rtype uint16
+		class uint16
+	}
+	minTTL := make(map[rrsetKey]uint32)
+	for _, rr := range rrs {
+		k := rrsetKey{
+			name:  strings.ToLower(strings.TrimSuffix(rr.Name, ".")),
+			rtype: rr.Type,
+			class: rr.Class,
+		}
+		if cur, ok := minTTL[k]; !ok || rr.TTL < cur {
+			minTTL[k] = rr.TTL
+		}
+	}
+	for i := range rrs {
+		k := rrsetKey{
+			name:  strings.ToLower(strings.TrimSuffix(rrs[i].Name, ".")),
+			rtype: rrs[i].Type,
+			class: rrs[i].Class,
+		}
+		rrs[i].TTL = minTTL[k]
+	}
 }
