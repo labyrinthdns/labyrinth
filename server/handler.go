@@ -852,9 +852,27 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		resp = appendECSToResponse(resp, &echo)
 	}
 
-	// Add EDE for SERVFAIL (no reachable authority) if client supports EDNS0
+	// Add EDE info code for SERVFAIL when the cause was tagged by the
+	// resolver. "no-reachable-authority" → EDE 22 (RFC 8914 §4.22) with a
+	// human-readable hint so operators can tell the difference between
+	// "our resolver is broken" and "every NS in the delegation refused".
+	// This is the typical broken-reverse-zone shape (in-addr.arpa parent
+	// publishes NS for a /24 whose actual operators never set up real
+	// auth) — retry from the client is hopeless, the fix is upstream.
 	if result.RCODE == dns.RCodeServFail && msg.EDNS0 != nil {
-		resp = h.addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority, "")
+		switch result.FailureReason {
+		case "no-reachable-authority":
+			resp = h.addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority,
+				"all authoritative nameservers refused or were unreachable")
+		default:
+			// Keep EDE 22 as the conservative default for non-DNSSEC,
+			// non-network SERVFAILs — matches the prior behaviour and is
+			// the most common cause in practice. Generic text so a
+			// downstream parser doesn't mistake the empty-message for a
+			// crafted signal.
+			resp = h.addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority,
+				"resolver could not produce an authoritative answer")
+		}
 	}
 
 	// Add cookie response if client sent a cookie option

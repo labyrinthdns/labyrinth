@@ -311,11 +311,58 @@ func (r *Resolver) traceIterative(
 
 	currentZone := initialZone
 	nameservers := initialNS
+	// pendingNSHostnames holds NS hostnames from the most recent delegation
+	// whose addresses we have NOT yet tried. When the current `nameservers`
+	// IP list exhausts on REFUSED/ServFail (the broken-rDNS-delegation
+	// shape: one glue'd NS rejects, three NS hostnames remain unresolved),
+	// the loop drains this list one hostname at a time before declaring
+	// "no reachable nameserver". This brings the trace path's exhaustion
+	// behaviour in line with production `selectAndResolveNS` — previously
+	// the trace gave up after the first failure and misled operators into
+	// thinking the resolver itself was broken.
+	var pendingNSHostnames []string
 	var lastErr error
 
 	for depth := 0; depth < maxDepth; depth++ {
 		if err := t.ctxErr(); err != nil {
 			return nil, err
+		}
+
+		// When the IP list is empty but unresolved NS hostnames remain from
+		// the latest delegation, resolve one (A first, AAAA on failure) and
+		// keep iterating. RFC 1034 §4.3.2: try every authoritative server in
+		// the delegation before concluding the chain is dead.
+		for len(nameservers) == 0 && len(pendingNSHostnames) > 0 {
+			next := pendingNSHostnames[0]
+			pendingNSHostnames = pendingNSHostnames[1:]
+			t.emit("ns-resolve", TraceStatusInfo, fmt.Sprintf("resolving NS hostname %q (no glue)", next), map[string]any{
+				"hostname": next,
+				"zone":     currentZone,
+			})
+			res, err := r.resolveNSAddr(next, dns.TypeA)
+			if err == nil && res != nil {
+				for _, rr := range res.Answers {
+					if rr.Type == dns.TypeA {
+						if ip, perr := dns.ParseA(rr.RData); perr == nil {
+							nameservers = append(nameservers, ip.String())
+						}
+					}
+				}
+			}
+			if len(nameservers) > 0 {
+				break
+			}
+			// Try AAAA before moving on.
+			res, err = r.resolveNSAddr(next, dns.TypeAAAA)
+			if err == nil && res != nil {
+				for _, rr := range res.Answers {
+					if rr.Type == dns.TypeAAAA {
+						if ip, perr := dns.ParseAAAA(rr.RData); perr == nil {
+							nameservers = append(nameservers, ip.String())
+						}
+					}
+				}
+			}
 		}
 
 		if len(nameservers) == 0 {
@@ -468,12 +515,14 @@ func (r *Resolver) traceIterative(
 
 			nsIPs := make([]string, 0, len(newNS))
 			nsNames := make([]string, 0, len(newNS))
+			glueOwners := make(map[string]struct{}, len(newNS))
 			for _, d := range newNS {
 				nsNames = append(nsNames, d.Hostname)
 				if d.IPv4 != "" {
 					// Glue IPv4 in the delegation table is already a printable
 					// dotted-quad string, not a 4-byte slice.
 					nsIPs = append(nsIPs, d.IPv4)
+					glueOwners[strings.ToLower(d.Hostname)] = struct{}{}
 				}
 			}
 			// If no glue, resolve at least one NS via cache/recursion so
@@ -489,10 +538,22 @@ func (r *Resolver) traceIterative(
 							}
 						}
 						if len(nsIPs) > 0 {
+							glueOwners[strings.ToLower(ns.Hostname)] = struct{}{}
 							break
 						}
 					}
 				}
+			}
+
+			// Remember the NS hostnames we have NOT yet resolved so the
+			// exhaustion path can fall back to them when the primary IPs
+			// REFUSE/ServFail (RFC 1034 §4.3.2: try every authoritative).
+			pendingNSHostnames = pendingNSHostnames[:0]
+			for _, d := range newNS {
+				if _, used := glueOwners[strings.ToLower(d.Hostname)]; used {
+					continue
+				}
+				pendingNSHostnames = append(pendingNSHostnames, d.Hostname)
 			}
 
 			t.emit("delegation", TraceStatusOK, fmt.Sprintf("referred to zone %q with %d NS (%d glue)", zone, len(newNS), len(nsIPs)), map[string]any{
