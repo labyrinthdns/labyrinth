@@ -513,11 +513,21 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	// RFC 6891 §6.1.1: "If a query message with more than one OPT RR is
 	// received, a FORMERR (RCODE=1) MUST be returned." Our wire parser
 	// keeps only the first OPT, so without this guard a multi-OPT query
-	// would silently proceed.
+	// would silently proceed. RFC 6891 §6.1.2 also pins the OPT owner
+	// name to the root: "The fixed part of an OPT RR is structured as
+	// follows: NAME — domain name — MUST be 0 (root domain)." A non-root
+	// owner is a structural malformation and must be rejected with
+	// FORMERR — accepting it would let a buggy or hostile client smuggle
+	// arbitrary names through the pseudo-RR.
 	optCount := 0
 	for _, rr := range msg.Additional {
-		if rr.Type == dns.TypeOPT {
-			optCount++
+		if rr.Type != dns.TypeOPT {
+			continue
+		}
+		optCount++
+		if rr.Name != "" && rr.Name != "." {
+			h.metrics.IncResponses("FORMERR")
+			return h.buildError(query, dns.RCodeFormErr)
 		}
 	}
 	if optCount > 1 {

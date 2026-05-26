@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.16] - 2026-05-27
+
+### Fixed
+- **Weaker DS digest types were considered alongside stronger ones for the same key** (RFC 4509 §3 / RFC 6840 §5.2 violation) — the spec is explicit: "If the DS RRset of a delegation contains multiple records with different digest types, a signed DNSKEY RRset is validated if it is validated by at least one of the records that uses the algorithm with the highest value among the supported ones." A pre-fix validator running with `dnssec.allow_sha1 = true` (operator policy for legacy zones) would accept a SHA-1 DS match even when a SHA-256 DS for the same key was also published — a SHA-1 collision against the same key tag + algorithm could chain to a key the operator would never have accepted under SHA-256. The fix adds `strongestDSDigestForKey` in [dnssec/validator.go](dnssec/validator.go) and wires it into both `verifyDNSKEYWithDS` and `verifyAgainstTrustAnchors`; DS digest types are now selected per (key tag, algorithm) and only the strongest supported one is honoured. Pin tests [dnssec/rfc4509_strongest_ds_test.go](dnssec/rfc4509_strongest_ds_test.go).
+- **OPT pseudo-RR with non-root owner was silently accepted** (RFC 6891 §6.1.2: "NAME — domain name — MUST be 0 (root domain)") — a buggy or hostile client could smuggle arbitrary names through the EDNS OPT, potentially confusing log pipelines, ACL paths keyed on RR name, or downstream EDNS option parsers that assume owner == root. The Handle gate in [server/handler.go](server/handler.go) now FORMERRs any OPT whose owner is not the root, alongside the pre-existing multi-OPT FORMERR (RFC 6891 §6.1.1). Pin test [server/rfc6891_opt_owner_test.go](server/rfc6891_opt_owner_test.go).
+- **Responses with multiple CNAME RRs at a single owner were silently accepted** (RFC 2181 §10.1 violation) — "There may be only one such [CNAME] record per domain name." The pre-fix classifier set `hasCNAME = true` without counting, and `extractCNAMETarget` returned the first match. A malicious or misconfigured authoritative could attach a forged second CNAME to a legitimate response, redirecting the chain to attacker-controlled infrastructure. The classifier in [resolver/classify.go](resolver/classify.go) now counts CNAMEs at qname and returns `responseServFail` when more than one is present, forcing the iterative loop to try a sibling nameserver. Pin test [resolver/rfc2181_cname_test.go](resolver/rfc2181_cname_test.go).
+
 ## [0.6.15] - 2026-05-26
 
 ### Fixed

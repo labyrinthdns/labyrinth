@@ -793,8 +793,19 @@ func (v *Validator) verifyDSDenial(childZone, parentZone string, parentKeys []dn
 
 // verifyAgainstTrustAnchors checks if any DNSKEY for the root zone matches
 // one of the configured trust anchors. Trust-anchor DS records using digest
-// types we reject by policy (e.g. SHA1) are skipped.
+// types we reject by policy (e.g. SHA1) are skipped. RFC 4509 §3: when the
+// trust-anchor set carries multiple digest types for the same key tag +
+// algorithm, only the strongest supported digest is consulted — otherwise
+// a SHA-1 collision could let an attacker chain to a key the operator
+// would never have accepted under the stronger SHA-256 anchor.
 func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.ResourceRecord) bool {
+	// Materialise pointers once so the strongest-digest helper can scan
+	// the same list. The variable scope is intentionally short to limit
+	// the allocation footprint to this verify pass.
+	anchorPtrs := make([]*dns.DSRecord, 0, len(v.trustAnchors))
+	for i := range v.trustAnchors {
+		anchorPtrs = append(anchorPtrs, &v.trustAnchors[i])
+	}
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
 		if err != nil {
@@ -808,8 +819,13 @@ func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.Resourc
 		if dnskey.IsRevoked() {
 			continue
 		}
+		strongest := strongestDSDigestForKey(anchorPtrs, dnskey.KeyTag(), dnskey.Algorithm, v)
 		for _, anchor := range v.trustAnchors {
 			if v.isWeakDSDigest(anchor.DigestType) {
+				continue
+			}
+			if anchor.KeyTag == dnskey.KeyTag() && anchor.Algorithm == dnskey.Algorithm &&
+				strongest != 0 && anchor.DigestType != strongest {
 				continue
 			}
 			if VerifyDS(dnskey, &anchor, zone) {
@@ -820,9 +836,41 @@ func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.Resourc
 	return false
 }
 
+// strongestDSDigestForKey returns the most-trusted supported DS digest
+// type present among `dsRecords` for the given (keyTag, algorithm) pair.
+// RFC 4509 §3 mandates the "highest value among the supported ones" rule;
+// the digest-type numbers were assigned in ascending strength, so a
+// simple max over the supported subset is the correct selection. Returns
+// 0 when no DS for this key has a supported digest — caller should leave
+// the (now empty) supported set alone and the verify loop falls through.
+func strongestDSDigestForKey(dsRecords []*dns.DSRecord, keyTag uint16, algorithm uint8, v *Validator) uint8 {
+	var best uint8
+	for _, ds := range dsRecords {
+		if ds == nil {
+			continue
+		}
+		if ds.KeyTag != keyTag || ds.Algorithm != algorithm {
+			continue
+		}
+		if v.isWeakDSDigest(ds.DigestType) {
+			continue
+		}
+		if ds.DigestType > best {
+			best = ds.DigestType
+		}
+	}
+	return best
+}
+
 // verifyDNSKEYWithDS checks if any DNSKEY (specifically KSK) matches any
 // of the provided DS records. DS records with digest types rejected by
 // policy (e.g. SHA1) are skipped to prevent algorithm-downgrade attacks.
+// RFC 4509 §3 / RFC 6840 §5.2: when the parent publishes multiple DS RRs
+// for the same key tag + algorithm with different digest types, the
+// validator MUST use the strongest supported digest and ignore weaker
+// siblings — otherwise an attacker who can break SHA-1 (collision attack)
+// can craft a key matching the SHA-1 DS even though a SHA-256 DS exists.
+// strongestDSDigestForKey computes the per-(keytag,algorithm) ceiling.
 func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord, ownerName string) bool {
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
@@ -840,8 +888,16 @@ func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords [
 		if dnskey.IsRevoked() {
 			continue
 		}
+		strongest := strongestDSDigestForKey(dsRecords, dnskey.KeyTag(), dnskey.Algorithm, v)
 		for _, ds := range dsRecords {
 			if v.isWeakDSDigest(ds.DigestType) {
+				continue
+			}
+			// RFC 4509 §3: among the DS RRs that target this key, only
+			// the strongest supported digest type may be used. Lower
+			// digest types for the SAME key are now downgrade chaff.
+			if ds.KeyTag == dnskey.KeyTag() && ds.Algorithm == dnskey.Algorithm &&
+				strongest != 0 && ds.DigestType != strongest {
 				continue
 			}
 			if VerifyDS(dnskey, ds, ownerName) {
