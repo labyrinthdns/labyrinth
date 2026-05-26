@@ -322,3 +322,265 @@ func HasType(nsec3 *dns.NSEC3Record, rrtype uint16) bool {
 	}
 	return false
 }
+
+// nsec3OptOut reports whether the opt-out flag (RFC 5155 §3.1.2.1, bit 0
+// of the Flags field) is set. An opt-out NSEC3 may span unsigned delegation
+// names that the zone owner chose not to enumerate; such a record cannot
+// be used as proof that a name within its hash interval does not exist —
+// the name might exist as an unsigned delegation.
+func nsec3OptOut(rec *dns.NSEC3Record) bool {
+	return rec.Flags&0x01 != 0
+}
+
+// findNSEC3Match returns the first NSEC3 whose owner hash exactly equals
+// the given hash, or nil if none match. "Matching" (as opposed to
+// "covering") proves that a name with that hash exists in the zone.
+func findNSEC3Match(records []NSEC3RecordWithOwner, hash []byte) *NSEC3RecordWithOwner {
+	for i := range records {
+		if compareHashes(records[i].OwnerHash, hash) == 0 {
+			return &records[i]
+		}
+	}
+	return nil
+}
+
+// findNSEC3Cover returns the first NSEC3 whose half-open interval
+// (OwnerHash, NextHash] covers the given hash. "Covering" proves that
+// no name with that hash exists in the zone (because the hash falls
+// in a gap between two enumerated owner hashes).
+func findNSEC3Cover(records []NSEC3RecordWithOwner, hash []byte) *NSEC3RecordWithOwner {
+	for i := range records {
+		if coversHashFull(records[i].OwnerHash, records[i].NextHash, hash) {
+			return &records[i]
+		}
+	}
+	return nil
+}
+
+// canonicalQName lowercases qname and strips any trailing dot, normalising
+// to the form ComputeNSEC3Hash expects to re-append.
+func canonicalQName(name string) string {
+	return strings.ToLower(strings.TrimSuffix(name, "."))
+}
+
+// ancestorsOf returns the dot-separated ancestors of name, ordered from
+// the deepest (parent) to the shallowest (root). For "a.b.example.com" it
+// returns ["b.example.com", "example.com", "com", ""]. The root is represented
+// by the empty string so callers can detect it cheaply.
+func ancestorsOf(name string) []string {
+	name = canonicalQName(name)
+	if name == "" {
+		return nil
+	}
+	out := make([]string, 0, strings.Count(name, ".")+1)
+	for {
+		dot := strings.IndexByte(name, '.')
+		if dot < 0 {
+			out = append(out, "")
+			return out
+		}
+		name = name[dot+1:]
+		out = append(out, name)
+	}
+}
+
+// VerifyNSEC3Denial5155 verifies a NXDOMAIN or NODATA denial proof per
+// RFC 5155 §8.4–8.7 and RFC 6840 §4.8. Unlike the loose VerifyNSEC3DenialFull
+// (which only checks that some NSEC3 covers H(qname) and is correct only for
+// the next-closer-coverage step in isolation), this function requires the
+// full three-record proof for NXDOMAIN:
+//
+//  1. Closest-encloser MATCH: an NSEC3 whose owner hash equals H(CE), where
+//     CE is the deepest ancestor of qname proven to exist.
+//  2. Next-closer COVER: an NSEC3 whose interval contains H(next_closer),
+//     where next_closer is CE's immediate child label on the path to qname.
+//  3. Wildcard-at-CE COVER: an NSEC3 whose interval contains H(*.CE), proving
+//     that the synthetic wildcard does not exist either.
+//
+// For NODATA the function accepts either:
+//
+//   - Direct NODATA: an NSEC3 matching H(qname) whose type bitmap omits qtype
+//     (and CNAME).
+//   - Wildcard NODATA: CE-match + NC-cover + wildcard-MATCH whose bitmap omits
+//     qtype.
+//
+// Opt-out semantics (RFC 5155 §6): if the next-closer-covering NSEC3 has the
+// opt-out flag set, the next closer name could be an unsigned delegation,
+// and the NXDOMAIN proof is therefore inconclusive (return false). A caller
+// receiving false here treats the response as Bogus (signed denial without a
+// verifiable proof) rather than Secure NXDOMAIN.
+//
+// Without this strict layering, a forged single covering NSEC3 over H(qname)
+// can fake NXDOMAIN for any name whose true closest-encloser differs from
+// what the attacker claims — exactly the proof-substitution attack RFC 5155
+// is designed to prevent.
+func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NSEC3RecordWithOwner) (bool, error) {
+	if len(records) == 0 {
+		return false, errNoNSEC3Records
+	}
+	// RFC 9276 §3.2: apply the iteration cap to every record, not just
+	// records[0] — an attacker mixing a low-iteration record with high-
+	// iteration siblings must not slip past with the slowest one in the
+	// proof.
+	for i := range records {
+		if records[i].Iterations > MaxNSEC3Iterations {
+			return false, errTooManyIterations
+		}
+	}
+	rec := &records[0]
+	qname = canonicalQName(qname)
+
+	// Direct NODATA — NSEC3 at H(qname) with qtype absent. This is the
+	// simplest case and applies only when RCODE=NOERROR.
+	if rcode == dns.RCodeNoError {
+		qnameHash, err := ComputeNSEC3Hash(qname, rec.HashAlgorithm, rec.Iterations, rec.Salt)
+		if err != nil {
+			return false, fmt.Errorf("computing NSEC3 hash for qname: %w", err)
+		}
+		if m := findNSEC3Match(records, qnameHash); m != nil {
+			if !HasType(&m.NSEC3Record, qtype) && !HasType(&m.NSEC3Record, dns.TypeCNAME) {
+				return true, nil
+			}
+			// Owner-match with qtype present means the type DOES exist —
+			// the response is misclassified as NODATA. Fall through to
+			// the wildcard-NODATA path to be safe.
+		}
+	}
+
+	// Find the closest encloser by walking ancestors of qname upward and
+	// looking for an NSEC3 owner-match. The FIRST (deepest) match is the
+	// CE; everything below it is unproven.
+	ancestors := ancestorsOf(qname)
+	var ce string
+	var nc string
+	found := false
+	prev := qname
+	for _, ancestor := range ancestors {
+		ancestorWithDot := ancestor
+		if ancestor == "" {
+			ancestorWithDot = "."
+		}
+		h, err := ComputeNSEC3Hash(ancestorWithDot, rec.HashAlgorithm, rec.Iterations, rec.Salt)
+		if err != nil {
+			return false, fmt.Errorf("computing NSEC3 hash for ancestor %q: %w", ancestor, err)
+		}
+		if findNSEC3Match(records, h) != nil {
+			ce = ancestor
+			nc = prev
+			found = true
+			break
+		}
+		prev = ancestor
+	}
+	if !found {
+		return false, nil
+	}
+
+	// Verify next-closer is covered.
+	ncWithDot := nc
+	if ncWithDot == "" {
+		ncWithDot = "."
+	} else {
+		ncWithDot = nc + "."
+	}
+	ncHash, err := ComputeNSEC3Hash(ncWithDot, rec.HashAlgorithm, rec.Iterations, rec.Salt)
+	if err != nil {
+		return false, fmt.Errorf("computing NSEC3 hash for next-closer %q: %w", nc, err)
+	}
+	ncRec := findNSEC3Cover(records, ncHash)
+	if ncRec == nil {
+		return false, nil
+	}
+	// RFC 5155 §6: opt-out at the NC-covering NSEC3 makes NXDOMAIN proof
+	// inconclusive — the NC name may exist as an unsigned delegation.
+	// For NODATA we still accept it because the lower bound on validation
+	// is "the type doesn't exist", not "the name doesn't exist".
+	if rcode == dns.RCodeNXDomain && nsec3OptOut(&ncRec.NSEC3Record) {
+		return false, nil
+	}
+
+	// Verify wildcard at CE.
+	wcCanonical := "*"
+	if ce != "" {
+		wcCanonical = "*." + ce
+	}
+	wcHash, err := ComputeNSEC3Hash(wcCanonical+".", rec.HashAlgorithm, rec.Iterations, rec.Salt)
+	if err != nil {
+		return false, fmt.Errorf("computing NSEC3 hash for wildcard %q: %w", wcCanonical, err)
+	}
+
+	if rcode == dns.RCodeNXDomain {
+		if findNSEC3Cover(records, wcHash) != nil {
+			return true, nil
+		}
+		return false, nil
+	}
+
+	// NODATA via wildcard expansion: wildcard exists (owner-match) but
+	// lacks qtype.
+	if wcMatch := findNSEC3Match(records, wcHash); wcMatch != nil {
+		if !HasType(&wcMatch.NSEC3Record, qtype) && !HasType(&wcMatch.NSEC3Record, dns.TypeCNAME) {
+			return true, nil
+		}
+	}
+	// Or: wildcard does not exist (covered). This applies when the
+	// authoritative is asserting NODATA via a synthesised wildcard that
+	// itself was denied.
+	if findNSEC3Cover(records, wcHash) != nil {
+		return true, nil
+	}
+	return false, nil
+}
+
+// VerifyNSEC3DenialDSAbsent verifies an NSEC3 proof that the queried zone
+// has no DS record at its parent — required for authenticating "insecure
+// delegation" responses (RFC 5155 §10.4). Three forms are accepted:
+//
+//   - NSEC3 at H(childZone) with DS absent from the bitmap (and NS present,
+//     so we're at a real delegation point rather than a synthesized empty
+//     name).
+//   - Opt-out next-closer-cover: the NC-covering NSEC3 has the opt-out
+//     flag set, asserting that the child is an unsigned delegation that
+//     the parent zone has not enumerated.
+//
+// The function returns true only when one of these proofs holds. A caller
+// that gets `true` from this function may safely treat the delegation as
+// Insecure; `false` means the denial of DS is unproven and the response
+// must NOT downgrade a previously-Secure chain to Insecure.
+func VerifyNSEC3DenialDSAbsent(childZone string, records []NSEC3RecordWithOwner) (bool, error) {
+	if len(records) == 0 {
+		return false, errNoNSEC3Records
+	}
+	for i := range records {
+		if records[i].Iterations > MaxNSEC3Iterations {
+			return false, errTooManyIterations
+		}
+	}
+	rec := &records[0]
+	childZone = canonicalQName(childZone)
+
+	// Direct: NSEC3 at H(childZone) with DS absent. We don't require NS
+	// presence here — the parent zone signs the delegation point and may
+	// or may not list NS in the parent-side NSEC3 bitmap, depending on
+	// the signer. The critical bit is DS absence.
+	childHash, err := ComputeNSEC3Hash(childZone+".", rec.HashAlgorithm, rec.Iterations, rec.Salt)
+	if err != nil {
+		return false, fmt.Errorf("computing NSEC3 hash for child zone: %w", err)
+	}
+	if m := findNSEC3Match(records, childHash); m != nil {
+		if !HasType(&m.NSEC3Record, dns.TypeDS) {
+			return true, nil
+		}
+		return false, nil
+	}
+
+	// Opt-out: an NSEC3 with opt-out flag covering H(childZone) proves
+	// the child is an unsigned delegation. Walk back to find the CE so
+	// we can identify which NSEC3 covers the next-closer (which in this
+	// case IS childZone itself — the deepest existing ancestor is the
+	// parent, so NC == childZone).
+	if c := findNSEC3Cover(records, childHash); c != nil && nsec3OptOut(&c.NSEC3Record) {
+		return true, nil
+	}
+	return false, nil
+}

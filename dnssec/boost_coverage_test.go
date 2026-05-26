@@ -605,9 +605,17 @@ func TestValidateDenialResponse_SecureWithNSEC3DenialProof(t *testing.T) {
 		},
 	}
 
+	// Pre-0.6.12 this returned Secure: a single wide-open NSEC3 covering
+	// H(qname) was accepted as proof of NXDOMAIN — exactly the proof-
+	// substitution attack RFC 5155 §8.4–8.7 are designed to prevent.
+	// Post-fix VerifyNSEC3Denial5155 requires the closest-encloser /
+	// next-closer / wildcard triplet; a lone covering NSEC3 is now
+	// classified as a signed-but-unproven denial → Bogus. The positive
+	// case (a properly constructed 3-record proof) is exercised by
+	// TestVerifyNSEC3Denial5155_NXDOMAIN_ProperProof in rfc_audit_test.go.
 	result := s.v.ValidateResponse(resp, "nonexist.example.com.", dns.TypeA)
-	if result != Secure {
-		t.Errorf("got %v, want Secure (NSEC3 denial proof)", result)
+	if result != Bogus {
+		t.Errorf("got %v, want Bogus (single-NSEC3 loose proof is no longer valid)", result)
 	}
 }
 

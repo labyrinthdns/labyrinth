@@ -69,7 +69,13 @@ type inflightFetch struct {
 	done chan struct{}
 	keys []dns.ResourceRecord
 	dss  []*dns.DSRecord
-	err  error
+	// denialAuth carries the authority section of an empty-DS response so
+	// the caller can authenticate the parent's denial of DS per
+	// RFC 4035 §5.2 / RFC 5155 §10.4. Without authenticated denial, an
+	// off-path attacker spoofing a NOERROR-empty DS answer can downgrade
+	// a previously-Secure child zone to Insecure.
+	denialAuth []dns.ResourceRecord
+	err        error
 }
 
 // Validator performs DNSSEC signature verification and trust chain validation.
@@ -465,6 +471,13 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 	// Build the chain of zones from root to the signer zone.
 	chain := buildZoneChain(zone)
 
+	// parentKeys holds the previous chain element's verified DNSKEY RRset.
+	// Required for authenticating the parent's denial-of-DS (RFC 4035 §5.2 /
+	// RFC 5155 §10.4) on the empty-DS path — without it, an off-path
+	// attacker spoofing a NOERROR-empty DS reply downgrades a secure child
+	// to Insecure for the lifetime of the (legitimate) cache miss.
+	var parentKeys []dns.ResourceRecord
+
 	for i, chainZone := range chain {
 		zoneKeys, err := v.fetchDNSKEYs(chainZone)
 		if err != nil {
@@ -483,7 +496,7 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 		} else {
 			// Non-root zone: fetch DS from parent and verify.
 			parentZone := chain[i-1]
-			dsRecords, err := v.fetchDS(chainZone, parentZone)
+			dsRecords, denialAuth, err := v.fetchDS(chainZone, parentZone)
 			if err != nil {
 				v.logger.Debug("failed to fetch DS records",
 					"zone", chainZone,
@@ -492,10 +505,19 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 				return Indeterminate
 			}
 			if len(dsRecords) == 0 {
-				// No DS at parent means insecure delegation.
-				v.logger.Debug("no DS records at parent, insecure delegation",
-					"zone", chainZone,
-					"parent", parentZone)
+				// RFC 4035 §5.2 / RFC 5155 §10.4: a NOERROR-empty DS
+				// response must be authenticated as denial-of-DS before
+				// it can downgrade the chain to Insecure. Without this
+				// check, a spoofed empty DS reply downgrades any secure
+				// child to Insecure for the cache lifetime.
+				ok := v.verifyDSDenial(chainZone, parentZone, parentKeys, denialAuth)
+				if !ok {
+					v.logger.Debug("empty DS response without authenticated denial — treating as Bogus",
+						"zone", chainZone, "parent", parentZone)
+					return Bogus
+				}
+				v.logger.Debug("authenticated insecure delegation",
+					"zone", chainZone, "parent", parentZone)
 				return Insecure
 			}
 
@@ -521,9 +543,189 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 				return Bogus
 			}
 		}
+		// Carry this iteration's verified DNSKEY rrset forward as the
+		// parent keys for the next chain element; needed by the
+		// empty-DS denial verification on the next hop.
+		parentKeys = zoneKeys
 	}
 
 	return Secure
+}
+
+// verifyDSDenial authenticates a NOERROR-empty DS response from the parent
+// zone. Without this check, an off-path attacker who wins the TXID/0x20
+// race for a single forged packet can inject an empty DS answer and
+// downgrade any previously-Secure child to Insecure for the lifetime of
+// the cache miss (RFC 4035 §5.2 / RFC 5155 §10.4 / RFC 6840 §5.9).
+//
+// The proof must be served from the parent's authority section and signed
+// by a key in parentKeys. Accepted forms:
+//
+//   - NSEC at the child's owner name whose type bitmap omits DS (and CNAME,
+//     and either includes NS or — for a same-zone NSEC — includes SOA).
+//   - NSEC3 at H(childZone) with DS absent from the bitmap.
+//   - NSEC3 covering H(childZone) with the opt-out flag set, asserting that
+//     the child is an unsigned delegation that the parent did not enumerate.
+//
+// Returns true only when at least one such proof is present AND signed by
+// parentKeys. A false return must be treated as Bogus by the caller (signed
+// chain with a forged/missing parent denial).
+func (v *Validator) verifyDSDenial(childZone, parentZone string, parentKeys []dns.ResourceRecord, authority []dns.ResourceRecord) bool {
+	// Defense in depth: if we have no parent keys (e.g. trust-anchor
+	// fast-path issue), refuse the denial — an unverified Insecure
+	// downgrade is what we are trying to prevent.
+	if len(parentKeys) == 0 {
+		return false
+	}
+
+	// Collect RRSIGs, NSEC, NSEC3 from the authority section, alongside the
+	// raw RR owner names needed for owner-aware RRset reconstruction.
+	var rrsigs []rrsigWithOwner
+	var nsec3WithOwners []NSEC3RecordWithOwner
+	var nsec3RRNames []string
+	var nsecWithOwners []NSECRecordWithOwner
+
+	for _, rr := range authority {
+		switch rr.Type {
+		case dns.TypeRRSIG:
+			parsed, err := dns.ParseRRSIG(rr.RData, 0)
+			if err != nil {
+				continue
+			}
+			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name})
+		case dns.TypeNSEC:
+			parsed, err := dns.ParseNSEC(rr.RData, 0)
+			if err != nil {
+				continue
+			}
+			nsecWithOwners = append(nsecWithOwners, NSECRecordWithOwner{
+				NSECRecord: *parsed,
+				OwnerName:  rr.Name,
+			})
+		case dns.TypeNSEC3:
+			parsed, err := dns.ParseNSEC3(rr.RData)
+			if err != nil {
+				continue
+			}
+			ownerHash, err := nsec3OwnerHashFromName(rr.Name)
+			if err != nil {
+				continue
+			}
+			nsec3WithOwners = append(nsec3WithOwners, NSEC3RecordWithOwner{
+				NSEC3Record: *parsed,
+				OwnerHash:   ownerHash,
+			})
+			nsec3RRNames = append(nsec3RRNames, rr.Name)
+		}
+	}
+
+	if len(rrsigs) == 0 {
+		// An unsigned empty DS reply cannot prove anything; this is the
+		// classic downgrade-attempt shape.
+		return false
+	}
+
+	// Validate each RRSIG against parentKeys, recording which (owner, type)
+	// rrsets have a verified signature. We refuse to use unauthenticated
+	// NSEC/NSEC3 records even if the math of their bitmap/coverage looks
+	// fine — the whole point of denial-of-DS authentication is that the
+	// signature is what blocks substitution.
+	type ownerTypeKey struct {
+		owner string
+		typ   uint16
+	}
+	authenticated := make(map[ownerTypeKey]bool)
+	skewI := int64(rrsigClockSkew / time.Second)
+	for _, rs := range rrsigs {
+		rrsig := rs.rrsig
+		if rrsig.TypeCovered != dns.TypeNSEC && rrsig.TypeCovered != dns.TypeNSEC3 {
+			continue
+		}
+		if v.isWeakRRSIGAlg(rrsig.Algorithm) || v.isUnsupportedRRSIGAlg(rrsig.Algorithm) {
+			continue
+		}
+		// Bailiwick — the RRSIG signer must be the parent zone (or root)
+		// to authenticate a denial-of-DS at the delegation point.
+		signer := strings.ToLower(strings.TrimSuffix(rrsig.SignerName, "."))
+		parent := strings.ToLower(strings.TrimSuffix(parentZone, "."))
+		if signer != parent {
+			continue
+		}
+		rrset := filterRRSetByOwner(authority, rrsig.TypeCovered, rs.owner)
+		if len(rrset) == 0 {
+			continue
+		}
+		nowI := time.Now().Unix()
+		incI := int64(rrsig.Inception)
+		expI := int64(rrsig.Expiration)
+		if nowI+skewI < incI || nowI > expI+skewI {
+			continue
+		}
+		dnskey, err := findMatchingDNSKEY(parentKeys, rrsig.KeyTag, rrsig.Algorithm)
+		if err != nil {
+			continue
+		}
+		if err := VerifyRRSIG(rrset, rrsig, dnskey); err == nil {
+			authenticated[ownerTypeKey{
+				owner: strings.ToLower(strings.TrimSuffix(rs.owner, ".")),
+				typ:   rrsig.TypeCovered,
+			}] = true
+		}
+	}
+
+	if len(authenticated) == 0 {
+		return false
+	}
+
+	// Path 1: NSEC at childZone with DS absent.
+	for _, n := range nsecWithOwners {
+		owner := strings.ToLower(strings.TrimSuffix(n.OwnerName, "."))
+		want := strings.ToLower(strings.TrimSuffix(childZone, "."))
+		if owner != want {
+			continue
+		}
+		if !authenticated[ownerTypeKey{owner: owner, typ: dns.TypeNSEC}] {
+			continue
+		}
+		if nsecHasType(&n.NSECRecord, dns.TypeDS) {
+			continue
+		}
+		if nsecHasType(&n.NSECRecord, dns.TypeCNAME) {
+			continue
+		}
+		// Must be a parent-side delegation NSEC (NS without SOA) OR an
+		// apex NSEC at the child (NS+SOA). Either way the DS bitmap
+		// absence is the load-bearing fact; we just want a sanity check
+		// that we aren't looking at an unrelated NSEC.
+		if nsecHasType(&n.NSECRecord, dns.TypeNS) {
+			return true
+		}
+	}
+
+	// Path 2 & 3: NSEC3 forms.
+	if len(nsec3WithOwners) == 0 {
+		return false
+	}
+	// Restrict to authenticated NSEC3 records.
+	verified := make([]NSEC3RecordWithOwner, 0, len(nsec3WithOwners))
+	for i, n := range nsec3WithOwners {
+		if authenticated[ownerTypeKey{
+			owner: strings.ToLower(strings.TrimSuffix(nsec3RRNames[i], ".")),
+			typ:   dns.TypeNSEC3,
+		}] {
+			verified = append(verified, n)
+		}
+	}
+	if len(verified) == 0 {
+		return false
+	}
+	ok, err := VerifyNSEC3DenialDSAbsent(childZone, verified)
+	if err != nil {
+		v.logger.Debug("NSEC3 DS-denial verification error",
+			"zone", childZone, "error", err)
+		return false
+	}
+	return ok
 }
 
 // verifyAgainstTrustAnchors checks if any DNSKEY for the root zone matches
@@ -693,7 +895,7 @@ func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
 //
 // Concurrent callers for the same zone share an inflight upstream query, the
 // same way fetchDNSKEYs does.
-func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, error) {
+func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, []dns.ResourceRecord, error) {
 	normalized := normalizeName(zone)
 
 	// Singleflight coordination.
@@ -701,7 +903,7 @@ func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, error) {
 	if inf, ok := v.inflightDS[normalized]; ok {
 		v.inflightMu.Unlock()
 		<-inf.done
-		return inf.dss, inf.err
+		return inf.dss, inf.denialAuth, inf.err
 	}
 	inf := &inflightFetch{done: make(chan struct{})}
 	v.inflightDS[normalized] = inf
@@ -717,13 +919,13 @@ func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, error) {
 	resp, err := v.querier.QueryDNSSEC(normalized, dns.TypeDS, dns.ClassIN)
 	if err != nil {
 		inf.err = fmt.Errorf("DS query for %s: %w", normalized, err)
-		return nil, inf.err
+		return nil, nil, inf.err
 	}
 
 	rcode := resp.Header.RCODE()
 	if rcode == dns.RCodeServFail || rcode == dns.RCodeRefused {
 		inf.err = fmt.Errorf("DS query for %s returned rcode %d", normalized, rcode)
-		return nil, inf.err
+		return nil, nil, inf.err
 	}
 
 	var dsRecords []*dns.DSRecord
@@ -738,7 +940,12 @@ func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, error) {
 	}
 
 	inf.dss = dsRecords
-	return dsRecords, nil
+	// Surface the authority section so the caller can authenticate the
+	// denial of DS when no DS records were returned. Cloning into a fresh
+	// slice would also work, but inflightFetch outlives this call only
+	// for the singleflight followers, and they receive read-only access.
+	inf.denialAuth = resp.Authority
+	return dsRecords, resp.Authority, nil
 }
 
 // findMatchingDNSKEY finds a DNSKEY record matching the given key tag and algorithm.
@@ -1082,8 +1289,12 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 	}
 
 	// Validate NSEC3 denial proof using only authenticated records.
+	// Requires the full RFC 5155 §8.4–8.7 closest-encloser / next-closer /
+	// wildcard triplet — not just a single covering NSEC3, which was the
+	// pre-0.6.12 forgery vector (any one valid NSEC3 anywhere in the zone
+	// could be replayed to "prove" NXDOMAIN for unrelated names).
 	if len(verifiedNSEC3s) > 0 {
-		denied, err := VerifyNSEC3DenialFull(qname, verifiedNSEC3s)
+		denied, err := VerifyNSEC3Denial5155(qname, qtype, response.Header.RCODE(), verifiedNSEC3s)
 		if err != nil {
 			v.logger.Debug("NSEC3 denial verification error",
 				"qname", qname, "error", err)
@@ -1093,7 +1304,7 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 			v.logger.Debug("NSEC3 denial proof valid", "qname", qname)
 			return Secure
 		}
-		v.logger.Debug("NSEC3 denial proof inconclusive — covering NSEC3 not found",
+		v.logger.Debug("NSEC3 denial proof inconclusive — closest-encloser/NC/wildcard triplet not satisfied",
 			"qname", qname)
 	}
 
