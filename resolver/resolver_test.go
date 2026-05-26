@@ -35,7 +35,7 @@ func TestClassifyResponseServFail(t *testing.T) {
 func TestClassifyResponseAnswer(t *testing.T) {
 	msg := &dns.Message{
 		Header: dns.Header{
-			Flags:   dns.NewFlagBuilder().SetQR(true).Build(),
+			Flags:   dns.NewFlagBuilder().SetQR(true).SetAA(true).Build(),
 			ANCount: 1,
 		},
 		Answers: []dns.ResourceRecord{{
@@ -53,7 +53,7 @@ func TestClassifyResponseAnswer(t *testing.T) {
 func TestClassifyResponseCNAME(t *testing.T) {
 	msg := &dns.Message{
 		Header: dns.Header{
-			Flags:   dns.NewFlagBuilder().SetQR(true).Build(),
+			Flags:   dns.NewFlagBuilder().SetQR(true).SetAA(true).Build(),
 			ANCount: 1,
 		},
 		Answers: []dns.ResourceRecord{{

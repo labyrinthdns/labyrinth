@@ -535,6 +535,32 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		return h.buildBadVersResponse(query)
 	}
 
+	// RFC 7873 §5.2 cookie enforcement: when the client provides BOTH a
+	// client cookie and a server cookie, the server cookie MUST be valid.
+	// An invalid server cookie indicates a stale (post-secret-rotation),
+	// IP-mismatched, expired, or forged cookie — return BADCOOKIE so the
+	// client retries with a fresh issuance. A client sending only a client
+	// cookie (no server cookie yet) is not validated here; the normal
+	// addCookieToResponse path issues a server cookie in the success
+	// response. The early-exit position (before zone ACL, blocklist,
+	// cache lookup, and recursive resolution) means a flood of garbage
+	// cookies cannot consume CPU on expensive downstream work.
+	if h.cookiesEnabled && msg.EDNS0 != nil {
+		var clientCookie, serverCookie []byte
+		for _, opt := range msg.EDNS0.Options {
+			if opt.Code == dns.EDNSOptionCodeCookie {
+				clientCookie, serverCookie = dns.ParseCookieOption(opt.Data)
+				break
+			}
+		}
+		if len(clientCookie) == 8 && len(serverCookie) == 16 {
+			if !h.validateServerCookie(clientCookie, serverCookie, clientIP) {
+				h.metrics.IncResponses("BADCOOKIE")
+				return h.buildBadCookieResponse(query, clientCookie, clientIP)
+			}
+		}
+	}
+
 	q := msg.Questions[0]
 	qtypeStr := dns.TypeToString[q.Type]
 	if qtypeStr == "" {
@@ -628,6 +654,21 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 				if h.OnQuery != nil {
 					h.OnQuery(clientIP, q.Name, qtypeStr, cacheRCode, true, durationMs)
 				}
+				// Anti-amplification: cached responses are just as
+				// reflective as freshly resolved ones, so RRL must
+				// gate them too. This matters in particular for the
+				// RFC 9520 §3 failure-cache: a flood of requests for
+				// a broken name would otherwise be served unlimited
+				// SERVFAILs from cache without ever touching the
+				// rate-limiter.
+				if h.rrl != nil {
+					switch h.rrl.AllowResponse(clientIP, q.Name, cacheRCode) {
+					case security.RRLDrop:
+						return nil, nil
+					case security.RRLSlip:
+						return h.buildSlipResponse(query)
+					}
+				}
 				return resp, nil
 			}
 		}
@@ -677,6 +718,12 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		}
 		if err != nil {
 			h.metrics.IncResponses("SERVFAIL")
+			// RFC 9520 §3: cache the resolution failure for a few seconds
+			// so a retry loop on a broken name does not re-run the full
+			// iterative chain on every QPS spike. TTL is capped at 30 s.
+			if !bypassCache {
+				h.cache.StoreFailure(q.Name, q.Type, q.Class, cache.DefaultFailureTTL)
+			}
 			if msg.EDNS0 != nil {
 				resp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, dns.EDECodeNetworkError, err.Error())
 				if buildErr == nil {
@@ -725,6 +772,10 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority)
 		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
 			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority)
+		} else if result.RCODE == dns.RCodeServFail {
+			// RFC 9520 §3 failure caching for the resolver-returned-SERVFAIL
+			// path (DNSSEC bogus, all NS unreachable, lame delegation, etc.).
+			h.cache.StoreFailure(q.Name, q.Type, q.Class, cache.DefaultFailureTTL)
 		}
 	}
 
@@ -1134,6 +1185,49 @@ func (h *MainHandler) buildBlockedResponse(query *dns.Message, q dns.Question) (
 
 	// H-5: pack into an owned slice.
 	return h.packToOwnedBytes(resp)
+}
+
+// buildBadCookieResponse synthesizes the RFC 7873 §5.2.3 reply for a query
+// whose server cookie failed validation. The extended RCODE 23 (BADCOOKIE)
+// is split across the header (low 4 bits = 0x07) and the OPT TTL byte 0
+// (high 8 bits = 0x01) exactly like BADVERS. We MUST also echo a freshly
+// issued server cookie back in the response so the client can adopt it on
+// retry — refusing to do so would lock a legitimate client out indefinitely
+// after a server-secret rotation (the client's stored server cookie would
+// fail forever with no path to refresh).
+//
+// clientCookie may be nil; in that case the response carries no cookie
+// option (the client never identified itself with one).
+func (h *MainHandler) buildBadCookieResponse(query []byte, clientCookie []byte, clientIP string) ([]byte, error) {
+	resp, err := h.buildError(query, dns.RCodeBadCookie&0x0F) // low 4 bits = 7
+	if err != nil {
+		return nil, err
+	}
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp, nil //nolint:nilerr // fall back rather than mask
+	}
+	// Build OPT with ExtRCODE byte (high byte of TTL) = 1 → composes
+	// BADCOOKIE (23) with header RCODE=7. Version stays at 0. When the
+	// client identified itself with a client cookie, we MUST echo a fresh
+	// server cookie so the client can retry with a valid pair (RFC 7873
+	// §5.2.3 — refusing to issue would lock the client out forever after
+	// a server-secret rotation).
+	var ednsOpts []dns.EDNSOption
+	if len(clientCookie) == 8 {
+		serverCookie := h.generateServerCookie(clientCookie, clientIP)
+		cookieData := make([]byte, 8+len(serverCookie))
+		copy(cookieData[:8], clientCookie)
+		copy(cookieData[8:], serverCookie)
+		ednsOpts = append(ednsOpts, dns.EDNSOption{
+			Code: dns.EDNSOptionCodeCookie,
+			Data: cookieData,
+		})
+	}
+	opt := dns.BuildOPTWithOptions(h.advertisedUDPBufferSize(), false, ednsOpts)
+	opt.TTL = uint32(1) << 24 // ExtRCODE=1, Version=0, no DO, Z=0
+	msg.Additional = append(msg.Additional, opt)
+	return h.packToOwnedBytes(msg)
 }
 
 // buildBadVersResponse synthesizes the RFC 6891 §6.1.3 mandated reply for a

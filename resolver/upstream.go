@@ -57,17 +57,21 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 		return nil, err
 	}
 
-	// RFC 6891 §7: If the server returns FORMERR (doesn't understand EDNS0),
-	// retry without the OPT record. This also drops any ECS option we may
-	// have sent — a server that FORMERRs on plain EDNS0 will certainly
-	// reject an OPT carrying ECS sub-options.
-	if msg.Header.RCODE() == dns.RCodeFormErr {
-		msg, err = r.sendQuery(nsIP, name, qtype, qclass, false, nil)
-		if err != nil {
-			return nil, err
-		}
-	}
-
+	// RFC 5452 §6.1 hardening: a FORMERR from an EDNS-bearing query was
+	// historically interpreted (per RFC 6891 §7) as "this server hates EDNS,
+	// retry without OPT." Modern reality is the opposite — DNS Flag Day
+	// 2020 made EDNS mandatory for any auth server that participates in
+	// the public DNS, and an EDNS-hostile server is effectively extinct.
+	// What does still happen: an off-path attacker who wins the TXID/0x20
+	// race for a single forged packet can inject a FORMERR and trigger our
+	// silent downgrade to a non-EDNS query that drops DNSSEC OK / ECS /
+	// the 1232-byte buffer ceiling — a one-packet downgrade vector against
+	// DNSSEC validation. We surface the FORMERR as a server failure
+	// instead; the iterative loop's classifyResponse moves to a sibling
+	// NS, and no spoofed FORMERR can strip the DO bit off subsequent
+	// queries. If an operator ever encounters a legitimately broken EDNS
+	// server they should bypass it via the forward-zone configuration
+	// rather than have the resolver silently strip protocol features.
 	return msg, nil
 }
 
