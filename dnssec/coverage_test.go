@@ -445,7 +445,7 @@ func TestFetchDS_Success(t *testing.T) {
 		},
 	}
 	v := NewValidator(mq, nil)
-	dsRecords, err := v.fetchDS("example.com.", "com.")
+	dsRecords, _, err := v.fetchDS("example.com.", "com.")
 	if err != nil {
 		t.Fatalf("fetchDS failed: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestFetchDS_Success(t *testing.T) {
 func TestFetchDS_QueryError(t *testing.T) {
 	mq := &mockQuerier{responses: make(map[string]*dns.Message)}
 	v := NewValidator(mq, nil)
-	_, err := v.fetchDS("example.com.", "com.")
+	_, _, err := v.fetchDS("example.com.", "com.")
 	if err == nil {
 		t.Error("expected error when querier has no response for DS")
 	}
@@ -480,7 +480,7 @@ func TestFetchDS_BadDSRData(t *testing.T) {
 		},
 	}
 	v := NewValidator(mq, nil)
-	dsRecords, err := v.fetchDS("example.com.", "com.")
+	dsRecords, _, err := v.fetchDS("example.com.", "com.")
 	if err != nil {
 		t.Fatalf("fetchDS should not error on bad DS RData: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestFetchDS_MixedRecords(t *testing.T) {
 		},
 	}
 	v := NewValidator(mq, nil)
-	dsRecords, err := v.fetchDS("example.com.", "com.")
+	dsRecords, _, err := v.fetchDS("example.com.", "com.")
 	if err != nil {
 		t.Fatalf("fetchDS failed: %v", err)
 	}
@@ -851,14 +851,21 @@ func TestValidateTrustChain_TLDNoDSInsecure(t *testing.T) {
 		},
 	}
 
-	// DS response with no DS records -> insecure delegation.
+	// DS response with no DS records and no authenticated denial. Pre-0.6.12
+	// this was accepted as "insecure delegation" — exactly the off-path
+	// downgrade vector RFC 4035 §5.2 / RFC 5155 §10.4 require resolvers to
+	// close. The result is now Bogus, not Insecure: an empty DS reply
+	// without a signed NSEC/NSEC3 proof MUST NOT downgrade a previously
+	// secure chain. A separate test (TestValidateTrustChain_EmptyDSWithDenial_Insecure
+	// in dnssec/rfc_audit_test.go) covers the positive case where the
+	// denial IS authenticated.
 	ti.mq.responses["com.|43"] = &dns.Message{
 		Answers: []dns.ResourceRecord{},
 	}
 
 	result := ti.v.validateTrustChain("com.", nil)
-	if result != Insecure {
-		t.Errorf("validateTrustChain with no DS: got %v, want Insecure", result)
+	if result != Bogus {
+		t.Errorf("validateTrustChain on unauthenticated empty DS: got %v, want Bogus", result)
 	}
 }
 

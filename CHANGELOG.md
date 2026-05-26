@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-05-26
+
+### Fixed
+- **NSEC3 closest-encloser proof skipped (RFC 5155 §8.4–8.7 / RFC 6840 §4.8 violation)** — `VerifyClosestEncloser` in [dnssec/nsec3.go](dnssec/nsec3.go) was dead code (its `hashStr`/`ownerHash` locals were assigned then immediately discarded with `_ = …`) and the path actually used by the validator, `VerifyNSEC3DenialFull`, accepted *any* NSEC3 whose owner-hash interval covered H(qname) as proof of NXDOMAIN. A signed-but-unrelated NSEC3 lifted from elsewhere in the same zone could be replayed to forge NXDOMAIN for any name whose true closest-encloser the attacker chose to lie about — the proof-substitution attack RFC 5155 was written to prevent. New [`VerifyNSEC3Denial5155`](dnssec/nsec3.go) requires the full three-record proof:
+  1. Closest-encloser MATCH — an NSEC3 whose owner-hash equals H(deepest existing ancestor)
+  2. Next-closer COVER — an NSEC3 whose interval contains H(CE's immediate child label on the path to qname)
+  3. Wildcard-at-CE COVER — an NSEC3 whose interval contains H(*.CE)
+
+  Also pinned: RFC 9276 §3.2 iteration cap now applies to **every** NSEC3 record in the proof rather than only `records[0]` (a previous oversight let an attacker mix one low-iteration leader with high-iteration siblings to slip past the cap). RFC 5155 §6 opt-out: an opt-out next-closer-cover NSEC3 invalidates the NXDOMAIN proof — the next-closer name may exist as an unsigned delegation. The validator now hits the new function in [dnssec/validator.go](dnssec/validator.go) `validateDenialResponse`. Pin tests in [dnssec/rfc_audit_test.go](dnssec/rfc_audit_test.go) cover the negative (loose-proof rejection, opt-out invalidation, per-record iteration cap) and positive (proper three-NSEC3 proof, direct NODATA match) shapes. The pre-existing `TestValidateDenialResponse_SecureWithNSEC3DenialProof` was updated to expect Bogus where it used to expect Secure — locking in the regression rather than the bug.
+- **Unauthenticated empty-DS downgrade (RFC 4035 §5.2 / RFC 5155 §10.4 violation)** — `fetchDS` in [dnssec/validator.go](dnssec/validator.go) returned an empty DS list on any NOERROR-no-DS response, and the chain walker accepted that as proof of Insecure delegation without verifying the parent's denial of DS. An off-path attacker who wins the TXID/0x20 race for a single forged packet could inject a NOERROR-empty DS reply and downgrade a previously-Secure child zone to Insecure for the cache lifetime — the classic resolver downgrade vector. The fix threads the parent zone's verified DNSKEY rrset through the chain walker (`parentKeys` in `validateTrustChain`), surfaces the DS response's authority section out of `fetchDS`, and calls a new [`verifyDSDenial`](dnssec/validator.go) helper that authenticates the denial before accepting Insecure. Three proof forms are recognised:
+  - NSEC at the child's owner name whose bitmap omits DS (and includes NS)
+  - NSEC3 at H(childZone) whose bitmap omits DS (new [`VerifyNSEC3DenialDSAbsent`](dnssec/nsec3.go))
+  - Opt-out NSEC3 covering H(childZone) (the canonical TLD-served insecure-delegation shape — com/net/etc.)
+
+  Each accepted proof must be signed by a key in `parentKeys`; an unsigned authority section is now Bogus, not Insecure. The legacy `TestValidateTrustChain_TLDNoDSInsecure` was updated to expect Bogus on unauthenticated empty-DS — what it used to test was the downgrade vector itself.
+
 ## [0.6.11] - 2026-05-26
 
 ### Fixed
