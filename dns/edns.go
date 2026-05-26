@@ -124,7 +124,47 @@ const (
 	EDNSOptionCodeECS    uint16 = 8
 	EDNSOptionCodeCookie uint16 = 10
 	EDNSOptionCodeEDE    uint16 = 15
+	// EDNSOptionCodeDAU is the "DNSSEC Algorithm Understood" option
+	// (RFC 6975 §3). The option data is the list of DNSKEY/RRSIG
+	// algorithm numbers the resolver can validate. Multi-signed zones
+	// (a zone published with multiple algorithms during a rollover)
+	// use this to decide which signature to return; without DAU they
+	// must send all signatures, wasting bandwidth and amplification.
+	EDNSOptionCodeDAU uint16 = 5
+	// EDNSOptionCodeDHU is the "DS Hash Understood" option. Same idea
+	// but for DS digest types (RFC 6975 §3, option code 6).
+	EDNSOptionCodeDHU uint16 = 6
+	// EDNSOptionCodeN3U is the "NSEC3 Hash Understood" option. NSEC3
+	// hash algorithms — only SHA-1 (algorithm 1) is currently defined
+	// (RFC 6975 §3, option code 7).
+	EDNSOptionCodeN3U uint16 = 7
 )
+
+// BuildDAUOption constructs the DNSSEC Algorithm Understood option
+// (RFC 6975) carrying the list of DNSKEY/RRSIG algorithm numbers this
+// resolver can validate. Algorithms we deliberately refuse (RSASHA1
+// when allowSHA1=false, ED448 until we ship a verifier) are omitted —
+// the spec is explicit that DAU advertises ONLY algorithms the resolver
+// will actually accept.
+func BuildDAUOption(algorithms []uint8) EDNSOption {
+	data := make([]byte, len(algorithms))
+	copy(data, algorithms)
+	return EDNSOption{Code: EDNSOptionCodeDAU, Data: data}
+}
+
+// BuildDHUOption is the DS-hash counterpart of BuildDAUOption.
+func BuildDHUOption(digests []uint8) EDNSOption {
+	data := make([]byte, len(digests))
+	copy(data, digests)
+	return EDNSOption{Code: EDNSOptionCodeDHU, Data: data}
+}
+
+// BuildN3UOption is the NSEC3-hash counterpart of BuildDAUOption.
+func BuildN3UOption(hashes []uint8) EDNSOption {
+	data := make([]byte, len(hashes))
+	copy(data, hashes)
+	return EDNSOption{Code: EDNSOptionCodeN3U, Data: data}
+}
 
 // BuildEDEOption constructs an Extended DNS Error option (RFC 8914, option code 15).
 // infoCode is the EDE info code, extraText is an optional UTF-8 string.

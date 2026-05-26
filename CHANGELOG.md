@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.14] - 2026-05-26
+
+### Fixed
+- **RRset TTLs were stored with their original mixed values, violating RFC 2181 §5.2** — when an authoritative published an rrset with non-uniform TTLs (e.g. three A records at 300/600/60), the cache preserved each record's TTL verbatim. RFC 2181 §5.2 is explicit: "If any of the records in the set have different TTLs, then a receiver must … treat them as if they all had the same TTL — the lowest of those TTLs." A hostile or buggy auth could otherwise mix one short-TTL record with several long-TTL ones; downstream serve-stale would key off the longest, pinning poisoned or outdated data in cache far past the rrset's intended life. The cache in [cache/cache.go](cache/cache.go) now runs `normalizeRRSetTTLs` over both answers and authority at store time, grouping by (name, type, class) and collapsing each group to its minimum. Pin test [cache/rfc2181_rrset_test.go](cache/rfc2181_rrset_test.go).
+- **Compact denial of existence accepted NSEC at qname whose bitmap LISTED the qtype** (RFC 6840 §4.1 / "black lies" replay attack) — Cloudflare-style compact denial puts a legitimate NSEC at the very name being queried with a synthetic bitmap that excludes the qtype. The pre-fix loop in [dnssec/nsec.go](dnssec/nsec.go) `VerifyNSECDenial` only required `OwnerName == qname` and the absence of CNAME/DNAME/parent-side-NS, but did *not* check whether the bitmap itself omitted the qtype. An attacker who replays a real signed NSEC for an *existing* name (bitmap contains A/AAAA/MX) paired with a forged RCODE=NXDOMAIN would slip past the validator. The fix adds `nsecHasType(&n.NSECRecord, qtype) { continue }` — if the bitmap asserts the type exists, the denial claim is structurally a lie. Pin test [dnssec/compact_denial_test.go](dnssec/compact_denial_test.go).
+
+### Added
+- **RFC 6975 DAU/DHU/N3U algorithm signaling on outbound DNSSEC queries** — when DNSSEC validation is enabled, the resolver now advertises which signature algorithms (DAU, EDNS option code 5), DS digest types (DHU, code 6), and NSEC3 hash algorithms (N3U, code 7) it can actually validate, letting auth servers prefer signatures the client will not just discard. The advertised lists reflect the resolver's real capability surface — RSASHA256, RSASHA512, ECDSAP256, ECDSAP384, ED25519 (plus RSASHA1 only if `dnssec.allow_sha1`), DS digest types SHA-256 / SHA-384 (plus SHA-1 conditionally), and NSEC3 hash 1 (SHA-1, the only defined value). New helpers `BuildDAUOption` / `BuildDHUOption` / `BuildN3UOption` in [dns/edns.go](dns/edns.go); wired in [resolver/upstream.go](resolver/upstream.go) `sendQuery` alongside the existing EDNS0 OPT pseudo-RR. Pin test [dns/rfc6975_test.go](dns/rfc6975_test.go).
+
 ## [0.6.13] - 2026-05-26
 
 ### Changed

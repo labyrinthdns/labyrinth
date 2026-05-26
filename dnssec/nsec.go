@@ -68,8 +68,19 @@ func VerifyNSECDenial(qname string, qtype uint16, rcode uint8, records []NSECRec
 	}
 
 	// 2) Compact denial — NSEC at qname with no CNAME/DNAME, paired with an
-	//    NXDOMAIN RCODE. Cloudflare and other online signers emit this rather
-	//    than a real two-NSEC closest-encloser proof.
+	//    NXDOMAIN RCODE. Cloudflare and other online signers emit this
+	//    rather than a real two-NSEC closest-encloser proof.
+	//
+	//    Critical sanity check: the NSEC bitmap MUST NOT include the
+	//    queried qtype. A legitimate compact-denial NSEC asserts "this
+	//    name has no useful records" — its bitmap typically lists only
+	//    [NSEC, RRSIG] (or a sentinel NXNAME pseudo-type). Without this
+	//    check, an attacker who replays a real signed NSEC for a name
+	//    that DOES exist (bitmap lists actual types like A/AAAA/MX) could
+	//    forge an NXDOMAIN: owner equals qname, bitmap excludes CNAME, no
+	//    parent-side NS-without-SOA, so the pre-fix code accepted it.
+	//    Requiring the qtype to be absent rejects this substitution — if
+	//    the bitmap says the type exists, NXDOMAIN is structurally a lie.
 	for _, n := range records {
 		owner := canonicalName(n.OwnerName)
 		if owner != qname {
@@ -82,6 +93,9 @@ func VerifyNSECDenial(qname string, qtype uint16, rcode uint8, records []NSECRec
 			continue
 		}
 		if nsecHasType(&n.NSECRecord, dns.TypeNS) && !nsecHasType(&n.NSECRecord, dns.TypeSOA) {
+			continue
+		}
+		if nsecHasType(&n.NSECRecord, qtype) {
 			continue
 		}
 		return true, nil

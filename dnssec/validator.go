@@ -126,6 +126,13 @@ func (v *Validator) AllowSHA1(allow bool) {
 	v.allowSHA1 = allow
 }
 
+// SHA1Allowed reports the current allowSHA1 setting. Used by callers that
+// advertise their accepted primitives via RFC 6975 DAU/DHU options — the
+// advertised list must match what the validator will actually accept.
+func (v *Validator) SHA1Allowed() bool {
+	return v.allowSHA1
+}
+
 // isWeakRRSIGAlg reports whether the algorithm is on the weak/deprecated list
 // the validator rejects by default. Currently only RSASHA1.
 func (v *Validator) isWeakRRSIGAlg(alg uint8) bool {
