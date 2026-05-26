@@ -240,6 +240,10 @@ func run() int {
 	// Security: advertise small EDNS0 buffer (RFC 9018 / DNS Flag Day 2020)
 	handler.SetDownstreamUDPBufferSize(cfg.Server.MaxUDPSize)
 
+	// EDNS Client Subnet forwarding (RFC 7871). Passthrough policy: only
+	// forward what the client itself sent, capped at per-family ceilings.
+	handler.SetECSPrefixes(cfg.Resolver.ECSEnabled, cfg.Resolver.ECSMaxPrefix, cfg.Resolver.ECSMaxPrefixV6)
+
 	// Cache: harden-below-nxdomain (RFC 8020)
 	c.SetHardenBelowNX(cfg.Resolver.HardenBelowNXDomain)
 

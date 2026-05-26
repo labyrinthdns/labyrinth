@@ -518,35 +518,14 @@ func TestValidateReferralNSEmptyHostname(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SetActiveECS and InfraCache (resolver.go:72-74, 95-96)
+// InfraCache (resolver.go: InfraCache accessor)
 // ---------------------------------------------------------------------------
-
-func TestSetActiveECS(t *testing.T) {
-	m := metrics.NewMetrics()
-	c := cache.NewCache(100, 5, 86400, 3600, m)
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	r := NewResolver(c, ResolverConfig{MaxDepth: 30}, m, logger)
-
-	if r.activeECS.Load() != nil {
-		t.Error("activeECS should be nil initially")
-	}
-
-	ecs := &dns.ECSOption{
-		Family:          1,
-		SourcePrefixLen: 24,
-		ScopePrefixLen:  0,
-		Address:         net.ParseIP("192.168.1.0").To4(),
-	}
-	r.SetActiveECS(ecs)
-	if r.activeECS.Load() == nil {
-		t.Error("activeECS should be set")
-	}
-
-	r.SetActiveECS(nil)
-	if r.activeECS.Load() != nil {
-		t.Error("activeECS should be nil after clear")
-	}
-}
+//
+// The previous TestSetActiveECS exercised a process-global ECS slot on the
+// resolver. That field was removed when ECS forwarding moved to per-query
+// parameters (RFC 7871 correctness — concurrent clients no longer leak
+// subnets onto each other's outbound queries). The ECS forwarding path is
+// now covered by handler-level tests that drive Resolver.ResolveWithECS.
 
 func TestResolverInfraCache(t *testing.T) {
 	m := metrics.NewMetrics()
@@ -1059,14 +1038,14 @@ func TestResolveWithECS(t *testing.T) {
 
 	r := testResolver(t, mock)
 	r.config.ECSEnabled = true
-	r.SetActiveECS(&dns.ECSOption{
+	ecs := &dns.ECSOption{
 		Family:          1,
 		SourcePrefixLen: 24,
 		ScopePrefixLen:  0,
 		Address:         net.ParseIP("192.168.1.0").To4(),
-	})
+	}
 
-	result, err := r.Resolve("ecs.example.com", dns.TypeA, dns.ClassIN)
+	result, err := r.ResolveWithECS("ecs.example.com", dns.TypeA, dns.ClassIN, ecs)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}

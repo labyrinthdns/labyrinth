@@ -148,7 +148,8 @@ type ResolverConfig struct {
 	HardenBelowNXDomain   bool
 	RootHintsRefresh      time.Duration
 	ECSEnabled            bool
-	ECSMaxPrefix          int
+	ECSMaxPrefix          int // IPv4 source-prefix ceiling (RFC 7871 §11.1 recommends /24)
+	ECSMaxPrefixV6        int // IPv6 source-prefix ceiling (RFC 7871 §11.1 recommends /56)
 	DNS64Enabled          bool
 	DNS64Prefix           string
 	FallbackResolvers     []string
@@ -358,6 +359,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setDuration(&cfg.Resolver.RootHintsRefresh, "resolver.root_hints_refresh")
 	setBool(&cfg.Resolver.ECSEnabled, "resolver.ecs_enabled")
 	setInt(&cfg.Resolver.ECSMaxPrefix, "resolver.ecs_max_prefix")
+	setInt(&cfg.Resolver.ECSMaxPrefixV6, "resolver.ecs_max_prefix_v6")
 	setBool(&cfg.Resolver.DNS64Enabled, "resolver.dns64_enabled")
 	setString(&cfg.Resolver.DNS64Prefix, "resolver.dns64_prefix")
 	setCSV(&cfg.Resolver.FallbackResolvers, "resolver.fallback_resolvers")

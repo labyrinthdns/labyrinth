@@ -61,7 +61,12 @@ func (ft *ForwardTable) Match(qname string) *ForwardZone {
 // resolveStub performs iterative resolution starting from the stub zone's
 // configured nameserver addresses instead of the root servers.
 func (r *Resolver) resolveStub(name string, qtype uint16, qclass uint16, fz *ForwardZone) (*ResolveResult, error) {
-	// Build initial nameserver list from stub zone addresses.
+	return r.resolveStubECS(name, qtype, qclass, fz, nil)
+}
+
+// resolveStubECS is the ECS-aware variant: the client's subnet is propagated
+// to every upstream stub query so authoritative servers can geo-tailor.
+func (r *Resolver) resolveStubECS(name string, qtype uint16, qclass uint16, fz *ForwardZone, clientECS *dns.ECSOption) (*ResolveResult, error) {
 	stubNS := make([]nsEntry, len(fz.Addrs))
 	for i, addr := range fz.Addrs {
 		stubNS[i] = nsEntry{
@@ -69,8 +74,7 @@ func (r *Resolver) resolveStub(name string, qtype uint16, qclass uint16, fz *For
 			ipv4:     addr,
 		}
 	}
-
-	return r.resolveIterativeFrom(name, qtype, qclass, 0, newVisitedSet(), stubNS, fz.Name)
+	return r.resolveIterativeFromInner(name, qtype, qclass, 0, newVisitedSet(), stubNS, fz.Name, false, clientECS)
 }
 
 // queryForward sends a recursive (RD=1) query to the forward zone upstreams.
@@ -84,9 +88,13 @@ func (r *Resolver) resolveStub(name string, qtype uint16, qclass uint16, fz *For
 // unsigned channel to an unauthenticated server cannot prove anything, but
 // forward-zone upstreams are operator-trusted by configuration.
 func (r *Resolver) queryForward(addrs []string, name string, qtype uint16, qclass uint16) (*ResolveResult, error) {
+	return r.queryForwardECS(addrs, name, qtype, qclass, nil)
+}
+
+func (r *Resolver) queryForwardECS(addrs []string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*ResolveResult, error) {
 	var lastErr error
 	for _, addr := range addrs {
-		msg, err := r.sendForwardQuery(addr, name, qtype, qclass)
+		msg, err := r.sendForwardQueryECS(addr, name, qtype, qclass, clientECS)
 		if err != nil {
 			lastErr = err
 			r.logger.Debug("forward query error", "addr", addr, "name", name, "error", err)
@@ -102,6 +110,7 @@ func (r *Resolver) queryForward(addrs []string, name string, qtype uint16, qclas
 			Additional:   msg.Additional,
 			RCODE:        msg.Header.RCODE(),
 			DNSSECStatus: status,
+			UpstreamECS:  extractResponseECS(msg),
 		}, nil
 	}
 	if lastErr != nil {
@@ -112,6 +121,10 @@ func (r *Resolver) queryForward(addrs []string, name string, qtype uint16, qclas
 
 // sendForwardQuery builds and sends a single DNS query with RD=1.
 func (r *Resolver) sendForwardQuery(nsIP string, name string, qtype uint16, qclass uint16) (*dns.Message, error) {
+	return r.sendForwardQueryECS(nsIP, name, qtype, qclass, nil)
+}
+
+func (r *Resolver) sendForwardQueryECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
 	r.metrics.IncUpstreamQueries()
 
 	retries := r.config.UpstreamRetries
@@ -121,7 +134,7 @@ func (r *Resolver) sendForwardQuery(nsIP string, name string, qtype uint16, qcla
 
 	var lastErr error
 	for attempt := 0; attempt < retries; attempt++ {
-		msg, err := r.sendForwardQueryOnce(nsIP, name, qtype, qclass)
+		msg, err := r.sendForwardQueryOnceECS(nsIP, name, qtype, qclass, clientECS)
 		if err != nil {
 			lastErr = err
 			r.metrics.IncUpstreamErrors()
@@ -134,15 +147,20 @@ func (r *Resolver) sendForwardQuery(nsIP string, name string, qtype uint16, qcla
 
 // sendForwardQueryOnce sends a single forward query with RD=1 and EDNS0.
 func (r *Resolver) sendForwardQueryOnce(nsIP string, name string, qtype uint16, qclass uint16) (*dns.Message, error) {
-	msg, err := r.sendQueryWithRD(nsIP, name, qtype, qclass, true, true)
+	return r.sendForwardQueryOnceECS(nsIP, name, qtype, qclass, nil)
+}
+
+func (r *Resolver) sendForwardQueryOnceECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
+	msg, err := r.sendQueryWithRDECS(nsIP, name, qtype, qclass, true, true, clientECS)
 	if err != nil {
 		return nil, err
 	}
 
 	// If the server returns FORMERR (doesn't understand EDNS0),
-	// retry without the OPT record.
+	// retry without the OPT record (and without ECS — a server that can't
+	// parse EDNS0 won't accept nested ECS options either).
 	if msg.Header.RCODE() == dns.RCodeFormErr {
-		msg, err = r.sendQueryWithRD(nsIP, name, qtype, qclass, true, false)
+		msg, err = r.sendQueryWithRDECS(nsIP, name, qtype, qclass, true, false, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -151,8 +169,16 @@ func (r *Resolver) sendForwardQueryOnce(nsIP string, name string, qtype uint16, 
 	return msg, nil
 }
 
-// sendQueryWithRD builds, sends and validates a DNS query with a configurable RD flag.
+// sendQueryWithRD is the legacy no-ECS wrapper retained for tests and for
+// internal paths that do not carry a client subnet (e.g. trace).
 func (r *Resolver) sendQueryWithRD(nsIP string, name string, qtype uint16, qclass uint16, rd bool, withEDNS0 bool) (*dns.Message, error) {
+	return r.sendQueryWithRDECS(nsIP, name, qtype, qclass, rd, withEDNS0, nil)
+}
+
+// sendQueryWithRDECS builds, sends and validates a DNS query with a configurable
+// RD flag. clientECS, when non-nil and withEDNS0 is true, is included as an
+// EDNS Client Subnet option (RFC 7871) in the outgoing OPT record.
+func (r *Resolver) sendQueryWithRDECS(nsIP string, name string, qtype uint16, qclass uint16, rd bool, withEDNS0 bool, clientECS *dns.ECSOption) (*dns.Message, error) {
 	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
@@ -173,8 +199,20 @@ func (r *Resolver) sendQueryWithRD(nsIP string, name string, qtype uint16, qclas
 		}},
 	}
 	if withEDNS0 {
-		query.Additional = []dns.ResourceRecord{
-			dns.BuildOPT(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled),
+		var ecsOptions []dns.EDNSOption
+		if r.config.ECSEnabled && clientECS != nil {
+			outgoing := *clientECS
+			outgoing.ScopePrefixLen = 0
+			ecsOptions = append(ecsOptions, dns.BuildECS(&outgoing))
+		}
+		if len(ecsOptions) > 0 {
+			query.Additional = []dns.ResourceRecord{
+				dns.BuildOPTWithOptions(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled, ecsOptions),
+			}
+		} else {
+			query.Additional = []dns.ResourceRecord{
+				dns.BuildOPT(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled),
+			}
 		}
 	}
 

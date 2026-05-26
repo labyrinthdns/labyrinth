@@ -17,7 +17,7 @@ type FormState = {
   resolver: {
     maxDepth: number; maxCnameDepth: number; upstreamTimeout: string; upstreamRetries: number
     qmin: boolean; preferIPv4: boolean; dnssec: boolean; hardenBelowNX: boolean
-    rootHintsRefresh: string; ecsEnabled: boolean; ecsMaxPrefix: number
+    rootHintsRefresh: string; ecsEnabled: boolean; ecsMaxPrefix: number; ecsMaxPrefixV6: number
     dns64Enabled: boolean; dns64Prefix: string; fallbackResolvers: string[]
   }
   cache: {
@@ -112,7 +112,7 @@ function mapForm(cfg: Record<string, unknown>, authHash: string): FormState {
       qmin: boo(resolver.qname_minimization, true), preferIPv4: boo(resolver.prefer_ipv4, true),
       dnssec: boo(resolver.dnssec_enabled, true), hardenBelowNX: boo(resolver.harden_below_nxdomain),
       rootHintsRefresh: str(resolver.root_hints_refresh, '168h'),
-      ecsEnabled: boo(resolver.ecs_enabled), ecsMaxPrefix: num(resolver.ecs_max_prefix, 24),
+      ecsEnabled: boo(resolver.ecs_enabled), ecsMaxPrefix: num(resolver.ecs_max_prefix, 24), ecsMaxPrefixV6: num(resolver.ecs_max_prefix_v6, 56),
       dns64Enabled: boo(resolver.dns64_enabled), dns64Prefix: str(resolver.dns64_prefix),
       fallbackResolvers: arr(resolver.fallback_resolvers),
     },
@@ -208,7 +208,10 @@ function buildYAML(f: FormState): string {
   L.push(`  harden_below_nxdomain: ${f.resolver.hardenBelowNX}`)
   L.push(`  root_hints_refresh: ${y(f.resolver.rootHintsRefresh)}`)
   L.push(`  ecs_enabled: ${f.resolver.ecsEnabled}`)
-  if (f.resolver.ecsEnabled) L.push(`  ecs_max_prefix: ${f.resolver.ecsMaxPrefix}`)
+  if (f.resolver.ecsEnabled) {
+    L.push(`  ecs_max_prefix: ${f.resolver.ecsMaxPrefix}`)
+    L.push(`  ecs_max_prefix_v6: ${f.resolver.ecsMaxPrefixV6}`)
+  }
   L.push(`  dns64_enabled: ${f.resolver.dns64Enabled}`)
   if (f.resolver.dns64Enabled && f.resolver.dns64Prefix) L.push(`  dns64_prefix: ${y(f.resolver.dns64Prefix)}`)
   if (f.resolver.fallbackResolvers.length) L.push(`  fallback_resolvers: ${y(csv(f.resolver.fallbackResolvers))}`)
@@ -576,7 +579,8 @@ export default function ConfigPage() {
           <Toggle label="DNSSEC Validation" checked={form.resolver.dnssec} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, dnssec: v } }))} />
           <Toggle label="Harden Below NXDOMAIN" checked={form.resolver.hardenBelowNX} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, hardenBelowNX: v } }))} />
           <Toggle label="ECS (EDNS Client Subnet)" checked={form.resolver.ecsEnabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsEnabled: v } }))} />
-          {form.resolver.ecsEnabled && <I label="ECS Max Prefix" path="resolver.ecs_max_prefix" type="number" value={form.resolver.ecsMaxPrefix} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsMaxPrefix: Number(v) || 0 } }))} />}
+          {form.resolver.ecsEnabled && <I label="ECS Max Prefix (IPv4)" path="resolver.ecs_max_prefix" type="number" value={form.resolver.ecsMaxPrefix} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsMaxPrefix: Number(v) || 0 } }))} />}
+          {form.resolver.ecsEnabled && <I label="ECS Max Prefix (IPv6)" path="resolver.ecs_max_prefix_v6" type="number" value={form.resolver.ecsMaxPrefixV6} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsMaxPrefixV6: Number(v) || 0 } }))} />}
           <Toggle label="DNS64" checked={form.resolver.dns64Enabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, dns64Enabled: v } }))} />
           {form.resolver.dns64Enabled && <I label="DNS64 Prefix" path="resolver.dns64_prefix" value={form.resolver.dns64Prefix} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, dns64Prefix: v } }))} />}
           <StringList title="Fallback Resolvers" path="resolver.fallback_resolvers" values={form.resolver.fallbackResolvers} onChange={(n) => patch((p) => ({ ...p, resolver: { ...p.resolver, fallbackResolvers: n } }))} disabled={readonly} placeholder="8.8.8.8" />

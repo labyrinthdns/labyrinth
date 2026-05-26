@@ -46,8 +46,9 @@ type MainHandler struct {
 	cookieSecret   []byte // 16-byte server secret for HMAC
 
 	// ECS forwarding
-	ecsEnabled   bool
-	ecsMaxPrefix int
+	ecsEnabled     bool
+	ecsMaxPrefix   int // IPv4 source-prefix ceiling
+	ecsMaxPrefixV6 int // IPv6 source-prefix ceiling
 
 	// downstreamUDPBufferSize is the EDNS0 UDP payload size advertised in
 	// outgoing OPT records on responses to clients. RFC 9018 / DNS Flag Day
@@ -123,9 +124,123 @@ func (h *MainHandler) EnableCookiesWithSecret(secret []byte) {
 }
 
 // SetECS enables or disables ECS forwarding.
+// maxPrefix and maxPrefixV6 cap the source-prefix length we forward upstream
+// for IPv4 and IPv6 clients respectively. Pass 0 or out-of-range values to
+// accept the RFC 7871 §11.1 recommended defaults (/24 IPv4, /56 IPv6).
 func (h *MainHandler) SetECS(enabled bool, maxPrefix int) {
+	h.SetECSPrefixes(enabled, maxPrefix, 0)
+}
+
+// SetECSPrefixes is the IPv6-aware extension of SetECS. The legacy SetECS
+// is preserved as a convenience wrapper for callers that only care about
+// IPv4 limits.
+func (h *MainHandler) SetECSPrefixes(enabled bool, maxPrefixV4, maxPrefixV6 int) {
 	h.ecsEnabled = enabled
-	h.ecsMaxPrefix = maxPrefix
+	h.ecsMaxPrefix = maxPrefixV4
+	h.ecsMaxPrefixV6 = maxPrefixV6
+}
+
+// buildOutboundECS prepares the EDNS Client Subnet option (RFC 7871) that
+// the resolver should forward upstream for this query. Policy: passthrough.
+//
+//   - If the client sent ECS in its OPT record, forward it. Source prefix is
+//     clamped down to the operator's ECSMaxPrefix ceiling. A client-sent
+//     SourcePrefixLen of 0 is an explicit opt-out and is preserved verbatim
+//     (the upstream sees "/0" and MUST NOT subnet-tailor).
+//   - If the client did not send ECS, do nothing — we do not synthesize
+//     from clientIP. (Synthesis would leak the resolver's clients' subnets
+//     to every authoritative server, which is the privacy hazard RFC 7871
+//     §11 calls out.)
+//   - Reserved / private / loopback / CGNAT / link-local source addresses
+//     are stripped: such ranges are never globally meaningful to any
+//     upstream CDN and would only serve as a side-channel fingerprint of
+//     the operator's network.
+//
+// Returns nil when no ECS should be forwarded for this query.
+func (h *MainHandler) buildOutboundECS(opt *dns.EDNS0) *dns.ECSOption {
+	if !h.ecsEnabled || opt == nil {
+		return nil
+	}
+	clientECS, err := dns.ExtractECSFromOPT(opt)
+	if err != nil || clientECS == nil {
+		return nil
+	}
+	// Honour explicit /0 opt-out — forward unchanged so the upstream sees it.
+	if clientECS.SourcePrefixLen == 0 {
+		out := *clientECS
+		out.ScopePrefixLen = 0
+		return &out
+	}
+	// Suppress non-public source addresses entirely.
+	if security.IsReservedIP(clientECS.Address) {
+		return nil
+	}
+
+	// Cap source prefix at the operator's per-family ceiling (RFC 7871
+	// §11.1 recommends /24 for IPv4 and /56 for IPv6). Out-of-range or
+	// zero configuration falls back to those recommended defaults.
+	maxV4 := h.ecsMaxPrefix
+	if maxV4 <= 0 || maxV4 > 32 {
+		maxV4 = 24
+	}
+	maxV6 := h.ecsMaxPrefixV6
+	if maxV6 <= 0 || maxV6 > 128 {
+		maxV6 = 56
+	}
+	src := clientECS.SourcePrefixLen
+	switch clientECS.Family {
+	case 1: // IPv4
+		if int(src) > maxV4 {
+			src = uint8(maxV4)
+		}
+	case 2: // IPv6
+		if int(src) > maxV6 {
+			src = uint8(maxV6)
+		}
+	default:
+		return nil // unknown family — strip
+	}
+
+	out := dns.ECSOption{
+		Family:          clientECS.Family,
+		SourcePrefixLen: src,
+		ScopePrefixLen:  0, // outgoing queries always set scope=0
+		Address:         dns.TruncateIP(clientECS.Address, src),
+	}
+	return &out
+}
+
+// chooseCacheECSKey decides under which ECS scope the result of this query
+// should be stored or fetched from cache. The rules follow RFC 7871 §7.3:
+//
+//   - No outbound ECS was sent → cache globally (key "").
+//   - Upstream returned scope=0 → cache globally (one entry serves all
+//     clients, even though we sent ECS).
+//   - Upstream returned scope>0 → cache under the truncated client subnet
+//     at the returned scope length. Clients whose subnet falls within that
+//     scope share the entry; clients in a different subnet get their own.
+//
+// outboundECS is the ECS option we sent upstream (or were going to);
+// upstreamECS is the option the upstream echoed back (nil if no ECS was
+// returned). Either may be nil.
+func chooseCacheECSKey(outboundECS, upstreamECS *dns.ECSOption) string {
+	if outboundECS == nil {
+		return ""
+	}
+	if upstreamECS == nil {
+		// Upstream is ECS-unaware — treat the answer as global. CDN behaviour
+		// here is the same as if we had never sent ECS.
+		return ""
+	}
+	if upstreamECS.ScopePrefixLen == 0 {
+		return ""
+	}
+	scoped := dns.ECSOption{
+		Family:          outboundECS.Family,
+		SourcePrefixLen: upstreamECS.ScopePrefixLen,
+		Address:         dns.TruncateIP(outboundECS.Address, upstreamECS.ScopePrefixLen),
+	}
+	return scoped.CacheKey()
 }
 
 // SetDownstreamUDPBufferSize configures the EDNS0 UDP payload size this
@@ -210,6 +325,46 @@ func parseIPBytes(ipStr string) []byte {
 		return ipv4
 	}
 	return ip.To16()
+}
+
+// appendECSToResponse parses a packed wire-format response, appends the
+// given EDNS Client Subnet option to the existing OPT record (or builds
+// one if none is present), and re-packs. Used to echo the client's ECS
+// back per RFC 7871 §7.2.1 so the client knows the answer was geo-tailored.
+// Returns the original bytes on any parse/encode error.
+func appendECSToResponse(resp []byte, ecs *dns.ECSOption) []byte {
+	if ecs == nil {
+		return resp
+	}
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp
+	}
+	ecsOpt := dns.BuildECS(ecs)
+	found := false
+	for i, rr := range msg.Additional {
+		if rr.Type != dns.TypeOPT {
+			continue
+		}
+		optData := make([]byte, 4+len(ecsOpt.Data))
+		binary.BigEndian.PutUint16(optData[0:2], ecsOpt.Code)
+		binary.BigEndian.PutUint16(optData[2:4], uint16(len(ecsOpt.Data)))
+		copy(optData[4:], ecsOpt.Data)
+		msg.Additional[i].RData = append(msg.Additional[i].RData, optData...)
+		msg.Additional[i].RDLength = uint16(len(msg.Additional[i].RData))
+		found = true
+		break
+	}
+	if !found {
+		const defaultSize uint16 = 1232
+		msg.Additional = append(msg.Additional,
+			dns.BuildOPTWithOptions(defaultSize, false, []dns.EDNSOption{ecsOpt}))
+	}
+	out, err := dns.Pack(msg, make([]byte, 4096))
+	if err != nil {
+		return resp
+	}
+	return append([]byte(nil), out...)
 }
 
 // addEDEToResponse appends an EDE option to the response OPT record.
@@ -400,11 +555,26 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 
 	bypassCache := h.shouldBypassCache(clientIP)
 
-	// 3. Cache lookup
+	// 2.7 Build outbound ECS from the client's OPT record (RFC 7871).
+	// Passthrough policy: only forward what the client itself sent. Nil
+	// when the client opted out or ECS is disabled.
+	outboundECS := h.buildOutboundECS(msg.EDNS0)
+
+	// 3. Cache lookup. Try the global key first; that one is shared across
+	// all clients and matches authoritative answers with scope=0 (RFC 7871
+	// §7.3.1). On miss, if we have an outbound ECS, fall back to a scoped
+	// lookup so geo-tailored entries can still be reused by clients whose
+	// subnet maps to the same key.
 	if !bypassCache {
-		if entry, ok := h.cache.Get(q.Name, q.Type, q.Class); ok {
+		var entry *cache.Entry
+		var ok bool
+		entry, ok = h.cache.Get(q.Name, q.Type, q.Class)
+		if !ok && outboundECS != nil {
+			entry, ok = h.cache.GetWithECS(q.Name, q.Type, q.Class, outboundECS.CacheKey())
+		}
+		if ok {
 			h.metrics.IncCacheHits()
-			resp, err := h.buildCacheResponse(msg, entry)
+			resp, err := h.buildCacheResponseECS(msg, entry, outboundECS)
 			if err == nil {
 				duration := time.Since(start)
 				h.metrics.ObserveQueryDuration(duration)
@@ -430,7 +600,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	h.metrics.IncCacheMisses()
 
 	// 4. Recursive resolution
-	result, err := h.resolver.Resolve(q.Name, q.Type, q.Class)
+	result, err := h.resolver.ResolveWithECS(q.Name, q.Type, q.Class, outboundECS)
 
 	// Serve stale (RFC 8767): if resolution failed (Go error or SERVFAIL),
 	// try serving expired cache entry before giving up.
@@ -489,6 +659,13 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	}
 
 	if !bypassCache {
+		// RFC 7871 §7.3: scope=0 (or no ECS in response) → global cache;
+		// scope>0 → key under truncated client subnet at that scope.
+		ecsKey := chooseCacheECSKey(outboundECS, result.UpstreamECS)
+		var ecsScope uint8
+		if result.UpstreamECS != nil {
+			ecsScope = result.UpstreamECS.ScopePrefixLen
+		}
 		if result.RCODE == dns.RCodeNoError && len(result.Answers) > 0 {
 			// H-6: filter private addresses BEFORE inserting into the
 			// cache. Previously the filter only ran in buildResponse,
@@ -500,8 +677,16 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 			if h.privateFilter {
 				answersToCache = security.FilterPrivateAddresses(answersToCache)
 			}
-			h.cache.StoreWithStatus(q.Name, q.Type, q.Class, answersToCache, result.Authority, result.DNSSECStatus)
+			if ecsKey == "" {
+				h.cache.StoreWithStatus(q.Name, q.Type, q.Class, answersToCache, result.Authority, result.DNSSECStatus)
+			} else {
+				h.cache.StoreWithECSStatus(q.Name, q.Type, q.Class, ecsKey, ecsScope, answersToCache, result.Authority, result.DNSSECStatus)
+			}
 		} else if result.RCODE == dns.RCodeNXDomain {
+			// Negative caching is kept global for now: RFC 7871 §7.3 does
+			// not forbid per-subnet negatives, but NXDOMAIN scoping at
+			// authoritative servers is rare and per-subnet negatives
+			// would inflate cache pressure on the common case.
 			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority)
 		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
 			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority)
@@ -531,6 +716,23 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	resp, buildErr := h.buildResponse(msg, result)
 	if buildErr != nil {
 		return nil, buildErr
+	}
+
+	// RFC 7871 §7.2.1: if the client signalled ECS, echo back our derived
+	// option with the authoritative SCOPE PREFIX-LENGTH so the client knows
+	// the answer was (or was not) geo-tailored.
+	if outboundECS != nil {
+		var scope uint8
+		if result.UpstreamECS != nil {
+			scope = result.UpstreamECS.ScopePrefixLen
+		}
+		echo := dns.ECSOption{
+			Family:          outboundECS.Family,
+			SourcePrefixLen: outboundECS.SourcePrefixLen,
+			ScopePrefixLen:  scope,
+			Address:         outboundECS.Address,
+		}
+		resp = appendECSToResponse(resp, &echo)
 	}
 
 	// Add EDE for SERVFAIL (no reachable authority) if client supports EDNS0
@@ -622,6 +824,28 @@ func (h *MainHandler) buildSlipResponse(query []byte) ([]byte, error) {
 		binary.BigEndian.PutUint16(resp[2:4], flags)
 	}
 	return resp, nil
+}
+
+// buildCacheResponseECS is the ECS-aware variant of buildCacheResponse.
+// When the client sent ECS in its query, the response carries an ECS
+// option echoing the source prefix the client provided alongside the
+// SCOPE PREFIX-LENGTH from the cached entry (RFC 7871 §7.2.1). When the
+// client did not send ECS, the behaviour is identical to buildCacheResponse.
+func (h *MainHandler) buildCacheResponseECS(query *dns.Message, entry *cache.Entry, outboundECS *dns.ECSOption) ([]byte, error) {
+	resp, err := h.buildCacheResponse(query, entry)
+	if err != nil {
+		return nil, err
+	}
+	if outboundECS == nil {
+		return resp, nil
+	}
+	echo := dns.ECSOption{
+		Family:          outboundECS.Family,
+		SourcePrefixLen: outboundECS.SourcePrefixLen,
+		ScopePrefixLen:  entry.ECSScope,
+		Address:         outboundECS.Address,
+	}
+	return appendECSToResponse(resp, &echo), nil
 }
 
 func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry) ([]byte, error) {

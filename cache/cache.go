@@ -270,6 +270,45 @@ func (c *Cache) StoreWithStatus(name string, qtype uint16, class uint16, answers
 	s.mu.Unlock()
 }
 
+// StoreWithECSStatus caches a positive DNS result keyed by ECS source prefix
+// along with the DNSSEC validator's verdict and the authoritative server's
+// returned ECS SCOPE PREFIX-LENGTH (echoed to the client per RFC 7871 §7.2.1).
+// ecsPrefix == "" routes to StoreWithStatus (global, all clients share).
+func (c *Cache) StoreWithECSStatus(
+	name string, qtype uint16, class uint16,
+	ecsPrefix string, ecsScope uint8,
+	answers []dns.ResourceRecord, authority []dns.ResourceRecord,
+	dnssecStatus string,
+) {
+	if ecsPrefix == "" {
+		// Global scope (RFC 7871 §7.3.1): one entry covers all clients.
+		c.StoreWithStatus(name, qtype, class, answers, authority, dnssecStatus)
+		return
+	}
+	name = strings.ToLower(name)
+	key := cacheKey{name: name, qtype: qtype, class: class, ecsPrefix: ecsPrefix}
+	idx := c.shardIndex(name)
+
+	ttl := c.extractTTL(answers)
+	ttl = c.clampTTL(ttl)
+
+	entry := &Entry{
+		Records:      cloneRRs(answers),
+		Authority:    cloneRRs(authority),
+		InsertedAt:   time.Now(),
+		OrigTTL:      ttl,
+		DNSSECStatus: dnssecStatus,
+		ECSScope:     ecsScope,
+	}
+
+	s := &c.shards[idx]
+	s.mu.Lock()
+	s.entries[key] = entry
+	s.pushEvictionEntry(key, entry)
+	c.enforceMaxEntriesLocked(s)
+	s.mu.Unlock()
+}
+
 // StoreNegative caches a negative DNS result (NXDOMAIN/NODATA).
 // NXDOMAIN applies to the entire name (RFC 2308 §3) so it is stored
 // with qtype=0 as a sentinel. NODATA is type-specific.
