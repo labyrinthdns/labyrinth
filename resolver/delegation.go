@@ -79,12 +79,39 @@ func extractDelegation(msg *dns.Message) ([]DelegationNS, string) {
 // the delegated zone. This is a harden-referral-path soft check: suspicious
 // NS names are logged but not rejected, since some legitimate setups use
 // external nameservers.
+//
+// Two whole classes of zones are skipped because their NS-naming conventions
+// guarantee a false positive otherwise:
+//
+//   - **TLDs (1-label zones like "com", "net", "tr").** gTLDs are served by
+//     Verisign/IANA infrastructure (`*.gtld-servers.net`, `*.nic.it` etc.)
+//     and ccTLDs by registry-operator domains — all structurally out of
+//     bailiwick of the TLD label itself.
+//   - **The `arpa` tree (in-addr.arpa, ip6.arpa, and any subzone).** Reverse
+//     DNS delegations are issued by IANA / the five RIRs from their own
+//     domains (`*.lacnic.net`, `*.ripe.net`, `*.arin.net`, `*.apnic.net`,
+//     `*.afrinic.net`, `*.in-addr-servers.arpa`). Out-of-bailiwick is the
+//     normal case here, not an anomaly.
+//
+// Without these skips a single PTR lookup produced ~10 WARN events on every
+// resolution — drowning real "suspicious NS" findings in noise.
 func validateReferralNS(delegations []DelegationNS, zone string, logger *slog.Logger) {
 	if logger == nil || zone == "" {
 		return
 	}
 
 	zone = strings.ToLower(strings.TrimSuffix(zone, "."))
+
+	// Skip TLD referrals (single-label zone): registry infrastructure is
+	// structurally out of bailiwick of the TLD label.
+	if !strings.Contains(zone, ".") {
+		return
+	}
+	// Skip the entire arpa hierarchy: RIR-served reverse delegations are
+	// always out of bailiwick of *.arpa, by IANA convention.
+	if zone == "arpa" || strings.HasSuffix(zone, ".arpa") {
+		return
+	}
 
 	// Build the parent hierarchy for the zone.
 	// For "example.com", hierarchy is ["example.com", "com", ""]
