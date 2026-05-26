@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.15] - 2026-05-26
+
+### Fixed
+- **RRSIG.Labels was not bounded against the owner-name label count** (RFC 4034 §3.1.3) — the spec is explicit: "The value of the Labels field MUST be less than or equal to the number of labels in the RRSIG owner name." A larger Labels value is structurally malformed — no legitimate signer can produce one, because Labels records how many labels the original signed owner actually had (root and wildcard label excluded). The previous code in [dnssec/verify.go](dnssec/verify.go) silently let it through and `canonicalWildcardOwner` returned the owner verbatim, widening the attack surface on the wildcard-reconstruction path. The fix rejects the RRSIG up front with `errMalformedLabels`; the validator's outer loop treats it as one signature failure and tries the next RRSIG (so the rollover-safe fallback is preserved). Pin tests [dnssec/rfc4034_labels_test.go](dnssec/rfc4034_labels_test.go).
+
+### Added
+- **Granular RFC 8914 EDE info codes on DNSSEC failures** — every Bogus answer used to collapse into the generic EDE 6 (DNSSEC Bogus), making it impossible to tell "the auth's signature expired" (operational failure at the signer) from "we saw a cryptographic forgery on the wire" (security event). The validator now classifies the failure cause through a new `FailureReason` type ([dnssec/failure_reason.go](dnssec/failure_reason.go)) and a `ValidateResponseWithReason` entrypoint; the resolver propagates the cause as `ResolveResult.DNSSECReason`; the server in [server/dnssec_ede.go](server/dnssec_ede.go) maps it to the correct EDE code:
+  - RRSIG `Expiration < now` → EDE 7 (Signature Expired, RFC 8914 §4.7)
+  - RRSIG `Inception > now` → EDE 8 (Signature Not Yet Valid, RFC 8914 §4.8)
+  - DNSKEY rrset fetch failed or no key with matching tag/algorithm → EDE 9 (DNSKEY Missing)
+  - All RRSIGs used a refused/unsupported algorithm → EDE 1 (Unsupported DNSKEY Algorithm)
+  - Other Bogus (crypto verify, out-of-bailiwick signer, trust-chain bogus) → EDE 6 (generic)
+
+  The hot path stays allocation-free — `ValidateResponseWithReason` doesn't allocate the per-RRSIG step slice. Pin tests [dnssec/rfc_ede_reason_test.go](dnssec/rfc_ede_reason_test.go).
+- **CNAME synthesis from DNAME when upstream omits the companion CNAME** (RFC 6672 §5.3) — the spec says: "If the resolver does not find a CNAME associated with the DNAME, it MUST synthesize one." Many stub resolvers and applications only know how to follow CNAME chains; without the synthesised CNAME the DNAME redirection is invisible to them and the lookup appears to fail. The auth is supposed to include the synth-CNAME per RFC 6672 §3.2, but historical and non-conformant servers omit it — the iterative resolver is the last line of defence. The DNAME branch in [resolver/resolver.go](resolver/resolver.go) now detects the missing companion and synthesises a CNAME at qname pointing to the DNAME-substituted target, inheriting the DNAME's TTL (RFC 6672 §5.3.3). The synthesised CNAME is intentionally unsigned — RFC 6672 §3.2 forbids signing it because the DNAME RRSIG already authenticates the substitution rule. New helper `dns.EncodeNameToBytes` ([dns/name.go](dns/name.go)) produces the uncompressed wire-format RData for the synthesised record. Pin test [resolver/rfc6672_dname_synth_test.go](resolver/rfc6672_dname_synth_test.go).
+
 ## [0.6.14] - 2026-05-26
 
 ### Fixed

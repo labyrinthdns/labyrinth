@@ -989,7 +989,7 @@ func (s *fullTestSetup) signRRSet(t *testing.T, rrset []dns.ResourceRecord, sign
 	rrsig := &dns.RRSIGRecord{
 		TypeCovered: rrset[0].Type,
 		Algorithm:   dns.AlgED25519,
-		Labels:      uint8(strings.Count(strings.TrimSuffix(signerName, "."), ".") + 1),
+		Labels:      uint8(labelCountExcludingRoot(rrset[0].Name)),
 		OrigTTL:     300,
 		Expiration:  0xFFFFFFFF,
 		Inception:   0,

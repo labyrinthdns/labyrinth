@@ -190,8 +190,20 @@ type ValidationStep struct {
 // trust chain from the signer back to the root trust anchors.
 // For NXDOMAIN/NODATA responses, it also validates NSEC3 proofs.
 func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype uint16) ValidationResult {
-	verdict, _ := v.validateResponseImpl(response, qname, qtype, false)
+	verdict, _, _ := v.validateResponseImpl(response, qname, qtype, false)
 	return verdict
+}
+
+// ValidateResponseWithReason returns the same verdict as ValidateResponse
+// plus a FailureReason that classifies why a Bogus / Indeterminate verdict
+// was reached. Callers can map the reason to an RFC 8914 EDE info code so
+// that "RRSIG expired" and "no DNSKEY by key tag" don't collapse into the
+// generic EDE 6. For Secure verdicts the reason is ReasonNone.
+//
+// Like ValidateResponse, this path does not allocate per-RRSIG steps.
+func (v *Validator) ValidateResponseWithReason(response *dns.Message, qname string, qtype uint16) (ValidationResult, FailureReason) {
+	verdict, _, reason := v.validateResponseImpl(response, qname, qtype, false)
+	return verdict, reason
 }
 
 // ValidateResponseDetailed returns the same verdict as ValidateResponse plus
@@ -202,12 +214,15 @@ func (v *Validator) ValidateResponse(response *dns.Message, qname string, qtype 
 // Plain ValidateResponse callers do not pay for this — they get the same
 // single verdict and no allocated step slice.
 func (v *Validator) ValidateResponseDetailed(response *dns.Message, qname string, qtype uint16) (ValidationResult, []ValidationStep) {
-	return v.validateResponseImpl(response, qname, qtype, true)
+	verdict, steps, _ := v.validateResponseImpl(response, qname, qtype, true)
+	return verdict, steps
 }
 
 // validateResponseImpl is the unified routine behind both public entrypoints.
 // When collect is false `steps` is left nil — the hot path stays allocation-free.
-func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qtype uint16, collect bool) (ValidationResult, []ValidationStep) {
+// The FailureReason result classifies the cause when verdict is not Secure
+// so callers can map it to an RFC 8914 EDE info code.
+func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qtype uint16, collect bool) (ValidationResult, []ValidationStep, FailureReason) {
 	var steps []ValidationStep
 	push := func(s ValidationStep) {
 		if collect {
@@ -215,7 +230,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		}
 	}
 	if response == nil {
-		return Insecure, steps
+		return Insecure, steps, ReasonNone
 	}
 
 	// Handle NXDOMAIN/NODATA: validate NSEC3 proofs in authority section
@@ -223,11 +238,15 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	if rcode == dns.RCodeNXDomain || (rcode == dns.RCodeNoError && len(response.Answers) == 0) {
 		verdict := v.validateDenialResponse(response, qname, qtype)
 		push(ValidationStep{Stage: "denial", Outcome: verdictToOutcome(verdict), Detail: "NSEC/NSEC3 denial proof"})
-		return verdict, steps
+		reason := ReasonNone
+		if verdict == Bogus {
+			reason = ReasonOther
+		}
+		return verdict, steps, reason
 	}
 
 	if len(response.Answers) == 0 {
-		return Insecure, steps
+		return Insecure, steps, ReasonNone
 	}
 
 	// Collect RRSIG records together with their owner names, plus the
@@ -257,7 +276,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	// No RRSIG records at all means unsigned (insecure) zone.
 	if len(rrsigs) == 0 {
 		push(ValidationStep{Stage: "no-rrsigs", Outcome: "insecure", Detail: "answer section has no RRSIG"})
-		return Insecure, steps
+		return Insecure, steps, ReasonNone
 	}
 
 	// RFC 4035 §5.3.3: a Secure RRset is one for which AT LEAST ONE valid
@@ -268,10 +287,27 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	//
 	// Strategy: walk every usable RRSIG; remember the strongest failure mode
 	// (Bogus > Indeterminate > Insecure) so that if none validate we can
-	// return the right "why" instead of always saying Indeterminate.
+	// return the right "why" instead of always saying Indeterminate. Track
+	// the specific cause too so callers can pick an RFC 8914 EDE info code.
 	usableRRSIGs := 0
 	sawBogus := false
 	sawIndeterminate := false
+	sawUnsupportedAlg := false
+	bogusReason := ReasonNone
+	indetReason := ReasonNone
+	// setBogusReason records the first specific bogus cause we see. Later
+	// causes do not overwrite — the first signature failure is usually the
+	// most informative for the operator looking at the EDE.
+	setBogusReason := func(r FailureReason) {
+		if bogusReason == ReasonNone {
+			bogusReason = r
+		}
+	}
+	setIndetReason := func(r FailureReason) {
+		if indetReason == ReasonNone {
+			indetReason = r
+		}
+	}
 
 	skewI := int64(rrsigClockSkew / time.Second)
 	nowI := time.Now().Unix()
@@ -310,6 +346,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			step.Outcome = "skipped"
 			step.Detail = "no verifier for this algorithm"
 			push(step)
+			sawUnsupportedAlg = true
 			continue
 		}
 		usableRRSIGs++
@@ -341,6 +378,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			v.logger.Debug("RRSIG not yet valid; trying next",
 				"inception", rrsig.Inception, "now", nowI)
 			sawBogus = true
+			setBogusReason(ReasonSignatureNotYetValid)
 			step := baseStep
 			step.Stage = "not-yet"
 			step.Outcome = "bogus"
@@ -352,6 +390,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			v.logger.Debug("RRSIG expired; trying next",
 				"expiration", rrsig.Expiration, "now", nowI)
 			sawBogus = true
+			setBogusReason(ReasonSignatureExpired)
 			step := baseStep
 			step.Stage = "expired"
 			step.Outcome = "bogus"
@@ -368,6 +407,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			v.logger.Debug("RRSIG signer not in bailiwick of qname; trying next",
 				"signer", signerZone, "qname", qname)
 			sawBogus = true
+			setBogusReason(ReasonOther)
 			step := baseStep
 			step.Stage = "out-of-bailiwick"
 			step.Outcome = "bogus"
@@ -382,6 +422,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			v.logger.Debug("failed to fetch DNSKEYs; trying next",
 				"zone", signerZone, "error", err)
 			sawIndeterminate = true
+			setIndetReason(ReasonDNSKEYMissing)
 			step := baseStep
 			step.Stage = "no-dnskey"
 			step.Outcome = "indeterminate"
@@ -396,6 +437,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			v.logger.Debug("no matching DNSKEY found; trying next",
 				"key_tag", rrsig.KeyTag, "zone", signerZone)
 			sawIndeterminate = true
+			setIndetReason(ReasonNoMatchingDNSKEY)
 			step := baseStep
 			step.Stage = "no-matching-key"
 			step.Outcome = "indeterminate"
@@ -409,6 +451,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			v.logger.Debug("RRSIG verification failed; trying next",
 				"key_tag", rrsig.KeyTag, "zone", signerZone, "error", err)
 			sawBogus = true
+			setBogusReason(ReasonOther)
 			step := baseStep
 			step.Stage = "verify-failed"
 			step.Outcome = "bogus"
@@ -437,27 +480,40 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		chainStep.Outcome = verdictToOutcome(result)
 		chainStep.Detail = fmt.Sprintf("trust chain from %s to root: %s", signerZone, result)
 		push(chainStep)
-		return result, steps
+		// Trust chain may have ruled Bogus (e.g. revoked KSK, DS-DNSKEY
+		// mismatch). Surface that as a generic Bogus reason since we don't
+		// have a more specific tag from here.
+		chainReason := ReasonNone
+		if result == Bogus {
+			chainReason = ReasonOther
+		}
+		return result, steps, chainReason
 	}
 
 	// All RRSIGs were skipped because they used weak (rejected) algorithms.
 	// Per RFC 8624 §3.1, treat as insecure: the zone is effectively unsigned
-	// from this validator's perspective.
+	// from this validator's perspective. The unsupported-algorithm signal is
+	// still useful to emit as EDE 1 — clients deciding whether to retry with
+	// a different resolver should know the answer is unsigned-by-policy here.
 	if usableRRSIGs == 0 {
 		v.logger.Debug("all RRSIGs used weak algorithms; treating as insecure",
 			"qname", qname, "qtype", qtype)
-		return Insecure, steps
+		reason := ReasonNone
+		if sawUnsupportedAlg {
+			reason = ReasonUnsupportedDNSKEYAlgo
+		}
+		return Insecure, steps, reason
 	}
 
 	// No RRSIG fully validated. Prefer Bogus over Indeterminate so a real
 	// signature forgery does not get downgraded to a soft-fail.
 	if sawBogus {
-		return Bogus, steps
+		return Bogus, steps, bogusReason
 	}
 	if sawIndeterminate {
-		return Indeterminate, steps
+		return Indeterminate, steps, indetReason
 	}
-	return Indeterminate, steps
+	return Indeterminate, steps, indetReason
 }
 
 func verdictToOutcome(v ValidationResult) string {
