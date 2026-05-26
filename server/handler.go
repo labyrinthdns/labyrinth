@@ -686,11 +686,23 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 			h.logger.Info("serving stale cache", "qname", q.Name, "qtype", qtypeStr)
 			resp, buildErr := h.buildCacheResponse(msg, staleEntry)
 			if buildErr == nil {
-				// Add EDE "Stale Answer" (RFC 8914, info code 1)
+				// EDE info-code selection (RFC 8914 / RFC 8767 §6):
+				// a stale NXDOMAIN gets its own code (19, STALE-NXDOMAIN-
+				// ANSWER) so the client can distinguish "expired denial
+				// of existence" from "expired positive answer" — useful
+				// for log/UI hints and for clients deciding whether to
+				// retry against a different resolver. Falls back to the
+				// generic stale-answer code for non-NX serves.
 				if msg.EDNS0 != nil {
 					staleResp, parseErr := dns.Unpack(resp)
 					if parseErr == nil {
-						h.addEDEToResponse(staleResp, dns.EDECodeStaleAnswer, "serve-stale")
+						edeCode := dns.EDECodeStaleAnswer
+						edeText := "serve-stale"
+						if staleEntry.RCODE == dns.RCodeNXDomain {
+							edeCode = dns.EDECodeStaleNXDOMAINAnswer
+							edeText = "serve-stale-nxdomain"
+						}
+						h.addEDEToResponse(staleResp, edeCode, edeText)
 						// H-5: copy packed bytes off the pooled buffer before the
 						// caller (UDP/TCP listener) reads them. packToOwnedBytes
 						// copies and returns the buffer to the pool atomically.
@@ -708,8 +720,14 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 				return resp, nil
 			}
 		}
-		// Check for DNSSEC bogus — add EDE info code 6
-		if result != nil && result.DNSSECStatus == "bogus" && msg.EDNS0 != nil {
+		// Check for DNSSEC bogus — add EDE info code 6. RFC 4035 §3.2.2
+		// makes one exception: when the client sets CD=1 it has asked us
+		// to skip the validation gate, so a Bogus verdict MUST NOT mask
+		// the answer behind SERVFAIL. The AD bit is already cleared by
+		// the response-builder under CD=1, which communicates the
+		// non-validation state to the client; the data itself flows
+		// through unfiltered.
+		if result != nil && result.DNSSECStatus == "bogus" && !msg.Header.CD() && msg.EDNS0 != nil {
 			bogusResp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, dns.EDECodeDNSSECBogus, "DNSSEC validation failure")
 			if buildErr == nil {
 				h.metrics.IncResponses("SERVFAIL")
@@ -1031,10 +1049,20 @@ func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question
 }
 
 func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.ResolveResult) ([]byte, error) {
-	// Apply private address filtering before building the response
+	// Apply private address filtering before building the response. RFC 8914
+	// §4.6 "Forged Answer" (info code 4) is the standardised signal that the
+	// resolver replaced/stripped records relative to the authoritative
+	// answer; we emit it when the private-IP filter actually removed
+	// something so clients can distinguish "auth said empty" from
+	// "resolver rebind-protected the answer."
 	answers := result.Answers
+	privateStripped := false
 	if h.privateFilter {
-		answers = security.FilterPrivateAddresses(answers)
+		filtered := security.FilterPrivateAddresses(answers)
+		if len(filtered) != len(answers) {
+			privateStripped = true
+		}
+		answers = filtered
 	}
 	authority := result.Authority
 	additional := result.Additional
@@ -1076,9 +1104,15 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 		Additional: additional,
 	}
 
-	// Add OPT if client sent one
+	// Add OPT if client sent one. Surface the RFC 8914 §4.6 "Forged Answer"
+	// info code when the private-IP filter actually removed records so
+	// clients can tell rebind-protection apart from a genuinely empty
+	// authoritative answer.
 	if query.EDNS0 != nil {
 		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
+		if privateStripped {
+			h.addEDEToResponse(resp, dns.EDECodeForgedAnswer, "rebind-protected")
+		}
 	}
 
 	// H-5: pack into an owned slice.

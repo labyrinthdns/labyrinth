@@ -740,6 +740,11 @@ func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.Resourc
 		if !dnskey.IsKSK() {
 			continue
 		}
+		// RFC 5011 §3: a revoked DNSKEY MUST NOT match a trust anchor.
+		// The operator has explicitly disowned this key.
+		if dnskey.IsRevoked() {
+			continue
+		}
 		for _, anchor := range v.trustAnchors {
 			if v.isWeakDSDigest(anchor.DigestType) {
 				continue
@@ -762,6 +767,14 @@ func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords [
 			continue
 		}
 		if !dnskey.IsKSK() {
+			continue
+		}
+		// RFC 5011 §3: revoked KSKs MUST NOT chain to a DS record.
+		// A revoked-yet-DS-published key is exactly the rollover hold-
+		// down period when the parent has not yet retracted the DS;
+		// during that window only the unrevoked successor key is the
+		// legitimate authority.
+		if dnskey.IsRevoked() {
 			continue
 		}
 		for _, ds := range dsRecords {
@@ -948,11 +961,17 @@ func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, []dns.Res
 	return dsRecords, resp.Authority, nil
 }
 
-// findMatchingDNSKEY finds a DNSKEY record matching the given key tag and algorithm.
+// findMatchingDNSKEY finds a DNSKEY record matching the given key tag and
+// algorithm. RFC 5011 §3 revoked keys are skipped — a revoked DNSKEY can
+// still appear in the zone's published DNSKEY rrset for the duration of
+// the hold-down period, but it MUST NOT be used to validate RRSIGs.
 func findMatchingDNSKEY(dnskeys []dns.ResourceRecord, keyTag uint16, algorithm uint8) (*dns.DNSKEYRecord, error) {
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
 		if err != nil {
+			continue
+		}
+		if dnskey.IsRevoked() {
 			continue
 		}
 		if dnskey.KeyTag() == keyTag && dnskey.Algorithm == algorithm {
