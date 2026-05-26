@@ -224,6 +224,15 @@ func (k *DNSKEYRecord) IsKSK() bool {
 	return k.Flags&0x0001 != 0
 }
 
+// IsRevoked reports whether the REVOKE flag (RFC 5011 §3, bit 8) is set.
+// A revoked DNSKEY MUST NOT be used to validate signatures or to match DS
+// records — the operator has explicitly disowned that key and the chain
+// must rebuild from the unrevoked siblings. Resolvers that ignore the bit
+// keep accepting signatures from compromised or rolled-out keys.
+func (k *DNSKEYRecord) IsRevoked() bool {
+	return k.Flags&0x0080 != 0
+}
+
 // DSRecord holds parsed DS RDATA fields (RFC 4034 Section 5).
 type DSRecord struct {
 	KeyTag     uint16

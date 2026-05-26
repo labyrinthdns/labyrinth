@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-05-26
+
+### Changed
+- **`resolver.caps_for_id` (DNS 0x20 case randomization) now defaults to `true`** (RFC 5452 §9.2 hardening) — for every ASCII letter in an outbound qname the resolver flips the case at random, and the auth server is required to mirror the exact case on the way back. An off-path spoofer had to guess the 16-bit TXID (65 536 possibilities); with 0x20 enabled on a typical 10-letter name they now also have to guess 10 random bits of case, multiplying the brute-force window by ~1024 at zero protocol cost. The infrastructure has shipped since 0.4 but was disabled by default; the audit flagged this and 0.6.13 flips the default on. Operators who interact with the (very rare) misbehaving authoritative that does not preserve case can still set `resolver.caps_for_id: false` in config. [config/defaults.go](config/defaults.go).
+
+### Added
+- **EDE info code 19 (STALE-NXDOMAIN-ANSWER) on serve-stale NXDOMAIN responses** (RFC 8914 §4.4 / RFC 8767 §6) — previously the serve-stale path emitted the generic "Stale Answer" code (3) for both positive and negative cached entries, so clients had no way to tell "expired denial of existence" from "expired positive answer". The selection in [server/handler.go](server/handler.go) now branches on `entry.RCODE`. Useful for both log triage and client-side retry policy (a stale NXDOMAIN typically should not be retried; a stale positive answer can be revalidated against the same upstream).
+- **EDE info code 4 (FORGED ANSWER) when the private-IP filter strips records** (RFC 8914 §4.6) — when `security.private_address_filter` removes A/AAAA records (DNS-rebinding protection) the response was empty without any wire-level indication that the resolver had mutated the upstream answer. Clients could not distinguish "auth returned no records" from "resolver rebind-protected the answer". The new EDE in [server/handler.go](server/handler.go) `buildResponse` fires only when the filter actually removed something, so legitimate empty answers are not falsely tagged as forged.
+
+### Fixed
+- **Revoked DNSKEYs (RFC 5011 §3, bit 8 / mask `0x0080`) were accepted in chain validation** — `verifyAgainstTrustAnchors`, `verifyDNSKEYWithDS`, and `findMatchingDNSKEY` ([dnssec/validator.go](dnssec/validator.go)) all walked the DNSKEY RRset without checking the REVOKE flag. RFC 5011's whole point is to give an operator a way to disown a key (compromise, planned rollover) by re-publishing it with REVOKE set — the resolver MUST treat such keys as no longer authoritative. Without the check, a revoked-yet-DS-published key during the hold-down period would still validate signatures, defeating the rollover. New [`DNSKEYRecord.IsRevoked`](dns/rdata.go) decodes the flag; all three call sites now skip revoked keys, forcing the chain to rebuild from unrevoked siblings. Pin test [dnssec/rfc5011_revoke_test.go](dnssec/rfc5011_revoke_test.go).
+- **CD=1 (Checking Disabled) queries had their Bogus verdicts masked behind SERVFAIL** (RFC 4035 §3.2.2 violation) — when the client explicitly asked for validation to be skipped (e.g. a debugging stub like `dig +cd`), the handler still converted Bogus to SERVFAIL, hiding the bogus data the client deliberately requested. The handler in [server/handler.go](server/handler.go) now passes Bogus data through unmodified when CD=1; the AD bit is already cleared under CD=1 by the response-builder, so clients still see the non-validated state without losing the data itself. The MITM/downgrade defenders (CD=0 — the overwhelming default) are unchanged.
+
 ## [0.6.12] - 2026-05-26
 
 ### Fixed
