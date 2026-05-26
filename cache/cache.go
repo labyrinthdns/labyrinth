@@ -322,6 +322,15 @@ func (c *Cache) StoreWithECSStatus(
 // NXDOMAIN applies to the entire name (RFC 2308 §3) so it is stored
 // with qtype=0 as a sentinel. NODATA is type-specific.
 func (c *Cache) StoreNegative(name string, qtype uint16, class uint16, negType NegativeType, rcode uint8, authority []dns.ResourceRecord) {
+	// RFC 2308 §3 defense-in-depth: refuse to cache a negative response whose
+	// authority section carries an SOA but the SOA's owner does not cover the
+	// queried name. The resolver classifier already filters out-of-bailiwick
+	// SOAs before producing the NODATA/NXDOMAIN verdict, but this guard
+	// prevents any future caller from accidentally bypassing that check and
+	// poisoning the negative cache with an attacker-attached SOA.
+	if hasAnySOA(authority) && !authorityCoversName(name, authority) {
+		return
+	}
 	// RFC 2181 §8 / RFC 2308 §4: a TTL of zero on the SOA Minimum field
 	// or the SOA RR itself means the negative answer is for this query
 	// only and MUST NOT be cached.
@@ -377,6 +386,86 @@ func (c *Cache) extractTTL(records []dns.ResourceRecord) uint32 {
 		}
 	}
 	return minTTL
+}
+
+// MaxFailureTTL is the RFC 9520 §4 ceiling on resolution-failure caching.
+// "DNS resolvers SHOULD cache resolution failures … TTL … MUST NOT exceed
+// 5 minutes." We pick a tighter 30-second cap so transient outages clear
+// quickly while still protecting upstream from the per-query stampede.
+const MaxFailureTTL uint32 = 30
+
+// DefaultFailureTTL is the typical RFC 9520 §3 "small number of seconds"
+// negative-failure window: 5 s by default, balancing fast recovery on
+// transient flakes against worthwhile suppression of repeat work.
+const DefaultFailureTTL uint32 = 5
+
+// StoreFailure records a resolution-failure (SERVFAIL) negative entry for
+// the (name, qtype, class) triple, with TTL clamped to [1, MaxFailureTTL].
+// RFC 9520 §3: "Recursive servers MUST cache resolution failures." Without
+// this cap, a client retrying a broken name every 100 ms re-runs the full
+// iterative chain every time — a small loop can swamp an upstream auth
+// server with thousands of QPS. The entry stores no records and emits
+// RCODE=SERVFAIL on cache hit, just like the upstream would have.
+func (c *Cache) StoreFailure(name string, qtype uint16, class uint16, ttl uint32) {
+	if ttl == 0 {
+		ttl = DefaultFailureTTL
+	}
+	if ttl > MaxFailureTTL {
+		ttl = MaxFailureTTL
+	}
+	name = strings.ToLower(name)
+	key := cacheKey{name: name, qtype: qtype, class: class}
+	idx := c.shardIndex(name)
+
+	entry := &Entry{
+		InsertedAt: time.Now(),
+		OrigTTL:    ttl,
+		Negative:   true,
+		NegType:    NegServFail,
+		RCODE:      dns.RCodeServFail,
+	}
+
+	s := &c.shards[idx]
+	s.mu.Lock()
+	s.entries[key] = entry
+	s.pushEvictionEntry(key, entry)
+	c.enforceMaxEntriesLocked(s)
+	s.mu.Unlock()
+}
+
+// hasAnySOA reports whether the authority section contains any SOA record.
+func hasAnySOA(authority []dns.ResourceRecord) bool {
+	for _, rr := range authority {
+		if rr.Type == dns.TypeSOA {
+			return true
+		}
+	}
+	return false
+}
+
+// authorityCoversName reports whether at least one SOA record in the authority
+// section has an owner name that is qname itself or an ancestor of qname.
+// RFC 2308 §3 requires the SOA accompanying a negative response to come from
+// a zone that covers the queried name; an SOA whose owner is unrelated to
+// qname is illegitimate and must not contribute to negative caching.
+func authorityCoversName(qname string, authority []dns.ResourceRecord) bool {
+	q := strings.ToLower(strings.TrimSuffix(qname, "."))
+	for _, rr := range authority {
+		if rr.Type != dns.TypeSOA {
+			continue
+		}
+		owner := strings.ToLower(strings.TrimSuffix(rr.Name, "."))
+		if owner == "" {
+			return true // root SOA covers everything
+		}
+		if owner == q {
+			return true
+		}
+		if strings.HasSuffix(q, "."+owner) {
+			return true
+		}
+	}
+	return false
 }
 
 // sanitizeWireTTL applies the RFC 2181 §8 ceiling to a TTL value read off
@@ -555,6 +644,8 @@ func (c *Cache) NegativeEntries(limit int) []NegativeEntryInfo {
 				negTypeStr = "NXDOMAIN"
 			case NegNoData:
 				negTypeStr = "NODATA"
+			case NegServFail:
+				negTypeStr = "SERVFAIL"
 			}
 
 			rcodeStr := dns.RCodeToString[entry.RCODE]

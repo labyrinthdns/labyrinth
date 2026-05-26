@@ -856,7 +856,7 @@ func TestClassifyResponseDNAMEBoost(t *testing.T) {
 	dnameRData := dns.BuildPlainName("target.com")
 	msg := &dns.Message{
 		Header: dns.Header{
-			Flags:   dns.NewFlagBuilder().SetQR(true).Build(),
+			Flags:   dns.NewFlagBuilder().SetQR(true).SetAA(true).Build(),
 			ANCount: 1,
 		},
 		Answers: []dns.ResourceRecord{{

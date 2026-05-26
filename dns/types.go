@@ -38,6 +38,11 @@ const (
 	RCodeNXDomain uint8 = 3
 	RCodeNotImp   uint8 = 4
 	RCodeRefused  uint8 = 5
+	// RCodeBadCookie is the extended RCODE 23 (RFC 7873 §5.2). It must be
+	// transmitted using the EDNS0 ExtRCODE split: the low 4 bits (0x07) go
+	// into the DNS header RCODE field, the high 8 bits (0x01) go into the
+	// OPT pseudo-RR TTL byte 0. See buildBadCookieResponse.
+	RCodeBadCookie uint8 = 23
 )
 
 // Opcodes
@@ -59,10 +64,11 @@ var TypeToString = map[uint16]string{
 
 // RCodeToString maps response codes to human-readable names.
 var RCodeToString = map[uint8]string{
-	RCodeNoError:  "NOERROR",
-	RCodeFormErr:  "FORMERR",
-	RCodeServFail: "SERVFAIL",
-	RCodeNXDomain: "NXDOMAIN",
-	RCodeNotImp:   "NOTIMP",
-	RCodeRefused:  "REFUSED",
+	RCodeNoError:   "NOERROR",
+	RCodeFormErr:   "FORMERR",
+	RCodeServFail:  "SERVFAIL",
+	RCodeNXDomain:  "NXDOMAIN",
+	RCodeNotImp:    "NOTIMP",
+	RCodeRefused:   "REFUSED",
+	RCodeBadCookie: "BADCOOKIE",
 }

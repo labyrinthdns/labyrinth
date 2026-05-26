@@ -79,6 +79,11 @@ func startMockDNS(t *testing.T, responder func(q *dns.Message) *dns.Message) *mo
 				continue
 			}
 			resp.Header.ID = query.Header.ID
+			// Mock auth servers represent authoritative responses; real
+			// auth servers always set AA=1 on answer-bearing replies
+			// (RFC 1034 §3.7). Add it here so tests don't each have to
+			// remember to flip the bit on every dns.Message they build.
+			ensureAAOnAuthoritativeReply(resp)
 			out := make([]byte, 4096)
 			packed, err := dns.Pack(resp, out)
 			if err != nil {
@@ -115,6 +120,7 @@ func startMockDNS(t *testing.T, responder func(q *dns.Message) *dns.Message) *mo
 					return
 				}
 				resp.Header.ID = query.Header.ID
+				ensureAAOnAuthoritativeReply(resp)
 				out := make([]byte, 4096)
 				packed, err := dns.Pack(resp, out)
 				if err != nil {
@@ -133,6 +139,24 @@ func startMockDNS(t *testing.T, responder func(q *dns.Message) *dns.Message) *mo
 func (m *mockDNSServer) close() {
 	m.udpConn.Close()
 	m.tcpLn.Close()
+}
+
+// ensureAAOnAuthoritativeReply sets the AA bit on a mock response whose
+// Answers section names the qname (the canonical shape of an authoritative
+// answer per RFC 1034 §3.7). Lets the existing tests express auth responses
+// without each individually remembering to call SetAA(true).
+func ensureAAOnAuthoritativeReply(resp *dns.Message) {
+	if resp.Header.AA() {
+		return
+	}
+	rcode := resp.Header.RCODE()
+	if rcode != dns.RCodeNoError && rcode != dns.RCodeNXDomain {
+		return
+	}
+	if len(resp.Answers) == 0 && len(resp.Authority) == 0 {
+		return
+	}
+	resp.Header.Flags |= 0x0400 // AA = bit 10 of flags word
 }
 
 func testResolver(t *testing.T, mock *mockDNSServer) *Resolver {

@@ -14,6 +14,14 @@ const (
 	NegNone     NegativeType = 0
 	NegNXDomain NegativeType = 1
 	NegNoData   NegativeType = 2
+	// NegServFail is the short-lived "resolution failure" cache entry
+	// introduced for RFC 9520 §3. When the recursive resolver cannot
+	// produce an answer (upstream timeout, all NS unreachable, broken
+	// delegation, signed-zone bogus), we cache the failure for a few
+	// seconds so an aggressive client cannot amplify upstream load by
+	// retrying the same expensive iterative chain on every miss. TTL
+	// is capped at 30 s per the RFC's recommendation.
+	NegServFail NegativeType = 3
 )
 
 // Entry represents a cached DNS result.
