@@ -12,6 +12,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { createDiagnosticsTraceSocket } from '@/api/client'
+import { ipToReverseDNSName } from './reverseDns'
 import type {
   TraceEvent,
   TraceResult,
@@ -160,9 +161,18 @@ export default function DiagnosticsPage() {
     setRunning(true)
 
     ws.onopen = () => {
+      // type=PTR + bare IP literal in the name field → auto-rewrite to
+      // in-addr.arpa / ip6.arpa form. Without this the resolver iterates
+      // from the root for an unqualified label sequence and the trace
+      // bottoms out at NXDOMAIN, hiding the user's real intent.
+      let outboundName = name
+      if (qtype === 'PTR') {
+        const rev = ipToReverseDNSName(name)
+        if (rev !== null) outboundName = rev
+      }
       ws.send(JSON.stringify({
         action: 'start',
-        name,
+        name: outboundName,
         type: qtype,
         bypass_cache: bypassCache,
         skip_dnssec: skipDNSSEC,

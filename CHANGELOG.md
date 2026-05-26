@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.17] - 2026-05-27
+
+### Fixed
+- **Diagnostic trace gave up after the first NS failure even though more NS records were available** — the trace path in [resolver/trace.go](resolver/trace.go) `traceIterative` worked on a flat `[]string` of IPs derived once from the delegation; when that list exhausted on REFUSED/ServFail (the typical broken-reverse-zone shape: one glue'd NS rejects, three NS hostnames remain unresolved) the loop printed "no reachable nameserver" without ever resolving the other 3 hostnames. The production resolver path (`selectAndResolveNS` in `resolveIterativeFromInner`) already did this correctly — so the trace UI was lying about what production actually did, making operators believe the resolver itself was broken when in fact it was upstream. The trace path now keeps a `pendingNSHostnames` list of un-tried NS hostnames from the most recent delegation and drains it (A then AAAA recursive resolution) before declaring exhaustion. RFC 1034 §4.3.2.
+
+### Added
+- **EDE info code 22 (No Reachable Authority) on the all-NS-refused SERVFAIL path** (RFC 8914 §4.22) — when every authoritative NS in the final delegation refused or was unreachable (the broken-reverse-zone shape on `in-addr.arpa` /24s whose published NS never had real auth set up), the SERVFAIL response now carries EDE 22 with a human-readable hint. Clients and operators can then distinguish "our resolver is broken" (retry) from "the upstream delegation is broken" (retry is hopeless, the fix is at the parent zone). New `ResolveResult.FailureReason` field in [resolver/resolver.go](resolver/resolver.go) tags the cause at every exhaustion site; the server maps it in [server/handler.go](server/handler.go) to the granular EDE code with descriptive text. Pin test [resolver/no_reachable_authority_test.go](resolver/no_reachable_authority_test.go).
+- **Diagnostic UI auto-rewrites bare IP literals to in-addr.arpa / ip6.arpa when type=PTR** — typing `46.20.5.236` and selecting `PTR` previously sent the literal string to the resolver, which iterated from the root for the leftmost label (`236`) and bottomed out at NXDOMAIN, confusing operators into thinking the resolver was broken. The form now rewrites IPv4 to the dotted-reversed `…in-addr.arpa` form (RFC 1035 §3.5) and IPv6 to the nibble-reversed `…ip6.arpa` form (RFC 3596 §2.5) before sending. Non-IP inputs pass through unchanged so legitimate PTR queries on already-formed arpa names keep working. New helper [web/ui/src/pages/reverseDns.ts](web/ui/src/pages/reverseDns.ts); pin test [web/ui/src/pages/reverseDns.test.ts](web/ui/src/pages/reverseDns.test.ts) covers IPv4, IPv6 canonical/shorthand, edge cases, and malformed-input rejection.
+
 ## [0.6.16] - 2026-05-27
 
 ### Fixed

@@ -63,7 +63,15 @@ type ResolveResult struct {
 	// emitting the generic EDE 6. Empty string when no specific cause is
 	// recorded. See dnssec.FailureReason.
 	DNSSECReason string
-	Error        error // underlying error if resolution failed
+	// FailureReason carries a stable token classifying a NON-DNSSEC
+	// failure (RCODE=SERVFAIL paths that have nothing to do with crypto).
+	// Currently used to surface "no-reachable-authority" when every NS in
+	// the delegation refused or was unreachable — the server maps it to
+	// EDE info code 22 (RFC 8914 §4.22) so clients and operators can tell
+	// "your resolver is broken" from "the auth chain itself is broken
+	// upstream of us, retry won't help". Empty when no specific cause.
+	FailureReason string
+	Error         error // underlying error if resolution failed
 
 	// UpstreamECS is the EDNS Client Subnet option that the authoritative
 	// (or forward) server included in its response, if any. The SCOPE
@@ -458,8 +466,16 @@ func (r *Resolver) resolveIterativeFromInner(
 		// Pick a nameserver
 		_, nsIP, err := r.selectAndResolveNS(nameservers, visited, currentZone)
 		if err != nil {
+			// selectAndResolveNS exhausted every glue IP and every NS
+			// hostname it could recursively resolve — same upstream
+			// failure mode as the "all NS REFUSED" path below. Tag the
+			// reason so the server emits EDE 22.
 			lastErr = err
-			return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
+			return &ResolveResult{
+				RCODE:         dns.RCodeServFail,
+				FailureReason: "no-reachable-authority",
+				Error:         lastErr,
+			}, nil
 		}
 
 		// Loop detection: include currentZone so that querying the same NS IP
@@ -780,13 +796,26 @@ func (r *Resolver) resolveIterativeFromInner(
 		case responseServFail:
 			nameservers = removeNSByIP(nameservers, nsIP)
 			if len(nameservers) == 0 {
-				return &ResolveResult{RCODE: dns.RCodeServFail}, nil
+				// Every authoritative NS in the delegation refused or
+				// errored out (typical broken-reverse-zone shape: parent
+				// publishes NS records for a /24 whose actual operators
+				// never set up real auth). Tag the cause so the server
+				// emits EDE 22 (No Reachable Authority) — clients then
+				// know retry won't help and the failure is upstream.
+				return &ResolveResult{
+					RCODE:         dns.RCodeServFail,
+					FailureReason: "no-reachable-authority",
+				}, nil
 			}
 			continue
 		}
 	}
 
-	return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
+	return &ResolveResult{
+		RCODE:         dns.RCodeServFail,
+		FailureReason: "no-reachable-authority",
+		Error:         lastErr,
+	}, nil
 }
 
 func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet, currentZone string) (string, string, error) {
