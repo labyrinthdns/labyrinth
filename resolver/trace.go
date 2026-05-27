@@ -260,6 +260,7 @@ func (r *Resolver) traceForward(t *tracer, addrs []string, name string, qtype ui
 			})
 			continue
 		}
+		ede, cd := extractTraceEDE(msg)
 		t.emit("upstream", TraceStatusOK, fmt.Sprintf("forward %s answered in %dms", addr, dur.Milliseconds()), map[string]any{
 			"ns":      addr,
 			"name":    name,
@@ -268,6 +269,8 @@ func (r *Resolver) traceForward(t *tracer, addrs []string, name string, qtype ui
 			"answers": len(msg.Answers),
 			"rtt_ms":  dur.Milliseconds(),
 			"ad":      msg.Header.AD(),
+			"cd":      cd,
+			"ede":     ede,
 			"mode":    "forward",
 		})
 		status := ""
@@ -405,6 +408,7 @@ func (r *Resolver) traceIterative(
 			continue
 		}
 		r.infraCache.RecordRTT(nsIP, rtt)
+		ede, cd := extractTraceEDE(response)
 		t.emit("upstream", TraceStatusOK, fmt.Sprintf("ns %s answered in %dms rcode=%s answers=%d", nsIP, rtt.Milliseconds(), rcodeName(response.Header.RCODE()), len(response.Answers)), map[string]any{
 			"ns":         nsIP,
 			"rtt_ms":     rtt.Milliseconds(),
@@ -413,6 +417,8 @@ func (r *Resolver) traceIterative(
 			"authority":  len(response.Authority),
 			"additional": len(response.Additional),
 			"ad":         response.Header.AD(),
+			"cd":         cd,
+			"ede":        ede,
 		})
 
 		security.SanitizeBailiwick(response, currentZone)

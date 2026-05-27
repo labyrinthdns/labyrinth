@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.27] - 2026-05-27
+
+### Added
+- **DiagnosticsPage CD bit + RFC 8914 EDE badges (Y41)** — the trace UI now surfaces what the upstream actually sent back, not just the rcode and answer count. Each `upstream` event renders inline pill badges for the DNSSEC AD flag, the CD bit (RFC 6840 §5.9), and any Extended DNS Error codes the upstream attached. New backend helper [resolver/trace_ede.go](resolver/trace_ede.go) walks the response OPT pseudo-record and pulls every EDE option into a JSON-friendly descriptor (`{code, name, text}`), where `name` is the human-readable label from RFC 8914 §4 (Filtered, Prohibited, Stale Answer, DNSSEC Bogus, …). Unknown codes fall through to `EDE<n>` so future IANA assignments still render. The same details now flow through both forward and iterative paths ([resolver/trace.go](resolver/trace.go)) and render via a new `<TraceFlagBadges>` component on [web/ui/src/pages/DiagnosticsPage.tsx](web/ui/src/pages/DiagnosticsPage.tsx) — tooltips on hover explain what each bit means so an operator doesn't need to keep the RFC open in a tab. Pin test [resolver/trace_ede_test.go](resolver/trace_ede_test.go) covers the OPT/EDE parser (two-EDE response, no-OPT response, nil-message safety) and the code → name map for the five most common values.
+
 ## [0.6.26] - 2026-05-27
 
 ### Added
