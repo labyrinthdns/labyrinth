@@ -25,7 +25,12 @@ type Cache struct {
 	negMaxTTL  uint32
 	serveStale bool
 	staleTTL   uint32
-	metrics    *metrics.Metrics
+	// staleMaxAge caps how far past expiry a stale entry may be served
+	// (RFC 8767 §3.3 — 1-3 day recommended ceiling). Zero disables the
+	// cap, restoring the original unbounded behaviour for operators who
+	// know what they're doing.
+	staleMaxAge uint32
+	metrics     *metrics.Metrics
 
 	// hardenBelowNX enables RFC 8020: if a parent domain has an NXDOMAIN
 	// cache entry, sub-domain queries return NXDOMAIN immediately.
@@ -36,6 +41,12 @@ type Cache struct {
 	// 10% of the original TTL.
 	prefetchEnabled bool
 	prefetchFunc    func(name string, qtype, qclass uint16)
+
+	// nsecIdx implements RFC 8198 aggressive use of DNSSEC-validated
+	// cache: cached Secure NSEC intervals are consulted on cache miss to
+	// synthesise NXDOMAIN for any name falling in a proven gap, without
+	// re-querying upstream. See nsec_aggressive.go.
+	nsecIdx *nsecIndex
 }
 
 type shard struct {
@@ -66,6 +77,7 @@ func NewCacheWithStale(maxEntries int, minTTL, maxTTL, negMaxTTL uint32, serveSt
 		serveStale: serveStale,
 		staleTTL:   staleTTL,
 		metrics:    m,
+		nsecIdx:    newNSECIndex(),
 	}
 	for i := range c.shards {
 		c.shards[i].resetEntries()
@@ -185,6 +197,13 @@ func (c *Cache) checkParentNXDomain(name string, class uint16) (*Entry, bool) {
 	return nil, false
 }
 
+// SetStaleMaxAge sets the upper bound (in seconds) on how far past
+// expiry a stale entry may be served (RFC 8767 §3.3). Setting 0
+// disables the cap, restoring unbounded stale-serve.
+func (c *Cache) SetStaleMaxAge(seconds uint32) {
+	c.staleMaxAge = seconds
+}
+
 // SetHardenBelowNX enables or disables RFC 8020 harden-below-nxdomain.
 func (c *Cache) SetHardenBelowNX(enabled bool) {
 	c.hardenBelowNX = enabled
@@ -229,6 +248,17 @@ func (c *Cache) GetStale(name string, qtype uint16, class uint16) (*Entry, bool)
 	// Only serve stale if entry is actually expired
 	if entry.RemainingTTL() > 0 {
 		return nil, false
+	}
+
+	// RFC 8767 §3.3: bound how far past expiry we will serve. Without a
+	// cap, an entry inserted with a short TTL but never re-fetched (long-
+	// tail name accessed once and then again 6 months later) would still
+	// be served stale — the RFC explicitly recommends a 1-3 day ceiling.
+	if c.staleMaxAge > 0 {
+		expiredFor := uint32(time.Since(entry.InsertedAt).Seconds()) - entry.OrigTTL
+		if expiredFor > c.staleMaxAge {
+			return nil, false
+		}
 	}
 
 	// Return with stale TTL; suppress DNSSEC verdict (see method comment).

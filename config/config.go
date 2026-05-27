@@ -158,13 +158,22 @@ type ResolverConfig struct {
 
 // CacheConfig holds cache settings.
 type CacheConfig struct {
-	MaxEntries     int
-	MinTTL         uint32
-	MaxTTL         uint32
-	NegMaxTTL      uint32
-	SweepInterval  time.Duration
-	ServeStale     bool
-	StaleTTL       uint32
+	MaxEntries    int
+	MinTTL        uint32
+	MaxTTL        uint32
+	NegMaxTTL     uint32
+	SweepInterval time.Duration
+	ServeStale    bool
+	StaleTTL      uint32
+	// StaleMaxAge bounds how far past expiry a stale entry may be served
+	// (RFC 8767 §3.3: "It is RECOMMENDED that responses no longer than
+	// 1-3 days old be considered for stale serve"). An entry whose live
+	// expiry is older than this threshold is rejected even when the
+	// physical record is still in cache. Default is 86400 seconds (1 day).
+	// Setting 0 keeps the prior unbounded behaviour for operators who
+	// prefer it, but the strong recommendation is to keep a finite cap so
+	// long-tail zones cannot pin obsolete data indefinitely.
+	StaleMaxAge    uint32
 	NoCacheClients []string
 	Prefetch       bool
 }
@@ -373,6 +382,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setDuration(&cfg.Cache.SweepInterval, "cache.sweep_interval")
 	setBool(&cfg.Cache.ServeStale, "cache.serve_stale")
 	setUint32(&cfg.Cache.StaleTTL, "cache.serve_stale_ttl", "cache.stale_ttl")
+	setUint32(&cfg.Cache.StaleMaxAge, "cache.stale_max_age", "cache.serve_stale_max_age")
 	setCSV(&cfg.Cache.NoCacheClients, "cache.no_cache_clients")
 	setBool(&cfg.Cache.Prefetch, "cache.prefetch")
 

@@ -643,6 +643,19 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		if !ok && outboundECS != nil {
 			entry, ok = h.cache.GetWithECS(q.Name, q.Type, q.Class, outboundECS.CacheKey())
 		}
+		// RFC 8198 aggressive NSEC caching: if no direct hit, see whether
+		// a previously cached Secure NSEC interval proves qname does not
+		// exist. Synthesising NXDOMAIN here drops the auth-server load for
+		// signed zones hit with garbage-subdomain traffic by an order of
+		// magnitude in practice. Only consulted on a complete miss so that
+		// real positive entries always win.
+		if !ok {
+			if synth, hit := h.cache.LookupNSECCovers(q.Name, q.Class); hit {
+				entry = synth
+				ok = true
+				h.metrics.IncCacheHits()
+			}
+		}
 		if ok {
 			h.metrics.IncCacheHits()
 			resp, err := h.buildCacheResponseECS(msg, entry, outboundECS)
