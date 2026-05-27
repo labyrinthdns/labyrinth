@@ -136,6 +136,11 @@ func (s *TCPServer) handleTCP(conn net.Conn) {
 			return
 		}
 
+		// RFC 7828 — advertise edns-tcp-keepalive when the client asked.
+		// Plaintext TCP, so padding is intentionally NOT applied
+		// (RFC 8467 §6 forbids it on unencrypted transports).
+		response = applyTCPTransportPolicies(query, response, s.idleTimeout, false)
+
 		// Write 2-byte length prefix + response
 		if err := binary.Write(conn, binary.BigEndian, uint16(len(response))); err != nil {
 			return

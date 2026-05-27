@@ -159,6 +159,10 @@ func (s *DoTServer) handleDoT(conn net.Conn) {
 			return
 		}
 
+		// RFC 7828 + RFC 7830/8467 — apply keepalive + padding on
+		// encrypted transport when the client signalled the options.
+		response = applyTCPTransportPolicies(query, response, s.idleTimeout, true)
+
 		// Write 2-byte length prefix + response
 		if err := binary.Write(conn, binary.BigEndian, uint16(len(response))); err != nil {
 			return
