@@ -35,6 +35,19 @@ export interface StatsResponse {
   blocked_queries: number
   fallback_queries: number
   fallback_recoveries: number
+
+  // v0.6.26 — Y34/Y35/Y36 observability counters surfaced in the
+  // dashboard. Optional so a server running an older API still works.
+  failure_cache_hits?: number
+  failure_cache_misses?: number
+  server_cookie_cache_hits?: number
+  server_cookie_cache_misses?: number
+  nsec_aggressive_synth_nx?: number
+  nsec_aggressive_synth_nodata?: number
+  nsec3_aggressive_synth_nx?: number
+  nsec3_aggressive_synth_nodata?: number
+  outbound_badcookie_retries?: number
+  stale_while_refresh?: number
 }
 
 export interface TimeSeriesBucket {
