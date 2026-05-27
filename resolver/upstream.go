@@ -53,9 +53,26 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 }
 
 func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
-	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS)
+	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	// RFC 7873 §5.4 BADCOOKIE handling: when an auth requires DNS cookies
+	// it rejects the first query (which carried only our client cookie)
+	// with extended RCODE 23 and includes a freshly-minted server cookie
+	// in the OPT COOKIE option. We are required to re-issue the query
+	// with `client_cookie || server_cookie` so the auth recognises us as
+	// the same client. Without this retry we never get past auths that
+	// enforce cookies — they will reply BADCOOKIE forever. We retry once
+	// only: a second BADCOOKIE is bogus and is surfaced as the answer.
+	if extendedRCODE(msg) == dns.RCodeBadCookie {
+		if sc := extractServerCookie(msg); len(sc) > 0 {
+			retried, retryErr := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, sc)
+			if retryErr == nil {
+				msg = retried
+			}
+		}
 	}
 
 	// RFC 5452 §6.1 hardening: a FORMERR from an EDNS-bearing query was
@@ -76,11 +93,50 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 	return msg, nil
 }
 
+// extendedRCODE returns the 12-bit RCODE per RFC 6891 §6.1.3 — the high
+// 8 bits live in the OPT RR's TTL byte 0 (parsed as EDNS0.ExtRCODE) and
+// the low 4 bits are in the header Flags field. Without composing them
+// a resolver that only looks at Header.RCODE() sees BADCOOKIE (23) as a
+// plain "7" (a reserved low-RCODE value) and never triggers the cookie
+// retry path.
+func extendedRCODE(msg *dns.Message) uint8 {
+	if msg == nil {
+		return 0
+	}
+	rc := msg.Header.RCODE()
+	if msg.EDNS0 != nil && msg.EDNS0.ExtRCODE != 0 {
+		return (msg.EDNS0.ExtRCODE << 4) | rc
+	}
+	return rc
+}
+
+// extractServerCookie returns the server-supplied portion of a COOKIE
+// option in the response (bytes 8..end of the option payload, per
+// RFC 7873 §4). Returns nil when no cookie or no server cookie portion
+// is present.
+func extractServerCookie(msg *dns.Message) []byte {
+	if msg == nil || msg.EDNS0 == nil {
+		return nil
+	}
+	for _, opt := range msg.EDNS0.Options {
+		if opt.Code != dns.EDNSOptionCodeCookie {
+			continue
+		}
+		if len(opt.Data) < 16 {
+			return nil
+		}
+		sc := make([]byte, len(opt.Data)-8)
+		copy(sc, opt.Data[8:])
+		return sc
+	}
+	return nil
+}
+
 // sendQuery builds, sends and validates a single upstream DNS query.
 // When clientECS is non-nil and withEDNS0 is true, the OPT record carries
 // an EDNS Client Subnet option (RFC 7871). The outgoing ECS always has
 // SCOPE PREFIX-LENGTH = 0 — only authoritative answers set that field.
-func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption) (*dns.Message, error) {
+func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte) (*dns.Message, error) {
 	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
@@ -143,9 +199,17 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		// validateResponseCookie). Auths that don't support cookies just
 		// ignore the option, so this is fully back-compatible.
 		if len(r.outboundClientCookie) == 8 {
+			cookieData := append([]byte(nil), r.outboundClientCookie...)
+			// RFC 7873 §5.3: a known server cookie (received from this
+			// same auth in a prior BADCOOKIE response) is appended after
+			// the client cookie so the server recognises us as the same
+			// client across the BADCOOKIE round trip.
+			if len(serverCookie) > 0 {
+				cookieData = append(cookieData, serverCookie...)
+			}
 			cookieOpt := dns.EDNSOption{
 				Code: dns.EDNSOptionCodeCookie,
-				Data: append([]byte(nil), r.outboundClientCookie...),
+				Data: cookieData,
 			}
 			ednsOpts = append(ednsOpts, cookieOpt)
 		}

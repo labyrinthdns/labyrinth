@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/server"
 )
 
@@ -58,6 +59,15 @@ func (s *AdminServer) handleDoH(w http.ResponseWriter, r *http.Request) {
 	if response == nil {
 		http.Error(w, "no response", http.StatusInternalServerError)
 		return
+	}
+
+	// RFC 7830 + RFC 8467 — DoH is encrypted, so if the client carried
+	// a PADDING option we pad the response to the next 468-byte block
+	// to hide length-based fingerprinting on the wire. TCP-keepalive
+	// (RFC 7828) does not apply here: HTTP/2 manages connection state
+	// at its own layer.
+	if qmsg, qerr := dns.Unpack(query); qerr == nil && dns.HasPaddingOption(qmsg.EDNS0) {
+		response = dns.PadRawResponse(response, dns.PaddingBlockSize)
 	}
 
 	// Compute Cache-Control max-age from the minimum TTL of answer records.
