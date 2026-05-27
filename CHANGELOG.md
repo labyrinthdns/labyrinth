@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.28] - 2026-05-27
+
+### Added
+- **AboutPage RFC Compliance Matrix (Y42)** — a curated, filterable list of the standards Labyrinth implements, grouped by capability so an SRE / security reader can scan the resolver's compliance posture without opening the CHANGELOG. Categories: Core Protocol, DNSSEC Validation, Aggressive NSEC/NSEC3, EDNS / Cookies / Padding, Transport Security, Special-Use Names, Extended Errors, Caching, Blocking & Policy. Each card surfaces the RFC number (linking to the IETF datatracker), the section (when behaviour is pinned to a specific section, e.g. RFC 6840 §5.9), title, one-line summary of what we do, and the version that shipped it. A debounced search input filters across all fields and a category chip row narrows by capability. Data lives in [web/ui/src/data/rfcCompliance.ts](web/ui/src/data/rfcCompliance.ts) with a vitest integrity pin ([web/ui/src/data/rfcCompliance.test.ts](web/ui/src/data/rfcCompliance.test.ts)) that catches: empty fields, unknown category labels, malformed `since` versions, duplicate entries — so a typo in the matrix can't ship as a false compliance claim.
+
 ## [0.6.27] - 2026-05-27
 
 ### Added

@@ -10,6 +10,7 @@ import {
   Loader2,
   RefreshCw,
   Rocket,
+  Search,
   Server,
   Shield,
   Sparkles,
@@ -17,6 +18,7 @@ import {
 import { api } from '@/api/client'
 import type { UpdateInfo } from '@/api/types'
 import { copyTextToClipboard, formatVersion } from '@/lib/utils'
+import { COMPLIANCE_ENTRIES, CATEGORY_LABELS, type ComplianceCategory } from '@/data/rfcCompliance'
 
 type VersionInfo = {
   version: string
@@ -28,6 +30,155 @@ function formatBuildTime(value: string): string {
   if (!value) return 'N/A'
   const d = new Date(value)
   return Number.isNaN(d.getTime()) ? value : d.toLocaleString()
+}
+
+// rfcDatatrackerURL returns the IETF datatracker link for an "RFC NNNN" string.
+// The matrix entries spell the RFC out with a space ("RFC 8198") because that's
+// the canonical citation form, but the datatracker URL needs the bare number.
+function rfcDatatrackerURL(rfc: string): string {
+  const m = rfc.match(/RFC\s+(\d+)/)
+  if (!m) return ''
+  return `https://datatracker.ietf.org/doc/html/rfc${m[1]}`
+}
+
+const CATEGORY_TINT: Record<ComplianceCategory, string> = {
+  core: 'border-slate-400/40 bg-slate-500/10 text-slate-700 dark:text-slate-300',
+  dnssec: 'border-emerald-400/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  'nsec-aggressive': 'border-teal-400/40 bg-teal-500/10 text-teal-700 dark:text-teal-300',
+  edns: 'border-sky-400/40 bg-sky-500/10 text-sky-700 dark:text-sky-300',
+  'transport-security': 'border-indigo-400/40 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
+  'special-use': 'border-violet-400/40 bg-violet-500/10 text-violet-700 dark:text-violet-300',
+  'error-signalling': 'border-rose-400/40 bg-rose-500/10 text-rose-700 dark:text-rose-300',
+  caching: 'border-amber-400/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+  blocking: 'border-orange-400/40 bg-orange-500/10 text-orange-700 dark:text-orange-300',
+}
+
+function RFCComplianceMatrix() {
+  const [query, setQuery] = useState('')
+  const [activeCategory, setActiveCategory] = useState<ComplianceCategory | 'all'>('all')
+
+  const categoriesPresent = useMemo(() => {
+    const set = new Set<ComplianceCategory>()
+    for (const e of COMPLIANCE_ENTRIES) set.add(e.category)
+    return Array.from(set)
+  }, [])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return COMPLIANCE_ENTRIES.filter((e) => {
+      if (activeCategory !== 'all' && e.category !== activeCategory) return false
+      if (!q) return true
+      const hay = `${e.rfc} ${e.section ?? ''} ${e.title} ${e.summary} ${e.since ?? ''}`.toLowerCase()
+      return hay.includes(q)
+    })
+  }, [query, activeCategory])
+
+  const categoryCounts = useMemo(() => {
+    const counts: Partial<Record<ComplianceCategory, number>> = {}
+    for (const e of COMPLIANCE_ENTRIES) counts[e.category] = (counts[e.category] ?? 0) + 1
+    return counts
+  }, [])
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6 shadow-sm space-y-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-300">RFC Compliance Matrix</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            The standards Labyrinth implements, grouped by capability. Click any RFC to open the IETF datatracker.
+          </p>
+        </div>
+        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+          {filtered.length} / {COMPLIANCE_ENTRIES.length} shown
+        </span>
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by RFC number, title, summary..."
+            className="w-full h-9 pl-8 pr-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          onClick={() => setActiveCategory('all')}
+          className={`px-2.5 py-1 rounded-full text-[11px] border transition ${
+            activeCategory === 'all'
+              ? 'border-slate-700 dark:border-slate-300 bg-slate-700 dark:bg-slate-300 text-white dark:text-slate-900'
+              : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+          }`}
+        >
+          All ({COMPLIANCE_ENTRIES.length})
+        </button>
+        {categoriesPresent.map((cat) => (
+          <button
+            type="button"
+            key={cat}
+            onClick={() => setActiveCategory(cat)}
+            className={`px-2.5 py-1 rounded-full text-[11px] border transition ${
+              activeCategory === cat
+                ? 'border-slate-700 dark:border-slate-300 bg-slate-700 dark:bg-slate-300 text-white dark:text-slate-900'
+                : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+            }`}
+          >
+            {CATEGORY_LABELS[cat]} ({categoryCounts[cat]})
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-8 text-xs text-slate-500 dark:text-slate-400">
+          No entries match the current filter.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+          {filtered.map((e) => {
+            const tint = CATEGORY_TINT[e.category]
+            const url = rfcDatatrackerURL(e.rfc)
+            return (
+              <div
+                key={`${e.rfc}-${e.section ?? ''}-${e.title}`}
+                className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-900/40 p-3 space-y-1.5"
+              >
+                <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-amber-700 dark:text-amber-300 hover:underline"
+                  >
+                    {e.rfc}{e.section ? ` ${e.section}` : ''}
+                    <ExternalLink size={10} />
+                  </a>
+                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-mono uppercase border ${tint}`}>
+                    {CATEGORY_LABELS[e.category]}
+                  </span>
+                </div>
+                <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 leading-snug">
+                  {e.title}
+                </div>
+                <div className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                  {e.summary}
+                </div>
+                {e.since && (
+                  <div className="text-[10px] text-slate-500 dark:text-slate-500 font-mono pt-1">
+                    since {e.since}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function AboutPage() {
@@ -384,6 +535,8 @@ export default function AboutPage() {
           )}
         </div>
       </div>
+
+      <RFCComplianceMatrix />
     </div>
   )
 }
