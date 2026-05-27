@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.31] - 2026-05-27
+
+### Security
+- **RFC 1034 §3.7 — AA bit MUST be clear on resolver responses (Y50)** — a recursive resolver is by definition NOT authoritative for any name, even when serving cached data that originated from an AA=1 upstream. Monitoring tools and stub resolvers treat AA=1 as "fresh, direct from origin"; a cache hit that ships AA=1 silently misleads them into trusting stale data as live. Two pin sets in [server/rfc1034_aa_bit_test.go](server/rfc1034_aa_bit_test.go): five-case matrix on `buildCacheResponse` (every DNSSECStatus × CD combination) and three-case matrix on `buildResponse` (NOERROR/NXDOMAIN/SERVFAIL) — AA MUST be 0 in every case.
+- **RFC 4035 §3.2.1 — DNSSEC RR stripping for non-DO clients (Y51)** — `stripDNSSECRRs` has unit tests but the integration was not pinned. A refactor that moved the strip call out of `buildResponse` / `buildCacheResponse` would silently ship RRSIG/DNSKEY/NSEC/NSEC3 records to a legacy stub — both a DDoS amplification surface (multi-KB DNSSEC blobs to clients that asked for a 30-byte A answer) AND a confusion source for strict stubs that reject unknown RR types. Three-case pin in [server/rfc4035_strip_dnssec_integration_test.go](server/rfc4035_strip_dnssec_integration_test.go): (1) cache path strips DNSSEC for non-DO; (2) live path strips DNSSEC for non-DO; (3) explicit `qtype=DNSKEY` query keeps its DNSKEY even without DO (§3.2.1 exception so DNS-audit tooling still works).
+
 ## [0.6.30] - 2026-05-27
 
 ### Security
