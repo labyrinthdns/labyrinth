@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.29] - 2026-05-27
+
+### Security
+- **RFC 4035 §4.7 — DO bit on outbound queries (Y43)** — a validating resolver MUST set the DNSSEC OK bit in the OPT pseudo-record of every upstream query so the authoritative server includes RRSIG records. A refactor that loses this would silently degrade every answer to Insecure (validator gets no signatures to verify). New behavioural pin [resolver/rfc4035_do_bit_test.go](resolver/rfc4035_do_bit_test.go) captures the actual outbound query at a mock UDP socket and asserts the OPT TTL high-word DO bit follows the `DNSSECEnabled` config: `true → DO=1`, `false → DO=0`.
+- **RFC 4035 §3.2.2 + RFC 6840 §5.7 — AD bit gating (Y45)** — the AD bit on responses to clients MUST only be set when the data was validated AND the client did not opt out with CD=1. Five-case truth table pinned in [server/rfc4035_ad_bit_test.go](server/rfc4035_ad_bit_test.go): `secure+CD=0→AD=1`, `secure+CD=1→AD=0`, `insecure/bogus/unset+CD=0→AD=0`. A regression here is a silent downgrade — stub resolvers trust AD to decide whether to forward the answer to apps; an unvalidated AD=1 is the resolver lying to its downstream.
+
+### Hardened
+- **RFC 9210 §3.7 + RFC 7766 §6.2 — TCP idle timeout + pipeline cap defaults (Y44)** — a TCP server with no idle timeout or unbounded pipeline is a trivial DoS surface. Four-case pin [server/rfc9210_tcp_idle_test.go](server/rfc9210_tcp_idle_test.go) enforces the operational invariants: default idle timeout `> 0 and ≤ 30s`; default pipeline max `> 0 and ≤ 10000`; both option helpers (`WithIdleTimeout` / `WithPipelineMax`) apply positive overrides AND refuse non-positive values (so a misconfigured `0` cannot clobber the default to "disabled").
+
 ## [0.6.28] - 2026-05-27
 
 ### Added
