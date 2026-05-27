@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -132,6 +133,22 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 				dns.BuildN3UOption(r.supportedNSEC3Hashes()),
 			)
 		}
+		// RFC 7873 §5.4 outbound DNS cookies: present our stable 8-byte
+		// client cookie on every EDNS-bearing query. An off-path spoofer
+		// trying to forge a response now has to guess this 64-bit value in
+		// addition to the TXID (16 bits) and the source port (~15 bits of
+		// entropy on commodity OS RNGs) — multiplying the brute-force
+		// window by ~10^19. Compliant auths echo the cookie back in the
+		// COOKIE option; we verify the echo and drop on mismatch (see
+		// validateResponseCookie). Auths that don't support cookies just
+		// ignore the option, so this is fully back-compatible.
+		if len(r.outboundClientCookie) == 8 {
+			cookieOpt := dns.EDNSOption{
+				Code: dns.EDNSOptionCodeCookie,
+				Data: append([]byte(nil), r.outboundClientCookie...),
+			}
+			ednsOpts = append(ednsOpts, cookieOpt)
+		}
 		if len(ednsOpts) > 0 {
 			query.Additional = []dns.ResourceRecord{
 				dns.BuildOPTWithOptions(r.advertisedUDPBufferSize(), r.config.DNSSECEnabled, ednsOpts),
@@ -168,6 +185,16 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 	// When 0x20 is active, compare case-sensitively against the randomized name.
 	if err := validateResponseQuestionEx(msg, queryName, qtype, qclass, r.config.Caps0x20Enabled); err != nil {
 		return nil, err
+	}
+	// RFC 7873 §5.4 outbound cookie echo check: if the response carries a
+	// COOKIE option, the first 8 bytes MUST equal the client cookie we
+	// sent. A mismatch is positive evidence of off-path forgery (the
+	// spoofer could not have observed our random cookie), so drop the
+	// response. Auths that did not include a cookie at all are accepted
+	// (RFC 7873 §5.4: "...the resolver MUST NOT discard responses that
+	// do not include a COOKIE option.").
+	if !r.validateResponseCookie(msg) {
+		return nil, errors.New("response cookie mismatch")
 	}
 
 	// TC bit set → retry over TCP
@@ -246,6 +273,52 @@ func (r *Resolver) queryTCP(nsIP string, query []byte) ([]byte, error) {
 	}
 
 	return resp, nil
+}
+
+// validateResponseCookie enforces the outbound-cookie integrity check
+// (RFC 7873 §5.4). The check is one-sided:
+//
+//   - No COOKIE option in the response → accept (back-compat with auths
+//     that don't implement RFC 7873).
+//   - COOKIE option present whose first 8 bytes echo our client cookie
+//     → accept (server confirmed it saw our query as we sent it).
+//   - COOKIE option present whose first 8 bytes do NOT match → reject.
+//     This is the spoofer-eject case: an off-path attacker who guessed
+//     TXID + port + 0x20 caps but did not observe our random client
+//     cookie cannot echo it back, so the mismatch positively identifies
+//     a forgery.
+//
+// We do NOT store any server cookie returned by the auth — full RFC 7873
+// state tracking (per-IP server-cookie cache + retry on BADCOOKIE) is a
+// follow-up. Even without it, the client-cookie echo check provides ~64
+// bits of additional entropy against blind off-path spoofing.
+func (r *Resolver) validateResponseCookie(msg *dns.Message) bool {
+	if len(r.outboundClientCookie) != 8 {
+		return true // cookie disabled at startup; nothing to verify against
+	}
+	if msg == nil || msg.EDNS0 == nil {
+		return true
+	}
+	for _, opt := range msg.EDNS0.Options {
+		if opt.Code != dns.EDNSOptionCodeCookie {
+			continue
+		}
+		// RFC 7873 §4: COOKIE option payload is exactly 8 bytes (client
+		// cookie only) OR 16-40 bytes (client + server cookie). Any
+		// other length is malformed; treat as no-cookie rather than as
+		// a positive forgery signal — a buggy implementation should not
+		// look like an attacker.
+		if len(opt.Data) < 8 {
+			return true
+		}
+		// Constant-time compare to deny timing-side-channel inference of
+		// the cookie value across many probes.
+		if subtle.ConstantTimeCompare(opt.Data[:8], r.outboundClientCookie) != 1 {
+			return false
+		}
+		return true
+	}
+	return true
 }
 
 // extractResponseECS parses the OPT record from a DNS response message and

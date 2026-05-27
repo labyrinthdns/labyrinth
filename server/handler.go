@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/cache"
@@ -43,7 +44,16 @@ type MainHandler struct {
 
 	// DNS Cookies (RFC 7873)
 	cookiesEnabled bool
-	cookieSecret   []byte // 16-byte server secret for HMAC
+	cookieMu       sync.RWMutex // protects cookieSecret + prevCookieSecret + prevExpiresAt
+	cookieSecret   []byte       // 16-byte server secret for SipHash
+	// prevCookieSecret is the immediately-previous secret kept after a
+	// rotation so server cookies the client minted moments before the
+	// rotation still validate (RFC 7873 §5.2.5: "Cookies created with old
+	// secrets remain valid until they expire."). Cleared when
+	// prevExpiresAt passes — the 1-hour cookie lifetime puts an upper
+	// bound on how long the previous secret needs to be kept around.
+	prevCookieSecret []byte
+	prevExpiresAt    time.Time
 
 	// ECS forwarding
 	ecsEnabled     bool
@@ -121,6 +131,40 @@ func (h *MainHandler) EnableCookiesWithSecret(secret []byte) {
 	h.cookiesEnabled = true
 	h.cookieSecret = make([]byte, len(secret))
 	copy(h.cookieSecret, secret)
+}
+
+// RotateCookieSecret generates a fresh random 16-byte server cookie
+// secret. The previous secret is retained for one hour (the cookie
+// validity window per RFC 9018 §4.3) so cookies the client minted
+// moments before rotation are not invalidated — RFC 7873 §5.2.5
+// explicitly requires this grace ("Cookies created with old secrets
+// remain valid until they expire"). Without grace every rotation
+// would force every active client through a BADCOOKIE round-trip,
+// turning a routine operational action into a service blip.
+//
+// Returns the error from the OS RNG; on error the existing secrets
+// are left intact (better to keep using a known-good secret than
+// land on an all-zero replacement).
+func (h *MainHandler) RotateCookieSecret() error {
+	if !h.cookiesEnabled {
+		return errors.New("cookies disabled — cannot rotate secret")
+	}
+	fresh := make([]byte, 16)
+	if _, err := rand.Read(fresh); err != nil {
+		if h.logger != nil {
+			h.logger.Error("cookie secret rotation aborted: RNG failed", "error", err)
+		}
+		return fmt.Errorf("cookie rotation: RNG: %w", err)
+	}
+	// Cookies live one hour (RFC 9018 §4.3); the previous secret only
+	// needs to remain usable for that long.
+	graceUntil := time.Unix(int64(nowFunc()), 0).Add(time.Hour)
+	h.cookieMu.Lock()
+	h.prevCookieSecret = h.cookieSecret
+	h.prevExpiresAt = graceUntil
+	h.cookieSecret = fresh
+	h.cookieMu.Unlock()
+	return nil
 }
 
 // SetECS enables or disables ECS forwarding.
@@ -280,20 +324,32 @@ func (h *MainHandler) generateServerCookie(clientCookie []byte, clientIP string)
 }
 
 func (h *MainHandler) generateServerCookieAt(clientCookie []byte, clientIP string, timestamp uint32) []byte {
+	return h.generateServerCookieWithSecretAt(clientCookie, clientIP, timestamp, nil)
+}
+
+// generateServerCookieWithSecretAt builds the cookie deterministically using
+// `useSecret` when non-nil, falling back to the current cookieSecret. The
+// validation path uses this to re-mint cookies under the previous secret
+// during the post-rotation grace window (RFC 7873 §5.2.5).
+func (h *MainHandler) generateServerCookieWithSecretAt(clientCookie []byte, clientIP string, timestamp uint32, useSecret []byte) []byte {
 	cookie := make([]byte, 16)
 	cookie[0] = 1 // Version = 1 (RFC 9018)
-	// cookie[1:4] = 0 (Reserved)
 	binary.BigEndian.PutUint32(cookie[4:8], timestamp)
 
-	// SipHash input: Client Cookie + header (Version+Reserved+Timestamp) + Client IP bytes
 	ipBytes := parseIPBytes(clientIP)
 	msg := make([]byte, 0, 8+8+len(ipBytes))
 	msg = append(msg, clientCookie...)
-	msg = append(msg, cookie[:8]...) // Version + Reserved + Timestamp
+	msg = append(msg, cookie[:8]...)
 	msg = append(msg, ipBytes...)
 
 	var key [16]byte
-	copy(key[:], h.cookieSecret)
+	if useSecret != nil {
+		copy(key[:], useSecret)
+	} else {
+		h.cookieMu.RLock()
+		copy(key[:], h.cookieSecret)
+		h.cookieMu.RUnlock()
+	}
 	hash := security.SipHash24(key, msg)
 	binary.LittleEndian.PutUint64(cookie[8:16], hash)
 
@@ -301,19 +357,16 @@ func (h *MainHandler) generateServerCookieAt(clientCookie []byte, clientIP strin
 }
 
 // validateServerCookie checks whether a received server cookie is valid and
-// not older than 1 hour per RFC 9018 §4.3.
+// not older than 1 hour per RFC 9018 §4.3. After RotateCookieSecret the
+// previous secret is also tried until its grace window expires — RFC 7873
+// §5.2.5 mandates this so a routine rotation does not invalidate every
+// active client's cookie simultaneously.
 func (h *MainHandler) validateServerCookie(clientCookie, serverCookie []byte, clientIP string) bool {
 	if len(serverCookie) != 16 || serverCookie[0] != 1 {
 		return false
 	}
 	timestamp := binary.BigEndian.Uint32(serverCookie[4:8])
 	now := nowFunc()
-	// RFC 9018 §4.3 / §4.4: reject both stale (older than 1 hour) AND
-	// future timestamps. A future timestamp can only come from server-
-	// clock skew at issuance or from an attacker probing the validation
-	// window; either way it has no place being accepted. A 5-minute
-	// forward tolerance accommodates normal NTP jitter without opening
-	// a meaningful window for replay/forge attempts.
 	const futureSkewTolerance uint32 = 300
 	if now > timestamp && now-timestamp > 3600 {
 		return false // expired
@@ -321,8 +374,23 @@ func (h *MainHandler) validateServerCookie(clientCookie, serverCookie []byte, cl
 	if timestamp > now && timestamp-now > futureSkewTolerance {
 		return false // future
 	}
-	expected := h.generateServerCookieAt(clientCookie, clientIP, timestamp)
-	return subtle.ConstantTimeCompare(serverCookie, expected) == 1
+	// Try current secret first — the common case.
+	expected := h.generateServerCookieWithSecretAt(clientCookie, clientIP, timestamp, nil)
+	if subtle.ConstantTimeCompare(serverCookie, expected) == 1 {
+		return true
+	}
+	// Grace path: try the previous secret if rotation happened within
+	// the past hour. Snapshot under read-lock so a concurrent rotation
+	// cannot tear the previous-secret reference out from under us.
+	h.cookieMu.RLock()
+	prev := h.prevCookieSecret
+	prevExp := h.prevExpiresAt
+	h.cookieMu.RUnlock()
+	if len(prev) == 0 || time.Unix(int64(now), 0).After(prevExp) {
+		return false
+	}
+	expectedPrev := h.generateServerCookieWithSecretAt(clientCookie, clientIP, timestamp, prev)
+	return subtle.ConstantTimeCompare(serverCookie, expectedPrev) == 1
 }
 
 // parseIPBytes returns the raw IP bytes for the given address string.
