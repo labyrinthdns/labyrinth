@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.30] - 2026-05-27
+
+### Security
+- **RFC 6891 §6.1.3 — Extended RCODE pack/unpack round-trip (Y46)** — the 12-bit Extended RCODE is split across the DNS header's low-4-bit RCODE nibble and the OPT pseudo-record's TTL byte 0. A refactor that "simplified" the error builder to write the full 12-bit value into the header nibble alone would silently truncate BADCOOKIE (23) to RCODE 7 (NXRRSET) — and clients would never see the cookie-rotation signal. Two new pin tests in [server/rfc6891_extrcode_test.go](server/rfc6891_extrcode_test.go) round-trip both BADCOOKIE and BADVERS through `dns.Unpack` + `dns.ParseOPT` and recompose `(ExtRCODE<<4)|header.RCODE()` to confirm the original 12-bit value. Also pins that the BADVERS response carries OPT Version=0 (our highest supported), per §6.1.3 — a future bump must not accidentally still advertise 0.
+- **RFC 5452 §6 — DNS 0x20 case randomization behavioural pin (Y48)** — `Caps0x20Enabled` only adds defence value if the randomization actually reaches the wire. Behavioural pin [resolver/rfc5452_0x20_test.go](resolver/rfc5452_0x20_test.go) captures the outbound QNAME at a mock UDP socket and verifies: `Caps0x20Enabled=true → mixed-case bytes on wire` (with a 24-letter QNAME the chance of an all-lowercase RNG result is ~6×10⁻⁸ — flake-proof); `Caps0x20Enabled=false → lowercase preserved`. Both modes pin that letter identity is preserved case-insensitively — a regression that mangled the QNAME would surface here.
+
+### Hardened
+- **RFC 2308 §5 — Negative cache TTL = MIN(SOA RR TTL, SOA.Minimum) (Y47)** — taking the MAX would extend negative caching beyond zone-owner intent; using only RR TTL or only Minimum would ignore the other input. Truth-table pin [cache/rfc2308_negative_ttl_test.go](cache/rfc2308_negative_ttl_test.go) covers three cases (Minimum smaller, RR TTL smaller, equal) plus the no-SOA fallback path (which must NOT collapse to 0 or grow unboundedly — silent disabling of negative caching for misbehaving upstreams is the regression to catch).
+
 ## [0.6.29] - 2026-05-27
 
 ### Security
