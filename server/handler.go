@@ -964,6 +964,16 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 			resp = h.addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority,
 				"resolver could not produce an authoritative answer")
 		}
+		// RFC 8914 §4.13 — when this SERVFAIL was replayed from the
+		// RFC 9520 resolution-failure cache (rather than a fresh
+		// upstream attempt) attach EDE 13 (Cached Error) so operators
+		// chasing intermittent failures can distinguish a cache replay
+		// from a live failure. EDE supports multiple codes in the same
+		// response; addEDEToRawResponse appends.
+		if result.FromFailureCache {
+			resp = h.addEDEToRawResponse(resp, dns.EDECodeCachedError,
+				"resolution failure replayed from RFC 9520 cache")
+		}
 	}
 
 	// Add cookie response if client sent a cookie option

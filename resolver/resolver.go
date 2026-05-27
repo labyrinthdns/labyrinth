@@ -72,7 +72,14 @@ type ResolveResult struct {
 	// "your resolver is broken" from "the auth chain itself is broken
 	// upstream of us, retry won't help". Empty when no specific cause.
 	FailureReason string
-	Error         error // underlying error if resolution failed
+	// FromFailureCache marks this result as a replay from the RFC 9520
+	// resolution-failure cache rather than a fresh upstream attempt.
+	// The server uses the flag to attach RFC 8914 §4.13 EDE info code
+	// 13 ("Cached Error") alongside whatever EDE the original failure
+	// reason mapped to, so downstream operators can tell a cache replay
+	// from a live fresh failure without having to track query timing.
+	FromFailureCache bool
+	Error            error // underlying error if resolution failed
 
 	// UpstreamECS is the EDNS Client Subnet option that the authoritative
 	// (or forward) server included in its response, if any. The SCOPE
@@ -388,7 +395,11 @@ func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clie
 	// happily answer another.
 	if clientECS == nil {
 		if rcode, reason, hit := r.failureCache.Get(name, qtype, qclass); hit {
-			return &ResolveResult{RCODE: rcode, FailureReason: reason}, nil
+			return &ResolveResult{
+				RCODE:            rcode,
+				FailureReason:    reason,
+				FromFailureCache: true,
+			}, nil
 		}
 	}
 
@@ -406,6 +417,14 @@ func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clie
 	// .test, .example TLD, .local, home.arpa) must never leave the
 	// resolver. .onion in particular is a Tor privacy hazard if leaked.
 	if result := specialUseResponse(name, qtype, qclass); result != nil {
+		return result, nil
+	}
+
+	// RFC 6303 §3 locally-served reverse zones — RFC 1918 private
+	// space, link-local, TEST-NET-1/2/3, loopback, IPv6 ULA, IPv6
+	// link-local. Returned as NXDOMAIN without leaving the resolver
+	// so the public root never sees private-LAN reverse traffic.
+	if result := rfc6303LocallyServed(name, qtype, qclass); result != nil {
 		return result, nil
 	}
 
