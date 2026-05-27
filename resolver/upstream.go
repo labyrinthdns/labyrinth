@@ -53,7 +53,12 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 }
 
 func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
-	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, nil)
+	// RFC 7873 §5.3 — pre-load the server cookie cached from a prior
+	// exchange with this auth (if any) so the FIRST query already
+	// carries client||server cookie. Saves the BADCOOKIE round-trip on
+	// every query after the cache is warm.
+	cachedSC := r.serverCookieCache.Get(nsIP)
+	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, cachedSC)
 	if err != nil {
 		return nil, err
 	}
@@ -71,8 +76,15 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 			retried, retryErr := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, sc)
 			if retryErr == nil {
 				msg = retried
+				// Cache the cookie we negotiated through the BADCOOKIE
+				// round-trip so the next query skips it.
+				r.serverCookieCache.Put(nsIP, sc)
 			}
 		}
+	} else if sc := extractServerCookie(msg); len(sc) > 0 {
+		// Friendly auth that included a server cookie on a successful
+		// response — record it for future queries (RFC 7873 §5.3).
+		r.serverCookieCache.Put(nsIP, sc)
 	}
 
 	// RFC 5452 §6.1 hardening: a FORMERR from an EDNS-bearing query was

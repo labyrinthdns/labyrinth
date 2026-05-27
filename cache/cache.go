@@ -47,6 +47,13 @@ type Cache struct {
 	// synthesise NXDOMAIN for any name falling in a proven gap, without
 	// re-querying upstream. See nsec_aggressive.go.
 	nsecIdx *nsecIndex
+	// nsec3Idx is the NSEC3 counterpart (RFC 8198 §5.3). Stored
+	// separately because NSEC3 lookup needs the hash parameters
+	// (algorithm + iterations + salt) attached to each interval and
+	// the per-zone walk has to hash qname per-interval. Opt-out
+	// NSEC3s are excluded at registration time. See
+	// nsec3_aggressive.go.
+	nsec3Idx *nsec3Index
 }
 
 type shard struct {
@@ -78,6 +85,7 @@ func NewCacheWithStale(maxEntries int, minTTL, maxTTL, negMaxTTL uint32, serveSt
 		staleTTL:   staleTTL,
 		metrics:    m,
 		nsecIdx:    newNSECIndex(),
+		nsec3Idx:   newNSEC3Index(),
 	}
 	for i := range c.shards {
 		c.shards[i].resetEntries()
