@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.33] - 2026-05-28
+
+### Hardened
+- **RFC 6891 §6.2.5 — UDP buffer-size advertisement truth-table (Y54)** — `advertisedUDPBufferSize` clamps unset / sub-512 / over-65535 / negative operator values back to 1232. An eight-case pin in [server/rfc6891_udp_buffer_size_test.go](server/rfc6891_udp_buffer_size_test.go) covers (unset, 256, 512 floor, 1232 default, 4096 BIND-default, 65535 ceiling, 70000 overflow, -1 typo) so a refactor that swapped the inequality direction (or changed `< minSize` to `<= minSize`) can't silently regress a single cell. Misconfigured int → too-small OPT means fragmentation under any non-trivial answer; misconfigured int → overflow uint16 means a bogus OPT advertisement on the wire.
+- **RFC 1034 §3.1 / RFC 4343 — Cache lookups are case-insensitive (Y55)** — DNS names compare case-insensitively. Three-case pin in [cache/rfc1034_case_insensitive_test.go](cache/rfc1034_case_insensitive_test.go) covers `Store(lower)→Get(MIXED)`, `Store(MIXED)→Get(lower)`, and the structural invariant "both case-folded forms map to ONE entry, not two." A regression here would silently double-store entries on every 0x20-randomised query (Y48) and break the cache integration with the DNSSEC canonical-form rule (RFC 4034 §6.2).
+
+### Security
+- **RFC 5452 §7 + §9 — Query ID entropy (Y56)** — predictable IDs reduce the off-path forgery search space below the nominal 16 bits. Two statistical pins in [resolver/rfc5452_txid_entropy_test.go](resolver/rfc5452_txid_entropy_test.go) over 256 consecutive `randomTXID()` calls: (1) collision count ≤ 5 (vs ~0.5 expected for a fair 16-bit RNG, vs ~256 for a counter); (2) Hamming union of all 256 IDs covers ≥ 14 of 16 bit positions; (3) consecutive-pair ascending ratio ≤ 80% (vs ~50% random, ~99% counter). Catches the silent regression where someone swaps `crypto/rand` for an unseeded `math/rand` or for a uint16 counter — invisible in normal traffic, only an active probe would notice without these pins.
+
 ## [0.6.32] - 2026-05-27
 
 ### Security
