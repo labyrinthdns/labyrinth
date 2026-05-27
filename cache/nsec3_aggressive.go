@@ -61,6 +61,11 @@ type nsec3Interval struct {
 	soa          *dns.ResourceRecord
 	origTTL      uint32
 	registeredAt time.Time
+	// typeBitmap enables RFC 8198 §5.4 NODATA aggressive use — if
+	// hash(qname) == ownerHash AND qtype is absent from this bitmap,
+	// the NSEC3 itself authenticates "qname exists but not for this
+	// type" and the resolver can synth NODATA without going upstream.
+	typeBitmap []uint16
 }
 
 // nsec3Index is the per-zone collection of cached NSEC3 intervals.
@@ -132,6 +137,7 @@ func (c *Cache) RegisterNSEC3Interval(zone string, negTTL uint32, authority []dn
 			soa:          soa,
 			origTTL:      negTTL,
 			registeredAt: now,
+			typeBitmap:   append([]uint16(nil), nsec3.TypeBitMaps...),
 		})
 	}
 	if len(harvested) == 0 {
@@ -168,11 +174,25 @@ func (c *Cache) RegisterNSEC3Interval(zone string, negTTL uint32, authority []dn
 }
 
 // LookupNSEC3Covers checks whether any cached NSEC3 interval proves
-// qname nonexistent under the interval's hash scheme. Returns a synth
-// NXDOMAIN Entry carrying the original SOA + NSEC3 + RRSIG so a
-// downstream validator can confirm the AD verdict, with
-// DNSSECStatus="secure".
+// qname nonexistent under the interval's hash scheme. Returns either
+// a synthesized NXDOMAIN (interval coverage, RFC 8198 §5.2) or NODATA
+// (owner-hash match with qtype absent from the bitmap, RFC 8198 §5.4),
+// carrying the original SOA + NSEC3 + RRSIG so a downstream validator
+// can confirm the AD verdict.
+//
+// qtype=0 disables the NODATA path (covers callers that only want
+// NXDOMAIN). LookupNSEC3CoversTyped is the qtype-aware variant.
 func (c *Cache) LookupNSEC3Covers(qname string, qclass uint16) (*Entry, bool) {
+	return c.lookupNSEC3(qname, 0, qclass)
+}
+
+// LookupNSEC3CoversTyped is the qtype-aware variant that enables the
+// RFC 8198 §5.4 NSEC3 NODATA aggressive-use path.
+func (c *Cache) LookupNSEC3CoversTyped(qname string, qtype uint16, qclass uint16) (*Entry, bool) {
+	return c.lookupNSEC3(qname, qtype, qclass)
+}
+
+func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, bool) {
 	if c.nsec3Idx == nil {
 		return nil, false
 	}
@@ -187,6 +207,28 @@ func (c *Cache) LookupNSEC3Covers(qname string, qclass uint16) (*Entry, bool) {
 		c.nsec3Idx.mu.RLock()
 		intervals := c.nsec3Idx.byZone[name]
 		c.nsec3Idx.mu.RUnlock()
+		// First pass: NODATA via exact owner-hash match (§5.4).
+		if qtype != 0 {
+			for _, iv := range intervals {
+				if !iv.expiresAt.After(now) {
+					continue
+				}
+				qHash, err := computeNSEC3HashForCache(q, iv.hashAlg, iv.iterations, iv.salt)
+				if err != nil {
+					continue
+				}
+				if !equalBytes(qHash, iv.ownerHash) {
+					continue
+				}
+				if typeBitmapHas(iv.typeBitmap, qtype) {
+					continue
+				}
+				if entry, ok := c.buildNSEC3SynthEntry(iv, now, NegNoData, dns.RCodeNoError); ok {
+					return entry, true
+				}
+			}
+		}
+		// Second pass: NXDOMAIN via interval coverage (§5.2).
 		for _, iv := range intervals {
 			if !iv.expiresAt.After(now) {
 				continue
@@ -198,32 +240,9 @@ func (c *Cache) LookupNSEC3Covers(qname string, qclass uint16) (*Entry, bool) {
 			if !nsec3HashCovers(iv.ownerHash, iv.nextHash, qHash) {
 				continue
 			}
-			remaining := uint32(iv.expiresAt.Sub(now).Seconds())
-			if remaining == 0 {
-				continue
+			if entry, ok := c.buildNSEC3SynthEntry(iv, now, NegNXDomain, dns.RCodeNXDomain); ok {
+				return entry, true
 			}
-			authCopy := cloneRRs(iv.authority)
-			for i := range authCopy {
-				authCopy[i].TTL = remaining
-			}
-			var soa *dns.ResourceRecord
-			for i := range authCopy {
-				if authCopy[i].Type == dns.TypeSOA {
-					soa = &authCopy[i]
-					break
-				}
-			}
-			synth := &Entry{
-				Authority:    authCopy,
-				InsertedAt:   now.Add(-time.Duration(iv.origTTL-remaining) * time.Second),
-				OrigTTL:      iv.origTTL,
-				Negative:     true,
-				NegType:      NegNXDomain,
-				SOA:          soa,
-				RCODE:        dns.RCodeNXDomain,
-				DNSSECStatus: "secure",
-			}
-			return synth, true
 		}
 		dot := strings.IndexByte(name, '.')
 		if dot < 0 {
@@ -232,6 +251,37 @@ func (c *Cache) LookupNSEC3Covers(qname string, qclass uint16) (*Entry, bool) {
 		name = name[dot+1:]
 	}
 	return nil, false
+}
+
+// buildNSEC3SynthEntry materialises an Entry from a cached NSEC3
+// interval, shared between the NXDOMAIN (§5.2) and NODATA (§5.4)
+// synthesis paths. Mirror of buildNSECSynthEntry in the NSEC file.
+func (c *Cache) buildNSEC3SynthEntry(iv nsec3Interval, now time.Time, negType NegativeType, rcode uint8) (*Entry, bool) {
+	remaining := uint32(iv.expiresAt.Sub(now).Seconds())
+	if remaining == 0 {
+		return nil, false
+	}
+	authCopy := cloneRRs(iv.authority)
+	for i := range authCopy {
+		authCopy[i].TTL = remaining
+	}
+	var soa *dns.ResourceRecord
+	for i := range authCopy {
+		if authCopy[i].Type == dns.TypeSOA {
+			soa = &authCopy[i]
+			break
+		}
+	}
+	return &Entry{
+		Authority:    authCopy,
+		InsertedAt:   now.Add(-time.Duration(iv.origTTL-remaining) * time.Second),
+		OrigTTL:      iv.origTTL,
+		Negative:     true,
+		NegType:      negType,
+		SOA:          soa,
+		RCODE:        rcode,
+		DNSSECStatus: "secure",
+	}, true
 }
 
 // extractNSEC3OwnerHash decodes the leftmost label of an NSEC3 owner

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.23] - 2026-05-27
+
+### Added
+- **RFC 8914 EDE on REFUSED responses** (§4.17 Filtered, §4.18 Prohibited) — the three refuse paths (global ACL deny, per-zone ACL deny, rate-limit deny) now attach an Extended DNS Error to the REFUSED response when the client carried EDNS, so a misconfigured client can tell "you cannot recurse here" (EDE 18, ACL) from "you tripped the rate limiter" (EDE 17, RRL) instead of treating REFUSED as one opaque verdict. A small byte-level helper [server/handler.go](server/handler.go) `queryHasEDNS` gates the emission per RFC 8914 §3 — non-EDNS clients still get a clean REFUSED with no surprise OPT in additional. Pin tests [server/rfc8914_refused_ede_test.go](server/rfc8914_refused_ede_test.go) cover the ARCount detection and the too-short-query defensive guard.
+- **RFC 8198 §5.4 NSEC NODATA aggressive use** — extends the v0.6.18 NSEC aggressive-use index from "NXDOMAIN via interval coverage" to also synthesise NODATA when a cached NSEC's owner name EXACTLY matches qname and the type bitmap excludes qtype. Without this path the cache could prove "qname does not exist" but had to re-fetch upstream to prove "qname exists but not for type X" — even though the cached NSEC's bitmap is itself authenticated proof of the absence. New `LookupNSECCoversTyped` companion to the existing `LookupNSECCovers` (untyped wrapper kept for callers that only want NXDOMAIN), shared `buildNSECSynthEntry` helper for the two synthesis paths, and `typeBitmap` field on each cached interval. Server now uses the typed lookup. Pin tests [cache/rfc8198_nodata_aggressive_test.go](cache/rfc8198_nodata_aggressive_test.go) cover owner-match-with-type-absent, owner-match-with-type-present (synth must NOT fire), the NXDOMAIN regression guard, and the qtype=0 untyped path.
+- **RFC 8198 §5.4 NSEC3 NODATA aggressive use** — parallel to the NSEC NODATA path but for NSEC3-signed zones. When `hash(qname)` under the cached NSEC3PARAM equals a cached owner hash AND qtype is absent from that NSEC3's type bitmap, the resolver synthesises NODATA locally. Same opt-out filter and RFC 9276 §3.2 iteration ceiling that gate the existing NSEC3 NXDOMAIN path apply. New `LookupNSEC3CoversTyped`, shared `buildNSEC3SynthEntry`, `typeBitmap` field on `nsec3Interval`. Pin tests [cache/rfc8198_nsec3_nodata_test.go](cache/rfc8198_nsec3_nodata_test.go) cover owner-hash-match-with-type-absent, type-present-skips, and the qtype=0 untyped wrapper.
+
 ## [0.6.22] - 2026-05-27
 
 ### Added

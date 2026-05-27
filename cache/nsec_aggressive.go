@@ -45,6 +45,12 @@ type nsecInterval struct {
 	// negTTLFloor stamps the synth-response TTL when the caller wants a
 	// fixed floor rather than the decayed live value.
 	registeredAt time.Time
+	// typeBitmap is the parsed NSEC RR's type-bitmap (RFC 4034 §4.1.2).
+	// Required for RFC 8198 §5.4 NODATA aggressive use: if qname's
+	// owner matches this NSEC's owner AND qtype is NOT in the bitmap,
+	// the NSEC is itself authenticated proof that qname exists but the
+	// requested type does not — synth NODATA without going upstream.
+	typeBitmap []uint16
 }
 
 // nsecIndex is the per-zone collection of cached intervals.
@@ -110,6 +116,7 @@ func (c *Cache) RegisterNSECInterval(zone string, negTTL uint32, authority []dns
 			soa:          soa,
 			origTTL:      negTTL,
 			registeredAt: now,
+			typeBitmap:   append([]uint16(nil), nsec.TypeBitMaps...),
 		})
 	}
 	if len(harvested) == 0 {
@@ -159,7 +166,27 @@ func (c *Cache) RegisterNSECInterval(zone string, negTTL uint32, authority []dns
 // authoritative zone for the name and consults that zone's interval list.
 // Within each zone the search is linear; per-zone interval count is
 // bounded by RegisterNSECInterval.
+//
+// This function returns either:
+//   - NXDOMAIN entry: a cached NSEC interval STRICTLY covers qname (the
+//     classic RFC 8198 §5.2 use case);
+//   - NODATA entry (RFC 8198 §5.4 + qtype != 0): a cached NSEC owner
+//     EXACTLY matches qname and qtype is absent from its type bitmap.
+//
+// The qtype is honoured only on the NODATA path; pass 0 to skip the
+// NODATA check and only consider interval-coverage NXDOMAIN.
 func (c *Cache) LookupNSECCovers(qname string, qclass uint16) (*Entry, bool) {
+	return c.lookupNSEC(qname, 0, qclass)
+}
+
+// LookupNSECCoversTyped is the qtype-aware variant for RFC 8198 §5.4
+// NSEC NODATA aggressive use. Pass the real qtype so a cached
+// owner-match NSEC can prove "qname exists but not for this type."
+func (c *Cache) LookupNSECCoversTyped(qname string, qtype uint16, qclass uint16) (*Entry, bool) {
+	return c.lookupNSEC(qname, qtype, qclass)
+}
+
+func (c *Cache) lookupNSEC(qname string, qtype uint16, qclass uint16) (*Entry, bool) {
 	if c.nsecIdx == nil {
 		return nil, false
 	}
@@ -176,6 +203,26 @@ func (c *Cache) LookupNSECCovers(qname string, qclass uint16) (*Entry, bool) {
 		c.nsecIdx.mu.RLock()
 		intervals := c.nsecIdx.byZone[name]
 		c.nsecIdx.mu.RUnlock()
+		// First pass: RFC 8198 §5.4 NODATA — a cached NSEC whose owner
+		// EXACTLY matches qname and whose type bitmap excludes qtype
+		// is authenticated proof of NODATA. Skipped when qtype == 0.
+		if qtype != 0 {
+			for _, iv := range intervals {
+				if !iv.expiresAt.After(now) {
+					continue
+				}
+				if iv.owner != q {
+					continue
+				}
+				if typeBitmapHas(iv.typeBitmap, qtype) {
+					continue // type present — not NODATA
+				}
+				if entry, ok := c.buildNSECSynthEntry(iv, now, NegNoData, dns.RCodeNoError); ok {
+					return entry, true
+				}
+			}
+		}
+		// Second pass: RFC 8198 §5.2 NXDOMAIN — interval coverage.
 		for _, iv := range intervals {
 			if !iv.expiresAt.After(now) {
 				continue
@@ -183,34 +230,9 @@ func (c *Cache) LookupNSECCovers(qname string, qclass uint16) (*Entry, bool) {
 			if !nsecIntervalCovers(iv.owner, iv.next, q) {
 				continue
 			}
-			remaining := uint32(iv.expiresAt.Sub(now).Seconds())
-			if remaining == 0 {
-				continue
+			if entry, ok := c.buildNSECSynthEntry(iv, now, NegNXDomain, dns.RCodeNXDomain); ok {
+				return entry, true
 			}
-			authCopy := cloneRRs(iv.authority)
-			// Re-stamp every authority TTL to the live remaining value so
-			// downstream clients see a coherent expiry.
-			for i := range authCopy {
-				authCopy[i].TTL = remaining
-			}
-			var soa *dns.ResourceRecord
-			for i := range authCopy {
-				if authCopy[i].Type == dns.TypeSOA {
-					soa = &authCopy[i]
-					break
-				}
-			}
-			synth := &Entry{
-				Authority:    authCopy,
-				InsertedAt:   now.Add(-time.Duration(iv.origTTL-remaining) * time.Second),
-				OrigTTL:      iv.origTTL,
-				Negative:     true,
-				NegType:      NegNXDomain,
-				SOA:          soa,
-				RCODE:        dns.RCodeNXDomain,
-				DNSSECStatus: "secure",
-			}
-			return synth, true
 		}
 		// Strip leftmost label.
 		dot := strings.IndexByte(name, '.')
@@ -220,6 +242,54 @@ func (c *Cache) LookupNSECCovers(qname string, qclass uint16) (*Entry, bool) {
 		name = name[dot+1:]
 	}
 	return nil, false
+}
+
+// buildNSECSynthEntry materialises an Entry from a cached interval —
+// shared by the NXDOMAIN (RFC 8198 §5.2) and NODATA (RFC 8198 §5.4)
+// synthesis paths. Re-stamps every authority TTL to the live remaining
+// value so a downstream client sees a coherent expiry rather than the
+// frozen original. Returns ok=false when the entry has already lost
+// every second of remaining life since the lookup started.
+func (c *Cache) buildNSECSynthEntry(iv nsecInterval, now time.Time, negType NegativeType, rcode uint8) (*Entry, bool) {
+	remaining := uint32(iv.expiresAt.Sub(now).Seconds())
+	if remaining == 0 {
+		return nil, false
+	}
+	authCopy := cloneRRs(iv.authority)
+	for i := range authCopy {
+		authCopy[i].TTL = remaining
+	}
+	var soa *dns.ResourceRecord
+	for i := range authCopy {
+		if authCopy[i].Type == dns.TypeSOA {
+			soa = &authCopy[i]
+			break
+		}
+	}
+	return &Entry{
+		Authority:    authCopy,
+		InsertedAt:   now.Add(-time.Duration(iv.origTTL-remaining) * time.Second),
+		OrigTTL:      iv.origTTL,
+		Negative:     true,
+		NegType:      negType,
+		SOA:          soa,
+		RCODE:        rcode,
+		DNSSECStatus: "secure",
+	}, true
+}
+
+// typeBitmapHas reports whether qtype appears in a parsed NSEC/NSEC3
+// type-bitmap window. The bitmap is the flat slice of type codes that
+// ParseNSEC / ParseNSEC3 produce; a linear scan is fine because real-
+// world bitmaps stay small (most NSECs hold ≤ 8 types — A, AAAA,
+// MX, TXT, NS, SOA, RRSIG, NSEC).
+func typeBitmapHas(bitmap []uint16, qtype uint16) bool {
+	for _, t := range bitmap {
+		if t == qtype {
+			return true
+		}
+	}
+	return false
 }
 
 // nsecIntervalCovers reports whether qname falls strictly between owner
