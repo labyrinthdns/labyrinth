@@ -272,6 +272,17 @@ func (c *Cache) GetStale(name string, qtype uint16, class uint16) (*Entry, bool)
 	// Return with stale TTL; suppress DNSSEC verdict (see method comment).
 	stale := entry.WithDecayedTTL(c.staleTTL)
 	stale.DNSSECStatus = ""
+
+	// RFC 8767 §3.1 stale-while-refresh: serving a stale answer means
+	// the entry needs replacing. Kick off an async refresh so the next
+	// client query gets fresh data instead of more stale. Throttling
+	// (one in-flight refresh per (name, qtype, qclass)) is the
+	// resolver's responsibility — its inflight coalescer collapses
+	// duplicate background fetches automatically. We never wait for
+	// the refresh: the client request returns the stale answer now.
+	if c.prefetchEnabled && c.prefetchFunc != nil {
+		go c.prefetchFunc(name, qtype, class)
+	}
 	return stale, true
 }
 
