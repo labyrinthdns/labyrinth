@@ -724,6 +724,16 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 				h.metrics.IncCacheHits()
 			}
 		}
+		// RFC 8198 §5.3 NSEC3 aggressive lookup — second chance, only
+		// when NSEC didn't already hit. Most signed zones today use
+		// NSEC3 (opt-out skipped at registration time per RFC 5155 §6).
+		if !ok {
+			if synth, hit := h.cache.LookupNSEC3Covers(q.Name, q.Class); hit {
+				entry = synth
+				ok = true
+				h.metrics.IncCacheHits()
+			}
+		}
 		if ok {
 			h.metrics.IncCacheHits()
 			resp, err := h.buildCacheResponseECS(msg, entry, outboundECS)

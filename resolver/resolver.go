@@ -109,6 +109,25 @@ type Resolver struct {
 	// originator (the SHOULD in §5.4 around RTT- and identity-stable
 	// cookies for friendly upstream behaviour). Length 0 disables.
 	outboundClientCookie []byte
+	// serverCookieCache stores the most recent server cookie observed
+	// per upstream IP (RFC 7873 §5.3). Pre-emptively included on
+	// subsequent queries so the BADCOOKIE round-trip — already handled
+	// by the §5.4 retry path in queryUpstreamOnceECS — is paid at most
+	// once per server rather than once per query. nil-safe; callers
+	// that have no cache (test paths, RNG-disabled resolver) still
+	// behave correctly via the cache's nil receivers.
+	serverCookieCache *serverCookieCache
+	// failureCache stores recent resolution failures (RFC 9520) so a
+	// downstream client retry storm against a broken auth chain is
+	// absorbed by the resolver instead of being forwarded to the
+	// already-broken upstream. The 5-second default TTL matches the
+	// upper bound the RFC sets, balancing "long enough to absorb a
+	// retry burst" against "short enough that transient failures
+	// recover quickly". Only no-answer outcomes (SERVFAIL with no
+	// authority/answer to cache positively) land here; DNSSEC bogus
+	// and authoritative NXDOMAIN/NODATA stay in the normal answer
+	// cache because they carry their own authenticated denial proof.
+	failureCache *failureCache
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -137,6 +156,16 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	} else if logger != nil {
 		logger.Warn("outbound DNS cookie disabled: RNG failure", "error", err)
 	}
+	// Per-upstream server-cookie cache (RFC 7873 §5.3). Capacity 1024
+	// is the typical authoritative-IP footprint a recursive resolver
+	// touches in a busy hour; ttl 1h matches the cookie validity window
+	// in RFC 9018 §4.3 so cached entries cannot survive a server-secret
+	// rotation indefinitely.
+	r.serverCookieCache = newServerCookieCache(1024, time.Hour)
+	// RFC 9520 resolution-failure cache. Capacity 4096 covers the
+	// usual long-tail of broken delegations a busy resolver
+	// encounters in a given hour; ttl 5s is the RFC §4 upper bound.
+	r.failureCache = newFailureCache(4096, 5*time.Second)
 	return r
 }
 
@@ -352,6 +381,17 @@ func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveRe
 func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*ResolveResult, error) {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
 
+	// RFC 9520 resolution-failure cache hit — short-circuit when a
+	// recent attempt already failed for the same (name, type, class).
+	// Skipped when ECS is in play because failures are not portable
+	// across client subnets: an auth that REFUSED our subnet may
+	// happily answer another.
+	if clientECS == nil {
+		if rcode, reason, hit := r.failureCache.Get(name, qtype, qclass); hit {
+			return &ResolveResult{RCODE: rcode, FailureReason: reason}, nil
+		}
+	}
+
 	// Operator-configured local zones win over the RFC 6761 short-circuit:
 	// an admin who configured `myzone.local` or `something.test` knows what
 	// they want, and the special-use rule says "if no other local data
@@ -419,6 +459,16 @@ func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clie
 		if fbResult := r.queryFallback(name, qtype, qclass, fb.reason); fbResult != nil {
 			return fbResult, nil
 		}
+	}
+
+	// RFC 9520 — record the failure so the next identical query in the
+	// next few seconds is served from cache. Only when we ended up with
+	// SERVFAIL AND we are not carrying ECS (subnet-specific failures
+	// would poison cross-subnet queries). DNSSEC-bogus outcomes are
+	// excluded because the answer cache will keep their SERVFAIL with
+	// the bogus marker on its own schedule.
+	if clientECS == nil && result != nil && result.RCODE == dns.RCodeServFail && result.DNSSECStatus != "bogus" {
+		r.failureCache.Put(name, qtype, qclass, result.RCODE, result.FailureReason)
 	}
 
 	return result, err
@@ -814,6 +864,12 @@ func (r *Resolver) resolveIterativeFromInner(
 				negTTL := minNegativeTTL(response.Authority)
 				if zone != "" && negTTL > 0 {
 					r.cache.RegisterNSECInterval(zone, negTTL, response.Authority)
+					// RFC 8198 §5.3 — same idea for NSEC3-signed zones,
+					// which is most of the modern signed Internet (.com,
+					// .net, the majority of ccTLDs). Opt-out NSEC3s are
+					// filtered inside RegisterNSEC3Interval; if there
+					// are no usable NSEC3s the call is a no-op.
+					r.cache.RegisterNSEC3Interval(zone, negTTL, response.Authority)
 				}
 			}
 			return result, nil
