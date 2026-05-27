@@ -386,6 +386,18 @@ func (r *Resolver) Resolve(name string, qtype uint16, qclass uint16) (*ResolveRe
 // path. ECS-bearing queries always run independently — correctness over
 // dedup throughput.
 func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*ResolveResult, error) {
+	return r.ResolveWithECSAndCD(name, qtype, qclass, clientECS, false)
+}
+
+// ResolveWithECSAndCD is the CD-bit-aware entry point used by the
+// server when the client's query carried CD=1 (RFC 4035 §3.2.2,
+// RFC 6840 §5.9 — "Checking Disabled"). On the iterative path CD is
+// irrelevant (authoritative servers ignore it), but on the forward
+// path we MUST propagate it so a downstream-validating client does
+// not get its verdict silently rewritten by an intermediate cache
+// that chose to validate on its own. Existing ResolveWithECS callers
+// keep cd=false.
+func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool) (*ResolveResult, error) {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
 
 	// RFC 9520 resolution-failure cache hit — short-circuit when a
@@ -441,8 +453,11 @@ func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clie
 	if fz := r.forwardTable.Match(name); fz != nil {
 		if !fz.IsStub {
 			// Forward zone: send directly to configured upstreams with RD=1.
+			// RFC 6840 §5.9 — propagate the client's CD bit so the
+			// downstream upstream does not validate on behalf of a
+			// client that asked us to skip validation.
 			r.logger.Debug("forward zone match", "name", name, "zone", fz.Name)
-			result, err = r.queryForwardECS(fz.Addrs, name, qtype, qclass, clientECS)
+			result, err = r.queryForwardECSCD(fz.Addrs, name, qtype, qclass, clientECS, cd)
 		} else {
 			// Stub zone: start iterative resolution using configured addrs as initial NS.
 			r.logger.Debug("stub zone match", "name", name, "zone", fz.Name)

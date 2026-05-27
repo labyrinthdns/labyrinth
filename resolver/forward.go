@@ -92,9 +92,17 @@ func (r *Resolver) queryForward(addrs []string, name string, qtype uint16, qclas
 }
 
 func (r *Resolver) queryForwardECS(addrs []string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*ResolveResult, error) {
+	return r.queryForwardECSCD(addrs, name, qtype, qclass, clientECS, false)
+}
+
+// queryForwardECSCD is the CD-bit-aware forward path (RFC 6840 §5.9).
+// When cd=true, the client asked us to forward without invalidating
+// their validation context — we propagate CD downstream and do not
+// rewrite the upstream's verdict ourselves.
+func (r *Resolver) queryForwardECSCD(addrs []string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool) (*ResolveResult, error) {
 	var lastErr error
 	for _, addr := range addrs {
-		msg, err := r.sendForwardQueryECS(addr, name, qtype, qclass, clientECS)
+		msg, err := r.sendForwardQueryECSCD(addr, name, qtype, qclass, clientECS, cd)
 		if err != nil {
 			lastErr = err
 			r.logger.Debug("forward query error", "addr", addr, "name", name, "error", err)
@@ -125,6 +133,10 @@ func (r *Resolver) sendForwardQuery(nsIP string, name string, qtype uint16, qcla
 }
 
 func (r *Resolver) sendForwardQueryECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
+	return r.sendForwardQueryECSCD(nsIP, name, qtype, qclass, clientECS, false)
+}
+
+func (r *Resolver) sendForwardQueryECSCD(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool) (*dns.Message, error) {
 	r.metrics.IncUpstreamQueries()
 
 	retries := r.config.UpstreamRetries
@@ -134,7 +146,7 @@ func (r *Resolver) sendForwardQueryECS(nsIP string, name string, qtype uint16, q
 
 	var lastErr error
 	for attempt := 0; attempt < retries; attempt++ {
-		msg, err := r.sendForwardQueryOnceECS(nsIP, name, qtype, qclass, clientECS)
+		msg, err := r.sendForwardQueryOnceECSCD(nsIP, name, qtype, qclass, clientECS, cd)
 		if err != nil {
 			lastErr = err
 			r.metrics.IncUpstreamErrors()
@@ -151,16 +163,22 @@ func (r *Resolver) sendForwardQueryOnce(nsIP string, name string, qtype uint16, 
 }
 
 func (r *Resolver) sendForwardQueryOnceECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
-	msg, err := r.sendQueryWithRDECS(nsIP, name, qtype, qclass, true, true, clientECS)
+	return r.sendForwardQueryOnceECSCD(nsIP, name, qtype, qclass, clientECS, false)
+}
+
+func (r *Resolver) sendForwardQueryOnceECSCD(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool) (*dns.Message, error) {
+	msg, err := r.sendQueryWithRDECSCD(nsIP, name, qtype, qclass, true, true, clientECS, cd)
 	if err != nil {
 		return nil, err
 	}
 
 	// If the server returns FORMERR (doesn't understand EDNS0),
 	// retry without the OPT record (and without ECS — a server that can't
-	// parse EDNS0 won't accept nested ECS options either).
+	// parse EDNS0 won't accept nested ECS options either). CD is still
+	// propagated — it lives in the header, not the OPT, so a non-EDNS
+	// upstream can still honour or ignore it per its own policy.
 	if msg.Header.RCODE() == dns.RCodeFormErr {
-		msg, err = r.sendQueryWithRDECS(nsIP, name, qtype, qclass, true, false, nil)
+		msg, err = r.sendQueryWithRDECSCD(nsIP, name, qtype, qclass, true, false, nil, cd)
 		if err != nil {
 			return nil, err
 		}
@@ -179,6 +197,16 @@ func (r *Resolver) sendQueryWithRD(nsIP string, name string, qtype uint16, qclas
 // RD flag. clientECS, when non-nil and withEDNS0 is true, is included as an
 // EDNS Client Subnet option (RFC 7871) in the outgoing OPT record.
 func (r *Resolver) sendQueryWithRDECS(nsIP string, name string, qtype uint16, qclass uint16, rd bool, withEDNS0 bool, clientECS *dns.ECSOption) (*dns.Message, error) {
+	return r.sendQueryWithRDECSCD(nsIP, name, qtype, qclass, rd, withEDNS0, clientECS, false)
+}
+
+// sendQueryWithRDECSCD is the CD-bit-aware variant of sendQueryWithRDECS.
+// RFC 6840 §5.9 requires a forwarding resolver to propagate the client's
+// CD bit so a downstream validator that asked us to skip validation
+// (cd=1) is not silently overruled by an intermediate upstream that
+// chose to validate. Iterative-mode auths ignore CD (RFC 4035 §3.2.2),
+// so this only matters on the forward path.
+func (r *Resolver) sendQueryWithRDECSCD(nsIP string, name string, qtype uint16, qclass uint16, rd bool, withEDNS0 bool, clientECS *dns.ECSOption, cd bool) (*dns.Message, error) {
 	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
@@ -189,6 +217,7 @@ func (r *Resolver) sendQueryWithRDECS(nsIP string, name string, qtype uint16, qc
 			ID: txID,
 			Flags: dns.NewFlagBuilder().
 				SetRD(rd).
+				SetCD(cd).
 				Build(),
 			QDCount: 1,
 		},

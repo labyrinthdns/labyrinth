@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.25] - 2026-05-27
+
+### Added
+- **RFC 6840 §5.9 CD bit propagation (Y38)** — when a downstream stub or forwarder asks us to skip DNSSEC validation by setting CD=1 on its query, we now carry that intent through to forward-mode upstream queries instead of silently letting the upstream's own validator overrule the request. New `ResolveWithECSAndCD` entry point on the resolver, plumbed through `queryForwardECSCD` → `sendForwardQueryECSCD` → `sendQueryWithRDECSCD` so the CD bit reaches the wire ([resolver/forward.go](resolver/forward.go), [resolver/resolver.go](resolver/resolver.go)). Server wires the incoming header's CD bit via `msg.Header.CD()` ([server/handler.go](server/handler.go)). The original `ResolveWithECS` is preserved as a thin `cd=false` wrapper so every existing call site keeps its pre-Y38 behaviour. Pin test [resolver/rfc6840_cd_bit_test.go](resolver/rfc6840_cd_bit_test.go).
+
+### Security
+- **RFC 4509 §2.4 / RFC 8624 §3.3 — DS digest type 0 unconditionally rejected (Y37)** — IANA reserves digest type 0 as unusable for DNSKEY authentication. `isWeakDSDigest` now rejects it even when the operator opts into `allowSHA1=true` — the SHA-1 escape hatch is for *deprecated-but-functional*, not for *reserved* ([dns/dnssec_algorithms.go](dns/dnssec_algorithms.go), [dnssec/validator.go](dnssec/validator.go)). Pin test [dnssec/rfc4509_ds_digest_zero_test.go](dnssec/rfc4509_ds_digest_zero_test.go).
+- **RFC 8624 §3.1 MUST-NOT algorithms gated by name (Y39)** — added IANA-numbered constants for the four "MUST NOT validate" algorithms (RSAMD5=1, DSA=3, DSA-NSEC3-SHA1=6, RSASHA1-NSEC3-SHA1=7) ([dns/dnssec_algorithms.go](dns/dnssec_algorithms.go)) so the reject path in `VerifyRRSIG`'s algorithm switch is pinned to the registry values, not to magic numbers. A renumber would silently break the gate (we'd reject the wrong number and accept the broken one). Pin test [dnssec/rfc8624_must_not_algorithms_test.go](dnssec/rfc8624_must_not_algorithms_test.go) drives `VerifyRRSIG` with each algorithm and asserts unsupported-algorithm rejection plus IANA constant values.
+
 ## [0.6.24] - 2026-05-27
 
 ### Added
