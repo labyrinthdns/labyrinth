@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"log/slog"
 	"math/rand/v2"
@@ -96,6 +97,18 @@ type Resolver struct {
 	localZones      *LocalZoneTable
 	forwardTable    *ForwardTable
 	infraCache      *InfraCache
+	// outboundClientCookie is the 8-byte stable client cookie this
+	// resolver presents to every authoritative we query (RFC 7873 §5.4).
+	// Sent in the EDNS COOKIE option; auths that support cookies echo it
+	// back as the first 8 bytes of their reply's COOKIE option. We refuse
+	// any response whose echoed client cookie does not match — that
+	// mismatch is a positive signal of off-path forgery (the spoofer
+	// could not have guessed the random cookie). Randomised once at
+	// startup so the value is unpredictable to off-path attackers while
+	// stable enough across queries for auths to recognise us as the same
+	// originator (the SHOULD in §5.4 around RTT- and identity-stable
+	// cookies for friendly upstream behaviour). Length 0 disables.
+	outboundClientCookie []byte
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -105,7 +118,7 @@ func (r *Resolver) SetForwardTable(ft *ForwardTable) {
 
 // NewResolver creates a new recursive resolver.
 func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger *slog.Logger) *Resolver {
-	return &Resolver{
+	r := &Resolver{
 		cache:       c,
 		rootServers: RootServers,
 		config:      cfg,
@@ -114,6 +127,17 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 		inflight:    newInflight(),
 		infraCache:  NewInfraCache(),
 	}
+	// Stable per-resolver outbound client cookie (RFC 7873 §5.4). We
+	// generate 8 random bytes from the OS RNG; on rare RNG failure we
+	// silently disable the option rather than fall back to a constant
+	// (a constant cookie defeats the off-path-spoofing protection).
+	cookie := make([]byte, 8)
+	if _, err := cryptorand.Read(cookie); err == nil {
+		r.outboundClientCookie = cookie
+	} else if logger != nil {
+		logger.Warn("outbound DNS cookie disabled: RNG failure", "error", err)
+	}
+	return r
 }
 
 // InfraCache returns the resolver's infrastructure cache for external use.

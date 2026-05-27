@@ -23,6 +23,22 @@ const (
 	TypeDNSKEY     uint16 = 48
 	TypeNSEC3      uint16 = 50
 	TypeNSEC3PARAM uint16 = 51
+
+	// Modern service-discovery types. We do not parse their RDATA into
+	// rich Go structs (the wire layer treats them as opaque, which is
+	// the right behaviour for a forwarding recursive resolver per RFC
+	// 3597 — pass unknown RDATA through verbatim so signatures remain
+	// verifiable downstream). But registering them in TypeToString so
+	// logs, the queries UI, and DNSSEC trace events show "HTTPS" and
+	// "SVCB" instead of "TYPE65"/"TYPE64" is important for operators
+	// chasing real-world traffic on networks where these dominate
+	// (Apple devices, HTTP/3 / QUIC clients, ECH-enabled browsers).
+	TypeSVCB  uint16 = 64 // RFC 9460 §2.1 — service binding
+	TypeHTTPS uint16 = 65 // RFC 9460 §9   — HTTPS specialisation of SVCB
+	// RFC 8659 (obsoletes 6844). DNS-based authorization for X.509
+	// issuance — every CA on the public PKI MUST honour CAA, so
+	// resolvers that mangle this RDATA can silently break cert renewal.
+	TypeCAA uint16 = 257
 )
 
 // Classes
@@ -60,6 +76,7 @@ var TypeToString = map[uint16]string{
 	TypeDS: "DS", TypeRRSIG: "RRSIG", TypeNSEC: "NSEC",
 	TypeDNSKEY: "DNSKEY", TypeNSEC3: "NSEC3", TypeNSEC3PARAM: "NSEC3PARAM",
 	TypeANY: "ANY",
+	TypeSVCB: "SVCB", TypeHTTPS: "HTTPS", TypeCAA: "CAA",
 }
 
 // RCodeToString maps response codes to human-readable names.
