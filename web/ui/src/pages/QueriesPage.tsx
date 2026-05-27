@@ -448,12 +448,17 @@ export default function QueriesPage() {
                           <RcodeBadge rcode={q.rcode} />
                         )}
                         {q.dnssec_status === 'secure' && (
-                          <span title="DNSSEC Secure">
+                          <span title="DNSSEC Secure — signed zone, signature validated">
                             <Shield size={12} className="text-green-500 dark:text-green-400" />
                           </span>
                         )}
+                        {q.dnssec_status === 'insecure' && (
+                          <span title="DNSSEC Insecure — unsigned zone (no DS chain). Normal for unsigned domains; not a failure.">
+                            <Shield size={12} className="text-slate-400 dark:text-slate-500" strokeWidth={1.5} />
+                          </span>
+                        )}
                         {q.dnssec_status === 'bogus' && (
-                          <span title="DNSSEC Bogus">
+                          <span title="DNSSEC Bogus — validator rejected signatures (forgery, expired, broken chain)">
                             <Shield size={12} className="text-red-500 dark:text-red-400" />
                           </span>
                         )}
