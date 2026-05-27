@@ -395,11 +395,17 @@ func (r *Resolver) ResolveWithECS(name string, qtype uint16, qclass uint16, clie
 	// happily answer another.
 	if clientECS == nil {
 		if rcode, reason, hit := r.failureCache.Get(name, qtype, qclass); hit {
+			if r.metrics != nil {
+				r.metrics.IncFailureCacheHits()
+			}
 			return &ResolveResult{
 				RCODE:            rcode,
 				FailureReason:    reason,
 				FromFailureCache: true,
 			}, nil
+		}
+		if r.metrics != nil {
+			r.metrics.IncFailureCacheMisses()
 		}
 	}
 

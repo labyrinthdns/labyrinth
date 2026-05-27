@@ -82,6 +82,44 @@ type Metrics struct {
 	fallbackQueries   atomic.Int64
 	fallbackRecoveries atomic.Int64
 
+	// Y34: failure-cache (RFC 9520) hit/miss counters. A high hit ratio
+	// means the resolver is absorbing repeat queries against broken
+	// upstreams; a low ratio with high upstream errors means broken
+	// upstreams are not the same name twice in a row.
+	failureCacheHits   atomic.Int64
+	failureCacheMisses atomic.Int64
+
+	// Y34: server-cookie cache (RFC 7873 §5.3) hit/miss counters. A
+	// high hit ratio means cookie-enforcing auths see us as the same
+	// client across queries and we are NOT paying a BADCOOKIE round
+	// trip per query.
+	serverCookieCacheHits   atomic.Int64
+	serverCookieCacheMisses atomic.Int64
+
+	// Y35: RFC 8198 aggressive-use synthesis counters. NXDOMAIN and
+	// NODATA tracked separately so an operator can see the §5.2 vs
+	// §5.4 split. NSEC and NSEC3 indexes also separate because the
+	// rollover signal (NSEC zones moving to NSEC3 or vice-versa) is
+	// itself useful to surface.
+	nsecAggressiveSynthNX     atomic.Int64
+	nsecAggressiveSynthNoData atomic.Int64
+	nsec3AggressiveSynthNX    atomic.Int64
+	nsec3AggressiveSynthND    atomic.Int64
+
+	// Y36: outbound BADCOOKIE retry counter (RFC 7873 §5.4). Goes up
+	// only on the first query to a cookie-enforcing auth before the
+	// server-cookie cache (Y25) is warm; the steady-state should be
+	// near zero. A sustained non-zero rate means the cache is being
+	// evicted faster than it warms up.
+	outboundBadCookieRetries atomic.Int64
+
+	// Y36: RFC 8767 §3.1 stale-while-refresh trigger counter. Each
+	// increment is one stale serve that ALSO scheduled an async
+	// refresh. A high rate is fine — it means the freshness pipeline
+	// is doing its job; a zero rate with high stale-serve volume
+	// means the prefetch hook is mis-wired.
+	staleWhileRefreshTriggers atomic.Int64
+
 	fallbackEventRing *FallbackEventRing
 
 	// RecordFallbackFunc is an optional callback invoked each time a fallback
@@ -126,6 +164,22 @@ func (m *Metrics) IncDNSSECBogus()     { m.dnssecBogus.Add(1) }
 func (m *Metrics) IncBlockedQueries()     { m.blockedQueries.Add(1) }
 func (m *Metrics) IncFallbackQueries()    { m.fallbackQueries.Add(1) }
 func (m *Metrics) IncFallbackRecoveries() { m.fallbackRecoveries.Add(1) }
+
+// Y34 — failure cache & server-cookie cache.
+func (m *Metrics) IncFailureCacheHits()        { m.failureCacheHits.Add(1) }
+func (m *Metrics) IncFailureCacheMisses()      { m.failureCacheMisses.Add(1) }
+func (m *Metrics) IncServerCookieCacheHits()   { m.serverCookieCacheHits.Add(1) }
+func (m *Metrics) IncServerCookieCacheMisses() { m.serverCookieCacheMisses.Add(1) }
+
+// Y35 — RFC 8198 aggressive-use synthesis counters.
+func (m *Metrics) IncNSECAggressiveSynthNX()     { m.nsecAggressiveSynthNX.Add(1) }
+func (m *Metrics) IncNSECAggressiveSynthNoData() { m.nsecAggressiveSynthNoData.Add(1) }
+func (m *Metrics) IncNSEC3AggressiveSynthNX()    { m.nsec3AggressiveSynthNX.Add(1) }
+func (m *Metrics) IncNSEC3AggressiveSynthND()    { m.nsec3AggressiveSynthND.Add(1) }
+
+// Y36 — cookie retry & stale-while-refresh.
+func (m *Metrics) IncOutboundBadCookieRetries()  { m.outboundBadCookieRetries.Add(1) }
+func (m *Metrics) IncStaleWhileRefreshTriggers() { m.staleWhileRefreshTriggers.Add(1) }
 
 // FallbackEventRing returns the fallback event ring buffer.
 func (m *Metrics) FallbackEventRing() *FallbackEventRing { return m.fallbackEventRing }
@@ -285,6 +339,17 @@ func (m *Metrics) WriteMetrics(w io.Writer) {
 	fmt.Fprintf(w, "labyrinth_blocked_queries_total %d\n", m.blockedQueries.Load())
 	fmt.Fprintf(w, "labyrinth_fallback_queries_total %d\n", m.fallbackQueries.Load())
 	fmt.Fprintf(w, "labyrinth_fallback_recoveries_total %d\n", m.fallbackRecoveries.Load())
+	// Y34/Y35/Y36 — observability for the v0.6.18 → v0.6.23 features.
+	fmt.Fprintf(w, "labyrinth_failure_cache_hits_total %d\n", m.failureCacheHits.Load())
+	fmt.Fprintf(w, "labyrinth_failure_cache_misses_total %d\n", m.failureCacheMisses.Load())
+	fmt.Fprintf(w, "labyrinth_server_cookie_cache_hits_total %d\n", m.serverCookieCacheHits.Load())
+	fmt.Fprintf(w, "labyrinth_server_cookie_cache_misses_total %d\n", m.serverCookieCacheMisses.Load())
+	fmt.Fprintf(w, "labyrinth_nsec_aggressive_synth_total{kind=\"nxdomain\"} %d\n", m.nsecAggressiveSynthNX.Load())
+	fmt.Fprintf(w, "labyrinth_nsec_aggressive_synth_total{kind=\"nodata\"} %d\n", m.nsecAggressiveSynthNoData.Load())
+	fmt.Fprintf(w, "labyrinth_nsec3_aggressive_synth_total{kind=\"nxdomain\"} %d\n", m.nsec3AggressiveSynthNX.Load())
+	fmt.Fprintf(w, "labyrinth_nsec3_aggressive_synth_total{kind=\"nodata\"} %d\n", m.nsec3AggressiveSynthND.Load())
+	fmt.Fprintf(w, "labyrinth_outbound_badcookie_retries_total %d\n", m.outboundBadCookieRetries.Load())
+	fmt.Fprintf(w, "labyrinth_stale_while_refresh_total %d\n", m.staleWhileRefreshTriggers.Load())
 	fmt.Fprintf(w, "labyrinth_uptime_seconds %.0f\n", time.Since(m.startTime).Seconds())
 	fmt.Fprintf(w, "labyrinth_goroutines %d\n", runtime.NumGoroutine())
 

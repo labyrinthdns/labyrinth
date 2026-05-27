@@ -281,6 +281,9 @@ func (c *Cache) GetStale(name string, qtype uint16, class uint16) (*Entry, bool)
 	// duplicate background fetches automatically. We never wait for
 	// the refresh: the client request returns the stale answer now.
 	if c.prefetchEnabled && c.prefetchFunc != nil {
+		if c.metrics != nil {
+			c.metrics.IncStaleWhileRefreshTriggers()
+		}
 		go c.prefetchFunc(name, qtype, class)
 	}
 	return stale, true

@@ -58,6 +58,13 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 	// carries client||server cookie. Saves the BADCOOKIE round-trip on
 	// every query after the cache is warm.
 	cachedSC := r.serverCookieCache.Get(nsIP)
+	if r.metrics != nil {
+		if len(cachedSC) > 0 {
+			r.metrics.IncServerCookieCacheHits()
+		} else {
+			r.metrics.IncServerCookieCacheMisses()
+		}
+	}
 	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, cachedSC)
 	if err != nil {
 		return nil, err
@@ -73,6 +80,9 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 	// only: a second BADCOOKIE is bogus and is surfaced as the answer.
 	if extendedRCODE(msg) == dns.RCodeBadCookie {
 		if sc := extractServerCookie(msg); len(sc) > 0 {
+			if r.metrics != nil {
+				r.metrics.IncOutboundBadCookieRetries()
+			}
 			retried, retryErr := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, sc)
 			if retryErr == nil {
 				msg = retried

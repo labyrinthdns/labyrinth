@@ -218,6 +218,9 @@ func (c *Cache) lookupNSEC(qname string, qtype uint16, qclass uint16) (*Entry, b
 					continue // type present — not NODATA
 				}
 				if entry, ok := c.buildNSECSynthEntry(iv, now, NegNoData, dns.RCodeNoError); ok {
+					if c.metrics != nil {
+						c.metrics.IncNSECAggressiveSynthNoData()
+					}
 					return entry, true
 				}
 			}
@@ -231,6 +234,9 @@ func (c *Cache) lookupNSEC(qname string, qtype uint16, qclass uint16) (*Entry, b
 				continue
 			}
 			if entry, ok := c.buildNSECSynthEntry(iv, now, NegNXDomain, dns.RCodeNXDomain); ok {
+				if c.metrics != nil {
+					c.metrics.IncNSECAggressiveSynthNX()
+				}
 				return entry, true
 			}
 		}
