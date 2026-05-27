@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.18] - 2026-05-27
+
+### Added
+- **RFC 8198 aggressive use of DNSSEC-validated cache** — when a Secure NXDOMAIN response arrives, the NSEC records in its authority section are themselves authenticated proof that every name strictly between an NSEC's owner and next-domain fields does not exist. The resolver now registers those intervals in a per-zone index ([cache/nsec_aggressive.go](cache/nsec_aggressive.go)) so a subsequent miss for any OTHER name covered by the same gap is answered from cache without going upstream. The synthesised response carries the original SOA + NSEC + RRSIGs so downstream validators can confirm AD. For popular signed zones (`.com`, `.org`, the ccTLDs) routinely hit by random-subdomain garbage traffic, the same gap interval covers many unrelated nonexistent queries, dropping auth-server load by an order of magnitude in practice. Bounded per-zone interval count and TTL-expiry prune keep memory finite. Pin tests [cache/rfc8198_nsec_aggressive_test.go](cache/rfc8198_nsec_aggressive_test.go) cover gap synthesis, existing-name negative, cross-zone refusal, and expiry-driven invalidation.
+- **`cache.stale_max_age` setting bounding how far past expiry a stale entry may be served** (RFC 8767 §3.3) — the spec says "responses no longer than 1-3 days old be considered for stale serve." The pre-fix `GetStale` returned any entry that was simply expired, regardless of how long ago — a long-tail name accessed once and then six months later would still be served stale. New `staleMaxAge` field in [cache/cache.go](cache/cache.go) caps the elapsed-since-expiry interval. Default is 86400 seconds (1 day, conservative end of the RFC range); operators who explicitly want unbounded behaviour can set 0 to disable the cap. Pin tests in [cache/rfc8198_nsec_aggressive_test.go](cache/rfc8198_nsec_aggressive_test.go) cover both the reject-too-old and accept-within-cap paths plus the zero-disables behaviour.
+
 ## [0.6.17] - 2026-05-27
 
 ### Fixed

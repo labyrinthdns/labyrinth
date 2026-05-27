@@ -778,6 +778,20 @@ func (r *Resolver) resolveIterativeFromInner(
 				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
 			}
 			r.cache.StoreNegative(name, qtype, qclass, cache.NegNXDomain, dns.RCodeNXDomain, response.Authority)
+			// RFC 8198 aggressive NSEC caching: when the denial is Secure
+			// the NSEC intervals in the authority section are themselves
+			// authenticated proof that every name in the gap is non-
+			// existent. Register them so future queries for *other* names
+			// covered by the same gap can be answered from cache, dropping
+			// the upstream auth-server load for popular signed zones (.com,
+			// .org, ccTLDs).
+			if result.DNSSECStatus == "secure" {
+				zone := nsecZoneFromAuthority(response.Authority)
+				negTTL := minNegativeTTL(response.Authority)
+				if zone != "" && negTTL > 0 {
+					r.cache.RegisterNSECInterval(zone, negTTL, response.Authority)
+				}
+			}
 			return result, nil
 
 		case responseNoData:

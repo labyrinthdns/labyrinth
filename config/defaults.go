@@ -44,6 +44,7 @@ func defaultConfig() *Config {
 			SweepInterval: 60 * time.Second,
 			ServeStale:    false,
 			StaleTTL:      30,
+			StaleMaxAge:   86400, // RFC 8767 §3.3: 1 day cap, on the conservative end of the 1-3 day recommendation
 			Prefetch:      true,
 		},
 		Security: SecurityConfig{

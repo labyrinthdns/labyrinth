@@ -162,6 +162,7 @@ func run() int {
 	m := metrics.NewMetrics()
 	c := cache.NewCacheWithStale(cfg.Cache.MaxEntries, cfg.Cache.MinTTL, cfg.Cache.MaxTTL, cfg.Cache.NegMaxTTL,
 		cfg.Cache.ServeStale, cfg.Cache.StaleTTL, m)
+	c.SetStaleMaxAge(cfg.Cache.StaleMaxAge)
 
 	var rl *security.RateLimiter
 	if cfg.Security.RateLimit.Enabled {
