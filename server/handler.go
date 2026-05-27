@@ -805,7 +805,11 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	h.metrics.IncCacheMisses()
 
 	// 4. Recursive resolution
-	result, err := h.resolver.ResolveWithECS(q.Name, q.Type, q.Class, outboundECS)
+	// RFC 6840 §5.9 — propagate the client's CD bit down to forward-mode
+	// upstreams so a downstream-validating client is not silently
+	// overruled. Iterative authoritatives ignore CD (RFC 4035 §3.2.2),
+	// so this only changes behaviour for forward zones.
+	result, err := h.resolver.ResolveWithECSAndCD(q.Name, q.Type, q.Class, outboundECS, msg.Header.CD())
 
 	// Serve stale (RFC 8767): if resolution failed (Go error or SERVFAIL),
 	// try serving expired cache entry before giving up.

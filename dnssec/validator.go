@@ -158,9 +158,23 @@ func (v *Validator) isUnsupportedRRSIGAlg(alg uint8) bool {
 	return true
 }
 
-// isWeakDSDigest reports whether the DS digest type is rejected by default.
-// Currently only DigestSHA1.
+// isWeakDSDigest reports whether the DS digest type cannot be used to
+// authenticate a DNSKEY:
+//
+//   - DigestSHA1 (1) — RFC 8624 §3.3 deprecated; honoured only when
+//     the operator explicitly opted in via allowSHA1.
+//   - DigestReserved (0) — RFC 4509 §2.4 / RFC 8624 §3.3 hard
+//     constraint: digest type 0 is IANA-reserved and MUST NOT be used
+//     for validation regardless of the allowSHA1 toggle. If the parent
+//     publishes ONLY digest-type-0 DS records the delegation has no
+//     usable DS and falls to Insecure (RFC 4035 §5.2).
+//
+// Algorithms outside these two ranges are accepted; the verify-switch
+// in verify.go is the final arbiter for crypto support.
 func (v *Validator) isWeakDSDigest(d uint8) bool {
+	if d == dns.DigestReserved {
+		return true
+	}
 	if v.allowSHA1 {
 		return false
 	}
