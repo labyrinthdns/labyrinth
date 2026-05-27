@@ -250,7 +250,21 @@ func (c *Cache) GetStale(name string, qtype uint16, class uint16) (*Entry, bool)
 	s.mu.RUnlock()
 
 	if !ok {
-		return nil, false
+		// RFC 2308 §3 + RFC 8767 §3 + RFC 8914 §4.19: an expired
+		// NXDOMAIN is stored under the qtype=0 sentinel (covers all
+		// types). The regular Get() path already probes this on miss;
+		// GetStale() must do the same so a stale NXDOMAIN remains
+		// reachable on upstream failure (and emits EDE 19 instead of
+		// falling through to SERVFAIL with EDE 23 Network Error).
+		if qtype != 0 {
+			nxKey := cacheKey{name: name, qtype: 0, class: class}
+			s.mu.RLock()
+			entry, ok = s.entries[nxKey]
+			s.mu.RUnlock()
+		}
+		if !ok {
+			return nil, false
+		}
 	}
 
 	// Only serve stale if entry is actually expired

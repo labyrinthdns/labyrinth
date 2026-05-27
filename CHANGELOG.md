@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.34] - 2026-05-28
+
+### Fixed
+- **RFC 8767 §3 + RFC 8914 §4.19 — stale NXDOMAIN was unreachable via GetStale (real cache bug)** — `Cache.Get()` correctly probed the NXDOMAIN sentinel (`qtype=0` — "covers all types") as a second-chance lookup when the typed key missed, but `Cache.GetStale()` only checked the typed key. Net effect: an expired NXDOMAIN cached entry was structurally invisible to the serve-stale path. On upstream failure for a name the resolver had previously denied, the handler would fall through to SERVFAIL with EDE 23 (Network Error) instead of serving the stale denial with EDE 19 (Stale NXDOMAIN Answer). The Y57 pin caught this — `GetStale()` now mirrors the `Get()` fallback ([cache/cache.go](cache/cache.go)). Behavioral change for the better: clients that hit the serve-stale window during an upstream outage now receive a useful denial instead of a generic failure.
+
+### Hardened
+- **RFC 8914 §4.3 / §4.19 — serve-stale picks EDE 3 vs EDE 19 by cached RCODE (Y57)** — RFC 8914 defines EDE 3 "Stale Answer" for positive serve-stale and a separate EDE 19 "Stale NXDOMAIN Answer" specifically for stale denial-of-existence. A refactor that flattened the code path to always emit EDE 3 would leak a stale NXDOMAIN as a positive-stale signal, defeating the §4.19 use case (clients deciding whether to retry against another resolver weight a stale denial differently from a stale positive). Two-case pin in [server/rfc8914_stale_ede_test.go](server/rfc8914_stale_ede_test.go) drives the handler through both the positive and NXDOMAIN cached-RCODE branches via a broken resolver, plus a non-EDNS counterpart that asserts §3 gating still suppresses OPT/EDE for legacy stubs.
+- **RFC 8914 §4.3 / §4.19 negative pin — fresh cache hits never carry stale EDE (Y58)** — guards against the refactor that hoists EDE attachment too high (into a shared cache-response builder) and starts spraying EDE 3/19 on every normal cache hit. Two pins in [server/rfc8914_no_stale_ede_fresh_test.go](server/rfc8914_no_stale_ede_fresh_test.go): a healthy positive entry in its TTL window emits no EDE 3, and a fresh cached NXDOMAIN emits no EDE 19. A client that sees EDE 19 on a non-stale denial would (correctly under §4.19 semantics) doubt the answer and retry — turning a working negative cache into an upstream-load amplifier.
+
+### UI
+- **QueriesPage — DNSSEC "Insecure" badge** — the resolver already emits `dnssec_status="insecure"` for unsigned zones (no DS chain — the legitimate baseline for most of the internet), but the queries table only rendered the green secure / red bogus icons. Added a muted-slate unfilled shield for the insecure state with a tooltip that distinguishes it from a failure ("normal for unsigned domains; not a failure"). Operators reading the queries page can now see at a glance which traffic is signed-and-validated, signed-but-broken, and unsigned.
+
 ## [0.6.33] - 2026-05-28
 
 ### Hardened
