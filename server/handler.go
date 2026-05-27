@@ -548,6 +548,14 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	// Global ACL check (fast pre-parse check without zone context).
 	// Zone-specific ACL is checked after the query is parsed.
 	if h.acl != nil && !h.acl.Check(clientIP) {
+		// RFC 8914 §4.18 — when the client carried EDNS we can tell
+		// them WHY their query was refused (helps operators of clients
+		// reaching the wrong resolver figure out the mistake quickly).
+		// Without EDNS the response stays as plain REFUSED.
+		if queryHasEDNS(query) {
+			return h.buildErrorWithEDE(query, dns.RCodeRefused, dns.EDECodeProhibited,
+				"client not authorised by resolver ACL")
+		}
 		return h.buildError(query, dns.RCodeRefused)
 	}
 
@@ -555,6 +563,13 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	if h.limiter != nil && !h.limiter.Allow(clientIP) {
 		h.metrics.IncRateLimited()
 		h.metrics.IncResponses("REFUSED")
+		// RFC 8914 §4.17 EDE 17 (Filtered) — surface "rate-limited"
+		// so a client looping on this resolver can back off rather
+		// than treat REFUSED as an opaque policy decision.
+		if queryHasEDNS(query) {
+			return h.buildErrorWithEDE(query, dns.RCodeRefused, dns.EDECodeFiltered,
+				"rate limit exceeded")
+		}
 		return h.buildError(query, dns.RCodeRefused)
 	}
 
@@ -649,6 +664,14 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	// 2.4 Per-zone ACL check (requires parsed qname)
 	if h.acl != nil && !h.acl.CheckWithZone(clientIP, q.Name) {
 		h.metrics.IncResponses("REFUSED")
+		// RFC 8914 §4.18 EDE 18 (Prohibited) — per-zone ACL refusal.
+		// Distinct from the global ACL block above (same EDE code but
+		// the text helps an operator see "you can recurse here, just
+		// not for this zone"). Only when the client carries EDNS.
+		if queryHasEDNS(query) {
+			return h.buildErrorWithEDE(query, dns.RCodeRefused, dns.EDECodeProhibited,
+				"client not authorised for this zone")
+		}
 		return h.buildError(query, dns.RCodeRefused)
 	}
 
@@ -718,17 +741,22 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 		// magnitude in practice. Only consulted on a complete miss so that
 		// real positive entries always win.
 		if !ok {
-			if synth, hit := h.cache.LookupNSECCovers(q.Name, q.Class); hit {
+			// Typed lookup so RFC 8198 §5.4 NODATA synthesis fires
+			// when a cached owner-match NSEC's type bitmap excludes
+			// the queried type, not just on §5.2 NXDOMAIN coverage.
+			if synth, hit := h.cache.LookupNSECCoversTyped(q.Name, q.Type, q.Class); hit {
 				entry = synth
 				ok = true
 				h.metrics.IncCacheHits()
 			}
 		}
-		// RFC 8198 §5.3 NSEC3 aggressive lookup — second chance, only
-		// when NSEC didn't already hit. Most signed zones today use
-		// NSEC3 (opt-out skipped at registration time per RFC 5155 §6).
+		// RFC 8198 §5.3 / §5.4 NSEC3 aggressive lookup — second
+		// chance, only when NSEC didn't already hit. Most signed
+		// zones today use NSEC3 (opt-out skipped at registration
+		// time per RFC 5155 §6). Typed variant enables NODATA synth
+		// via owner-hash + type-bitmap exclusion.
 		if !ok {
-			if synth, hit := h.cache.LookupNSEC3Covers(q.Name, q.Class); hit {
+			if synth, hit := h.cache.LookupNSEC3CoversTyped(q.Name, q.Type, q.Class); hit {
 				entry = synth
 				ok = true
 				h.metrics.IncCacheHits()
@@ -1424,6 +1452,26 @@ func (h *MainHandler) buildBadVersResponse(query []byte) ([]byte, error) {
 }
 
 // buildErrorWithEDE creates an error response with an Extended DNS Error option.
+// queryHasEDNS reports whether the on-wire query carried an OPT pseudo-RR.
+// Used to gate RFC 8914 EDE emission on REFUSED responses — RFC 8914 §3
+// makes EDE meaningful only when the client speaks EDNS, and an OPT
+// shoved into a response to a non-EDNS query both wastes bytes and may
+// trip strict EDNS-0 enforcers in the wild. The check is byte-level so
+// we do not need to fully unpack the query (cheap on the refuse path).
+//
+// We accept any non-zero ARCount as evidence: in practice EDE-emitting
+// resolvers only see OPT in additional, and the alternative (full
+// parse to check Type==OPT) is wasted CPU on a path the resolver is
+// trying to make cheap. A FORMERR client that put TSIG/SIG(0) in
+// additional would still get its EDE — that is harmless.
+func queryHasEDNS(query []byte) bool {
+	if len(query) < 12 {
+		return false
+	}
+	// Header bytes 10-11 = ARCount.
+	return query[10] != 0 || query[11] != 0
+}
+
 func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint16, edeText string) ([]byte, error) {
 	resp, err := h.buildError(query, rcode)
 	if err != nil {
