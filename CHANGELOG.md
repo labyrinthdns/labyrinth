@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.26] - 2026-05-27
+
+### Added
+- **Dashboard "Resolver Observability" panel (Y40)** — the eight Y34/Y35/Y36 counters added in v0.6.24 lived only on `/metrics` (Prometheus scrape format). With v0.6.26 they are now first-class fields on `/api/stats` ([metrics/metrics.go](metrics/metrics.go), [web/api_stats.go](web/api_stats.go)) and surfaced on the dashboard as a six-card panel ([web/ui/src/pages/DashboardPage.tsx](web/ui/src/pages/DashboardPage.tsx)):
+  - Failure cache hit/miss + hit-ratio bar (RFC 9520)
+  - Server-cookie cache hit/miss + hit-ratio bar (RFC 7873 §5.3)
+  - BADCOOKIE outbound retries with operator hint ("should trend to zero once cookie cache warms") (RFC 7873 §5.4)
+  - NSEC aggressive synth NXDOMAIN / NODATA split (RFC 8198 §5.2 vs §5.4)
+  - NSEC3 aggressive synth NXDOMAIN / NODATA split (RFC 8198 §5.2 vs §5.4)
+  - Stale-while-refresh trigger counter (RFC 8767 §3.1)
+
+  The TypeScript shape was extended with optional fields so the dashboard still renders against older servers that haven't surfaced these counters yet ([web/ui/src/api/types.ts](web/ui/src/api/types.ts)). Pin test [web/api_stats_v0_6_24_observability_test.go](web/api_stats_v0_6_24_observability_test.go) increments each counter and asserts the JSON output carries the matching key with the right value — catches both "added the field on one side but not the other" regressions.
+
 ## [0.6.25] - 2026-05-27
 
 ### Added

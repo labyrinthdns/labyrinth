@@ -137,6 +137,169 @@ function MeterRow({
   )
 }
 
+function ratioPercent(hits: number, misses: number): number {
+  const total = hits + misses
+  if (total <= 0) return 0
+  return (hits / total) * 100
+}
+
+function HitMissCard({
+  title,
+  rfc,
+  hits,
+  misses,
+  hitColor,
+}: {
+  title: string
+  rfc: string
+  hits: number
+  misses: number
+  hitColor: string
+}) {
+  const pct = ratioPercent(hits, misses)
+  return (
+    <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 space-y-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500">{rfc}</span>
+      </div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-[11px] text-emerald-300">hit {formatNumber(hits)}</span>
+        <span className="text-[11px] text-rose-300">miss {formatNumber(misses)}</span>
+      </div>
+      <div>
+        <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-0.5">
+          <span>Hit ratio</span>
+          <span className="font-semibold" style={{ color: hitColor }}>{pct.toFixed(1)}%</span>
+        </div>
+        <div className="h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+          <div className="h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, pct))}%`, backgroundColor: hitColor }} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SynthCard({
+  title,
+  rfc,
+  nx,
+  nodata,
+}: {
+  title: string
+  rfc: string
+  nx: number
+  nodata: number
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500">{rfc}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <div className="text-[10px] text-slate-500 dark:text-slate-400">NXDOMAIN §5.2</div>
+          <div className="text-sm font-bold text-amber-300">{formatNumber(nx)}</div>
+        </div>
+        <div>
+          <div className="text-[10px] text-slate-500 dark:text-slate-400">NODATA §5.4</div>
+          <div className="text-sm font-bold text-sky-300">{formatNumber(nodata)}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SingleCounterCard({
+  title,
+  rfc,
+  value,
+  color,
+  hint,
+}: {
+  title: string
+  rfc: string
+  value: number
+  color: string
+  hint: string
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{title}</span>
+        <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500">{rfc}</span>
+      </div>
+      <div className="text-lg font-bold" style={{ color }}>{formatNumber(value)}</div>
+      <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug">{hint}</div>
+    </div>
+  )
+}
+
+function ResolverObservabilityPanel({ stats }: { stats: StatsResponse | null }) {
+  const failureHits = stats?.failure_cache_hits ?? 0
+  const failureMisses = stats?.failure_cache_misses ?? 0
+  const cookieHits = stats?.server_cookie_cache_hits ?? 0
+  const cookieMisses = stats?.server_cookie_cache_misses ?? 0
+  const nsecNX = stats?.nsec_aggressive_synth_nx ?? 0
+  const nsecND = stats?.nsec_aggressive_synth_nodata ?? 0
+  const nsec3NX = stats?.nsec3_aggressive_synth_nx ?? 0
+  const nsec3ND = stats?.nsec3_aggressive_synth_nodata ?? 0
+  const badcookieRetries = stats?.outbound_badcookie_retries ?? 0
+  const staleRefresh = stats?.stale_while_refresh ?? 0
+
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">
+      <div className="flex items-baseline justify-between mb-4">
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-200">Resolver Observability</h2>
+        <span className="text-[10px] text-slate-500 dark:text-slate-400">RFC 8198 / 9520 / 7873 / 8767</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <HitMissCard
+          title="Failure cache"
+          rfc="RFC 9520"
+          hits={failureHits}
+          misses={failureMisses}
+          hitColor="#10b981"
+        />
+        <HitMissCard
+          title="Server-cookie cache"
+          rfc="RFC 7873 §5.3"
+          hits={cookieHits}
+          misses={cookieMisses}
+          hitColor="#a855f7"
+        />
+        <SingleCounterCard
+          title="BADCOOKIE retries"
+          rfc="RFC 7873 §5.4"
+          value={badcookieRetries}
+          color="#f59e0b"
+          hint="Steady-state should trend to zero once cookie cache warms"
+        />
+        <SynthCard
+          title="NSEC aggressive synth"
+          rfc="RFC 8198"
+          nx={nsecNX}
+          nodata={nsecND}
+        />
+        <SynthCard
+          title="NSEC3 aggressive synth"
+          rfc="RFC 8198"
+          nx={nsec3NX}
+          nodata={nsec3ND}
+        />
+        <SingleCounterCard
+          title="Stale-while-refresh"
+          rfc="RFC 8767 §3.1"
+          value={staleRefresh}
+          color="#22d3ee"
+          hint="Each tick is one stale serve that also kicked an async refresh"
+        />
+      </div>
+    </div>
+  )
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [profile, setProfile] = useState<SystemProfileResponse | null>(null)
@@ -942,6 +1105,12 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* v0.6.26 — RFC compliance / resolver observability panel. The
+          numbers come from /api/stats (Y34/Y35/Y36 counters added in
+          v0.6.24); zero values render as "0" not "—" so an operator can
+          tell "feature inactive" from "feature missing". */}
+      <ResolverObservabilityPanel stats={statsView} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6">

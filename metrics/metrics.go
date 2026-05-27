@@ -278,6 +278,18 @@ type MetricsSnapshot struct {
 	BlockedQueries     int64
 	FallbackQueries    int64
 	FallbackRecoveries int64
+
+	// Y34/Y35/Y36 — observability counters surfaced via /api/stats.
+	FailureCacheHits          int64
+	FailureCacheMisses        int64
+	ServerCookieCacheHits     int64
+	ServerCookieCacheMisses   int64
+	NSECAggressiveSynthNX     int64
+	NSECAggressiveSynthNoData int64
+	NSEC3AggressiveSynthNX    int64
+	NSEC3AggressiveSynthND    int64
+	OutboundBadCookieRetries  int64
+	StaleWhileRefreshTriggers int64
 }
 
 // Snapshot returns a point-in-time snapshot of all metrics.
@@ -313,6 +325,17 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		BlockedQueries:     m.blockedQueries.Load(),
 		FallbackQueries:    m.fallbackQueries.Load(),
 		FallbackRecoveries: m.fallbackRecoveries.Load(),
+
+		FailureCacheHits:          m.failureCacheHits.Load(),
+		FailureCacheMisses:        m.failureCacheMisses.Load(),
+		ServerCookieCacheHits:     m.serverCookieCacheHits.Load(),
+		ServerCookieCacheMisses:   m.serverCookieCacheMisses.Load(),
+		NSECAggressiveSynthNX:     m.nsecAggressiveSynthNX.Load(),
+		NSECAggressiveSynthNoData: m.nsecAggressiveSynthNoData.Load(),
+		NSEC3AggressiveSynthNX:    m.nsec3AggressiveSynthNX.Load(),
+		NSEC3AggressiveSynthND:    m.nsec3AggressiveSynthND.Load(),
+		OutboundBadCookieRetries:  m.outboundBadCookieRetries.Load(),
+		StaleWhileRefreshTriggers: m.staleWhileRefreshTriggers.Load(),
 	}
 }
 

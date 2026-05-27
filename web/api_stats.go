@@ -49,6 +49,22 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		"goroutines":           snap.Goroutines,
 		"query_duration_count": snap.QueryDurationCount,
 		"resolver_ready":       resolverReady,
+
+		// Y34/Y35/Y36 observability — exposed to the dashboard so the
+		// v0.6.18→v0.6.23 features (failure cache, server-cookie cache,
+		// aggressive NSEC/NSEC3 synth, BADCOOKIE retry, stale-while-refresh)
+		// are no longer a blind spot in the UI. The same numbers are
+		// available on /metrics for Prometheus scrapers.
+		"failure_cache_hits":           snap.FailureCacheHits,
+		"failure_cache_misses":         snap.FailureCacheMisses,
+		"server_cookie_cache_hits":     snap.ServerCookieCacheHits,
+		"server_cookie_cache_misses":   snap.ServerCookieCacheMisses,
+		"nsec_aggressive_synth_nx":     snap.NSECAggressiveSynthNX,
+		"nsec_aggressive_synth_nodata": snap.NSECAggressiveSynthNoData,
+		"nsec3_aggressive_synth_nx":    snap.NSEC3AggressiveSynthNX,
+		"nsec3_aggressive_synth_nodata": snap.NSEC3AggressiveSynthND,
+		"outbound_badcookie_retries":   snap.OutboundBadCookieRetries,
+		"stale_while_refresh":          snap.StaleWhileRefreshTriggers,
 	})
 }
 
