@@ -77,6 +77,91 @@ function formatDetails(d: unknown): string | null {
   }
 }
 
+// EDEDescriptor is the shape resolver/trace_ede.go emits for each Extended DNS
+// Error in the upstream response. Optional because not every upstream sets one.
+interface EDEDescriptor {
+  code: number
+  name: string
+  text: string
+}
+
+// readBool / readEDE pull the v0.6.27 trace fields out of the free-form
+// `details` map without trusting any individual field's presence — older
+// servers won't emit them at all, and we render nothing in that case.
+function readBool(details: unknown, key: string): boolean | undefined {
+  if (!details || typeof details !== 'object') return undefined
+  const v = (details as Record<string, unknown>)[key]
+  return typeof v === 'boolean' ? v : undefined
+}
+
+function readEDE(details: unknown): EDEDescriptor[] {
+  if (!details || typeof details !== 'object') return []
+  const raw = (details as Record<string, unknown>).ede
+  if (!Array.isArray(raw)) return []
+  const out: EDEDescriptor[] = []
+  for (const e of raw) {
+    if (!e || typeof e !== 'object') continue
+    const r = e as Record<string, unknown>
+    if (typeof r.code !== 'number') continue
+    out.push({
+      code: r.code,
+      name: typeof r.name === 'string' ? r.name : `EDE${r.code}`,
+      text: typeof r.text === 'string' ? r.text : '',
+    })
+  }
+  return out
+}
+
+// TraceFlagBadges renders inline pill badges for DNSSEC AD, CD bit and any
+// RFC 8914 Extended DNS Error codes carried in the trace event's details.
+// Only appears when the relevant key exists in `details` (an `upstream` event
+// from v0.6.27+); legacy events render nothing.
+function TraceFlagBadges({ details }: { details: unknown }) {
+  const ad = readBool(details, 'ad')
+  const cd = readBool(details, 'cd')
+  const ede = readEDE(details)
+
+  if (ad === undefined && cd === undefined && ede.length === 0) return null
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+      {ad !== undefined && (
+        <span
+          className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold ${
+            ad
+              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+              : 'bg-slate-500/15 text-slate-500 dark:text-slate-400 border border-slate-500/30'
+          }`}
+          title={ad ? 'AD bit set — upstream marked answer as authenticated' : 'AD bit clear — answer not authenticated by upstream'}
+        >
+          AD={ad ? '1' : '0'}
+        </span>
+      )}
+      {cd !== undefined && (
+        <span
+          className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold ${
+            cd
+              ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
+              : 'bg-slate-500/15 text-slate-500 dark:text-slate-400 border border-slate-500/30'
+          }`}
+          title={cd ? 'CD bit set — DNSSEC checking disabled (RFC 6840 §5.9)' : 'CD bit clear — DNSSEC checking applied'}
+        >
+          CD={cd ? '1' : '0'}
+        </span>
+      )}
+      {ede.map((e, i) => (
+        <span
+          key={i}
+          className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30"
+          title={`RFC 8914 EDE ${e.code}: ${e.name}${e.text ? ' — ' + e.text : ''}`}
+        >
+          EDE {e.code} · {e.name}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 interface StageState {
   status: TraceStatus | 'pending'
   message?: string
@@ -421,6 +506,7 @@ export default function DiagnosticsPage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="text-slate-800 dark:text-slate-200 break-words">{ev.message}</div>
+                      <TraceFlagBadges details={ev.details} />
                       {details && (
                         <>
                           <button
