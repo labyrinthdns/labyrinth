@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.32] - 2026-05-27
+
+### Security
+- **RFC 4034 §2.1.1 + RFC 6840 §5.6 — DNSKEY Zone Key bit required for validation (Y53)** — a DNSKEY whose Zone Key flag (bit 7, value 0x0100) is clear holds some other kind of public key (e.g. host SIG(0) keys) and MUST NOT be used to verify RRSIGs over RRsets. Without this gate, an attacker with a SIG(0) key whose tag happens to match a DS record could appear to validate the zone. New `DNSKEYRecord.IsZoneKey()` helper ([dns/rdata.go](dns/rdata.go)) + `VerifyRRSIG` gate ([dnssec/verify.go](dnssec/verify.go)) — the bit is checked BEFORE algorithm dispatch so the rejection survives any algorithm switch. Pin tests [dnssec/rfc4034_zone_key_test.go](dnssec/rfc4034_zone_key_test.go) cover three cases: SEP-only key rejected, ZSK accepted past the gate (crypto fails on bogus material — proves gate is permissive enough), and a six-flag truth table on the helper.
+- **RFC 8914 §3 — EDE only when client carries EDNS (Y52)** — Extended DNS Errors only make sense to clients that speak EDNS; sending an OPT-bearing EDE response to a non-EDNS legacy stub both wastes bytes and risks tripping strict RFC 1035-only stubs that count "unknown additional" as malformed. The `queryHasEDNS` byte-level gate already covered the ACL/rate-limit refuse paths; pin test [server/rfc8914_ede_edns_gating_test.go](server/rfc8914_ede_edns_gating_test.go) drives the same ACL-denied query twice (with and without OPT) and asserts: non-EDNS response has ARCount=0 with no EDE; EDNS response carries an OPT bearing EDE 18 (Prohibited, §4.18).
+
+### Documentation
+- **README.md RFC compliance table rewritten** — the previous 14-entry table was stale (last touched before the Y34 audit started). Replaced with a 9-section matrix that mirrors the AboutPage compliance panel: Core Protocol, DNSSEC, Aggressive NSEC/NSEC3, EDNS / Cookies / Padding, Transport Security, Special-Use Names, and Error Signalling / Caching / Policy. Every "Pinned" row points at a `*/rfcNNNN_*_test.go` file under the new audit naming convention. Features section updated to surface the v0.6.26-v0.6.28 UI work (Resolver Observability panel, CD/EDE diagnostic badges, RFC Compliance Matrix on AboutPage).
+
 ## [0.6.31] - 2026-05-27
 
 ### Security

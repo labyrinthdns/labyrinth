@@ -27,6 +27,7 @@ var (
 	errNoSignature      = errors.New("dnssec: RRSIG has no signature data")
 	errInvalidKeyLength = errors.New("dnssec: invalid key length")
 	errMalformedLabels  = errors.New("dnssec: RRSIG Labels field exceeds owner label count (RFC 4034 §3.1.3)")
+	errZoneKeyBitClear  = errors.New("dnssec: DNSKEY Zone Key bit (flag 0x0100) is clear — MUST NOT verify RRSIGs (RFC 4034 §2.1.1)")
 )
 
 // labelCountExcludingRoot returns the number of labels in name, excluding
@@ -50,6 +51,16 @@ func VerifyRRSIG(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord, dnskey *dns
 	}
 	if len(rrsig.Signature) == 0 {
 		return errNoSignature
+	}
+
+	// RFC 4034 §2.1.1 / RFC 6840 §5.6: a DNSKEY whose Zone Key flag (bit 7,
+	// value 0x0100) is clear is not a zone-signing key and MUST NOT be used
+	// to verify RRSIGs over RRsets. Such keys exist for SIG(0) and other
+	// non-zone purposes; accepting one as a validator would let an attacker
+	// who has a host's SIG(0) key forge zone signatures. Reject before any
+	// crypto work — cheap gate that survives algorithm switches.
+	if dnskey == nil || !dnskey.IsZoneKey() {
+		return errZoneKeyBitClear
 	}
 
 	// RFC 4034 §3.1.3: "The value of the Labels field MUST be less than or

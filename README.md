@@ -15,15 +15,16 @@
 - **Single binary** — DNS resolver + web dashboard + auth, everything in one 6.8 MB executable
 - **Web dashboard** — Real-time DNS monitoring, cache management, live query stream, dark/light theme
 - **Operator-first dashboard** — Compact high-signal matrix, expandable secondary metrics, and inline cache query modal from top domains
-- **DNS Lookup Diagnostics** — Live pipeline trace for any name: each iterative step, CNAME chase, and per-RRSIG DNSSEC verdict streamed over WebSocket so you can see exactly which stage failed and why. Toggle cache bypass / DNSSEC skip to localise issues in seconds.
+- **Resolver Observability Panel** — Dashboard surface for the v0.6.24 RFC compliance counters: failure cache, server-cookie cache, NSEC/NSEC3 aggressive synthesis (NXDOMAIN vs NODATA split), BADCOOKIE retries, stale-while-refresh — each with hit-ratio bars and operator hints
+- **DNS Lookup Diagnostics** — Live pipeline trace for any name: each iterative step, CNAME chase, and per-RRSIG DNSSEC verdict streamed over WebSocket. Inline pill badges per upstream event show AD bit, CD bit (RFC 6840 §5.9) and any RFC 8914 Extended DNS Error codes the upstream attached. Toggle cache bypass / DNSSEC skip to localise issues in seconds.
+- **RFC Compliance Matrix** — AboutPage surface listing the standards Labyrinth implements, grouped by capability, with IETF datatracker links and "since vX.Y.Z" metadata. Each entry pinned by integrity tests so a typo can't ship as a false compliance claim.
 - **Smooth live charts** — Dashboard trend charts redraw every second to stay responsive during bursty traffic changes
 - **Zero-config start** — Interactive setup wizard on first run, sane defaults for everything
 - **Recursive only** — Navigates root → TLD → authoritative, caches results
-- **RFC compliant** — RFC 1035, 2308, 3596, 4033-4035, 6891, 7858, 8484, 8767, 9114, 9156
-- **DNSSEC validation** — Full signature verification (RSA, ECDSA, ED25519), trust chain from root KSK
+- **DNSSEC validation** — Full signature verification (RSA-SHA1/256/512, ECDSA P-256/P-384, ED25519), trust chain from root KSK, Zone Key bit gating (RFC 4034 §2.1.1), MUST-NOT algorithm refusal (RFC 8624 §3.1), CD bit propagation in forward mode (RFC 6840 §5.9), aggressive NSEC/NSEC3 use (RFC 8198 §5.2/§5.4)
 - **DNS blocklist** — Pi-hole style domain blocking with hosts/domain/AdBlock Plus list formats
-- **Secure** — JWT auth, bcrypt passwords, bailiwick enforcement, rate limiting, ACL
-- **Observable** — Prometheus metrics, Zabbix agent, structured logging, WebSocket query stream
+- **Secure** — JWT auth, bcrypt passwords, bailiwick enforcement (RFC 5452 §3), rate limiting, ACL with EDE 17/18 signalling (RFC 8914)
+- **Observable** — Prometheus metrics, Zabbix agent, structured logging, WebSocket query stream, 8 new counters for v0.6.24 RFC compliance features
 - **Self-updating** — Automatic version check + one-click update from web dashboard (read-only installs require host-level update/redeploy)
 - **Fast** — Sharded cache, >22M cache reads/sec, <50µs cache hit latency, request coalescing
 
@@ -342,22 +343,93 @@ Binary size: **6.8 MB** (stripped, with embedded web dashboard)
 
 ## RFC Compliance
 
+Labyrinth implements 40+ RFCs across nine capability groups. The full
+matrix with per-entry datatracker links and shipped-version metadata is
+available on the **About** page of the web dashboard. Each row is
+backed by a behavioural pin test under the `*/rfcNNNN_*_test.go` naming
+convention — a regression on any of these surfaces fails the suite
+rather than silently degrading the resolver.
+
+### Core protocol
+
 | RFC | Title | Coverage |
 |-----|-------|----------|
-| 1035 | Domain Names | Full |
+| 1034 / 1035 | Domain Names — Concepts + Implementation | Full |
+| 1034 §3.7 | AA bit clear on resolver responses | Pinned |
+| 1035 §2.3.4 | Label/name length caps (63 / 255) | Pinned |
 | 2181 | DNS Clarifications | Full |
-| 2308 | Negative Caching | Full |
-| 3596 | DNS IPv6 (AAAA) | Full |
-| 4033-4035 | DNSSEC | Full |
-| 5452 | DNS Resilience (0x20) | Full |
-| 6891 | EDNS0 | Full |
-| 7873 | DNS Cookies | Full |
-| 8020 | NXDOMAIN Cut | Full |
-| 8109 | Root Priming | Full |
-| 8767 | Serving Stale Data | Full |
-| 8914 | Extended DNS Errors | Full |
-| 9018 | DNS Cookies (SipHash) | Full |
-| 9156 | QNAME Minimization | Full |
+| 2308 §5 | Negative cache TTL = MIN(SOA TTL, SOA.MINIMUM) | Pinned |
+| 3596 | AAAA records | Full |
+| 3597 | Handling unknown RR types | Full |
+| 5452 §3 | In-bailiwick sanitisation | Pinned |
+| 5452 §6 | DNS 0x20 case randomisation (on-wire behavioural pin) | Pinned |
+| 6604 / 6672 | xNAME RCODE + DNAME redirection | Full |
+| 9156 | QNAME minimisation | Full |
+| 9460 | SVCB / HTTPS RR | Full |
+
+### DNSSEC
+
+| RFC | Title | Coverage |
+|-----|-------|----------|
+| 4033-4035 | DNSSEC core | Full |
+| 4034 §2.1.1 | DNSKEY Zone Key bit gating | Pinned |
+| 4035 §3.2.1 | DNSSEC RR stripping for non-DO clients | Pinned |
+| 4035 §3.2.2 | AD bit gating (validation + CD truth-table) | Pinned |
+| 4035 §4.7 | DO bit on outbound queries | Pinned |
+| 4509 §2.4 | DS digest type 0 unconditionally rejected | Pinned |
+| 5011 | Automated trust anchor updates | Full |
+| 5155 | NSEC3 hashed denial | Full |
+| 6605 | ECDSA P-256/P-384 | Full |
+| 6840 §5.9 | CD bit propagation on forward queries | Pinned |
+| 6975 | DAU / DHU / N3U algorithm signalling | Full |
+| 8624 §3.1 / §3.3 | MUST-NOT algorithm refusal (RSAMD5/DSA/SHA-1 NSEC3) | Pinned |
+| 9018 | Cookie key serialisation | Full |
+| 9276 §3.2 | NSEC3 iteration cap at 100 | Pinned |
+
+### Aggressive NSEC / NSEC3 (RFC 8198)
+
+| RFC | Section | Behaviour | Pinned |
+|-----|---------|-----------|--------|
+| 8198 | §5.2 | Aggressive NXDOMAIN synthesis from cached NSEC / NSEC3 | ✓ |
+| 8198 | §5.4 | Aggressive NODATA synthesis (type-bitmap aware) | ✓ |
+
+### EDNS / Cookies / Padding
+
+| RFC | Title | Coverage |
+|-----|-------|----------|
+| 6891 §6.1.3 | Extended RCODE pack/unpack (BADCOOKIE / BADVERS) | Pinned |
+| 7828 | edns-tcp-keepalive | Full |
+| 7830 + 8467 | EDNS padding on DoT/DoH (468-byte block) | Full |
+| 7871 | Client Subnet (ECS) | Full |
+| 7873 §5.2 / §5.3 / §5.4 | Server-cookie cache + BADCOOKIE retry | Pinned |
+| 7873 §5.5 | Cookie secret rotation | Pinned |
+
+### Transport security
+
+| RFC | Title | Coverage |
+|-----|-------|----------|
+| 7766 §6.2 | TCP pipelining + idle timeout bounds | Pinned |
+| 7858 | DNS over TLS (DoT) | Full |
+| 8484 | DNS over HTTPS (DoH) | Full |
+| 9210 §3.7 | TCP idle timeout safety bounds | Pinned |
+| 9250 | DNS over QUIC (DoQ) | Full |
+
+### Special-use names
+
+| RFC | Title | Coverage |
+|-----|-------|----------|
+| 6303 | Locally-served reverse zones (RFC 1918, IPv6 ULA, link-local) | Full |
+| 6761 / 6762 / 7686 / 8375 | Special-use domain names | Full |
+
+### Error signalling, caching, policy
+
+| RFC | Title | Coverage |
+|-----|-------|----------|
+| 8914 §3 | EDE only when client carries EDNS | Pinned |
+| 8914 §4.17 / §4.18 | EDE 17 Filtered / EDE 18 Prohibited on REFUSED | Pinned |
+| 8767 §3.1 | Stale-while-refresh | Pinned |
+| 8659 | DNS CAA pass-through | Full |
+| 9520 | Resolution failure caching | Pinned |
 
 ## License
 
