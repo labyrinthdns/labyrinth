@@ -224,6 +224,14 @@ func (k *DNSKEYRecord) IsKSK() bool {
 	return k.Flags&0x0001 != 0
 }
 
+// IsZoneKey reports whether the Zone Key flag (bit 7, value 0x0100) is set.
+// Per RFC 4034 §2.1.1, a DNSKEY whose Zone Key bit is clear holds some other
+// kind of public key (e.g. SIG(0) host keys) and MUST NOT be used to verify
+// RRSIGs that cover RRsets. The validator gates VerifyRRSIG on this.
+func (k *DNSKEYRecord) IsZoneKey() bool {
+	return k.Flags&0x0100 != 0
+}
+
 // IsRevoked reports whether the REVOKE flag (RFC 5011 §3, bit 8) is set.
 // A revoked DNSKEY MUST NOT be used to validate signatures or to match DS
 // records — the operator has explicitly disowned that key and the chain
