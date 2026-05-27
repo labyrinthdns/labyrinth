@@ -224,6 +224,9 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 					continue
 				}
 				if entry, ok := c.buildNSEC3SynthEntry(iv, now, NegNoData, dns.RCodeNoError); ok {
+					if c.metrics != nil {
+						c.metrics.IncNSEC3AggressiveSynthND()
+					}
 					return entry, true
 				}
 			}
@@ -241,6 +244,9 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 				continue
 			}
 			if entry, ok := c.buildNSEC3SynthEntry(iv, now, NegNXDomain, dns.RCodeNXDomain); ok {
+				if c.metrics != nil {
+					c.metrics.IncNSEC3AggressiveSynthNX()
+				}
 				return entry, true
 			}
 		}

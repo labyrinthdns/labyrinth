@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.24] - 2026-05-27
+
+### Added
+- **Observability for the v0.6.18 → v0.6.23 feature set** — eight new Prometheus counters expose what was previously a blind spot: how often the new caches actually save work, and where the resolver is paying the bills.
+  - `labyrinth_failure_cache_{hits,misses}_total` — RFC 9520 failure-cache (Y26) hit/miss ratio. High hit ratio = retry storms being absorbed; high miss ratio = each failure is its own.
+  - `labyrinth_server_cookie_cache_{hits,misses}_total` — RFC 7873 §5.3 server-cookie cache (Y25). High hit ratio = we're paying the BADCOOKIE round-trip once per server; a low ratio with cookie-enforcing peers means the cache is being evicted faster than it warms up.
+  - `labyrinth_nsec_aggressive_synth_total{kind="nxdomain|nodata"}` and `labyrinth_nsec3_aggressive_synth_total{kind=...}` — RFC 8198 §5.2 / §5.4 aggressive-use synthesis counters split by index (NSEC vs NSEC3) and kind (NXDOMAIN vs NODATA, the §5.2-vs-§5.4 distinction from Y16/Y27/Y32/Y33).
+  - `labyrinth_outbound_badcookie_retries_total` — RFC 7873 §5.4 retry rate (Y24). Should trend to zero once the server-cookie cache is warm; sustained non-zero rate means churn.
+  - `labyrinth_stale_while_refresh_total` — RFC 8767 §3.1 (Y29) background refresh trigger count. Zero with high stale-serve traffic means the prefetch hook is mis-wired.
+
+  Wired into existing call sites in [cache/nsec_aggressive.go](cache/nsec_aggressive.go), [cache/nsec3_aggressive.go](cache/nsec3_aggressive.go), [cache/cache.go](cache/cache.go), [resolver/resolver.go](resolver/resolver.go), and [resolver/upstream.go](resolver/upstream.go) so the increment happens at the same instant the feature triggers — no separate accounting layer to drift. Pin tests [metrics/v0_6_24_observability_test.go](metrics/v0_6_24_observability_test.go) cover each counter's Inc method AND its surfacing on the /metrics endpoint (the second guard catches the "added the counter but forgot the writer" regression).
+
 ## [0.6.23] - 2026-05-27
 
 ### Added
