@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.20] - 2026-05-28
+
+### Hardened
+- **`Cache-Control: no-store` on every JSON API response** — without this header an intermediate proxy (Squid, a corporate forward proxy) or a misconfigured browser could serve a 30-second-old `/api/stats` payload as if it were current, masking a real failure during an incident. The single-line change in [web/middleware.go](web/middleware.go) flips `jsonResponse` to emit `no-store` on every reply (success AND error paths — a cached 401 after a successful re-auth would lock out the operator). New pins in [web/api_cache_control_test.go](web/api_cache_control_test.go) lock the header on both 200 and the full set of common error codes (400/401/403/404/500/503).
+
 ## [0.7.19] - 2026-05-28
 
 ### Added

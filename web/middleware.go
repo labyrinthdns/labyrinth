@@ -76,6 +76,14 @@ func isWebSocketUpgrade(r *http.Request) bool {
 // jsonResponse writes a JSON response with the given status code and data.
 func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	// API responses are live observability data — never cacheable by
+	// intermediate proxies or the browser. Without Cache-Control a
+	// reverse proxy (or a misconfigured browser) could serve a 30-s-
+	// old /api/stats payload as if it were current, masking real
+	// failures during an incident. `no-store` is stricter than
+	// `no-cache` and is the right choice here because we never want
+	// these responses persisted at all (not even revalidated).
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }
