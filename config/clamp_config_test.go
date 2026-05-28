@@ -33,6 +33,8 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	cfg.Resolver.MaxCNAMEDepth = clampMaxCNAMEDepth * 10
 	cfg.Server.TCPPipelineMax = clampMaxTCPPipelineMax * 10
 	cfg.Resolver.UpstreamTimeout = clampMaxUpstreamTimeout * 10
+	cfg.Server.TCPIdleTimeout = clampMaxTCPIdleTimeout * 10
+	cfg.Server.TCPTimeout = clampMaxTCPTimeout * 10
 
 	clampConfigBounds(cfg)
 
@@ -75,6 +77,12 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	if got := cfg.Resolver.UpstreamTimeout; got != clampMaxUpstreamTimeout {
 		t.Errorf("Resolver.UpstreamTimeout = %v, want %v", got, clampMaxUpstreamTimeout)
 	}
+	if got := cfg.Server.TCPIdleTimeout; got != clampMaxTCPIdleTimeout {
+		t.Errorf("Server.TCPIdleTimeout = %v, want %v", got, clampMaxTCPIdleTimeout)
+	}
+	if got := cfg.Server.TCPTimeout; got != clampMaxTCPTimeout {
+		t.Errorf("Server.TCPTimeout = %v, want %v", got, clampMaxTCPTimeout)
+	}
 }
 
 // TestClampConfigBounds_UnderCapValuesPassThrough pins that legitimate
@@ -96,6 +104,8 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	cfg.Resolver.MaxCNAMEDepth = 16
 	cfg.Server.TCPPipelineMax = 100
 	cfg.Resolver.UpstreamTimeout = 5 * time.Second
+	cfg.Server.TCPIdleTimeout = 5 * time.Minute
+	cfg.Server.TCPTimeout = 10 * time.Second
 
 	clampConfigBounds(cfg)
 
@@ -125,6 +135,12 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	}
 	if cfg.Resolver.UpstreamTimeout != 5*time.Second {
 		t.Errorf("Resolver.UpstreamTimeout got clamped from 5s to %v", cfg.Resolver.UpstreamTimeout)
+	}
+	if cfg.Server.TCPIdleTimeout != 5*time.Minute {
+		t.Errorf("Server.TCPIdleTimeout got clamped from 5m to %v", cfg.Server.TCPIdleTimeout)
+	}
+	if cfg.Server.TCPTimeout != 10*time.Second {
+		t.Errorf("Server.TCPTimeout got clamped from 10s to %v", cfg.Server.TCPTimeout)
 	}
 }
 

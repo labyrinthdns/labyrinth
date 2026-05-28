@@ -591,6 +591,21 @@ const (
 	// bound (default 2s; production tuning 5-10s for slow auths) and
 	// well under worker-starvation threshold.
 	clampMaxUpstreamTimeout   = 60 * time.Second
+	// server.tcp_idle_timeout: how long an idle TCP DNS connection
+	// stays open before the server closes it. Combined with the TCP
+	// conn cap (clampMaxTCPConns=100k from v0.8.1), a 24h idle
+	// timeout lets an attacker holding 100k idle TCP connections
+	// occupy every conn slot for a day — preventing legitimate clients
+	// from connecting. RFC 7766 §6.2 recommends ~30s for non-keepalive
+	// and 5 minutes for keepalive flows; 1 h is the paranoid upper
+	// bound for long-poll observability tools. Anything past 1 h
+	// is a slot-exhaustion vector.
+	clampMaxTCPIdleTimeout    = time.Hour
+	// server.tcp_timeout: per-request read/write deadline on a TCP
+	// connection. Bounded for the same reason as upstream_timeout —
+	// a 24 h value lets a single slow-loris connection pin a worker.
+	// 60s matches the upstream timeout cap.
+	clampMaxTCPTimeout        = 60 * time.Second
 )
 
 // clampConfigBounds enforces sane upper bounds on integer fields.
@@ -635,6 +650,12 @@ func clampConfigBounds(cfg *Config) {
 	}
 	if cfg.Resolver.UpstreamTimeout > clampMaxUpstreamTimeout {
 		cfg.Resolver.UpstreamTimeout = clampMaxUpstreamTimeout
+	}
+	if cfg.Server.TCPIdleTimeout > clampMaxTCPIdleTimeout {
+		cfg.Server.TCPIdleTimeout = clampMaxTCPIdleTimeout
+	}
+	if cfg.Server.TCPTimeout > clampMaxTCPTimeout {
+		cfg.Server.TCPTimeout = clampMaxTCPTimeout
 	}
 }
 
