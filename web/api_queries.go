@@ -49,6 +49,7 @@ func (s *AdminServer) handleQueryStreamWS(w http.ResponseWriter, r *http.Request
 		s.logger.Error("websocket accept failed", "error", err)
 		return
 	}
+	conn.SetReadLimit(MaxWebSocketMessageBytes)
 	defer conn.Close(websocket.StatusNormalClosure, "closing")
 
 	ctx := r.Context()

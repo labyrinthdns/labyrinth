@@ -28,6 +28,19 @@ const MaxRequestBodyBytes = 1 << 20 // 1 MiB
 
 // withBodyCap wraps a handler so that any read from r.Body returns
 // http.MaxBytesError once MaxRequestBodyBytes has been read. This is
+// MaxWebSocketMessageBytes caps the size of any single WebSocket
+// message the admin API will read from a client. All three live-stream
+// endpoints (queries, trace, time-series) receive only tiny JSON
+// control messages — subscription updates, trace start/cancel — that
+// are well under 1 KiB in normal use. The coder/websocket library's
+// default is 32 KiB, which is large enough that a regression to the
+// library default (or a future bump in upstream) would silently widen
+// the attack surface for an authenticated client trying to bloat the
+// server's per-conn read buffer. Pinning to 4 KiB makes the bound
+// explicit at every Accept site and keeps headroom for tagged messages
+// without permitting megabyte-scale floods.
+const MaxWebSocketMessageBytes = 4 << 10 // 4 KiB
+
 // the OOM defence and MUST be applied to every POST/PUT/PATCH route
 // — including unauthenticated ones like /api/auth/login, where an
 // attacker has not yet been turned away and so the cap is the only

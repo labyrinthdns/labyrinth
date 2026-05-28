@@ -188,6 +188,7 @@ func (s *AdminServer) handleDiagnosticsTrace(w http.ResponseWriter, r *http.Requ
 		s.logger.Error("diagnostics trace accept failed", "error", err)
 		return
 	}
+	conn.SetReadLimit(MaxWebSocketMessageBytes)
 	defer conn.Close(websocket.StatusNormalClosure, "closing")
 
 	rootCtx := r.Context()

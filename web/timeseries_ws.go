@@ -125,6 +125,7 @@ func (s *AdminServer) handleTimeSeriesWS(w http.ResponseWriter, r *http.Request)
 		s.logger.Error("timeseries ws accept failed", "error", err)
 		return
 	}
+	conn.SetReadLimit(MaxWebSocketMessageBytes)
 	defer conn.Close(websocket.StatusNormalClosure, "closing")
 
 	q := r.URL.Query()
