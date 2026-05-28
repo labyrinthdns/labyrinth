@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-05-28
+
+UI-M5.3 from PLAN.md — audit timeline as a first-class UI surface.
+
+### Added
+- **`/audit` dashboard page** — chronological per-release record of the RFC pin work. Renders the new hand-curated [web/ui/src/data/auditTimeline.ts](web/ui/src/data/auditTimeline.ts) as a newest-first list of release cards; each card carries `added` / `harden` / `fixed` badges with totals at the top of the page. In-page filter searches across RFC reference, summary, and kind so an operator answering "when did RFC 7646 land?" types `7646` and sees the v0.6.42 release card with one line of context. Source attribution: the data is curated by hand from CHANGELOG.md (which remains canonical); the timeline UI is a scannable index, not a replacement. Linked from the main sidebar via the `History` icon.
+
 ## [0.7.8] - 2026-05-28
 
 Opens M6 (Test infrastructure) milestone from PLAN.md.

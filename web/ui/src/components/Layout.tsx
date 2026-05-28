@@ -10,6 +10,7 @@ import {
   Settings,
   BarChart3,
   FileText,
+  History,
   Bug,
   Info,
   Sun,
@@ -38,6 +39,7 @@ const mainNavItems = [
   { to: '/diagnostics', icon: Bug, label: 'Diagnostics' },
   { to: '/dnssec', icon: ShieldCheck, label: 'DNSSEC' },
   { to: '/security', icon: ShieldAlert, label: 'Security' },
+  { to: '/audit', icon: History, label: 'Audit' },
 ]
 const aboutNavItem = { to: '/about', icon: Info, label: 'About & Updates' }
 
