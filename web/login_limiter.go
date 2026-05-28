@@ -18,6 +18,17 @@ const (
 	loginLockoutFor    = 60 * time.Second
 	loginCleanupTick   = 5 * time.Minute
 	loginIdleEvict     = 15 * time.Minute
+	// loginMaxEntries caps how many distinct IPs the limiter will
+	// track at once. Without this cap a botnet hitting /api/auth/login
+	// from a million unique source IPs would grow the entries map
+	// without bound and exhaust resolver RAM long before the cleanup
+	// tick (5 min) could prune anything. 50k is well above any realistic
+	// legitimate population (the admin UI is a single-operator console)
+	// and small enough that the worst-case footprint is bounded to
+	// a few MB. When the cap is hit, allow() denies the request with
+	// the limiter-saturated lockout — the cleanup tick will recover
+	// the map within a few cycles.
+	loginMaxEntries = 50000
 )
 
 // loginLimiter is a per-IP sliding-window failure counter for the admin login
@@ -56,6 +67,14 @@ func (l *loginLimiter) allow(ip string) (bool, time.Duration) {
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// Saturation gate: refuse new IPs once the entries map is full. The
+	// cleanup tick will reclaim idle entries within a few cycles, so
+	// this is a temporary deny that recovers automatically — but it
+	// keeps a botnet flood from growing the map without bound.
+	if _, known := l.entries[ip]; !known && len(l.entries) >= loginMaxEntries {
+		return false, l.lockoutFor
+	}
 
 	e := l.touchLocked(ip, now)
 	if !e.lockedUntil.IsZero() {

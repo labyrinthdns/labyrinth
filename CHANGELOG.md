@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.30] - 2026-05-28
+
+### Hardened
+- **50k cap on the login limiter's entries map (memory-DoS gate)** — `loginLimiter.entries` previously grew without bound: a botnet hitting `/api/auth/login` from a million distinct source IPs would balloon the map until the resolver ran out of RAM, and the 5-minute cleanup tick could not possibly keep up. The `allow()` path now refuses to insert a new IP once `loginMaxEntries` (50,000) is in the map — denying with `lockoutFor` as the Retry-After hint — so the worst-case footprint is bounded. Known IPs already tracked continue to be processed normally so a saturation event does not lock out legitimate operators. The 5-minute eviction tick still runs, so the saturation gate recovers automatically within a few cycles after the flood subsides. Pins in [web/login_limiter_saturation_test.go](web/login_limiter_saturation_test.go) cover (a) new-IP refusal when the map is full, (b) known-IP success while saturated (gate only refuses NEW entries), (c) full recovery after idle eviction fires.
+
 ## [0.7.29] - 2026-05-28
 
 ### Hardened
