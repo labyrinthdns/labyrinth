@@ -221,6 +221,12 @@ func (s *AdminServer) Start(ctx context.Context) error {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		// 16 KiB header cap: ReadHeaderTimeout limits time, this
+		// limits volume. Real admin sessions send a few KB (cookie +
+		// session + auth + UA). Go's 1 MiB default is a generous
+		// amplification primitive when paired with many concurrent
+		// connections under the slowloris deadline.
+		MaxHeaderBytes: 16 << 10,
 	}
 
 	// Apply auto-TLS config to the HTTP server
@@ -247,6 +253,12 @@ func (s *AdminServer) Start(ctx context.Context) error {
 				ReadTimeout:       15 * time.Second,
 				WriteTimeout:      30 * time.Second,
 				IdleTimeout:       60 * time.Second,
+				// 16 KiB header cap on the HTTP-01 challenge listener.
+				// ACME validators send a single short GET — anything
+				// approaching even 4 KiB is anomalous. Paired with the
+				// slowloris timeouts, this bounds the worst-case memory
+				// footprint of a hostile actor camping on :80.
+				MaxHeaderBytes: 16 << 10,
 			}
 			s.logger.Info("auto-tls: HTTP-01 challenge listener starting", "addr", ":80")
 			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

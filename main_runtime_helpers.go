@@ -169,6 +169,13 @@ func startHTTPServices(
 			ReadTimeout:       15 * time.Second,
 			WriteTimeout:      30 * time.Second,
 			IdleTimeout:       60 * time.Second,
+			// Cap header bytes to 16 KiB. Go's default is 1 MiB, which
+			// for a scrape/health endpoint is gratuitous: a Prometheus
+			// scraper sends a few hundred bytes of headers. Without the
+			// cap an attacker can sit just under the slowloris deadline,
+			// flush 900 KiB of headers per connection, and across many
+			// connections inflate resolver memory by orders of magnitude.
+			MaxHeaderBytes: 16 << 10,
 		}
 		if err := metricsSrv.ListenAndServe(); err != nil {
 			logger.Error("metrics server error", "error", err)
