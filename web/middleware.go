@@ -14,10 +14,28 @@ const (
 	ctxKeyUser contextKey = iota
 )
 
+// MaxRequestBodyBytes caps the size of any JSON request body the
+// admin API will read. Every POST/PUT/PATCH handler decodes the body
+// into a struct; without a cap, an attacker (or a buggy automation
+// script) could POST a 1GB JSON blob and exhaust resolver RAM before
+// the decoder failed. 1 MiB is well above any legitimate API request
+// (the largest is a few-hundred-byte NTA install or blocklist domain
+// list) and well below the threshold at which a single body would
+// cause memory pressure. The middleware uses http.MaxBytesReader so
+// Decode() naturally errors with http.MaxBytesError once the cap is
+// exceeded, which jsonResponse turns into a clean 400.
+const MaxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // requireAuth returns a middleware that validates the JWT from the Authorization header
 // or ?token= query parameter. If no auth is configured (username is empty), it passes through.
 func (s *AdminServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Apply the body cap on every authenticated request. WebSocket
+		// upgrade requests have a small handshake body that is well
+		// under the cap; once the connection is upgraded the cap no
+		// longer applies (the protocol moves off http.Request.Body).
+		r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+
 		// If no auth configured, pass through
 		if s.config.Web.Auth.Username == "" {
 			next(w, r)
