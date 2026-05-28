@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.28] - 2026-05-28
+
+### Added
+- **Prometheus exposition `# HELP` + `# TYPE` for every metric family** — the `/metrics` exporter previously emitted bare `metric_name value` lines with no metadata. Without `# TYPE` PromQL's `rate()`, `increase()`, and `histogram_quantile()` functions silently fall back to "untyped" semantics, producing wrong results on counter overflow boundaries; without `# HELP` Grafana auto-doc shows blank descriptions and `promtool check metrics` flags every series as under-specified. The exporter now precedes each family with both lines describing its purpose and Prometheus type (counter/gauge/histogram). Pin in [metrics/http_help_type_test.go](metrics/http_help_type_test.go) walks the full list of 24 declared families and asserts both metadata lines precede their samples — a regression that adds a new series without metadata fails fast.
+
 ## [0.7.27] - 2026-05-28
 
 ### Hardened
