@@ -167,10 +167,24 @@ func validateJWT(tokenStr string, secret []byte, revokedTokens *sync.Map) (strin
 // MinPasswordLength is the minimum required password length.
 const MinPasswordLength = 8
 
+// MaxPasswordLength caps the password at bcrypt's hard input limit.
+// bcrypt silently truncates input to 72 bytes — without an explicit
+// cap, two passwords sharing the same first 72 bytes hash identically.
+// An operator who chose a 128-char passphrase would not learn that
+// only the first 72 bytes are protective (the "long passphrase as
+// extra security" mental model is a real attack surface here). The
+// cap is enforced by ValidatePassword so the setup wizard and the
+// change-password endpoint both refuse over-cap inputs with a clear
+// message rather than silently accepting them.
+const MaxPasswordLength = 72
+
 // ValidatePassword checks if a password meets minimum requirements.
 func ValidatePassword(password string) error {
 	if len(password) < MinPasswordLength {
 		return fmt.Errorf("password too short: minimum %d characters required (got %d)", MinPasswordLength, len(password))
+	}
+	if len(password) > MaxPasswordLength {
+		return fmt.Errorf("password too long: bcrypt truncates after %d bytes (got %d); use a shorter passphrase or a password manager", MaxPasswordLength, len(password))
 	}
 	return nil
 }

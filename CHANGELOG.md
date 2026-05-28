@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.35] - 2026-05-28
+
+### Hardened
+- **bcrypt 72-byte truncation gate on password validation** — bcrypt has a hardcoded 72-byte input limit; bytes 73+ never participate in the hash. An operator who chose a 128-char "extra-secure" passphrase would learn only the hard way that the bytes past 72 were never protective, and that two passphrases sharing the same first 72 bytes are functionally interchangeable. `ValidatePassword` (and therefore `HashPassword` plus the setup wizard and `/api/auth/change-password`) now refuses inputs longer than 72 bytes with an explanatory error message that names the bcrypt limit and suggests using a password manager instead of a long passphrase. The mental-model gap was the security issue, not the truncation itself. Pins in [web/auth_password_cap_test.go](web/auth_password_cap_test.go) cover (a) 73-byte input rejected with a bcrypt-mentioning error, (b) 72-byte input at the cap accepted, (c) HashPassword refuses oversized input too (no silent truncation if a caller bypassed ValidatePassword), (d) pre-existing 8-byte minimum still enforced as a negative control.
+
 ## [0.7.34] - 2026-05-28
 
 ### Hardened
