@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.41] - 2026-05-28
+
+### Hardened
+- **Slowloris timeouts on the standalone metrics HTTP server (legacy mode)** — the standalone `cfg.Server.MetricsAddr` listener (used when the admin UI is disabled and only Prometheus scrapes the resolver) was constructed via `http.ListenAndServe(addr, mux)` — the well-known Go footgun that leaves every timeout at zero. An attacker reaching the metrics port (which is often explicitly exposed for Prometheus scrapers, and Prometheus scrapers cannot authenticate) could hold thousands of half-open connections sending one byte every few seconds and exhaust the resolver's file descriptors. Now matches the admin server's timeout regime: `ReadHeaderTimeout: 10s`, `ReadTimeout: 15s`, `WriteTimeout: 30s`, `IdleTimeout: 60s`.
+
 ## [0.7.40] - 2026-05-28
 
 ### Hardened
