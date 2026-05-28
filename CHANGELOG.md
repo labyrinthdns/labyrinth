@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.14] - 2026-05-28
+
+UI-M5.1 from PLAN.md — RFC compliance matrix as a first-class page.
+
+### Added
+- **`/compliance` route — dedicated compliance-matrix page** — the matrix that previously lived as a section on AboutPage is now its own destination, designed for an auditor's workflow: full-text filter, category-pivot chips, sort by RFC number / since-version (newest first) / category, and CSV+JSON export buttons. The data still comes from the single source of truth at [web/ui/src/data/rfcCompliance.ts](web/ui/src/data/rfcCompliance.ts) — the page is a view, not a duplicate. AboutPage's embedded matrix is unchanged so the linked-from-About entry point still works.
+- **Compliance export builders** — new [web/ui/src/data/complianceExport.ts](web/ui/src/data/complianceExport.ts) carries `buildComplianceCSV` (RFC 4180 §2.6 quoting + §2.1 CRLF line endings, columns `rfc,section,title,category,category_label,since,summary`) and `buildComplianceJSON` (stamped with `generated_at`, includes the `category_labels` dictionary so a consumer doesn't have to know the internal taxonomy). 10 vitest pins in [web/ui/src/data/complianceExport.test.ts](web/ui/src/data/complianceExport.test.ts) lock the header row, quote-escaping, the missing-section/missing-since empty-cell convention, CRLF termination, and JSON validity.
+- **Sidebar navigation** — `Compliance` link with the `BookOpen` icon sits alongside `Audit` in the left nav.
+
 ## [0.7.13] - 2026-05-28
 
 M4.6 (Compliance counter scaffolding, partial) + UI-M6.3 (EDE breakdown) — operator-facing per-info-code visibility into Extended DNS Error emissions.

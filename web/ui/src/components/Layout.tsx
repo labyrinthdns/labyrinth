@@ -7,6 +7,7 @@ import {
   Shield,
   ShieldCheck,
   ShieldAlert,
+  BookOpen,
   Settings,
   BarChart3,
   FileText,
@@ -40,6 +41,7 @@ const mainNavItems = [
   { to: '/dnssec', icon: ShieldCheck, label: 'DNSSEC' },
   { to: '/security', icon: ShieldAlert, label: 'Security' },
   { to: '/audit', icon: History, label: 'Audit' },
+  { to: '/compliance', icon: BookOpen, label: 'Compliance' },
 ]
 const aboutNavItem = { to: '/about', icon: Info, label: 'About & Updates' }
 
