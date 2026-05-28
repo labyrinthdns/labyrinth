@@ -21,6 +21,27 @@ export type ComplianceCategory =
   | 'caching'
   | 'blocking'
 
+// ComplianceMetric — UI-M5.2 — links an RFC entry to live observability
+// counters so the compliance claim becomes evidence-bearing.
+//
+// `source` picks the API endpoint:
+//   - 'stats'    → /api/stats (StatsResponse)
+//   - 'security' → /api/security (SecurityStatusResponse)
+//
+// `path` is a dotted accessor evaluated against the response object;
+// `path: "failure_cache_hits"` reads `stats.failure_cache_hits`;
+// `path: "cookies.badcookie_responses"` reads through one nested level;
+// `path: "ede_counts.6"` reads `security.ede_counts["6"]` (the EDE map
+// uses string keys so numeric segments stay valid).
+//
+// Keeping the link as data — not React refs — means a new RFC entry
+// can wire itself to existing counters without touching any page code.
+export interface ComplianceMetric {
+  label: string
+  source: 'stats' | 'security'
+  path: string
+}
+
 export interface ComplianceEntry {
   rfc: string
   section?: string
@@ -28,6 +49,7 @@ export interface ComplianceEntry {
   summary: string
   category: ComplianceCategory
   since?: string
+  metrics?: ComplianceMetric[]
 }
 
 export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
@@ -63,16 +85,36 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
   { rfc: 'RFC 8901', title: 'Multi-Signer DNSSEC', summary: 'Two-operator model: both KSKs in apex DNSKEY, parent publishes one DS per signer, answer signed by either operator validates.', category: 'dnssec', since: 'v0.7.4' },
 
   // Aggressive use of DNSSEC denials
-  { rfc: 'RFC 8198', section: '§5.2', title: 'Aggressive NXDOMAIN Synthesis', summary: 'NSEC/NSEC3 ranges synthesise NXDOMAIN for subsequent queries without re-asking the auth.', category: 'nsec-aggressive', since: 'v0.6.20' },
-  { rfc: 'RFC 8198', section: '§5.4', title: 'Aggressive NODATA Synthesis', summary: 'Type-bitmap-aware NODATA synthesis for queries hitting cached NSEC/NSEC3.', category: 'nsec-aggressive', since: 'v0.6.22' },
+  { rfc: 'RFC 8198', section: '§5.2', title: 'Aggressive NXDOMAIN Synthesis', summary: 'NSEC/NSEC3 ranges synthesise NXDOMAIN for subsequent queries without re-asking the auth.', category: 'nsec-aggressive', since: 'v0.6.20',
+    metrics: [
+      { label: 'NSEC NX synth', source: 'stats', path: 'nsec_aggressive_synth_nx' },
+      { label: 'NSEC3 NX synth', source: 'stats', path: 'nsec3_aggressive_synth_nx' },
+    ],
+  },
+  { rfc: 'RFC 8198', section: '§5.4', title: 'Aggressive NODATA Synthesis', summary: 'Type-bitmap-aware NODATA synthesis for queries hitting cached NSEC/NSEC3.', category: 'nsec-aggressive', since: 'v0.6.22',
+    metrics: [
+      { label: 'NSEC NODATA synth', source: 'stats', path: 'nsec_aggressive_synth_nodata' },
+      { label: 'NSEC3 NODATA synth', source: 'stats', path: 'nsec3_aggressive_synth_nodata' },
+    ],
+  },
 
   // EDNS / Cookies / Padding
   { rfc: 'RFC 6891', title: 'EDNS(0)', summary: 'OPT pseudo-record, extended RCODE (12-bit), DO flag handling.', category: 'edns' },
   { rfc: 'RFC 7828', title: 'edns-tcp-keepalive', summary: 'TCP-only — server-side keepalive timeout advertised in OPT.', category: 'edns', since: 'v0.6.20' },
   { rfc: 'RFC 7830 + RFC 8467', title: 'EDNS(0) Padding', summary: 'DoT/DoH responses padded to 468-byte block boundary (§4.1 recommendation).', category: 'edns', since: 'v0.6.20' },
   { rfc: 'RFC 7871', title: 'Client Subnet (ECS)', summary: 'Outbound ECS forwarding configurable per-zone; client privacy preserved by default.', category: 'edns' },
-  { rfc: 'RFC 7873', section: '§5.3 / §5.4', title: 'DNS Cookies (server-side cache + BADCOOKIE retry)', summary: 'Server-cookie cache avoids per-query BADCOOKIE round trip; outbound retry handles cold cache.', category: 'edns', since: 'v0.6.21' },
-  { rfc: 'RFC 7873', section: '§5.4', title: 'Strict Cookie Mode — Cookie-less UDP Refused', summary: 'Operator opt-in: UDP queries without a client cookie get BADCOOKIE + server cookie; TCP/DoT/DoH skip the gate.', category: 'edns', since: 'v0.7.3' },
+  { rfc: 'RFC 7873', section: '§5.3 / §5.4', title: 'DNS Cookies (server-side cache + BADCOOKIE retry)', summary: 'Server-cookie cache avoids per-query BADCOOKIE round trip; outbound retry handles cold cache.', category: 'edns', since: 'v0.6.21',
+    metrics: [
+      { label: 'cookie cache hits', source: 'stats', path: 'server_cookie_cache_hits' },
+      { label: 'cookie cache misses', source: 'stats', path: 'server_cookie_cache_misses' },
+      { label: 'outbound BADCOOKIE retries', source: 'stats', path: 'outbound_badcookie_retries' },
+    ],
+  },
+  { rfc: 'RFC 7873', section: '§5.4', title: 'Strict Cookie Mode — Cookie-less UDP Refused', summary: 'Operator opt-in: UDP queries without a client cookie get BADCOOKIE + server cookie; TCP/DoT/DoH skip the gate.', category: 'edns', since: 'v0.7.3',
+    metrics: [
+      { label: 'BADCOOKIE responses', source: 'security', path: 'cookies.badcookie_responses' },
+    ],
+  },
   { rfc: 'RFC 8467', section: '§6', title: 'Padding Never on Plaintext Transports', summary: 'PADDING option honoured only on encrypted transports (DoT/DoH); plaintext TCP responses pass through unpadded.', category: 'edns', since: 'v0.7.1' },
 
   // Transport security
@@ -88,11 +130,26 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
   { rfc: 'RFC 8375', title: '.home.arpa', summary: 'Locally-served zone for residential routers per §6.', category: 'special-use' },
 
   // Error signalling
-  { rfc: 'RFC 8914', title: 'Extended DNS Errors (EDE)', summary: 'EDE codes 0-27 (IANA-complete through Jan 2026). RFC 9606 (25), RFC 9539 (26), RFC 9276 (27) backfill landed in v0.7.1.', category: 'error-signalling', since: 'v0.6.23' },
+  { rfc: 'RFC 8914', title: 'Extended DNS Errors (EDE)', summary: 'EDE codes 0-29 (IANA-complete through May 2026). RFC 9606 (25), RFC 9539 (26), RFC 9276 (27) plus §4.28 (28) and §4.29 (29) covered.', category: 'error-signalling', since: 'v0.6.23',
+    metrics: [
+      { label: 'EDE 6 (Bogus)', source: 'security', path: 'ede_counts.6' },
+      { label: 'EDE 17 (Filtered)', source: 'security', path: 'ede_counts.17' },
+      { label: 'EDE 18 (Prohibited)', source: 'security', path: 'ede_counts.18' },
+    ],
+  },
 
   // Caching
-  { rfc: 'RFC 8767', section: '§3.1', title: 'Serve-Stale + Stale-While-Refresh', summary: 'Stale answer served when origin fails; async refresh kicked in parallel.', category: 'caching', since: 'v0.6.22' },
-  { rfc: 'RFC 9520', title: 'Negative Caching of DNS Resolution Failures', summary: 'Bounded LRU failure cache absorbs retry storms against broken upstreams.', category: 'caching', since: 'v0.6.22' },
+  { rfc: 'RFC 8767', section: '§3.1', title: 'Serve-Stale + Stale-While-Refresh', summary: 'Stale answer served when origin fails; async refresh kicked in parallel.', category: 'caching', since: 'v0.6.22',
+    metrics: [
+      { label: 'stale-while-refresh triggers', source: 'stats', path: 'stale_while_refresh' },
+    ],
+  },
+  { rfc: 'RFC 9520', title: 'Negative Caching of DNS Resolution Failures', summary: 'Bounded LRU failure cache absorbs retry storms against broken upstreams.', category: 'caching', since: 'v0.6.22',
+    metrics: [
+      { label: 'failure cache hits', source: 'stats', path: 'failure_cache_hits' },
+      { label: 'failure cache misses', source: 'stats', path: 'failure_cache_misses' },
+    ],
+  },
 
   // Blocking
   { rfc: 'RFC 8659', title: 'DNS Certification Authority Authorization (CAA)', summary: 'CAA records resolved and returned verbatim — not enforced (operator concern).', category: 'core' },
