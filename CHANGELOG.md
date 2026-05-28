@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-05-28
+
+Opens M6 (Test infrastructure) milestone from PLAN.md.
+
+### Added
+- **Fuzz harness for wire-format parsers** — new [dns/fuzz_parsers_test.go](dns/fuzz_parsers_test.go) hosts four `go test -fuzz=...` entry points covering the parsers most directly exposed to attacker-controlled bytes: `FuzzParseCookieOption` (RFC 7873 cookie option), `FuzzUnpackMessage` (top-level DNS wire), `FuzzParseDNSKEY` (DNSKEY RDATA), `FuzzParseDS` (DS RDATA). Each target carries a hand-curated seed corpus (canonical well-formed shapes + intentionally malformed shapes) so the fuzzer's mutation walk starts from both "near-valid" and "garbage" — covering both bug classes (length-field arithmetic errors near the validity edge and crash-on-junk errors). The invariants under test are panic-safety, no-out-of-bounds, and structural length contracts; semantic correctness stays in the dedicated parser tests. Operators can extend coverage by running `go test -fuzz=FuzzParseCookieOption -fuzztime=10m ./dns/` etc. — CI can wire this into a recurring job.
+
 ## [0.7.7] - 2026-05-28
 
 ### Hardened
