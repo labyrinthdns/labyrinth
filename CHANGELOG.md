@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-05-29
+
+### Hardened
+- **`clampConfigBounds` now caps `server.max_udp_workers` and `server.max_tcp_connections` at 100 k each** — the v0.7.70 clamp closed off the obvious memory-bloat YAML knobs but missed the two `make(chan struct{}, N)` slots in the UDP and TCP server constructors. `NewUDPServer(addr, handler, maxWorkers, ...)` calls `make(chan struct{}, maxWorkers)`, and `NewTCPServer(addr, handler, timeout, maxConns, ...)` does the same with `maxConns`. Each channel slot is 8 bytes, so a typo'd YAML `server.max_udp_workers: 1000000000` (intended 1k) allocates ~8 GB of channel storage at startup and instant-OOMs the process — well before any DNS query is served. The wizard already rejects oversized values during interactive setup; the new clamps close the gap for operators who edit `labyrinth.yaml` directly and for `/api/config/raw` PUTs that plant pathological values. 100 k is well above any legitimate workload (a single resolver handling 100 k concurrent in-flight queries already exceeds the open-file limits on most kernels) and well under the OOM threshold. Pins in [config/clamp_config_test.go](config/clamp_config_test.go) extend the existing matrix: (a) `Server.MaxUDPWorkers = 1M` and `Server.MaxTCPConns = 1M` get clamped to the ceiling; (b) realistic values (1024 UDP, 256 TCP) pass through unchanged. Constants `clampMaxUDPWorkers` and `clampMaxTCPConns` keep the bound explicit so a refactor cannot silently widen them.
+
 ## [0.8.0] - 2026-05-29
 
 ### Milestone — defence-in-depth tier
