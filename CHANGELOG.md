@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-05-28
+
+UI-M5.4 from PLAN.md — compliance export.
+
+### Added
+- **Audit timeline export (CSV + JSON)** — operators and downstream auditors can now download the full audit timeline directly from `/audit`. Two new buttons sit next to the in-page filter:
+  - `Export CSV` produces an RFC 4180 §2.6-compliant CSV with the columns `version,date,theme,rfc,kind,summary` — quote-escaping for embedded commas/quotes/newlines and CRLF line endings (RFC 4180 §2.1) so Excel-style importers don't fold rows together. Filename is timestamped `labyrinth-audit-YYYY-MM-DD.csv`.
+  - `Export JSON` produces a pretty-printed JSON object `{generated_at, releases[]}` where `releases` preserves the internal `AuditRelease` shape — downstream compliance tooling gets a stable contract without reverse-engineering the React data model.
+  - The export logic lives in [web/ui/src/data/auditExport.ts](web/ui/src/data/auditExport.ts) (separated from the page component so it can be tested headlessly). New pin in [web/ui/src/data/auditExport.test.ts](web/ui/src/data/auditExport.test.ts) carries 12 vitest cases covering RFC 4180 escape rules, header/data-row count, CRLF termination, JSON validity, and timestamp injection.
+
 ## [0.7.11] - 2026-05-28
 
 Opens M5.5 (DNSSEC validation safety net) from PLAN.md.

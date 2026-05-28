@@ -1,6 +1,19 @@
 import { useMemo, useState } from 'react'
-import { History, ShieldCheck, ShieldAlert, Wrench, Plus } from 'lucide-react'
+import { History, ShieldCheck, ShieldAlert, Wrench, Plus, Download, FileJson, FileText } from 'lucide-react'
 import { AUDIT_TIMELINE, type AuditEntry } from '@/data/auditTimeline'
+import { buildAuditCSV, buildAuditJSON } from '@/data/auditExport'
+
+function triggerDownload(content: string, filename: string, mime: string): void {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
 
 // Audit timeline — chronological view of the RFC pin work that
 // landed in each release. Renders newest-first from the hand-curated
@@ -89,14 +102,42 @@ export default function AuditPage() {
         </div>
       </div>
 
-      <div className="mb-4">
+      <div className="mb-4 flex flex-col sm:flex-row gap-2">
         <input
           type="text"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter by RFC, summary, or kind (added / harden / fixed)…"
-          className="w-full px-3 py-2 text-sm border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500"
+          className="flex-1 px-3 py-2 text-sm border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500"
         />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const today = new Date().toISOString().slice(0, 10)
+              triggerDownload(buildAuditCSV(), `labyrinth-audit-${today}.csv`, 'text/csv;charset=utf-8')
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+            title="Download all audit entries as RFC 4180 CSV — feed to a spreadsheet or compliance tracker"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            <span>Export CSV</span>
+            <Download className="h-3 w-3 opacity-60" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const today = new Date().toISOString().slice(0, 10)
+              triggerDownload(buildAuditJSON(), `labyrinth-audit-${today}.json`, 'application/json')
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+            title="Download structured JSON — same shape as the internal data model"
+          >
+            <FileJson className="h-3.5 w-3.5" />
+            <span>Export JSON</span>
+            <Download className="h-3 w-3 opacity-60" />
+          </button>
+        </div>
       </div>
 
       <div className="space-y-4">
