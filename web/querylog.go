@@ -45,6 +45,22 @@ type QueryLog struct {
 // NewQueryLog and OOM the resolver at startup.
 const MaxQueryLogCapacity = 1_000_000
 
+// MaxQueryLogSubscribers caps the number of concurrent WS subscribers
+// the query-log fanout will hold. Each subscriber owns a
+// `make(chan QueryEntry, 128)` channel — with a QueryEntry of ~80
+// bytes plus pointer overhead, that's ~10 KiB per subscriber. The
+// `/api/queries/stream` endpoint is behind requireAuth, so only an
+// authenticated client can hit Subscribe; even so, a misbehaving
+// dashboard that opens-and-leaks WebSocket connections in a tight
+// reload loop, or an authenticated attacker, could grow `ql.subs`
+// past memory limits. 256 is well above any plausible legitimate
+// load (one operator + a handful of monitoring scripts) and bounds
+// the fanout footprint to ~2.5 MiB. When the cap is hit, Subscribe
+// returns id=0 and a CLOSED channel so the caller's read loop exits
+// immediately — the client gets a clean disconnect instead of a
+// silently-dropped subscription.
+const MaxQueryLogSubscribers = 256
+
 // NewQueryLog creates a new QueryLog with the given ring buffer
 // capacity. Values <= 0 fall back to the 1000-entry default; values
 // above MaxQueryLogCapacity are clamped to MaxQueryLogCapacity rather
@@ -108,17 +124,30 @@ func (ql *QueryLog) Recent(n int) []QueryEntry {
 }
 
 // Subscribe returns a unique subscription ID and a channel that receives new entries.
+// When the subscriber cap is hit, returns id=0 and a closed channel so the caller's
+// read loop exits immediately — the client gets a clean disconnect instead of a
+// silently-dropped subscription.
 func (ql *QueryLog) Subscribe() (uint64, <-chan QueryEntry) {
+	ql.subMu.Lock()
+	if len(ql.subs) >= MaxQueryLogSubscribers {
+		ql.subMu.Unlock()
+		closed := make(chan QueryEntry)
+		close(closed)
+		return 0, closed
+	}
 	id := ql.nextSub.Add(1)
 	ch := make(chan QueryEntry, 128)
-	ql.subMu.Lock()
 	ql.subs[id] = ch
 	ql.subMu.Unlock()
 	return id, ch
 }
 
-// Unsubscribe removes a subscriber and closes its channel.
+// Unsubscribe removes a subscriber and closes its channel. id=0 is the
+// sentinel returned by Subscribe when the cap was hit; no-op in that case.
 func (ql *QueryLog) Unsubscribe(id uint64) {
+	if id == 0 {
+		return
+	}
 	ql.subMu.Lock()
 	if ch, ok := ql.subs[id]; ok {
 		delete(ql.subs, id)

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.12] - 2026-05-29
+
+### Hardened
+- **256-subscriber cap on the `QueryLog` fan-out map** — the `/api/queries/stream` WebSocket handler calls `s.queryLog.Subscribe()` which lazily creates a `make(chan QueryEntry, 128)` channel (~10 KiB per slot with QueryEntry strings) and registered it in `ql.subs` with no upper bound. The endpoint is behind `requireAuth`, so this isn't an unauthenticated surface, but a buggy operator dashboard that loops open-and-leak WebSocket connections, or an authenticated attacker with the admin password, could pile up subscribers and pin memory: 1 M subscribers × 10 KiB = 10 GiB. `MaxQueryLogSubscribers = 256` caps the fanout map. When the cap is hit, `Subscribe` returns `id=0` and an already-closed channel — the caller's read loop immediately observes `(zero, ok=false)` and exits, giving the client a clean disconnect instead of a silently-dropped subscription. `Unsubscribe(0)` is a no-op so the sentinel doesn't break the deferred-unsubscribe pattern used by every existing caller. 256 is well above any legitimate dashboard load (one operator + a handful of monitoring scripts) and bounds the fan-out footprint to ~2.5 MiB. Pins in [web/querylog_subscriber_cap_test.go](web/querylog_subscriber_cap_test.go): (a) fills to the cap, asserts the next Subscribe returns id=0 + closed channel, and the underlying map never grew past the cap; (b) tripwire on the constant in [8, 1 M] so a regression cannot drop it below dashboard threshold or reopen the unbounded-fanout gap.
+
 ## [0.8.11] - 2026-05-29
 
 ### Fixed
