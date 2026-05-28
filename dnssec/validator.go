@@ -100,6 +100,41 @@ type dnskeyCache struct {
 	ttl       time.Duration
 }
 
+// MaxDNSKEYCacheEntries caps the validator's keyCache to bound the
+// memory footprint of an attacker who controls many DNSSEC-signed
+// zones. Each cache entry stores the full DNSKEY RRset for one zone
+// — RSA-2048 keys are 256 bytes of wire format, plus RDATA framing
+// and slice headers ~1 KB per entry in practice — so an attacker
+// driving the resolver to fetch DNSKEYs for distinct zones can pin
+// gigabytes of cache with normal query rates. 50k zones is well
+// above any realistic resolver workload (the top of the DNSSEC-
+// signed namespace plus active deep zones rarely exceeds 10k) and
+// small enough that the worst-case footprint stays bounded. LRU
+// eviction on insert past the cap drops the entry with the oldest
+// fetchedAt — a zone we haven't refreshed in the longest is the
+// right one to lose; if we hit it again it just costs one upstream
+// DNSKEY query to re-populate.
+const MaxDNSKEYCacheEntries = 50_000
+
+// evictOldestDNSKEYLocked drops the keyCache entry with the oldest
+// fetchedAt timestamp. Caller holds v.mu in write mode. O(n) over
+// the map; only runs on insert after the cap is reached.
+func (v *Validator) evictOldestDNSKEYLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+	for k, e := range v.keyCache {
+		if first || e.fetchedAt.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = e.fetchedAt
+			first = false
+		}
+	}
+	if oldestKey != "" {
+		delete(v.keyCache, oldestKey)
+	}
+}
+
 // inflightFetch coordinates concurrent fetchers for the same key, so that
 // N parallel validations of records signed by the same zone share a single
 // outbound DNSKEY/DS query instead of stampeding the upstream. The first
@@ -1163,8 +1198,13 @@ func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
 		ttl = negativeDNSKEYCacheTTL
 	}
 
-	// Cache the result.
+	// Cache the result. Enforce the cap with LRU eviction on insert
+	// past MaxDNSKEYCacheEntries; existing-zone refreshes are exempt
+	// because they replace in place and don't grow the map.
 	v.mu.Lock()
+	if _, exists := v.keyCache[normalized]; !exists && len(v.keyCache) >= MaxDNSKEYCacheEntries {
+		v.evictOldestDNSKEYLocked()
+	}
 	v.keyCache[normalized] = &dnskeyCache{
 		keys:      keys,
 		fetchedAt: time.Now(),
