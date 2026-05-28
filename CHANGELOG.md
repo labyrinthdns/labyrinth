@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.24] - 2026-05-28
+
+### Added
+- **`/api/system/readyz` — body-less status-code-only readiness probe** — the conventional k8s.io/component-base/healthz signal. Returns 200 OK or 503 Service Unavailable with NO body so a Kubernetes-style probe scraping it costs zero JSON-encoder allocations and the response fits in a single TCP segment. Pairs with the existing `/api/system/health` (JSON body for operator-facing surfaces) — the new endpoint is for the hot probe path at 1Hz × pod-count. Pins in [web/api_readyz_test.go](web/api_readyz_test.go) lock the body-less contract, the 503 readiness response, and the no-store header.
+
 ## [0.7.23] - 2026-05-28
 
 ### Hardened

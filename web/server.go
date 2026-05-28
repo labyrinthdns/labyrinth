@@ -428,6 +428,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 
 	// Public routes (no auth required)
 	mux.HandleFunc("/api/system/health", s.handleHealth)
+	mux.HandleFunc("/api/system/readyz", s.handleReadyz)
 	mux.HandleFunc("/api/system/version", s.handleVersion)
 	mux.HandleFunc("/api/dns-guide", s.handleDNSGuide)
 	mux.HandleFunc("/api/system/profile", s.requireAuth(s.handleSystemProfile))
