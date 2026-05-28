@@ -34,10 +34,28 @@ type QueryLog struct {
 	nextSub atomic.Uint64
 }
 
-// NewQueryLog creates a new QueryLog with the given ring buffer capacity.
+// MaxQueryLogCapacity caps the QueryLog ring buffer size. Each
+// QueryEntry is ~80 bytes (a few strings, int64s, a float64, a bool),
+// so a 1M-entry ring holds ~80 MiB of buffered query history — enough
+// for a dashboard to display many minutes of activity even on a
+// busy resolver, and small enough that the worst-case footprint
+// stays bounded. Without this cap, a typo in YAML (`query_log_buffer:
+// 1000000000` instead of `1000000`) or a malicious config-raw PUT
+// that planted a 1 GB+ value would allocate that slice upfront in
+// NewQueryLog and OOM the resolver at startup.
+const MaxQueryLogCapacity = 1_000_000
+
+// NewQueryLog creates a new QueryLog with the given ring buffer
+// capacity. Values <= 0 fall back to the 1000-entry default; values
+// above MaxQueryLogCapacity are clamped to MaxQueryLogCapacity rather
+// than rejected so an over-eager config doesn't fail-stop the
+// resolver — it just trims the buffer to the cap.
 func NewQueryLog(capacity int) *QueryLog {
 	if capacity <= 0 {
 		capacity = 1000
+	}
+	if capacity > MaxQueryLogCapacity {
+		capacity = MaxQueryLogCapacity
 	}
 	return &QueryLog{
 		entries:  make([]QueryEntry, capacity),
