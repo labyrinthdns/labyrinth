@@ -211,6 +211,21 @@ export const api = {
 
   dnssec: () => request<DNSSECStatusResponse>('/api/dnssec'),
 
+  addNTA: (zone: string, durationHours: number, reason: string) =>
+    request<{ status: string; zone: string; expires_at: string }>(
+      '/api/dnssec/nta',
+      {
+        method: 'POST',
+        body: JSON.stringify({ zone, duration_hours: durationHours, reason }),
+      },
+    ),
+
+  removeNTA: (zone: string) =>
+    request<{ status: string; zone: string }>(
+      `/api/dnssec/nta?zone=${encodeURIComponent(zone)}`,
+      { method: 'DELETE' },
+    ),
+
   checkUpdate: (force = false) => {
     if (force) {
       clearCached('system.update.check')
