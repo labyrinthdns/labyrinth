@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.33] - 2026-05-28
+
+### Hardened
+- **RFC 1035 §2.3.4 length cap on `/api/cache/lookup` and `/api/cache/entry` name parameters** — a fully-qualified domain name is capped at 255 octets on the wire; the admin cache endpoints previously accepted arbitrary-length query strings, letting a malformed or hostile admin URL feed multi-megabyte name parameters into `Cache.LookupAll`/`Cache.Lookup` and force allocation pressure proportional to the input size. The endpoints now reject any `name` longer than 255 octets with a clean 400 BEFORE normalisation runs. Pins in [web/api_cache_name_cap_test.go](web/api_cache_name_cap_test.go) cover (a) a 4 KiB name is rejected on the lookup route, (b) a name at exactly the 255-octet cap is NOT rejected (negative control — the gate must allow valid edges), (c) the same gate fires on the DELETE entry route.
+
 ## [0.7.32] - 2026-05-28
 
 ### Hardened

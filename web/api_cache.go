@@ -116,6 +116,16 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "missing name parameter"})
 		return
 	}
+	// RFC 1035 §2.3.4 caps a fully-qualified domain name at 255 octets
+	// on the wire. Presentation form is therefore comfortably under
+	// 256 chars. Anything longer is invalid by spec — refusing it
+	// pre-empts wasted allocation, cache pollution, and the operator
+	// concern of one bad admin query holding gigabytes of name string
+	// in memory.
+	if len(name) > 255 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "name exceeds RFC 1035 §2.3.4 length cap"})
+		return
+	}
 	// Normalize: try without trailing dot first (resolver convention), then with dot.
 	name = strings.ToLower(name)
 	nameNoDot := strings.TrimSuffix(name, ".")
@@ -315,6 +325,12 @@ func (s *AdminServer) handleCacheDelete(w http.ResponseWriter, r *http.Request) 
 
 	if name == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "missing name parameter"})
+		return
+	}
+	// RFC 1035 §2.3.4 caps domain name length at 255 octets — refuse
+	// anything longer than that as malformed input before normalising.
+	if len(name) > 255 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "name exceeds RFC 1035 §2.3.4 length cap"})
 		return
 	}
 	name = strings.ToLower(name)
