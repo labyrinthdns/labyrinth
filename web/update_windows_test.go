@@ -11,10 +11,12 @@ import (
 func withRestartHooksReset(t *testing.T) {
 	t.Helper()
 	prevExec := restartExecutable
+	prevEval := restartEvalSymlinks
 	prevCmd := restartCommand
 	prevExit := restartExit
 	t.Cleanup(func() {
 		restartExecutable = prevExec
+		restartEvalSymlinks = prevEval
 		restartCommand = prevCmd
 		restartExit = prevExit
 	})
@@ -30,9 +32,19 @@ func TestRestartSelf_ExecutableError(t *testing.T) {
 	}
 }
 
+func TestRestartSelf_EvalSymlinksError(t *testing.T) {
+	withRestartHooksReset(t)
+	restartExecutable = func() (string, error) { return "/some/path", nil }
+	restartEvalSymlinks = func(string) (string, error) { return "", errors.New("symlink error") }
+	if err := restartSelf(); err == nil {
+		t.Fatalf("expected eval symlinks error")
+	}
+}
+
 func TestRestartSelf_StartError(t *testing.T) {
 	withRestartHooksReset(t)
 	restartExecutable = func() (string, error) { return "ignored.exe", nil }
+	restartEvalSymlinks = func(p string) (string, error) { return p, nil }
 	restartCommand = func(string, ...string) *exec.Cmd {
 		return exec.Command("this-command-should-not-exist-xyz")
 	}
@@ -48,6 +60,7 @@ func TestRestartSelf_StartError(t *testing.T) {
 func TestRestartSelf_Success(t *testing.T) {
 	withRestartHooksReset(t)
 	restartExecutable = func() (string, error) { return "ignored.exe", nil }
+	restartEvalSymlinks = func(p string) (string, error) { return p, nil }
 	restartCommand = func(string, ...string) *exec.Cmd {
 		return exec.Command("cmd", "/c", "exit", "0")
 	}
