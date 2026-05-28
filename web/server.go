@@ -208,11 +208,19 @@ func (s *AdminServer) Start(ctx context.Context) error {
 	}
 
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      baseHandler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:    addr,
+		Handler: baseHandler,
+		// ReadHeaderTimeout is the dedicated slowloris guard: it caps
+		// the time to receive the request HEAD specifically, which is
+		// the half-open / one-byte-at-a-time attack window. Without
+		// this an attacker can send headers slowly forever and only
+		// trip ReadTimeout once they finally end the request — which
+		// is exactly what slowloris exploits. 10s is well above any
+		// realistic browser timing.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Apply auto-TLS config to the HTTP server
@@ -225,9 +233,20 @@ func (s *AdminServer) Start(ctx context.Context) error {
 	// Start HTTP-01 challenge handler + HTTPS redirect on port 80
 	if autoTLS {
 		go func() {
+			// Slowloris defence: the HTTP-01 challenge listener is on a
+			// well-known port reachable from the internet during certificate
+			// renewal. Without ReadHeaderTimeout an attacker could open
+			// thousands of half-open connections sending one header byte at
+			// a time and hold them open forever — exhausting the resolver's
+			// file descriptor table. Match the same timeout regime as the
+			// main admin server so the surface is uniform.
 			httpSrv := &http.Server{
-				Addr:    ":80",
-				Handler: s.certMgr.HTTPHandler(nil),
+				Addr:              ":80",
+				Handler:           s.certMgr.HTTPHandler(nil),
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       15 * time.Second,
+				WriteTimeout:      30 * time.Second,
+				IdleTimeout:       60 * time.Second,
 			}
 			s.logger.Info("auto-tls: HTTP-01 challenge listener starting", "addr", ":80")
 			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
