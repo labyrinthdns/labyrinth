@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.43] - 2026-05-28
+
+### Hardened
+- **Method gate + `Cache-Control: no-store` on the `/metrics` endpoint** — the Prometheus exposition handler had no method check, so a POST/PUT/PATCH/DELETE flood at `/metrics` (which is often deliberately exposed to the public internet for scraping and cannot be authenticated) would still run the full snapshot path including iterating every counter map under the metrics lock. Now refuses anything except GET/HEAD with HTTP 405 + `Allow: GET, HEAD` before touching the lock. Also adds `Cache-Control: no-store` to the response so an intermediate cache cannot serve a stale Prometheus payload during an incident — a fake flat-line dashboard is worse than no data. Pins in [metrics/http_method_test.go](metrics/http_method_test.go) cover (a) POST/PUT/PATCH/DELETE all rejected with 405 + Allow header, (b) GET still produces the exposition body, (c) Cache-Control: no-store on every GET response.
+
 ## [0.7.42] - 2026-05-28
 
 ### Added

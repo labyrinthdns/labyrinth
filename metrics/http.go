@@ -18,6 +18,19 @@ import (
 // silently downgrade the scraper's metadata, and `promtool check
 // metrics` flags every series as missing metadata.
 func (m *Metrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Prometheus scrapers use GET only. Refuse everything else with
+	// 405 so a misbehaving probe (or a hostile POST flood at the
+	// metrics endpoint, which is often exposed to the public internet
+	// for scraping) doesn't hit the snapshot path needlessly.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	// Metrics are live state — never cache. An intermediate cache
+	// serving a 30 s-old payload to a Prometheus scraper would create
+	// fake-flat-line panic during an incident.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
 	m.mu.RLock()
