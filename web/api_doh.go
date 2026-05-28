@@ -79,12 +79,25 @@ func (s *AdminServer) handleDoH(w http.ResponseWriter, r *http.Request) {
 	w.Write(response)
 }
 
+// dohMaxGetParamBytes caps the base64url-encoded "dns" GET parameter
+// length. The POST path is already capped at 65536 raw bytes via
+// LimitReader; without a matching cap on the GET path an attacker can
+// POST-equivalent abuse through ?dns=… with a megabytes-long encoded
+// payload that the base64 decoder would happily expand to ~75% of
+// that size in RAM before the DNS parser even runs. A 65536-byte cap
+// matches the POST surface (the encoded form is ~4/3 of the raw, so
+// this still fits any RFC 8484-sized DNS message comfortably).
+const dohMaxGetParamBytes = 65536
+
 // dohDecodeGet extracts the DNS query from a GET request's "dns" query parameter.
 // The parameter value is base64url-encoded without padding (RFC 4648 Section 5).
 func (s *AdminServer) dohDecodeGet(r *http.Request) ([]byte, error) {
 	param := r.URL.Query().Get("dns")
 	if param == "" {
 		return nil, fmt.Errorf("missing 'dns' query parameter")
+	}
+	if len(param) > dohMaxGetParamBytes {
+		return nil, fmt.Errorf("'dns' parameter exceeds %d-byte cap", dohMaxGetParamBytes)
 	}
 	query, err := base64.RawURLEncoding.DecodeString(param)
 	if err != nil {
