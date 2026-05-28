@@ -566,6 +566,14 @@ const (
 	// risk for any auth being probed. 16 is well above the 3 retries
 	// the default config picks and well above any RFC guidance.
 	clampMaxUpstreamRetries   = 16
+	// server.tcp_pipeline_max: caps the per-TCP-connection iteration in
+	// the handler's `for i := 0; i < pipelineMax; i++` loop. A typo of
+	// 1e9 lets a single attacker who holds one TCP connection open
+	// keep one worker pinned for 1B sequential queries — a slow-loris
+	// amplifier. 10 k is well above any legitimate TCP keep-alive flow
+	// (RFC 7828 expects ~100–1000 queries per connection) and well
+	// under the worker-starvation threshold.
+	clampMaxTCPPipelineMax    = 10_000
 	// resolver.max_cname_depth: bounds CNAME-chasing recursion. The DNS
 	// RFC has no hard cap, but a value above ~32 is operationally
 	// unreasonable and a 1M value lets a single carefully-crafted
@@ -610,6 +618,9 @@ func clampConfigBounds(cfg *Config) {
 	}
 	if cfg.Resolver.MaxCNAMEDepth > clampMaxCNAMEDepth {
 		cfg.Resolver.MaxCNAMEDepth = clampMaxCNAMEDepth
+	}
+	if cfg.Server.TCPPipelineMax > clampMaxTCPPipelineMax {
+		cfg.Server.TCPPipelineMax = clampMaxTCPPipelineMax
 	}
 }
 

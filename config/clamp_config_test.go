@@ -30,6 +30,7 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	cfg.Server.MaxTCPConns = clampMaxTCPConns * 10
 	cfg.Resolver.UpstreamRetries = clampMaxUpstreamRetries * 10
 	cfg.Resolver.MaxCNAMEDepth = clampMaxCNAMEDepth * 10
+	cfg.Server.TCPPipelineMax = clampMaxTCPPipelineMax * 10
 
 	clampConfigBounds(cfg)
 
@@ -66,6 +67,9 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	if got := cfg.Resolver.MaxCNAMEDepth; got != clampMaxCNAMEDepth {
 		t.Errorf("Resolver.MaxCNAMEDepth = %d, want %d", got, clampMaxCNAMEDepth)
 	}
+	if got := cfg.Server.TCPPipelineMax; got != clampMaxTCPPipelineMax {
+		t.Errorf("Server.TCPPipelineMax = %d, want %d", got, clampMaxTCPPipelineMax)
+	}
 }
 
 // TestClampConfigBounds_UnderCapValuesPassThrough pins that legitimate
@@ -85,6 +89,7 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	cfg.Server.MaxTCPConns = 256
 	cfg.Resolver.UpstreamRetries = 3
 	cfg.Resolver.MaxCNAMEDepth = 16
+	cfg.Server.TCPPipelineMax = 100
 
 	clampConfigBounds(cfg)
 
@@ -108,6 +113,9 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	}
 	if cfg.Resolver.MaxCNAMEDepth != 16 {
 		t.Errorf("Resolver.MaxCNAMEDepth got clamped from 16 to %d", cfg.Resolver.MaxCNAMEDepth)
+	}
+	if cfg.Server.TCPPipelineMax != 100 {
+		t.Errorf("Server.TCPPipelineMax got clamped from 100 to %d", cfg.Server.TCPPipelineMax)
 	}
 }
 
