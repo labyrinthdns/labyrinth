@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.40] - 2026-05-28
+
+### Hardened
+- **2000-entry page cap on `/api/cache/negative?limit=…`** — the negative-cache admin endpoint was the only paginated admin route without an upper bound on the `limit` query parameter. The other paginated routes (top-clients, top-domains, recent queries) all carry hard caps because negative-cache iteration is O(n) and the serialised JSON response scales proportionally — a single `?limit=1000000` would force the resolver to iterate millions of entries and balloon both CPU and the response payload. Now clamped to `maxNegativeCachePage` (2000), matching the order of magnitude of the other paginated admin caps. Pin in [web/api_cache_negative_cap_test.go](web/api_cache_negative_cap_test.go) asserts an oversize limit value is clamped and the handler returns 200 without OOM/hang.
+
 ## [0.7.39] - 2026-05-28
 
 ### Hardened
