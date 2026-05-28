@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.31] - 2026-05-28
+
+### Hardened
+- **`ReadHeaderTimeout` on both admin HTTP servers (slowloris defence)** — the admin server had `ReadTimeout`/`WriteTimeout`/`IdleTimeout` but no `ReadHeaderTimeout`, and the auto-TLS HTTP-01 challenge listener on `:80` had no timeouts at all. Slowloris attacks exploit the header-read phase: an attacker opens many connections and dribbles one byte every few seconds during HEAD transmission, holding sockets open without ever finishing a request. `ReadTimeout` does not fire mid-header because Go's net/http treats the whole request read as one window. The dedicated `ReadHeaderTimeout` caps the header phase specifically. The fix sets `ReadHeaderTimeout: 10s` (tighter than `ReadTimeout: 15s` so the slowloris-specific guard fires first) on both the admin server AND the previously timeout-free port-80 HTTP-01 listener. Pins in [web/server_timeouts_test.go](web/server_timeouts_test.go) cover (a) struct-level wiring of all four timeouts with ReadHeaderTimeout < ReadTimeout, (b) end-to-end behaviour — a half-open connection sending zero header bytes is closed within the configured window.
+
 ## [0.7.30] - 2026-05-28
 
 ### Hardened
