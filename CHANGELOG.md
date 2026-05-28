@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.54] - 2026-05-28
+
+### Hardened
+- **16 KiB `MaxHeaderBytes` cap on every admin/metrics/HTTP-01 `http.Server`** — Go's default `MaxHeaderBytes` is 1 MiB per request header set. With `ReadHeaderTimeout` already in place (slowloris guard, 10 s), an attacker who is *not* slow — just sending 900 KiB of headers per connection within the deadline — could inflate resolver memory by orders of magnitude across many concurrent connections. The admin dashboard server, the standalone metrics server, and the HTTP-01 ACME challenge listener on `:80` are all internet- or LAN-reachable surfaces; each now caps `MaxHeaderBytes = 16 << 10`. 16 KiB sits well above any real browser session (a few KB cookie + auth + UA) and well above what an ACME validator or Prometheus scraper sends, but cuts the worst-case header buffer per connection by 64×. Pins in [web/server_header_cap_test.go](web/server_header_cap_test.go): (a) wire-level test stands up a real `http.Server` with the cap, sends a 64 KiB header request, and asserts the server responds with 431 (or tears down the connection) instead of 200; (b) config-level test asserts 16 KiB is well below Go's 1 MiB default, guarding against accidental drift.
+
 ## [0.7.53] - 2026-05-28
 
 ### Hardened
