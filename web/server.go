@@ -438,6 +438,16 @@ func (s *AdminServer) cleanupStaleClients() {
 
 // registerRoutes sets up all API routes on the given mux.
 func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
+	// robots.txt — explicit Disallow:/ so any crawler that lands on
+	// an accidentally-exposed admin host skips indexing the entire
+	// surface. Belt-and-braces with the X-Robots-Tag header set by
+	// the security headers middleware.
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
+	})
+
 	// Auth routes (no auth required, but still body-capped so a 1GB
 	// JSON POST to /api/auth/login can't OOM the resolver before the
 	// JSON decoder gives up).

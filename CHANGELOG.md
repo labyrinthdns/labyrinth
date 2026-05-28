@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.32] - 2026-05-28
+
+### Hardened
+- **`X-Robots-Tag: noindex, nofollow` + `/robots.txt` (admin-surface deindex)** — Labyrinth's admin UI is internal infrastructure and must never appear in a public search index, even if an operator accidentally exposes the management port to the internet during commissioning or runs it on a routable cloud instance. The security headers middleware now emits `X-Robots-Tag: noindex, nofollow` on every response (the HTTP-header equivalent of `<meta name="robots" content="noindex,nofollow">`, honoured by every major crawler), and a new `/robots.txt` route returns the universal `User-agent: *` / `Disallow: /` block — a belt-and-braces approach because crawlers that hit a specific URL before fetching robots.txt still see the header. Pins in [web/robots_test.go](web/robots_test.go) lock both the `/robots.txt` body shape and the security middleware's X-Robots-Tag emission.
+
 ## [0.7.31] - 2026-05-28
 
 ### Hardened
