@@ -148,8 +148,11 @@ type Validator struct {
 	// short-circuits to Insecure with reason ReasonNTAOverride. The
 	// store is optional: validators constructed via NewValidator get
 	// a nil store and behave exactly as before. Operators wire one in
-	// via SetNTAStore.
-	ntaStore *NTAStore
+	// via SetNTAStore. atomic.Pointer makes SetNTAStore / NTAStore /
+	// validation-path Load race-free without taking a mutex on the
+	// hot validation path; GetOrCreateNTAStore uses CAS for safe
+	// lazy-init from concurrent admin POSTs to /api/dnssec/nta.
+	ntaStore atomic.Pointer[NTAStore]
 
 	// ntaMatches is incremented every time an NTA hides a validation
 	// outcome. Surfaced via NTAMatches() for the observability layer.
@@ -178,13 +181,31 @@ func NewValidator(querier Querier, logger *slog.Logger) *Validator {
 // short-circuited to Insecure with ReasonNTAOverride before any
 // chain work runs.
 func (v *Validator) SetNTAStore(store *NTAStore) {
-	v.ntaStore = store
+	v.ntaStore.Store(store)
 }
 
 // NTAStore returns the configured store, or nil if none is wired.
 // Operator-facing UI reads from here.
 func (v *Validator) NTAStore() *NTAStore {
-	return v.ntaStore
+	return v.ntaStore.Load()
+}
+
+// GetOrCreateNTAStore returns the configured NTA store, creating an
+// empty one and wiring it in atomically if none is set. Safe to call
+// from multiple goroutines: the first caller wins the CAS, losers
+// observe the winner's store. This closes the lazy-init TOCTOU on
+// the /api/dnssec/nta admin handler where two concurrent POSTs could
+// each create a fresh store, the loser's store.Add would write to an
+// orphaned store, and the NTA would silently never take effect.
+func (v *Validator) GetOrCreateNTAStore() *NTAStore {
+	if store := v.ntaStore.Load(); store != nil {
+		return store
+	}
+	fresh := NewNTAStore()
+	if v.ntaStore.CompareAndSwap(nil, fresh) {
+		return fresh
+	}
+	return v.ntaStore.Load()
 }
 
 // NTAMatches reports the cumulative count of validations short-
@@ -328,8 +349,8 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	// before doing any signature work. The verdict is Insecure (not
 	// Bogus or Secure) — "we deliberately stopped looking", which is
 	// what the RFC 8914 EDE consumer should see too.
-	if v.ntaStore != nil {
-		if nta, matched := v.ntaStore.Match(qname); matched {
+	if store := v.ntaStore.Load(); store != nil {
+		if nta, matched := store.Match(qname); matched {
 			v.ntaMatches.Add(1)
 			push(ValidationStep{
 				Stage:   "nta-override",

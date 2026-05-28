@@ -123,14 +123,12 @@ func (s *AdminServer) handleNTAAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := s.resolver.DNSSECValidator()
-	store := v.NTAStore()
-	if store == nil {
-		// Validator is enabled but no NTA store was wired (operator did
-		// not set the config key). Create one now so the runtime
-		// install path is usable without a restart.
-		store = dnssec.NewNTAStore()
-		v.SetNTAStore(store)
-	}
+	// GetOrCreateNTAStore handles concurrent lazy-init via CAS.
+	// Before v0.7.59 the handler did Load → if nil → New → Store as
+	// three separate operations, so two concurrent POSTs both saw
+	// nil, both created stores, and the loser's store.Add wrote to
+	// an orphaned store that the validator never consulted.
+	store := v.GetOrCreateNTAStore()
 
 	var req addNTARequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

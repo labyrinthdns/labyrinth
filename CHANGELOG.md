@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.59] - 2026-05-28
+
+### Hardened
+- **Race-free lazy-init of the DNSSEC NTA store** — `dnssec.Validator.ntaStore` was a plain `*NTAStore` field with no synchronisation. Two paths raced on it: (a) the validator's hot path read it on every `ValidateResponse` while `/api/dnssec/nta` POSTs and config-reload writes wrote it, producing a real Go data race on the field; (b) the admin handler `handleNTAAdd` did `Load → if nil → New → SetNTAStore` as three separate operations, so two concurrent admin POSTs both saw nil, both created fresh stores, and the loser's `store.Add(...)` wrote to an orphan that the validator never consulted via `NTAStore()` — the NTA silently never took effect, and an operator's "disable DNSSEC for this broken zone for the next 4 hours" override could be invisibly lost. The field is now `atomic.Pointer[NTAStore]` (race-free Load/Store, hot validation path stays lock-free), and a new `GetOrCreateNTAStore()` helper does CAS-based lazy-init: first caller publishes its fresh store, losers observe the winner's pointer. `handleNTAAdd` now calls the helper. Pin in [dnssec/nta_lazy_init_race_test.go](dnssec/nta_lazy_init_race_test.go) fires 100 concurrent `GetOrCreateNTAStore` calls on a fresh validator and asserts every returned pointer equals the canonical store — a regression that reintroduced the three-step pattern would produce 2+ distinct stores and fail.
+
 ## [0.7.58] - 2026-05-28
 
 ### Hardened
