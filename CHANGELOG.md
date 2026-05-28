@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-05-28
+
+### Added
+- **RFC compliance matrix refresh** — `web/ui/src/data/rfcCompliance.ts` now lists the seven RFCs added across v0.6.42 → v0.7.5: RFC 4035 §4.6 algorithm rollover, RFC 7344 + 8078 CDS/CDNSKEY, RFC 5011 full lifecycle, RFC 7646 NTA, RFC 8901 multi-signer, RFC 7873 §5.4 strict cookies, RFC 8467 §6 padding-only-on-encrypted. RFC 8914 entry reworded to reflect the IANA-0-through-27 backfill landed in v0.7.1. RFC 5452 entry now notes the v0.7.4 empirical source-port randomisation pin. The matrix is rendered on the About page and is the single user-visible record of what the resolver claims to implement; missing entries here were claims the operator couldn't see. Existing `rfcCompliance.test.ts` (rfc/title/summary/since/uniqueness pins) passes against the additions.
+
 ## [0.7.5] - 2026-05-28
 
 UI-M6 (Security panel) — operator-facing visibility into the three
