@@ -8,6 +8,51 @@ import (
 	"strings"
 )
 
+// Sanity caps on user-supplied setup fields. Real values are tiny;
+// these ceilings only filter pathological inputs that would round-trip
+// into YAML on disk and crash on next startup or balloon memory.
+const (
+	setupMaxStringLen     = 256
+	setupMaxCacheEntries  = 10_000_000
+	setupMaxResolverDepth = 1024
+	setupMaxRateLimitRate = 1_000_000.0
+	setupMaxRateBurst     = 1_000_000
+)
+
+// validateSetupRequest enforces the caps above. Returns the first
+// violation as an error so the operator gets a clear message about
+// which field is wrong.
+func validateSetupRequest(req *SetupRequest) error {
+	if len(req.ListenAddr) > setupMaxStringLen {
+		return fmt.Errorf("listen_addr exceeds %d-byte cap", setupMaxStringLen)
+	}
+	if len(req.WebAddr) > setupMaxStringLen {
+		return fmt.Errorf("web_addr exceeds %d-byte cap", setupMaxStringLen)
+	}
+	if len(req.Username) > setupMaxStringLen {
+		return fmt.Errorf("username exceeds %d-byte cap", setupMaxStringLen)
+	}
+	if len(req.LogLevel) > setupMaxStringLen {
+		return fmt.Errorf("log_level exceeds %d-byte cap", setupMaxStringLen)
+	}
+	if len(req.LogFormat) > setupMaxStringLen {
+		return fmt.Errorf("log_format exceeds %d-byte cap", setupMaxStringLen)
+	}
+	if req.MaxCacheSize > setupMaxCacheEntries {
+		return fmt.Errorf("max_cache_size exceeds %d entries", setupMaxCacheEntries)
+	}
+	if req.MaxDepth > setupMaxResolverDepth {
+		return fmt.Errorf("max_depth exceeds %d", setupMaxResolverDepth)
+	}
+	if req.RateLimitRate < 0 || req.RateLimitRate > setupMaxRateLimitRate {
+		return fmt.Errorf("rate_limit_rate out of range [0, %g]", setupMaxRateLimitRate)
+	}
+	if req.RateLimitBurst < 0 || req.RateLimitBurst > setupMaxRateBurst {
+		return fmt.Errorf("rate_limit_burst out of range [0, %d]", setupMaxRateBurst)
+	}
+	return nil
+}
+
 // SetupRequest represents the JSON body for the setup completion endpoint.
 type SetupRequest struct {
 	ListenAddr     string `json:"listen_addr"`
@@ -50,6 +95,16 @@ func (s *AdminServer) handleSetupComplete(w http.ResponseWriter, r *http.Request
 	var req SetupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	// Sanity-cap user-controlled fields before they round-trip into
+	// YAML on disk. The setup endpoint can be hit before any
+	// authentication exists, so an attacker reaching it first could
+	// otherwise submit pathological values that crash on next
+	// startup or balloon resolver memory.
+	if err := validateSetupRequest(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
