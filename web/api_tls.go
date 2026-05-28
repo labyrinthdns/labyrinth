@@ -9,6 +9,13 @@ import (
 
 // handleTLSStatus returns the current TLS certificate status.
 func (s *AdminServer) handleTLSStatus(w http.ResponseWriter, r *http.Request) {
+	// Default every response — including the 405 method-not-allowed
+	// error path — to no-store. The endpoint surfaces live cert state
+	// (issuer, NotAfter, ACME flag); a stale cached reading during a
+	// renewal storm could mask a real expiry. http.Error preserves
+	// previously-set headers, so setting this once at the top is
+	// enough to cover the error branch.
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -34,13 +41,17 @@ func (s *AdminServer) handleTLSStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
 // handleTLSRenew forces a certificate renewal (auto-TLS only).
 func (s *AdminServer) handleTLSRenew(w http.ResponseWriter, r *http.Request) {
+	// Cert renewal is a one-shot operator action; no response from this
+	// endpoint is ever appropriate to cache. Default to no-store at
+	// the top so the 400/405/500 error paths (which use http.Error)
+	// inherit it. http.Error preserves previously-set headers.
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -56,7 +67,6 @@ func (s *AdminServer) handleTLSRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"certificate cache cleared, will renew on next handshake"}`))
 }
@@ -64,6 +74,14 @@ func (s *AdminServer) handleTLSRenew(w http.ResponseWriter, r *http.Request) {
 // handleDNSGuide returns server configuration info for the public DNS setup guide.
 // This endpoint does NOT require authentication.
 func (s *AdminServer) handleDNSGuide(w http.ResponseWriter, r *http.Request) {
+	// Default Cache-Control: no-store at the top so the 405
+	// method-not-allowed http.Error inherits it. The guide reflects
+	// live config (listen addr, DoH URL, DoT host, TLS state) and
+	// stale cached values would mislead an operator following the
+	// setup instructions during a transitional moment (e.g. just
+	// after TLS was enabled). The success path no longer needs to
+	// re-set the header because it was already set here.
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -107,12 +125,6 @@ func (s *AdminServer) handleDNSGuide(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Same no-store contract as every other API response (see
-	// jsonResponse): the guide reflects live config and must never be
-	// cached by an intermediate proxy or the browser. The handler
-	// writes the body directly rather than through jsonResponse so
-	// the header is set explicitly here.
-	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
