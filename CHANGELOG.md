@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-05-28
+
+M6.2 from PLAN.md — second beat of the test-infrastructure milestone. Where v0.7.8 added fuzz coverage for parser inputs, this release adds *property-based* coverage for one of the most load-bearing transforms in DNSSEC: RFC 4034 §6.2 canonical RDATA.
+
+### Added
+- **Property-based pin for canonical RDATA (RFC 4034 §6.2)** — new [dnssec/rfc4034_canonical_property_test.go](dnssec/rfc4034_canonical_property_test.go) uses Go's `testing/quick.Check` to assert two invariants across 200 randomly generated inputs per type:
+  - **Idempotence** — `canonicalRData(canonicalRData(x, t), t) == canonicalRData(x, t)`. Iterates random RDATA byte-arrays against every RR type the canonicaliser handles (CNAME, NS, PTR, DNAME, MX, SOA, RRSIG, SRV, NSEC) plus pure-binary types (A, AAAA, TXT) where idempotence is trivial. A regression that introduced an asymmetric transform (e.g. lowercasing only the first byte, or an off-by-one in the embedded-name length-walk) would surface as a counterexample because the second pass would produce different bytes than the first.
+  - **Length preservation** — `len(canonicalRData(x, t)) == len(x)`. RFC 4034 §6.2 only permits 1:1 byte substitution (ASCII lowercasing of label payload); a regression that re-encoded names (decompressing pointers, inserting/removing a trailing dot, normalising name length) would break the surrounding RDLENGTH arithmetic on both verify- and sign-side. The pin also confirms the parser-rejection path preserves length — when `lowercaseWireName` fails to parse a malformed wire name, `canonicalRData` returns the original bytes verbatim rather than a truncated copy.
+
+  Property tests sit one layer above unit tests: a unit test pins *known* inputs against *known* outputs, but a property test pins the *invariant* against the *generator*. Both layers are valuable — the unit tests catch known-shape regressions; the property tests catch shape-classes the author didn't think to write a unit test for. Because canonical RDATA is the byte foundation of every signature verify, both invariants are unconditional contracts of the function — a regression in either would silently produce signature failures on otherwise-valid responses.
+
 ## [0.7.9] - 2026-05-28
 
 UI-M5.3 from PLAN.md — audit timeline as a first-class UI surface.
