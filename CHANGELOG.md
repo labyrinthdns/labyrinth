@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.49] - 2026-05-28
+
+### Hardened
+- **100-connection semaphore cap on the Zabbix ZBXD TCP listener** — the agent's accept loop spawned an unbounded goroutine per accepted connection. Each goroutine lives up to 10 s (the per-conn read deadline), so an attacker opening many concurrent connections could force unbounded goroutine + file-descriptor pressure on the resolver. Production Zabbix deployments poll from 1–3 monitoring stations, so a 100-conn cap is well above any legitimate workload and small enough that the worst-case footprint is bounded. Implemented as a semaphore channel — when full, `Accept()` blocks at `sem <- struct{}{}` rather than spawning new goroutines, and the kernel-side listener backlog absorbs the burst.
+
 ## [0.7.48] - 2026-05-28
 
 ### Hardened
