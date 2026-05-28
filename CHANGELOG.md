@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.68] - 2026-05-29
+
+### Hardened
+- **50k-entry LRU cap on the DNSSEC validator's `keyCache`** — `dnssec.Validator.keyCache` cached one DNSKEY RRset per zone (RSA-2048 keys are 256 bytes wire-form; with RDATA framing and slice headers each entry is ~1 KB) with no upper bound. An attacker who controls many DNSSEC-signed zones — or who can drive the resolver to query into many distinct zones via crafted referral chains — pins gigabytes of validator memory by sustained query rates. `MaxDNSKEYCacheEntries = 50_000` caps the map; on insert past the cap, the entry with the OLDEST `fetchedAt` is evicted. Existing-zone refreshes (the normal TTL-driven path) replace in place and are exempt from the cap. Pins in [dnssec/dnskey_cache_cap_test.go](dnssec/dnskey_cache_cap_test.go): (a) eviction picks the entry with the oldest `fetchedAt`, (b) a tripwire on the constant so a refactor can't silently drop it below thrash-threshold or balloon it to gigabyte-scale.
+
 ## [0.7.67] - 2026-05-29
 
 ### Hardened
