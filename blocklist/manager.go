@@ -65,6 +65,14 @@ type Manager struct {
 	httpClient      *http.Client
 	logger          *slog.Logger
 	mu              sync.RWMutex
+	// refreshing acts as a singleflight gate around RefreshAll. A
+	// repeated admin POST to /api/blocklist/refresh (or the
+	// background tick racing with an operator click) used to spawn
+	// concurrent RefreshAll goroutines, each pulling every upstream
+	// blocklist URL — wasted bandwidth at our end and potential
+	// rate-limit / blocklisting at the upstream provider's. CAS
+	// keeps exactly one refresh in flight.
+	refreshing atomic.Bool
 }
 
 // NewManager creates a Manager from the supplied configuration. The
@@ -212,6 +220,19 @@ func (mgr *Manager) CustomIP() string {
 // matcher, and atomically swaps it in. Errors on individual lists are
 // logged but do not prevent other lists from loading.
 func (mgr *Manager) RefreshAll() {
+	// Singleflight: refuse to start a second refresh while one is in
+	// flight. Repeated admin clicks or background tick / operator
+	// click race would otherwise fan out to N concurrent fetches of
+	// every upstream blocklist URL — wasted bandwidth on our side
+	// and an obvious "this client is misbehaving" signal to the
+	// upstream provider. CAS leaves the gate untouched on collision
+	// so the in-flight refresh continues normally.
+	if !mgr.refreshing.CompareAndSwap(false, true) {
+		mgr.logger.Info("blocklist refresh already in progress; skipping")
+		return
+	}
+	defer mgr.refreshing.Store(false)
+
 	mgr.logger.Info("blocklist refresh started")
 	start := time.Now()
 
