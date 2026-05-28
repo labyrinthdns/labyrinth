@@ -44,6 +44,15 @@ type MainHandler struct {
 
 	// DNS Cookies (RFC 7873)
 	cookiesEnabled bool
+	// cookiesEnforce is the RFC 7873 §5.4 "strict mode" toggle. When
+	// true, a client that sends a UDP query WITHOUT a COOKIE option is
+	// answered with BADCOOKIE and asked to retry. This eliminates the
+	// last UDP-amplification surface — spoofed clients cannot get
+	// answers at all until they prove they can complete one round trip.
+	// Default false: many legitimate clients (mobile resolvers, IoT
+	// stubs) do not implement cookies yet; refusing them outright
+	// breaks the service. Operators on a hostile network opt in.
+	cookiesEnforce bool
 	cookieMu       sync.RWMutex // protects cookieSecret + prevCookieSecret + prevExpiresAt
 	cookieSecret   []byte       // 16-byte server secret for SipHash
 	// prevCookieSecret is the immediately-previous secret kept after a
@@ -105,6 +114,18 @@ func NewMainHandler(
 		metrics:  m,
 		logger:   logger,
 	}
+}
+
+// SetCookiesEnforce toggles RFC 7873 §5.4 strict mode: cookie-less UDP
+// queries are rejected with BADCOOKIE. No-op unless cookies themselves
+// are also enabled (EnableCookies / EnableCookiesWithSecret).
+func (h *MainHandler) SetCookiesEnforce(enforce bool) {
+	h.cookiesEnforce = enforce
+}
+
+// CookiesEnforce reports the current §5.4 strict-mode setting.
+func (h *MainHandler) CookiesEnforce() bool {
+	return h.cookiesEnforce
 }
 
 // EnableCookies enables DNS cookie support (RFC 7873).
@@ -651,6 +672,47 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 				h.metrics.IncResponses("BADCOOKIE")
 				return h.buildBadCookieResponse(query, clientCookie, clientIP)
 			}
+		}
+	}
+
+	// RFC 7873 §5.4 STRICT cookie enforcement (operator opt-in).
+	// When cookiesEnforce is true AND the transport is plain UDP AND the
+	// client did NOT supply a client cookie, refuse to answer. The
+	// BADCOOKIE response (with our newly-minted server cookie) tells the
+	// client to retry over a connection it can actually prove it owns —
+	// either by replaying the cookie pair over UDP, or by upgrading to
+	// TCP/DoT/DoH which already pass the source-validation bar implicitly.
+	//
+	// Why UDP-only: TCP / DoT / DoH establish a stateful handshake the
+	// client cannot spoof, so the source-validation property is already
+	// provided by the transport. Forcing those clients through a
+	// BADCOOKIE round-trip is pure overhead.
+	//
+	// Why operator opt-in: many legitimate clients (mobile resolvers,
+	// IoT, older stubs) do not implement RFC 7873 yet. Defaulting on
+	// would break service for those clients globally.
+	if h.cookiesEnabled && h.cookiesEnforce && isUDPAddr(clientAddr) {
+		hasClientCookie := false
+		if msg.EDNS0 != nil {
+			for _, opt := range msg.EDNS0.Options {
+				if opt.Code == dns.EDNSOptionCodeCookie {
+					cc, _ := dns.ParseCookieOption(opt.Data)
+					if len(cc) == 8 {
+						hasClientCookie = true
+					}
+					break
+				}
+			}
+		}
+		if !hasClientCookie {
+			h.metrics.IncResponses("BADCOOKIE")
+			// Build a BADCOOKIE response WITH a freshly-minted server
+			// cookie. The client will reissue with the pair and pass
+			// the gate on the second attempt — RFC 7873 §5.4 exactly.
+			// clientCookie nil here means buildBadCookieResponse emits
+			// a response cookie option without the client half (which
+			// the client will mint locally on retry).
+			return h.buildBadCookieResponse(query, nil, clientIP)
 		}
 	}
 
@@ -1588,6 +1650,24 @@ func stripDNSSECRRs(rrs []dns.ResourceRecord, qtype uint16) []dns.ResourceRecord
 		out = append(out, rr)
 	}
 	return out
+}
+
+// isUDPAddr reports whether a client address came in over UDP. Used by
+// the RFC 7873 §5.4 strict cookie path to gate enforcement to the
+// unauthenticated transport — TCP / DoT / DoH already establish a
+// stateful handshake the client cannot spoof, so forcing those clients
+// through a BADCOOKIE round-trip is pure overhead.
+//
+// Implementation: we cannot type-switch reliably (DoH wraps the client
+// address through HTTP plumbing and may surface as *net.TCPAddr or as
+// a custom type). The cheap and robust check is the Network() string
+// the address itself reports: "udp", "udp4", "udp6" all start with
+// "udp"; nothing else does.
+func isUDPAddr(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	return strings.HasPrefix(addr.Network(), "udp")
 }
 
 func extractIP(addr net.Addr) string {

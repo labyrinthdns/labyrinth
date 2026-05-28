@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-05-28
+
+Closes part of M5 (DoS / security) from PLAN.md.
+
+### Added
+- **RFC 7873 §5.4 — Strict cookie enforcement mode (`security.dns_cookies_enforce`)** — operator opt-in: when true, a UDP query without a client cookie is answered with BADCOOKIE and the resolver mints a fresh server cookie for the client to replay on retry. This eliminates the last UDP amplification surface — spoofed sources cannot get answers at all until they prove one round trip. UDP-only by design: TCP / DoT / DoH already establish a stateful handshake that provides source validation, so the gate skips them. New `MainHandler.SetCookiesEnforce` setter; `MainHandler.cookiesEnforce` field; new `isUDPAddr` helper that gates on the `Network()` string (robust across DoH/TCP wrappers that surface client addrs as non-standard types). main.go now wires both `EnableCookies()` and `SetCookiesEnforce()` from config — previously the `security.dns_cookies` flag was dead because no caller invoked EnableCookies, so this also fixes a latent gap.
+- **Four-corner truth-table pin in [server/rfc7873_cookie_enforce_test.go](server/rfc7873_cookie_enforce_test.go)**: `enforce=false / UDP / no cookie → answered` (default safe), `enforce=true / UDP / no cookie → BADCOOKIE` (the whole point), `enforce=true / UDP / cookie → answered` (client proved itself), `enforce=true / TCP / no cookie → answered` (TCP gate must NOT fire). The 3rd and 4th rows lock against the two most likely regressions: gating regardless of cookie presence (locks out legit clients) and gating regardless of transport (punishes every TCP/DoT/DoH client). Eight-case `isUDPAddr` truth table covers udp/udp4/udp6/tcp/tcp4/tcp6/unix/empty + nil sentinel.
+
 ## [0.7.2] - 2026-05-28
 
 ### Added

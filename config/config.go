@@ -190,6 +190,11 @@ type SecurityConfig struct {
 	RRL                  RRLConfig
 	PrivateAddressFilter bool
 	DNSCookies           bool
+	// DNSCookiesEnforce — RFC 7873 §5.4 strict mode. When true, a UDP
+	// query without a client cookie is rejected with BADCOOKIE. Default
+	// false; opt-in for hostile-network deployments. Has no effect
+	// unless DNSCookies is also true.
+	DNSCookiesEnforce bool
 }
 
 // RateLimitConfig holds rate limiter settings.
@@ -399,6 +404,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	// Security
 	setBool(&cfg.Security.PrivateAddressFilter, "security.private_address_filter")
 	setBool(&cfg.Security.DNSCookies, "security.dns_cookies")
+	setBool(&cfg.Security.DNSCookiesEnforce, "security.dns_cookies_enforce")
 	setBool(&cfg.Security.RateLimit.Enabled, "security.rate_limit.enabled")
 	setFloat64(&cfg.Security.RateLimit.Rate, "security.rate_limit.rate")
 	setInt(&cfg.Security.RateLimit.Burst, "security.rate_limit.burst")
