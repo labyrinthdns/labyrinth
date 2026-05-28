@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-05-29
+
+### Hardened
+- **1 M-entry LRU cap on `security.RRL.entries` + cleanup goroutine actually started** — two related gaps closed in one commit. (1) The Response Rate Limiter's `entries` map is keyed on (source-IP /prefix, qname, response_type) and had no upper bound. A UDP-source-spoofing attacker sending queries for distinct names from millions of distinct spoofed sources can grow the map without bound between cleanup ticks (5 min) — same class as the `RateLimiter.clients` gap closed in v0.7.65. `MaxRRLEntries = 1_000_000` caps the map with LRU eviction (`evictOldestLocked` drops the oldest-`lastTime` entry on over-cap insert). Eviction preserves the rate-limit contract: an attacker already gets a fresh per-key budget on every distinct (prefix, qname, response_type) tuple by design, so the cap closes the memory growth not the semantic guarantee. (2) The cleanup goroutine `rrl.StartCleanup(ctx)` was never wired up in `main` — only the RateLimiter cleanup was started. Without the goroutine, even idle entries (one-shot spoofed queries) stay resident forever; the new 1 M cap kept that bounded but the steady-state working set was still ~hundreds of MB under any sustained scanning. Now started alongside `rl.StartCleanup` when RRL is enabled. Pins in [security/rrl_cap_test.go](security/rrl_cap_test.go): (a) seeds the entries map with monotonic `lastTime` values, calls `evictOldestLocked`, asserts the entry with the oldest `lastTime` was removed; (b) tripwire on `MaxRRLEntries` in the [100 k, 100 M] range to catch both thrash-level and OOM-level regressions.
+
 ## [0.8.5] - 2026-05-29
 
 ### Fixed
