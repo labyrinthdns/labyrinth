@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.44] - 2026-05-28
+
+### Fixed
+- **Upstream UDP read buffer now scales with the advertised EDNS UDP size (silent truncation gap)** — `Resolver.queryUDP` had a hardcoded 4096-byte read buffer, but the resolver advertises the operator-configurable `UpstreamUDPBufferSize` (default 1232, capped at 65535) to upstream authoritative servers. When an operator raised the advertised size above 4096, the kernel still delivered only the first 4096 bytes of any compliant authoritative's UDP reply and silently discarded the rest — `dns.Unpack` then either errored on the truncated wire or, worse, parsed a structurally-valid but content-truncated message that the validator trusted. The fix sizes the read buffer to match the advertised EDNS UDP size with a 4096 floor for the legacy default path. Pin in [resolver/rfc6891_upstream_read_buffer_test.go](resolver/rfc6891_upstream_read_buffer_test.go) stands up a fake authoritative replying with a 6000-byte payload over the legacy 4096 cap and asserts the full payload reaches `queryUDP` when the advertised size is 8192.
+
 ## [0.7.43] - 2026-05-28
 
 ### Hardened

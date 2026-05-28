@@ -336,7 +336,23 @@ func (r *Resolver) queryUDP(nsIP string, query []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	buf := make([]byte, 4096)
+	// The read buffer must be at least as large as the EDNS UDP buffer
+	// size we advertised in the outbound query. A smaller read buffer
+	// silently truncates the response — net.UDPConn.Read returns only
+	// what fits and discards the rest, leaving the caller with a
+	// half-message that `dns.Unpack` then mis-parses. The default
+	// advertised size is 1232 (DNS Flag Day 2020), but operators can
+	// raise UpstreamUDPBufferSize as high as 65535. We size the read
+	// buffer to match so we never silently lose response bytes.
+	bufSize := int(r.advertisedUDPBufferSize())
+	if bufSize < 4096 {
+		// 4096 is the legacy default and remains a safe floor — most
+		// auths cap their UDP response at this even when we advertise
+		// less. Keeping the floor avoids a regression for the common
+		// path while still respecting larger advertised sizes.
+		bufSize = 4096
+	}
+	buf := make([]byte, bufSize)
 	n, err := conn.Read(buf)
 	if err != nil {
 		return nil, err

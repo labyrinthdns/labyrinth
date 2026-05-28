@@ -5,11 +5,13 @@ package web
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 var (
-	restartExecutable = os.Executable
-	restartCommand = func(name string, args ...string) *exec.Cmd {
+	restartExecutable  = os.Executable
+	restartEvalSymlinks = filepath.EvalSymlinks
+	restartCommand     = func(name string, args ...string) *exec.Cmd {
 		return exec.Command(name, args...)
 	}
 	restartExit = os.Exit
@@ -17,6 +19,10 @@ var (
 
 func restartSelf() error {
 	exePath, err := restartExecutable()
+	if err != nil {
+		return err
+	}
+	exePath, err = restartEvalSymlinks(exePath)
 	if err != nil {
 		return err
 	}
