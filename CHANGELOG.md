@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-05-28
+
+Opens M5.5 (DNSSEC validation safety net) from PLAN.md.
+
+### Hardened
+- **RRSIG verify-cap bounds worst-case crypto cost per RRset** — the validator's RFC 4035 §5.3.3 "walk every RRSIG until one validates" strategy is open to a CPU-exhaustion attack: a hostile authoritative can attach an arbitrary number of garbage RRSIGs to an answer, each forcing the validator to do a DNSKEY fetch + asymmetric verify. [dnssec/validator.go](dnssec/validator.go) now caps the number of expensive crypto verifications per RRset at 16 (`maxRRSIGVerifyAttempts`), comfortably above any realistic algorithm-rollover scenario (2 algorithms × 2 keys × incoming+outgoing = 8) while bounding the worst case an attacker can induce. When the cap engages the validator stops the loop and lets the trailing logic settle on Bogus or Indeterminate from the failures already observed — the safe collapse for "we cannot validate further". New pin in [dnssec/rfc4035_verify_cap_test.go](dnssec/rfc4035_verify_cap_test.go) feeds the validator 30 garbage RRSIGs (alg/key-tag/time-window all valid, signature bytes zeroed so VerifyRRSIG fails) and asserts (a) the verdict is Bogus, (b) a `verify-cap` step is emitted in the detailed step log, (c) the number of crypto verifications stayed at or below 16. A second pin (`DoesNotBlockNormalRollover`) checks the cap value is high enough that legitimate 2-algorithm rollovers cannot trip it — guards against a future refactor that tightens the cap too far.
+
 ## [0.7.10] - 2026-05-28
 
 M6.2 from PLAN.md — second beat of the test-infrastructure milestone. Where v0.7.8 added fuzz coverage for parser inputs, this release adds *property-based* coverage for one of the most load-bearing transforms in DNSSEC: RFC 4034 §6.2 canonical RDATA.

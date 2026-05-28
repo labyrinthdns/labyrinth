@@ -16,6 +16,20 @@ import (
 // valid signatures fail near their boundaries.
 const rrsigClockSkew = 60 * time.Second
 
+// maxRRSIGVerifyAttempts caps the number of *expensive* cryptographic
+// signature checks the validator will perform for a single RRset before
+// it gives up. RFC 4035 §5.3.3 mandates "at least one valid RRSIG"
+// suffices, but the walk-every-RRSIG strategy is open to a CPU-exhaustion
+// attack: a hostile authoritative can attach an arbitrarily long list
+// of garbage RRSIGs, each forcing a DNSKEY fetch + asymmetric verify.
+// A cap of 16 covers all realistic scenarios — algorithm rollover with
+// 2 algorithms × 2 keys × an outgoing+incoming pair = 8 signatures —
+// while bounding the worst-case crypto cost an attacker can induce per
+// query. Beyond the cap the validator stops the crypto loop and lets
+// the trailing logic settle on Bogus/Indeterminate per the failures
+// already observed, which is the safe collapse for "we cannot validate".
+const maxRRSIGVerifyAttempts = 16
+
 // ValidationResult represents the outcome of DNSSEC validation.
 type ValidationResult int
 
@@ -380,6 +394,12 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	skewI := int64(rrsigClockSkew / time.Second)
 	nowI := time.Now().Unix()
 
+	// verifyAttempts counts the number of expensive crypto verifications
+	// already performed for this RRset. Beyond maxRRSIGVerifyAttempts we
+	// stop walking the RRSIG list — an attacker cannot make us spend
+	// unbounded CPU by stuffing the answer with garbage signatures.
+	verifyAttempts := 0
+
 	for _, rs := range rrsigs {
 		rrsig := rs.rrsig
 		// Algorithm policy: skip RRSIGs we refuse to validate (e.g. RSASHA1)
@@ -513,6 +533,20 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			push(step)
 			continue
 		}
+
+		// M5.5 — cap expensive crypto work. Once we've spent
+		// maxRRSIGVerifyAttempts cycles on this RRset we stop walking
+		// further RRSIGs even if more are present. A hostile auth that
+		// attached 1000 garbage RRSIGs cannot make us spend 1000 verifies.
+		if verifyAttempts >= maxRRSIGVerifyAttempts {
+			step := baseStep
+			step.Stage = "verify-cap"
+			step.Outcome = "skipped"
+			step.Detail = fmt.Sprintf("RRSIG verify cap (%d) reached; refusing further crypto work", maxRRSIGVerifyAttempts)
+			push(step)
+			break
+		}
+		verifyAttempts++
 
 		// Verify the RRSIG signature.
 		if err := VerifyRRSIG(rrset, rrsig, matchingKey); err != nil {
