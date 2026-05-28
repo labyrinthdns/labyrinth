@@ -217,6 +217,21 @@ func (c *Cache) lookupNSEC(qname string, qtype uint16, qclass uint16) (*Entry, b
 				if typeBitmapHas(iv.typeBitmap, qtype) {
 					continue // type present — not NODATA
 				}
+				// RFC 4035 §5.4 / RFC 6840 §4.4 — refuse to use a
+				// parent-side delegation NSEC (NS bit set, SOA bit
+				// clear) as authoritative NODATA proof for the child
+				// zone. The delegation NSEC's bitmap reflects only the
+				// types the PARENT publishes at the delegation point
+				// (NS, RRSIG, NSEC); it cannot speak to A/AAAA/MX/etc.
+				// that the CHILD zone may serve. Without this guard,
+				// an attacker who injects a delegation NSEC into a
+				// (NODATA-classified) response would let the aggressive
+				// cache synthesise NODATA for arbitrary child-zone
+				// records, hiding their real existence.
+				if typeBitmapHas(iv.typeBitmap, dns.TypeNS) &&
+					!typeBitmapHas(iv.typeBitmap, dns.TypeSOA) {
+					continue
+				}
 				if entry, ok := c.buildNSECSynthEntry(iv, now, NegNoData, dns.RCodeNoError); ok {
 					if c.metrics != nil {
 						c.metrics.IncNSECAggressiveSynthNoData()
