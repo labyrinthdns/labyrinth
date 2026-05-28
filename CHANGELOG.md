@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.51] - 2026-05-28
+
+### Hardened
+- **1 MiB cap on GitHub release JSON decode in update flow** — both `checkForUpdate` (used by the autonomous self-update background tick and the `/api/system/update/check` admin route) and `findAssetURLWithChecksums` (used by the install path) called `json.NewDecoder(resp.Body).Decode(...)` directly on the GitHub API response without a size cap. A real release JSON is a few KB (asset list + release notes), but an intercepted, poisoned, or DNS-rebound response could stream gigabytes into the decoder before the update flow gave up — both update paths run unprivileged but on the resolver's main process. Both call sites now wrap the body in `io.LimitReader(resp.Body, 1<<20)`. 1 MiB is well above any real release JSON (the largest releases with long markdown notes stay below 100 KiB) and matches the cap already applied to `fetchExpectedSHA256` since that function shipped.
+
 ## [0.7.50] - 2026-05-28
 
 ### Hardened
