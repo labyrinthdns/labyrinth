@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.17] - 2026-05-28
+
+UI-M5.2 from PLAN.md — per-RFC counter widgets. The compliance matrix at `/compliance` now carries live evidence beside the static claims: every RFC entry that has a natural counter source displays its current value inline as a chip on the card.
+
+### Added
+- **`metrics` field on `ComplianceEntry`** — optional array of `{ label, source: 'stats'|'security', path }` records that link an RFC entry to one or more live counters. Path is dotted (e.g. `cookies.badcookie_responses`, `ede_counts.6`); the resolver walks one segment at a time and returns `undefined` for any missing/non-numeric leaf so a partial API response can't crash the matrix. Wired with metrics for: RFC 7873 §5.3/§5.4 (cookie cache hits/misses, outbound BADCOOKIE retries, strict-mode BADCOOKIE responses), RFC 8198 §5.2/§5.4 (NSEC + NSEC3 aggressive synth NX/NODATA), RFC 8767 (stale-while-refresh triggers), RFC 9520 (failure cache hits/misses), RFC 8914 (EDE 6/17/18 emission counts).
+- **Path resolver helper** — new [web/ui/src/data/complianceMetricResolve.ts](web/ui/src/data/complianceMetricResolve.ts) carries `resolveMetricPath(obj, path)` with 8 vitest pins covering top-level lookup, nested traversal, missing segments, non-numeric leaves, null/undefined roots, and the EDE-counts numeric-key case (the `ede_counts` map uses decimal-string keys like `"6"` and the path `ede_counts.6` must resolve through them).
+- **CompliancePage now polls `/api/stats` + `/api/security` every 15s** — failure to fetch is silent so the matrix itself still renders when the API is down; success rehydrates the metric chips. Chip carries the path as a `title=` tooltip so an operator inspecting a value can see the underlying counter name.
+
 ## [0.7.16] - 2026-05-28
 
 M2.5 (Extended DNS Errors full table) — closes the remaining gap in the RFC 8914 §4 info-code registry: codes 28 (Unable to Conform to Policy) and 29 (Synthesized) are now defined and round-trip-tested. These two completed the IANA-registered set the resolver may need to surface as its emission paths evolve (policy-rejection of unsigned answers; aggregate signal for RFC 8198/DNS64-synthesised replies).

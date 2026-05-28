@@ -1,7 +1,10 @@
-import { useMemo, useState } from 'react'
-import { BookOpen, ExternalLink, Search, Download, FileJson, FileText, ArrowUpDown } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { BookOpen, ExternalLink, Search, Download, FileJson, FileText, ArrowUpDown, Activity } from 'lucide-react'
 import { COMPLIANCE_ENTRIES, CATEGORY_LABELS, type ComplianceCategory } from '@/data/rfcCompliance'
 import { buildComplianceCSV, buildComplianceJSON } from '@/data/complianceExport'
+import { resolveMetricPath } from '@/data/complianceMetricResolve'
+import { api } from '@/api/client'
+import type { StatsResponse, SecurityStatusResponse } from '@/api/types'
 
 // UI-M5.1 — RFC compliance matrix as its own page. Where AboutPage's
 // matrix is a passing reference for someone reading the About blurb,
@@ -52,6 +55,33 @@ export default function CompliancePage() {
   const [query, setQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState<ComplianceCategory | 'all'>('all')
   const [sort, setSort] = useState<SortKey>('rfc')
+  const [stats, setStats] = useState<StatsResponse | null>(null)
+  const [security, setSecurity] = useState<SecurityStatusResponse | null>(null)
+
+  // UI-M5.2 — pull live counters once on mount + every 15s so the
+  // claims on the matrix carry current evidence. Failure to fetch is
+  // silent (the cards just don't show metrics) rather than blocking
+  // the matrix itself — the matrix is hand-curated data that should
+  // render even when the API is down.
+  useEffect(() => {
+    let cancelled = false
+    async function refresh() {
+      try {
+        const [s, sec] = await Promise.all([api.stats(), api.security()])
+        if (cancelled) return
+        setStats(s)
+        setSecurity(sec)
+      } catch {
+        // Silent — see above.
+      }
+    }
+    refresh()
+    const id = setInterval(refresh, 15_000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [])
 
   const categoriesPresent = useMemo(() => {
     const set = new Set<ComplianceCategory>()
@@ -244,6 +274,28 @@ export default function CompliancePage() {
                 {e.since && (
                   <div className="text-[10px] text-slate-500 dark:text-slate-500 font-mono pt-1">
                     since {e.since}
+                  </div>
+                )}
+                {e.metrics && e.metrics.length > 0 && (
+                  <div className="pt-1.5 border-t border-slate-200 dark:border-slate-800 mt-1.5">
+                    <div className="flex flex-wrap gap-1">
+                      {e.metrics.map((m, idx) => {
+                        const src = m.source === 'stats' ? stats : security
+                        const val = resolveMetricPath(src, m.path)
+                        const display = val === undefined ? '—' : val.toLocaleString()
+                        return (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700"
+                            title={`${m.source}.${m.path}`}
+                          >
+                            <Activity className="h-2.5 w-2.5 opacity-60" />
+                            <span className="text-slate-500 dark:text-slate-400">{m.label}</span>
+                            <span className="font-mono font-semibold">{display}</span>
+                          </span>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
