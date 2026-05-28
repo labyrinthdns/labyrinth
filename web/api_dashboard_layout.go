@@ -122,6 +122,15 @@ func (s *AdminServer) handleDashboardLayout(w http.ResponseWriter, r *http.Reque
 		panelOrder := completeDashboardPanelOrder(req.PanelOrder)
 		hiddenPanels := normalizeDashboardPanelIDs(req.HiddenPanels)
 
+		// Serialise read-modify-write of the on-disk YAML against
+		// concurrent /api/config/raw PUT and other dashboard PUTs.
+		// Without the lock, two concurrent layout reorders both
+		// ReadFile the same baseline, both upsert their own panel
+		// order, and writeFileAtomically lets the second writer
+		// silently drop the first writer's delta.
+		s.configFileMu.Lock()
+		defer s.configFileMu.Unlock()
+
 		path := s.configFilePath()
 		raw, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
