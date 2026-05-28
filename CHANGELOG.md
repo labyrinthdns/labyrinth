@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-05-28
+
+### Hardened
+- **RFC 5452 §10 — Outbound UDP source port randomisation (empirical pin)** — new pin in [resolver/rfc5452_source_port_test.go](resolver/rfc5452_source_port_test.go) fires 50 outbound `queryUDP` dials against a mock UDP server that captures every observed source port, then asserts at least 30 distinct ports were observed. The weakest invariant that catches every real failure mode (fixed port = 1 distinct, sequential allocation = small distinct, tuple-hashed = few distinct) without committing to a fragile statistical test. Also guards against a regression that bound outbound dials to a privileged port (< 1024) — that would fire the second assertion distinctly from the count assertion.
+- **RFC 8901 — Multi-signer model pin** — new pin in [dnssec/rfc8901_multi_signer_test.go](dnssec/rfc8901_multi_signer_test.go) locks the multi-signer validation path: two independent operators each publish their own KSK at the apex; the parent (here represented by the trust-anchor edge) carries TWO DS records, one per operator's KSK; the answer is signed by ONE operator's ZSK and MUST validate. Structurally distinct from the v0.6.42 algorithm-rollover pin (one operator, two ZSKs) — the load-bearing new ground is the two-DS-records-at-the-parent path. Includes a negative control that drops every trust anchor to prove the chain is actually being walked rather than passing by accident.
+
 ## [0.7.3] - 2026-05-28
 
 Closes part of M5 (DoS / security) from PLAN.md.
