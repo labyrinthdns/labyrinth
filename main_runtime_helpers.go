@@ -127,14 +127,26 @@ func startHTTPServices(
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", m)
 		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
 			stats := c.Stats()
+			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"status":"healthy","cache_entries":%d,"uptime":"%s"}`,
 				stats.Entries, time.Since(m.StartTime()).Round(time.Second))
 		})
 		mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "application/json")
 			if res.IsReady() {
-				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{"status":"ready"}`)
 			} else {
 				w.WriteHeader(http.StatusServiceUnavailable)
