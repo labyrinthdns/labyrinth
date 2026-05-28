@@ -41,6 +41,20 @@ func (m *Metrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Y36 — cookie retry + stale-while-refresh.
 	fmt.Fprintf(w, "labyrinth_outbound_badcookie_retries_total %d\n", m.outboundBadCookieRetries.Load())
 	fmt.Fprintf(w, "labyrinth_stale_while_refresh_total %d\n", m.staleWhileRefreshTriggers.Load())
+	// DNSSEC verdict breakdown — Prometheus operators want to alert
+	// on "Bogus rate > 0.1%" across the resolver, not just the
+	// dashboard. Exposed as a single metric with a `verdict` label.
+	fmt.Fprintf(w, "labyrinth_dnssec_verdicts_total{verdict=\"secure\"} %d\n", m.dnssecSecure.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_verdicts_total{verdict=\"insecure\"} %d\n", m.dnssecInsecure.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_verdicts_total{verdict=\"bogus\"} %d\n", m.dnssecBogus.Load())
+	fmt.Fprintf(w, "labyrinth_blocked_queries_total %d\n", m.blockedQueries.Load())
+	// EDE emission breakdown — one series per info code observed.
+	// Snapshot (lock dance handled by EDECounts) so we don't iterate
+	// the map under m.mu (we're already holding it; calling EDECounts
+	// would re-lock). Inline read instead.
+	for code, counter := range m.edeCounts {
+		fmt.Fprintf(w, "labyrinth_ede_emissions_total{code=\"%d\"} %d\n", code, counter.Load())
+	}
 	fmt.Fprintf(w, "labyrinth_uptime_seconds %.0f\n", time.Since(m.startTime).Seconds())
 	fmt.Fprintf(w, "labyrinth_goroutines %d\n", runtime.NumGoroutine())
 
