@@ -75,6 +75,15 @@ func (s *AdminServer) handleDoH(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/dns-message")
 	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", maxAge))
+	// RFC 8484 §5.1 / RFC 7234 §4.1: an intermediate cache that varies
+	// its response on Accept must be told to do so explicitly.
+	// Without `Vary: Accept` a shared cache can serve a stored
+	// application/dns-message body to a downstream client that asked
+	// for application/dns-json (or vice versa) and the client will
+	// reject the payload as malformed. We only support dns-message
+	// today, but emitting Vary now makes the contract correct for
+	// every intermediary and future-proofs against adding dns-json.
+	w.Header().Set("Vary", "Accept")
 	w.WriteHeader(http.StatusOK)
 	w.Write(response)
 }

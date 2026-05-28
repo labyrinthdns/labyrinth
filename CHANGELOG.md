@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.42] - 2026-05-28
+
+### Added
+- **`Vary: Accept` header on every DoH response (RFC 8484 §5.1 + RFC 7234 §4.1)** — without this header, an intermediate cache (CDN or forward proxy) keyed on URL+Accept can reuse a stored `application/dns-message` body for a downstream client that asked for `application/dns-json` (or future formats), and the client rejects the payload as malformed. We only support dns-message today, but emitting the Vary header now makes the contract correct for every intermediary and future-proofs against adding dns-json. Pins in [web/api_doh_vary_test.go](web/api_doh_vary_test.go) cover (a) Vary: Accept on the POST response, (b) same on the GET response (independent companion pin in case a future refactor splits the two response-writing blocks).
+
 ## [0.7.41] - 2026-05-28
 
 ### Hardened
