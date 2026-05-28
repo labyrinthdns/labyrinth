@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.39] - 2026-05-28
+
+### Fixed
+- **RFC 4035 §5.4 / RFC 6840 §4.4 — Aggressive NSEC cache accepted parent-side delegation NSECs as NODATA proof (real bug, Y82)** — the validator path in `dnssec/nsec.go` already refused delegation NSECs (NS bit set, SOA bit clear) when used to "prove" NODATA for the child zone's records, but the **cache-side** aggressive synth in `cache/nsec_aggressive.go:lookupNSEC` had no equivalent gate. A delegation NSEC at the zone cut between `example.com` and `child.example.com` has bitmap `{NS, RRSIG, NSEC}` — every type the CHILD actually serves (A, AAAA, MX, …) is absent from the bitmap. The aggressive cache would happily synthesise "AAAA NODATA at child.example.com" for any query, hiding the child zone's real records. Fix adds the `typeBitmapHas(NS) && !typeBitmapHas(SOA) → skip` guard. Pin in [cache/rfc8198_delegation_nsec_test.go](cache/rfc8198_delegation_nsec_test.go) drives all three polarities (delegation rejected, authoritative apex accepted, plain leaf accepted).
+
+### Hardened
+- **RFC 4035 §5.4 — NSEC wildcard expansion proof + delegation-NSEC NODATA rejection at validator (Y79)** — pin in [dnssec/rfc4035_wildcard_proof_test.go](dnssec/rfc4035_wildcard_proof_test.go) locks the two security-critical structures in `VerifyNSECDenial`: (a) NXDOMAIN proof MUST contain both a qname-cover NSEC AND a wildcard-cover NSEC — accepting a "naked NSEC" (qname-cover only) would let an attacker replay a single zone NSEC to forge NXDOMAIN for any name in the gap and hide real wildcard-matched records; (b) a delegation-point NSEC (NS bit set, SOA bit clear) MUST NOT be accepted as NODATA proof — it belongs to the parent zone and proves nothing about the child's data.
+- **RFC 6672 §2.4 + RFC 6840 §5.10 — DNAME owner bailiwick truth table (Y80)** — five-case pin in [resolver/rfc6672_dname_bailiwick_test.go](resolver/rfc6672_dname_bailiwick_test.go) on `extractDNAMETarget`: (1) immediate child substitutes; (2) deep descendant substitutes; (3) owner == qname returns "" (RFC 6672 §3.2 — DNAME doesn't redirect itself); (4) sibling owner with no suffix relationship rejected (out-of-bailiwick injection guard); (5) partial-label match like `ample.com` for qname `example.com` rejected — the `"."+owner` prefix in the suffix check is what enforces label boundary, and a regression that dropped it would let `ample` redirect every `*example` name.
+- **RFC 4035 §5.3.2 / §5.3.3 — RRSIG OrigTTL in canonical wire form (Y81)** — pin in [dnssec/rfc4035_rrsig_origttl_test.go](dnssec/rfc4035_rrsig_origttl_test.go) drives `canonicalRRSetWire` with `rr.TTL=10` (cache-decayed) and `rrsig.OrigTTL=3600` (auth-signed) and verifies the canonical wire form encodes 3600 — not the decayed value. A regression that grabbed `rr.TTL` instead of `rrsig.OrigTTL` would Bogus every cached signed RRset within seconds of insertion as cache decay outran signature input stability.
+- **RFC 7873 §5.4 — Cookie-disabled server gracefully ignores client cookies (Y83)** — pin in [server/rfc7873_cookies_disabled_test.go](server/rfc7873_cookies_disabled_test.go) sends a well-formed 24-byte cookie option to a handler with cookies DISABLED and asserts: (a) no FORMERR for the "unrecognised" option, (b) no extended BADCOOKIE response — the server cannot demand validation it doesn't perform; cookie-aware stubs (BIND ≥ 9.10, Knot, systemd-resolved) would otherwise loop forever retrying.
+
 ## [0.6.38] - 2026-05-28
 
 ### Hardened
