@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.60] - 2026-05-28
+
+### Hardened
+- **DoH error responses now carry `Cache-Control: no-store`** — `handleDoH` set the cache directive only on the success path (`max-age=N` derived from the response TTL). Every `http.Error` branch — DoH not enabled (404), method not allowed (405), unsupported media type (415), malformed query (400), internal handler error (500), no response (500) — left the header unset, falling back to Go's default of "no cache directive". An intermediate CDN, ISP transparent cache, or browser cache is then free to store the error response. A brief upstream failure (resolver hiccup, mid-request config reload, transient handler error during DNSSEC validation) would persist as a cached 5xx for the cache's discretionary lifetime, leaving the DoH endpoint silently broken for every client behind that intermediary long after the underlying issue cleared. The handler now sets `Cache-Control: no-store` once at the very top so every error path inherits it; the success path overrides with `max-age=N` immediately before `WriteHeader`. Pin in [web/api_doh_error_no_store_test.go](web/api_doh_error_no_store_test.go) covers four distinct error paths (404 / 405 / 415 / 400) asserting `no-store` in the response header, plus a counterpoint test that asserts the success response carries `max-age=` and NOT `no-store` (a regression dropping the override would tank DoH cacheability and multiply upstream query load 10–100×).
+
 ## [0.7.59] - 2026-05-28
 
 ### Hardened

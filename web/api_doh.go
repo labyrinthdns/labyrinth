@@ -16,6 +16,16 @@ import (
 // It accepts both GET (with base64url-encoded "dns" query parameter) and POST
 // (with raw DNS message body and Content-Type: application/dns-message).
 func (s *AdminServer) handleDoH(w http.ResponseWriter, r *http.Request) {
+	// Default every response — including every error path below — to
+	// Cache-Control: no-store. Without this an http.Error reply (DoH
+	// not enabled, bad media type, malformed query, internal error)
+	// is left with the Go default of "no cache directive", and a CDN
+	// or browser cache is free to store it. A brief upstream failure
+	// would then persist as a cached 5xx well beyond its real
+	// duration, leaving the DoH endpoint silently broken for any
+	// client behind that intermediary. The success path overrides
+	// this header with the TTL-derived max-age below.
+	w.Header().Set("Cache-Control", "no-store")
 	if s.dohHandler == nil {
 		http.Error(w, "DoH not enabled", http.StatusNotFound)
 		return
