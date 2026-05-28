@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 )
 
 // TestClampConfigBounds_OverCapValuesGetClamped pins the v0.7.70 gate:
@@ -31,6 +32,7 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	cfg.Resolver.UpstreamRetries = clampMaxUpstreamRetries * 10
 	cfg.Resolver.MaxCNAMEDepth = clampMaxCNAMEDepth * 10
 	cfg.Server.TCPPipelineMax = clampMaxTCPPipelineMax * 10
+	cfg.Resolver.UpstreamTimeout = clampMaxUpstreamTimeout * 10
 
 	clampConfigBounds(cfg)
 
@@ -70,6 +72,9 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	if got := cfg.Server.TCPPipelineMax; got != clampMaxTCPPipelineMax {
 		t.Errorf("Server.TCPPipelineMax = %d, want %d", got, clampMaxTCPPipelineMax)
 	}
+	if got := cfg.Resolver.UpstreamTimeout; got != clampMaxUpstreamTimeout {
+		t.Errorf("Resolver.UpstreamTimeout = %v, want %v", got, clampMaxUpstreamTimeout)
+	}
 }
 
 // TestClampConfigBounds_UnderCapValuesPassThrough pins that legitimate
@@ -90,6 +95,7 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	cfg.Resolver.UpstreamRetries = 3
 	cfg.Resolver.MaxCNAMEDepth = 16
 	cfg.Server.TCPPipelineMax = 100
+	cfg.Resolver.UpstreamTimeout = 5 * time.Second
 
 	clampConfigBounds(cfg)
 
@@ -116,6 +122,9 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	}
 	if cfg.Server.TCPPipelineMax != 100 {
 		t.Errorf("Server.TCPPipelineMax got clamped from 100 to %d", cfg.Server.TCPPipelineMax)
+	}
+	if cfg.Resolver.UpstreamTimeout != 5*time.Second {
+		t.Errorf("Resolver.UpstreamTimeout got clamped from 5s to %v", cfg.Resolver.UpstreamTimeout)
 	}
 }
 

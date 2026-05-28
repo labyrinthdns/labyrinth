@@ -580,6 +580,17 @@ const (
 	// CNAME loop (or a zone that returns long synthetic CNAME chains)
 	// consume CPU for seconds-to-minutes per query.
 	clampMaxCNAMEDepth        = 64
+	// resolver.upstream_timeout: per-upstream-query deadline. A duration
+	// not an integer, but the same operator-bypass surface as the
+	// integer knobs. A YAML typo of `upstream_timeout: 24h` (intended
+	// 2-4s) lets a single failing query pin a worker goroutine for the
+	// full timeout before the deadline fires — slow-loris amplifier
+	// that bypasses the per-worker semaphore (the goroutine stays
+	// held) and the per-server idle eviction (worker IS active,
+	// just stuck on upstream). 60s is well above the legitimate upper
+	// bound (default 2s; production tuning 5-10s for slow auths) and
+	// well under worker-starvation threshold.
+	clampMaxUpstreamTimeout   = 60 * time.Second
 )
 
 // clampConfigBounds enforces sane upper bounds on integer fields.
@@ -621,6 +632,9 @@ func clampConfigBounds(cfg *Config) {
 	}
 	if cfg.Server.TCPPipelineMax > clampMaxTCPPipelineMax {
 		cfg.Server.TCPPipelineMax = clampMaxTCPPipelineMax
+	}
+	if cfg.Resolver.UpstreamTimeout > clampMaxUpstreamTimeout {
+		cfg.Resolver.UpstreamTimeout = clampMaxUpstreamTimeout
 	}
 }
 

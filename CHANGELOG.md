@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-05-29
+
+### Hardened
+- **`clampConfigBounds` now caps `resolver.upstream_timeout` at 60s** — the first duration-typed knob added to the clamp set (previous clamps covered integer fields). A YAML typo of `upstream_timeout: 24h` (intended 2-4s) lets a single failing query pin a worker goroutine for the full timeout before the deadline fires — a slow-loris amplifier that bypasses the per-worker semaphore (the goroutine stays held, semaphore slot not released) and the per-server idle eviction (the worker IS active, just stuck on an unresponsive upstream). 60s is well above the legitimate upper bound: the default config is 2s, production tuning runs 5-10s for slow authorities, and 60s is paranoid retry-budget on a flapping DNSSEC chain. Anything beyond 60s is operationally broken regardless of intent. New constant `clampMaxUpstreamTimeout = 60 * time.Second` keeps the bound explicit. Pin matrix in [config/clamp_config_test.go](config/clamp_config_test.go) extended for the duration field: 10× over-cap clamps to ceiling; realistic 5s passes through unchanged.
+
 ## [0.8.7] - 2026-05-29
 
 ### Hardened
