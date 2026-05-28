@@ -143,6 +143,14 @@ func (s *AdminServer) handleNTAAdd(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "zone is required"})
 		return
 	}
+	// RFC 1035 §2.3.4 — domain name length cap. An NTA "zone" field
+	// is a DNS name; refuse anything longer so a malformed admin POST
+	// cannot persist a multi-MB string into the NTA store (which is
+	// in-memory and consulted on every validation decision).
+	if len(zone) > 255 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "zone exceeds RFC 1035 §2.3.4 length cap"})
+		return
+	}
 
 	var expiry time.Time
 	switch {
@@ -201,6 +209,10 @@ func (s *AdminServer) handleNTARemove(w http.ResponseWriter, r *http.Request) {
 	zone := strings.TrimSpace(r.URL.Query().Get("zone"))
 	if zone == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "zone query parameter required"})
+		return
+	}
+	if len(zone) > 255 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "zone exceeds RFC 1035 §2.3.4 length cap"})
 		return
 	}
 	removed := store.Remove(zone)
