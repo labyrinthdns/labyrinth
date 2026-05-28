@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.53] - 2026-05-28
+
+### Hardened
+- **Singleflight gate on `blocklist.Manager.RefreshAll()`** — the background refresh ticker and the admin `/api/blocklist/refresh` POST both call `RefreshAll`, which iterates every configured list URL and pulls each upstream in sequence. If an operator clicked the admin button while a tick was already running (or clicked it twice in quick succession because the first didn't return fast enough), N concurrent `RefreshAll` goroutines would each fetch every upstream — multiplying outbound bandwidth, file-descriptor pressure, and (worse) the chance of being rate-limited or banned by the upstream blocklist hosts. A new `refreshing atomic.Bool` on the Manager acts as a CAS-only gate at the top of `RefreshAll`: the first caller flips it true and runs; subsequent callers see `CompareAndSwap(false, true) == false`, log `blocklist refresh already in progress; skipping`, and return immediately. The gate is reset via `defer` so a panicking refresh still unblocks the next tick. Pin in [blocklist/refresh_singleflight_test.go](blocklist/refresh_singleflight_test.go) stands up an upstream that signals when it's hit and holds until released; the test starts one refresh, waits for the signal, spawns 9 contending refreshes that must all CAS-fail and return immediately, then releases the held refresh — asserting upstream hits = 1.
+
 ## [0.7.52] - 2026-05-28
 
 ### Hardened
