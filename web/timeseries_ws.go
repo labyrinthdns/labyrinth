@@ -161,8 +161,16 @@ func (s *AdminServer) handleTimeSeriesWS(w http.ResponseWriter, r *http.Request)
 		}
 	}()
 
-	// Send initial snapshot.
-	if err := s.pushTimeSeries(ctx, conn, sub); err != nil {
+	// Send initial snapshot. Hold subMu while reading the subscription
+	// pointer: the read goroutine started above can be concurrently
+	// rewriting *sub if a client races a subscription update against
+	// the initial push. Without the lock, the data race is real even
+	// though the loop's later ticker fires DO copy-under-lock. Pass a
+	// copy so we don't hold the lock across the network write.
+	subMu.Lock()
+	initialSub := *sub
+	subMu.Unlock()
+	if err := s.pushTimeSeries(ctx, conn, &initialSub); err != nil {
 		return
 	}
 
