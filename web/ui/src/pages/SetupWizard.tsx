@@ -185,9 +185,10 @@ export default function SetupWizard() {
                   value={adminPassword}
                   onChange={(e) => setAdminPassword(e.target.value)}
                   className={inputClass}
-                  placeholder="Minimum 8 characters"
+                  placeholder="8–72 characters"
                   required
                   minLength={8}
+                  maxLength={72}
                 />
               </div>
               <div>
@@ -202,6 +203,7 @@ export default function SetupWizard() {
                   className={inputClass}
                   placeholder="Repeat password"
                   required
+                  maxLength={72}
                 />
               </div>
             </div>

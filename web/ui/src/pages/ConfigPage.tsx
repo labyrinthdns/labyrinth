@@ -733,9 +733,9 @@ export default function ConfigPage() {
 
         {/* ── Password ───────────────────────────────────────── */}
         <Section title="Change Password">
-          <Field label="Current Password" path="web.auth.password_hash"><input type="password" className={inputClass} value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} /></Field>
-          <Field label="New Password" path=""><input type="password" className={inputClass} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} /></Field>
-          <Field label="Confirm" path=""><input type="password" className={inputClass} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} /></Field>
+          <Field label="Current Password" path="web.auth.password_hash"><input type="password" className={inputClass} value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} maxLength={72} /></Field>
+          <Field label="New Password" path=""><input type="password" className={inputClass} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} minLength={8} maxLength={72} /></Field>
+          <Field label="Confirm" path=""><input type="password" className={inputClass} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} minLength={8} maxLength={72} /></Field>
           <button type="button" className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-300" onClick={changePassword} disabled={busy}>Change Password</button>
         </Section>
 
