@@ -546,6 +546,17 @@ const (
 	clampMaxQueryLogBuffer    = 1_000_000
 	clampMaxTopClientsLimit   = 1_000_000
 	clampMaxTopDomainsLimit   = 1_000_000
+	// server.max_udp_workers and server.max_tcp_connections are
+	// multiplier-on-make() values: the server constructors do
+	// `make(chan struct{}, max)` to bound concurrent request goroutines.
+	// A typo'd YAML `max_udp_workers: 1000000000` (intended 1k) allocates
+	// ~8 GB of channel storage (8 bytes per slot) at server start and
+	// instant-OOMs the process before any DNS query is served. 100k is
+	// well above any legitimate workload (a single resolver handling
+	// 100k concurrent in-flight queries already exceeds the open-file
+	// limits on most kernels) and well under the OOM threshold.
+	clampMaxUDPWorkers        = 100_000
+	clampMaxTCPConns          = 100_000
 )
 
 // clampConfigBounds enforces sane upper bounds on integer fields.
@@ -572,6 +583,12 @@ func clampConfigBounds(cfg *Config) {
 	}
 	if cfg.Web.TopDomainsLimit > clampMaxTopDomainsLimit {
 		cfg.Web.TopDomainsLimit = clampMaxTopDomainsLimit
+	}
+	if cfg.Server.MaxUDPWorkers > clampMaxUDPWorkers {
+		cfg.Server.MaxUDPWorkers = clampMaxUDPWorkers
+	}
+	if cfg.Server.MaxTCPConns > clampMaxTCPConns {
+		cfg.Server.MaxTCPConns = clampMaxTCPConns
 	}
 }
 

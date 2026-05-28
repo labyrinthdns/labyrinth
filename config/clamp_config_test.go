@@ -26,6 +26,8 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	cfg.Web.QueryLogBuffer = clampMaxQueryLogBuffer * 10
 	cfg.Web.TopClientsLimit = clampMaxTopClientsLimit * 10
 	cfg.Web.TopDomainsLimit = clampMaxTopDomainsLimit * 10
+	cfg.Server.MaxUDPWorkers = clampMaxUDPWorkers * 10
+	cfg.Server.MaxTCPConns = clampMaxTCPConns * 10
 
 	clampConfigBounds(cfg)
 
@@ -50,6 +52,12 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	if got := cfg.Web.TopDomainsLimit; got != clampMaxTopDomainsLimit {
 		t.Errorf("Web.TopDomainsLimit = %d, want %d", got, clampMaxTopDomainsLimit)
 	}
+	if got := cfg.Server.MaxUDPWorkers; got != clampMaxUDPWorkers {
+		t.Errorf("Server.MaxUDPWorkers = %d, want %d", got, clampMaxUDPWorkers)
+	}
+	if got := cfg.Server.MaxTCPConns; got != clampMaxTCPConns {
+		t.Errorf("Server.MaxTCPConns = %d, want %d", got, clampMaxTCPConns)
+	}
 }
 
 // TestClampConfigBounds_UnderCapValuesPassThrough pins that legitimate
@@ -65,6 +73,8 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	cfg.Web.QueryLogBuffer = 5000
 	cfg.Web.TopClientsLimit = 5000
 	cfg.Web.TopDomainsLimit = 5000
+	cfg.Server.MaxUDPWorkers = 1024
+	cfg.Server.MaxTCPConns = 256
 
 	clampConfigBounds(cfg)
 
@@ -76,6 +86,12 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	}
 	if cfg.Web.QueryLogBuffer != 5000 {
 		t.Errorf("Web.QueryLogBuffer got clamped from 5000 to %d", cfg.Web.QueryLogBuffer)
+	}
+	if cfg.Server.MaxUDPWorkers != 1024 {
+		t.Errorf("Server.MaxUDPWorkers got clamped from 1024 to %d", cfg.Server.MaxUDPWorkers)
+	}
+	if cfg.Server.MaxTCPConns != 256 {
+		t.Errorf("Server.MaxTCPConns got clamped from 256 to %d", cfg.Server.MaxTCPConns)
 	}
 }
 
