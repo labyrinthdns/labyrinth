@@ -117,6 +117,23 @@ const (
 	EDECodeNoReachableAuthority    uint16 = 22
 	EDECodeNetworkError            uint16 = 23
 	EDECodeInvalidData             uint16 = 24
+	// EDECodeSignatureExpiredBeforeValid — RFC 9606. The signer
+	// produced an RRSIG whose Expiration timestamp is earlier than
+	// its Inception timestamp; under no clock could it ever validate.
+	// Distinct from a normal "expired" (7) because this is a signer
+	// bug rather than a clock-skew situation.
+	EDECodeSignatureExpiredBeforeValid uint16 = 25
+	// EDECodeTooEarly — RFC 9539. Used by upstreams that observed
+	// the resolver send a 0-RTT query before the TLS handshake
+	// completed in a way they could not safely replay. Lets the
+	// client know to retry once handshake completes.
+	EDECodeTooEarly uint16 = 26
+	// EDECodeUnsupportedNSEC3IterationsValue — RFC 9276 §3.2. The
+	// resolver refused to walk an NSEC3 chain because its iteration
+	// count exceeded the local cap (MaxNSEC3Iterations); the response
+	// is reported Insecure rather than Bogus so the client knows to
+	// trust it for non-DNSSEC purposes.
+	EDECodeUnsupportedNSEC3IterationsValue uint16 = 27
 )
 
 // EDNS option codes.
