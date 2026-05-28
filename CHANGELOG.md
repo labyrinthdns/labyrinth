@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.36] - 2026-05-28
+
+### Changed
+- **UI password inputs honour bcrypt 72-byte cap (`maxLength={72}`) on Setup Wizard, Login, and Change Password forms** — pairs with the v0.7.35 backend gate. Without browser-level `maxLength` the user could type a 200-character "extra-secure" passphrase, see the input accept it, then receive a backend rejection on submit — a frustrating UX that hides the real reason. The HTML `maxLength` attribute makes the browser refuse keystrokes past 72, giving immediate feedback aligned with the backend contract. Setup Wizard now reads `8–72 characters` in its placeholder instead of `Minimum 8 characters` so the user understands both bounds. The Change Password form on ConfigPage carries `minLength={8}` + `maxLength={72}` so client-side validation rejects too-short and too-long inputs before the network round trip.
+
 ## [0.7.35] - 2026-05-28
 
 ### Hardened
