@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-29
+
+### Milestone — defence-in-depth tier
+
+v0.8.0 closes the 0.7.x hardening sweep. Across v0.7.53 → v0.7.70 every unbounded map, list, ring buffer, and admin-write race that an audit could surface was capped, gated, or pinned by a regression test. The new minor consolidates those guarantees into a single tier operators can quote: **no remote-attacker-reachable map grows past 1 M entries; no admin-API mutation can race itself; no oversized YAML field reaches a `make()` call.** The bounded surfaces are: `RateLimiter.clients` (1 M), `AdminServer.clientQueryNum` (1 M), NSEC/NSEC3 aggressive-use indexes (50 k zones), DNSSEC `keyCache` (50 k zones), DNSSEC `infraCache` (100 k entries, plus 10 k `LameZones` per NS), `MaxNTAEntries` (10 k), `MaxCustomBlocklistEntries` (100 k), `QueryLog` capacity (1 M), and `clampConfigBounds` ceilings on `Resolver.MaxDepth` / `Cache.MaxEntries` / rate-limit `Rate`/`Burst` / query-log buffer / top-clients / top-domains. The serialized admin paths are: blocklist refresh, setup wizard, JWT change-password, config raw PUT, dashboard-layout save, NTA install, and update apply — each behind a singleflight CAS gate or `configFileMu` write-lock. Cache-Control `no-store` is now set at the top of every DoH and TLS-admin handler, so error responses inherit it (a stale 429 error response cached in a CDN was the original gap).
+
+### Hardened
+- **Explicit `SetReadLimit(MaxWebSocketMessageBytes)` on every WebSocket Accept path** — `coder/websocket` defaults the per-message read limit to 32 KiB. All three admin WS endpoints — `/api/queries/stream`, `/api/diagnostics/trace/ws`, `/api/stats/timeseries/ws` — receive only tiny JSON control messages (a trace start/cancel; a subscription update) that never exceed a few hundred bytes in legitimate use. Inheriting the library default left the bound implicit: an upstream bump (or a future maintainer turning off the cap to debug a different issue) would silently widen the per-conn read buffer to whatever the new default was. Pinning to `MaxWebSocketMessageBytes = 4 KiB` immediately after every `websocket.Accept` makes the bound part of *this* codebase, not an upstream library promise. The cap is large enough to admit any realistic client message plus tagged-protocol headroom, small enough that an authenticated client cannot use the live-stream socket as a memory-bloat vector. On over-cap, the library closes the connection with `StatusMessageTooBig` (1009) and the handler's read loop returns cleanly — no half-buffered allocation, no goroutine leak. Pins in [web/ws_read_limit_test.go](web/ws_read_limit_test.go): (a) end-to-end test that dials the timeseries WS, sends a 64 KiB payload (over both the 4 KiB cap and the 32 KiB library default), and asserts the next read errors — the over-cap message did not reach the handler; (b) tripwire on the constant so a refactor cannot silently bump it to or past the library default (which would re-enable the original gap).
+
 ## [0.7.70] - 2026-05-29
 
 ### Hardened
