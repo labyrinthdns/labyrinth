@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-05-28
+
+### Hardened
+- **RFC 8109 — Root hint priming query shape (two-pin set)** — two new pins in [resolver/rfc8109_root_priming_test.go](resolver/rfc8109_root_priming_test.go) lock the priming contract. The first instruments a mock root listener that captures the first inbound query and asserts QNAME = root (`""` or `"."`), QTYPE = NS (2), QCLASS = IN (1); a regression to QTYPE=A or QTYPE=ANY would still draw a NOERROR-empty from a real root but would leave the root NS cache empty, defeating the priming. The second pin (`SetsReadyFlag`) confirms `PrimeRootHints` marks the resolver Ready even when priming itself fails — a regression that gated Ready on cache.Store would deadlock startup under a root NS outage even though normal queries against pre-seeded zones could still serve.
+
 ## [0.7.6] - 2026-05-28
 
 ### Added
