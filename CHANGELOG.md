@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.64] - 2026-05-29
+
+### Hardened
+- **100k-entry LRU cap on `InfraCache.entries` + 10k-zone cap per `NSInfo.LameZones`** — both maps were populated on every upstream-nameserver contact and on every lame-referral detection respectively, with no upper bound. Between `CleanStale` ticks (operator-configured interval, default minutes) a remote attacker who controls an authoritative server can drive the resolver into contacting thousands of distinct NS IPs per query by serving a fresh unique NS set each time, and can flag a single attacker-controlled NS as lame for millions of attacker-crafted sub-zones. Both maps then grow into resolver RAM until the next cleanup. `InfraCache.entries` is now capped at `MaxInfraCacheEntries = 100_000` with oldest-`LastUsed` LRU eviction on insert past the cap (the cache exists to remember "good recent servers", so the stalest entry is exactly the right loss). Each `NSInfo.LameZones` is capped at `MaxLameZonesPerNS = 10_000`; over-cap `RecordLame` calls are silent no-ops while RTT/FailCount tracking continues, so the NSInfo keeps performing its primary role even after the lame-tracking is saturated. Pins in [resolver/infracache_cap_test.go](resolver/infracache_cap_test.go): (a) seeds the cache to capacity with monotonically-increasing `LastUsed`, fires one more `RecordRTT`, and asserts the cache size stays at the cap AND the OLDEST entry is the one that got evicted (regression to FIFO / random eviction would flag); (b) fills a single NS's `LameZones` to the cap and asserts further distinct zones are dropped while idempotent re-records and `RecordRTT` against the same IP continue to work.
+
 ## [0.7.63] - 2026-05-28
 
 ### Hardened
