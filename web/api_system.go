@@ -57,6 +57,23 @@ func (s *AdminServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleLivez handles GET /api/system/livez — liveness probe.
+// Distinct from readyz: liveness asks "is the process alive at all"
+// and only fails when the process is hung or has lost its event
+// loop. The HTTP handler responding at all proves liveness, so this
+// endpoint just emits 200 unconditionally. A K8s liveness probe
+// failing means the pod restarts; tying that to resolver-ready state
+// would cause unnecessary restarts during slow priming. Body-less
+// for the same allocation-zero reasons as readyz.
+func (s *AdminServer) handleLivez(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+}
+
 // handleVersion handles GET /api/system/version — version info.
 func (s *AdminServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

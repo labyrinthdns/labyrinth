@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.25] - 2026-05-28
+
+### Added
+- **`/api/system/livez` — liveness probe (always 200)** — completes the K8s probe pair (`livez` + `readyz`) so operators can wire `livenessProbe` and `readinessProbe` to distinct endpoints. Liveness asks "is the process alive at all"; the HTTP handler answering proves liveness. Tying livez to resolver-ready state would cause K8s to restart pods during slow root priming — the exact failure mode the liveness/readiness split is designed to prevent. Body-less, allocation-zero, no-store. Pins lock the 200-regardless-of-resolver-state contract and the 405 on non-GET.
+
 ## [0.7.24] - 2026-05-28
 
 ### Added
