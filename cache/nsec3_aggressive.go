@@ -223,6 +223,18 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 				if typeBitmapHas(iv.typeBitmap, qtype) {
 					continue
 				}
+				// RFC 4035 §5.4 / RFC 6840 §4.4 — same delegation-NSEC
+				// guard as the NSEC sibling in nsec_aggressive.go: a
+				// parent-side NSEC3 at the zone cut has NS set and SOA
+				// clear; its bitmap can only deny types the PARENT
+				// publishes at the delegation point, never types the
+				// CHILD zone may serve. Without this gate an injected
+				// delegation NSEC3 would synthesise NODATA for child-
+				// zone records, hiding their real existence.
+				if typeBitmapHas(iv.typeBitmap, dns.TypeNS) &&
+					!typeBitmapHas(iv.typeBitmap, dns.TypeSOA) {
+					continue
+				}
 				if entry, ok := c.buildNSEC3SynthEntry(iv, now, NegNoData, dns.RCodeNoError); ok {
 					if c.metrics != nil {
 						c.metrics.IncNSEC3AggressiveSynthND()
