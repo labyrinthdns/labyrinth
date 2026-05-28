@@ -141,6 +141,16 @@ func securityHeaders(tlsActive func() bool) func(http.Handler) http.Handler {
 			if h.Get("X-Frame-Options") == "" {
 				h.Set("X-Frame-Options", "DENY")
 			}
+			// Search-engine indexing: the admin UI is internal infra and
+			// must never be in a public search index, even if an operator
+			// accidentally exposes the management port to the internet
+			// (or runs Labyrinth on a routable cloud instance during
+			// commissioning). X-Robots-Tag is the HTTP-header equivalent
+			// of <meta name="robots" content="noindex,nofollow"> and is
+			// honoured by every major crawler.
+			if h.Get("X-Robots-Tag") == "" {
+				h.Set("X-Robots-Tag", "noindex, nofollow")
+			}
 			// MIME-sniffing
 			if h.Get("X-Content-Type-Options") == "" {
 				h.Set("X-Content-Type-Options", "nosniff")
