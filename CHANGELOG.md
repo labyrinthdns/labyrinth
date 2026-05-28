@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.65] - 2026-05-29
+
+### Hardened
+- **1M-client LRU cap on `security.RateLimiter.clients`** — the per-IP token-bucket map grew without bound between `StartCleanup` ticks (default 5 minutes). DNS UDP source addresses are trivially spoofable from a single attacking host: an attacker sending one query per spoofed source IP can populate millions of tokenBucket entries before any cleanup runs, blowing through resolver RAM long before the per-IP rate cap matters. This is a remote, unauthenticated, pre-resolver gap — the rate limiter sits in front of the DNS handler so it sees every incoming UDP/TCP packet, including spoofed ones. `MaxRateLimiterClients = 1_000_000` caps the map; on insert past the cap, the OLDEST `lastTime` bucket is evicted to make room. Eviction does NOT degrade the per-IP isolation contract: an attacker who can already spoof unlimited distinct source IPs already gets a fresh per-IP budget on every request — the cap closes the memory growth, not the rate-limit semantics. Pins in [security/ratelimit_cap_test.go](security/ratelimit_cap_test.go): (a) seeds to a small test-only cap with monotonic `lastTime`, fires one over-cap `Allow`, asserts the size stays at cap AND the OLDEST entry was evicted while the new IP is now tracked; (b) drains an attacker's bucket past burst, floods the limiter with distinct IPs to cycle the LRU, asserts the limiter remains functional and the size never exceeds the cap.
+
 ## [0.7.64] - 2026-05-29
 
 ### Hardened
