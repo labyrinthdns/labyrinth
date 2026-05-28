@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.50] - 2026-05-28
+
+### Hardened
+- **64 KiB cap on cluster fanout peer-response body drain** — `fanoutCacheFlush` drains the response body via `io.Copy(io.Discard, resp.Body)` so the connection can be reused by HTTP keep-alive (Go's HTTP/1.x contract requires the body be drained before close to reuse the conn). Without a size cap, a malicious or buggy cluster peer can stream a multi-gigabyte body and pin the resolver's goroutine + memory until the 5s client timeout fires — possibly after consuming gigabytes of network bandwidth. The drain now wraps the body in `io.LimitReader(resp.Body, 64<<10)`; 64 KiB is well above any legitimate fanout response (a few hundred bytes of JSON status). Pin in [web/api_cache_fanout_cap_test.go](web/api_cache_fanout_cap_test.go) stands up a fake peer streaming 1 MiB and asserts fanout completes in well under the 5s timeout.
+
 ## [0.7.49] - 2026-05-28
 
 ### Hardened

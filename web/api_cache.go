@@ -279,7 +279,11 @@ func (s *AdminServer) fanoutCacheFlush() (int, int) {
 			s.logger.Warn("cluster cache flush request failed", "peer", peer.Name, "error", err)
 			continue
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// Drain the body so the connection can be reused by keepalive,
+		// but cap the read to avoid a malicious or buggy peer streaming
+		// a multi-GB body before we close. 64 KiB is well above any
+		// legitimate fanout response (a few hundred bytes of JSON).
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		_ = resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
