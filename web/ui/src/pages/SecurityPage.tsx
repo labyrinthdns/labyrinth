@@ -36,6 +36,8 @@ const EDE_LABELS: Record<string, string> = {
   '25': 'Signature Expired Before Valid',
   '26': 'Too Early',
   '27': 'Unsupported NSEC3 Iterations',
+  '28': 'Unable to Conform to Policy',
+  '29': 'Synthesized',
 }
 
 // Security panel — operator-facing snapshot of the three defensive

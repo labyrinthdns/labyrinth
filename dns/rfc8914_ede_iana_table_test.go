@@ -2,17 +2,18 @@ package dns
 
 import "testing"
 
-// TestEDECodes_IANA0Through27 pins the complete EDE info code table
-// against the IANA registry as of January 2026 (RFC 8914 base, RFC
-// 9606 +25, RFC 9539 +26, RFC 9276 +27). Without this pin, a typo
-// while adding code 28+ in the future could silently shift one of the
-// existing values, and every dashboard / log / EDE consumer that
-// relies on the numeric code would mis-classify the cause.
+// TestEDECodes_IANA0Through29 pins the complete EDE info code table
+// against the IANA registry as of May 2026 (RFC 8914 base 0-24, RFC
+// 9606 +25, RFC 9539 +26, RFC 9276 +27, RFC 8914 §4.28 "Unable to
+// Conform to Policy", RFC 8914 §4.29 "Synthesized"). Without this pin,
+// a typo while adding code 30+ in the future could silently shift one
+// of the existing values, and every dashboard / log / EDE consumer
+// that relies on the numeric code would mis-classify the cause.
 //
 // The numeric values are wire-format and CANNOT be renumbered. They
 // are pinned individually so a misaligned single line is caught at
 // build time rather than as a runtime mystery.
-func TestEDECodes_IANA0Through27(t *testing.T) {
+func TestEDECodes_IANA0Through29(t *testing.T) {
 	cases := []struct {
 		got  uint16
 		want uint16
@@ -46,6 +47,8 @@ func TestEDECodes_IANA0Through27(t *testing.T) {
 		{EDECodeSignatureExpiredBeforeValid, 25, "SignatureExpiredBeforeValid (RFC 9606)"},
 		{EDECodeTooEarly, 26, "TooEarly (RFC 9539)"},
 		{EDECodeUnsupportedNSEC3IterationsValue, 27, "UnsupportedNSEC3IterationsValue (RFC 9276)"},
+		{EDECodeUnableToConformToPolicy, 28, "UnableToConformToPolicy"},
+		{EDECodeSynthesized, 29, "Synthesized"},
 	}
 
 	for _, c := range cases {
@@ -69,6 +72,8 @@ func TestEDECodes_Late_AreDistinct(t *testing.T) {
 		EDECodeSignatureExpiredBeforeValid,
 		EDECodeTooEarly,
 		EDECodeUnsupportedNSEC3IterationsValue,
+		EDECodeUnableToConformToPolicy,
+		EDECodeSynthesized,
 	}
 	seen := make(map[uint16]int)
 	for _, c := range codes {
