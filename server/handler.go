@@ -723,6 +723,23 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) 
 	}
 	h.metrics.IncQueries(qtypeStr)
 
+	// RFC 1035 §3.2.4 — only the IN class is supported by this resolver.
+	// CHAOS (3) is sometimes used by operators to probe `version.bind. CH
+	// TXT`; we deliberately don't echo identifying information for that
+	// (a hardening choice). HS (4) is historical. ANY (255) at the
+	// question level is rarely meaningful for a recursive resolver and
+	// many implementations explicitly refuse it. Refuse anything other
+	// than IN with REFUSED + EDE 21 (Not Supported) so an operator
+	// debugging a misrouted client sees the right diagnostic.
+	if q.Class != dns.ClassIN {
+		h.metrics.IncResponses("REFUSED")
+		if queryHasEDNS(query) {
+			return h.buildErrorWithEDE(query, dns.RCodeRefused, dns.EDECodeNotSupported,
+				"only QCLASS=IN is supported")
+		}
+		return h.buildError(query, dns.RCodeRefused)
+	}
+
 	// 2.4 Per-zone ACL check (requires parsed qname)
 	if h.acl != nil && !h.acl.CheckWithZone(clientIP, q.Name) {
 		h.metrics.IncResponses("REFUSED")

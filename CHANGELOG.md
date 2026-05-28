@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.21] - 2026-05-28
+
+### Added
+- **QCLASS != IN refused with EDE 21 (Not Supported)** — RFC 1035 §3.2.4 defines IN/CS/CH/HS classes; Labyrinth supports only IN. The handler previously let non-IN queries fall through to the resolver, which doesn't know about non-IN delegations — the resolution would fail with an unclear error. Now the gate refuses non-IN with REFUSED + EDE 21 so an operator debugging a misrouted client sees the right diagnostic. CHAOS-class probes like `version.bind. CH TXT` (a passive recon vector) are also refused — Labyrinth deliberately does not echo software identification. New [server/rfc1035_qclass_test.go](server/rfc1035_qclass_test.go) pins (a) RCODE = REFUSED, (b) EDE 21 in the response when the client speaks EDNS, (c) the per-EDE counter went up by exactly one, (d) a negative-control IN-class query is not gated.
+
 ## [0.7.20] - 2026-05-28
 
 ### Hardened
