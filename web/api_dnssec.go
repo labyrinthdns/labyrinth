@@ -178,7 +178,14 @@ func (s *AdminServer) handleNTAAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store.Add(zone, expiry, req.Reason)
+	if err := store.Add(zone, expiry, req.Reason); err != nil {
+		// 507 Insufficient Storage when the per-store cap is hit.
+		// The admin UI shows a clear "you've hit the cap" message;
+		// without this the request would silently no-op and the
+		// operator would assume the NTA installed but see no effect.
+		jsonResponse(w, http.StatusInsufficientStorage, map[string]string{"error": err.Error()})
+		return
+	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"status":     "ok",
 		"zone":       zone,

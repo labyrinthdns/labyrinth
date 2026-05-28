@@ -1,10 +1,28 @@
 package dnssec
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"time"
 )
+
+// MaxNTAEntries caps the size of an NTAStore. /api/dnssec/nta POST is
+// authenticated, but a runaway operator script or a malicious admin
+// with valid credentials could otherwise blow up the in-memory store
+// (consulted on every DNSSEC-validated query through Match) by
+// spamming distinct zone names. Real operator NTA lists are tiny
+// (handful — RFC 7646 §6 explicitly warns NTAs are an exceptional
+// measure, not a normal operating mode). 10k is well above any
+// plausible legitimate workload and tiny enough that the entire map
+// fits in CPU cache.
+const MaxNTAEntries = 10_000
+
+// ErrNTAStoreFull is returned by Add when the store has reached
+// MaxNTAEntries. The /api/dnssec/nta admin handler surfaces this as
+// 507 Insufficient Storage so the operator sees the cap rather than
+// a silent no-op.
+var ErrNTAStoreFull = errors.New("NTA store is full")
 
 // NegativeTrustAnchor (NTA, RFC 7646) is an operator-installed override
 // that suppresses DNSSEC validation for a specific zone subtree for a
@@ -83,21 +101,31 @@ func (s *NTAStore) SetClock(fn func() time.Time) {
 // operator action). Expiry MUST be in the future at the moment of the
 // call; an Expiry already in the past is silently ignored — the caller
 // should detect this and surface an error if it matters.
-func (s *NTAStore) Add(zone string, expiry time.Time, reason string) {
+//
+// Returns ErrNTAStoreFull when the store is at MaxNTAEntries capacity
+// and the call would create a NEW entry (replacements of existing
+// zones continue to succeed at the cap because they do not grow the
+// map). nil on success, including the silent no-ops for empty zone
+// names and past-expiry entries (those are not error states).
+func (s *NTAStore) Add(zone string, expiry time.Time, reason string) error {
 	normalized := normalizeNTAName(zone)
 	if normalized == "" {
-		return
+		return nil
 	}
 	if !expiry.After(s.nowFunc()) {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.entries[normalized]; !exists && len(s.entries) >= MaxNTAEntries {
+		return ErrNTAStoreFull
+	}
 	s.entries[normalized] = NegativeTrustAnchor{
 		Zone:   normalized,
 		Expiry: expiry,
 		Reason: reason,
 	}
+	return nil
 }
 
 // Remove deletes the NTA for the given zone. No-op if the zone is not
@@ -218,7 +246,10 @@ func LoadNTAStoreFromStrings(entries []string) (*NTAStore, []string) {
 			failed = append(failed, raw+" (bad expiry: "+err.Error()+")")
 			continue
 		}
-		store.Add(zone, expiry, reason)
+		if addErr := store.Add(zone, expiry, reason); addErr != nil {
+			failed = append(failed, raw+" ("+addErr.Error()+")")
+			continue
+		}
 		// Add silently drops past-expiry entries; surface that as a
 		// soft failure so the operator notices in logs.
 		if _, ok := store.entries[normalizeNTAName(zone)]; !ok {
