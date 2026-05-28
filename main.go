@@ -309,6 +309,33 @@ func run() int {
 	// Infra cache cleanup (stale NS RTT entries)
 	go res.InfraCache().StartCleanup(ctx, infraCleanupInterval, infraEntryMaxAge)
 
+	// NTA store cleanup. NTAStore.Cleanup existed since v0.6.x but was
+	// never wired up — expired NTAs stayed resident, consuming slots
+	// in the MaxNTAEntries=10000 cap (v0.7.61) even though they had no
+	// effect on validation (Lookup checks expiry inline). An attacker
+	// or careless operator who installs 10k 1-minute-expiry NTAs fills
+	// the cap permanently until the resolver is restarted — no admin
+	// API exists to batch-prune. The goroutine ticks every minute; it
+	// no-ops when DNSSEC is disabled or the NTA store has not been
+	// lazily created yet (the validator might come up later, after
+	// PrimeRootHints, and the store is created on first install).
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if v := res.DNSSECValidator(); v != nil {
+					if store := v.NTAStore(); store != nil {
+						store.Cleanup()
+					}
+				}
+			}
+		}
+	}()
+
 	// Root hint priming
 	go func() {
 		if err := res.PrimeRootHints(); err != nil {
