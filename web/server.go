@@ -83,9 +83,23 @@ type AdminServer struct {
 	nextID                atomic.Uint64
 	topClients            *TopTracker
 	topDomains            *TopTracker
+	// clientQueryNum tracks a monotonic per-client query counter so
+	// the dashboard can show "this is the N-th query from 10.0.0.5".
+	// Populated lazily on every distinct client IP by RecordQuery.
+	// Before v0.7.66 the map grew without bound between cleanup
+	// ticks (default 5 minutes); a busy ISP-side resolver can see
+	// 100k+ distinct legitimate clients in that window, and a UDP-
+	// source-spoofing attacker can populate millions. The cap is
+	// enforced by RecordQuery with oldest-lastAccess LRU eviction;
+	// same defence-in-depth pattern as RateLimiter.clients (v0.7.65).
 	clientQueryNum        map[string]*clientQueryEntry
 	clientNumMu           sync.Mutex
 	clientCleanupInterval time.Duration
+	// clientQueryNumCapOverride lets tests use a smaller cap so the
+	// over-cap LRU eviction path can be exercised without inserting
+	// MaxClientQueryNumEntries entries. Zero means use the package
+	// constant; production paths never set this.
+	clientQueryNumCapOverride int
 	updateCache           *UpdateInfo
 	updateCheckedAt       time.Time
 	updateMu              sync.RWMutex
@@ -401,6 +415,49 @@ func defaultAltSvc(h3 *http3.Server) string {
 	return fmt.Sprintf(`h3=":%d"; ma=2592000`, port)
 }
 
+// MaxClientQueryNumEntries caps the size of AdminServer.clientQueryNum.
+// The map is populated lazily by RecordQuery on every distinct client
+// IP the resolver sees, and the TTL cleanup (default 5 minutes) only
+// evicts entries idle past 2x the cleanup interval — between ticks a
+// UDP-source-spoofing attacker can populate millions of entries from a
+// single host, and even a busy ISP-side deployment can see 100k+
+// distinct legitimate clients in a 10-minute window. The cap stops
+// unbounded growth without changing the per-client counter contract:
+// on insert past the cap, the OLDEST-lastAccess entry is evicted. A
+// returning client that was evicted simply restarts at 1 — the
+// counter is a UI convenience, not a security boundary, so resetting
+// it is acceptable when memory pressure forces eviction.
+const MaxClientQueryNumEntries = 1_000_000
+
+// clientQueryNumCap returns the effective cap. Tests set
+// clientQueryNumCapOverride to exercise the cap without inserting
+// MaxClientQueryNumEntries entries up-front; production paths see
+// the zero value and fall back to the package-level cap.
+func (s *AdminServer) clientQueryNumCap() int {
+	if s.clientQueryNumCapOverride > 0 {
+		return s.clientQueryNumCapOverride
+	}
+	return MaxClientQueryNumEntries
+}
+
+// evictOldestClientLocked drops the clientQueryNum entry with the
+// oldest lastAccess timestamp. Caller holds s.clientNumMu.
+func (s *AdminServer) evictOldestClientLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+	for k, v := range s.clientQueryNum {
+		if first || v.lastAccess.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = v.lastAccess
+			first = false
+		}
+	}
+	if oldestKey != "" {
+		delete(s.clientQueryNum, oldestKey)
+	}
+}
+
 // RecordQuery is called from the DNS handler hook to log a query.
 func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached bool, durationMs float64) {
 	id := s.nextID.Add(1)
@@ -409,10 +466,18 @@ func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached boo
 	s.topClients.Inc(client)
 	s.topDomains.Inc(qname)
 
-	// Track per-client query number with TTL-based cleanup
+	// Track per-client query number with TTL-based cleanup AND a
+	// bounded cap so a UDP-source-spoofing attacker cannot inflate
+	// the map between cleanup ticks. The cap is checked only when
+	// inserting a new client; existing clients always update
+	// without restriction so legitimate traffic patterns are
+	// unaffected.
 	s.clientNumMu.Lock()
 	clientEntry, ok := s.clientQueryNum[client]
 	if !ok {
+		if len(s.clientQueryNum) >= s.clientQueryNumCap() {
+			s.evictOldestClientLocked()
+		}
 		clientEntry = &clientQueryEntry{lastAccess: time.Now()}
 		s.clientQueryNum[client] = clientEntry
 	}

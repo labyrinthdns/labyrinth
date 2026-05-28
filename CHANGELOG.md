@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.66] - 2026-05-29
+
+### Hardened
+- **1M-client LRU cap on `AdminServer.clientQueryNum`** — the same class of remote-attacker-reachable unbounded map gap closed for `security.RateLimiter` in v0.7.65, this time on the per-client query-counter map. `RecordQuery` (called from the DNS handler hook on *every* incoming query, before any rate-limit check that would reject a spoofed source) lazily creates a `clientQueryEntry` for each distinct client IP, and the TTL cleanup runs every 5 minutes only evicting entries idle past 2× the interval. A UDP-source-spoofing attacker sending packets from millions of distinct fake sources in that window can pin hundreds of MB of per-client counter state; a busy ISP-side deployment with 100k+ legitimate distinct concurrent clients sees the same growth from honest traffic. `MaxClientQueryNumEntries = 1_000_000` caps the map; on insert past the cap the OLDEST `lastAccess` entry is evicted. The per-client counter is a dashboard UI convenience (numbering the N-th query from a given IP), not a security boundary, so resetting an evicted client's count to 1 when they return is acceptable — a stable bound on memory matters more than perfect counter continuity. Pins in [web/client_query_num_cap_test.go](web/client_query_num_cap_test.go): (a) seeds to a small test-only cap with monotonic `lastAccess`, fires `RecordQuery` for a fresh client, asserts size stays at cap AND the OLDEST entry is the one evicted; (b) verifies the cap only fires on NEW inserts — a returning known client continues to increment its counter normally (the cap must not reset legitimate repeat callers).
+
 ## [0.7.65] - 2026-05-29
 
 ### Hardened
