@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.63] - 2026-05-28
+
+### Hardened
+- **10k-entry cap on the DNSSEC NTA store** — `dnssec.NTAStore.entries` was the third unbounded admin-controlled map in the resolver (after the v0.7.62 blocklist custom maps). `/api/dnssec/nta` POST is authenticated, but a runaway operator script (or a malicious admin) could spam distinct zone names to grow the map without limit, and the map is consulted on *every* DNSSEC-validated query via `Match`. RFC 7646 §6 explicitly defines NTAs as an exceptional measure — real operator NTA lists are a handful — so a 10k cap is multiple orders of magnitude above any plausible legitimate workload and small enough that the entire map stays in CPU cache. `NTAStore.Add` now returns `ErrNTAStoreFull` when the store is at capacity AND the call would create a new entry; replacements of existing zones continue to succeed at the cap (the documented "extend the lockdown window" path must keep working under load). `handleNTAAdd` surfaces the error as `507 Insufficient Storage`. `LoadNTAStoreFromStrings` (config-load path) appends the rejected line to the failed-entries list so operators see the cap in startup logs. Pin in [dnssec/nta_cap_test.go](dnssec/nta_cap_test.go) covers (a) (cap+1)th distinct `Add` returns `ErrNTAStoreFull`, (b) map size unchanged after rejected add, (c) replacement of existing zone at cap still succeeds AND the new expiry took effect.
+
 ## [0.7.62] - 2026-05-28
 
 ### Hardened
