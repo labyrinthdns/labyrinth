@@ -6,6 +6,11 @@ import (
 )
 
 // handleHealth handles GET /api/system/health — JSON health check.
+// Returns 200 when the resolver is ready, 503 Service Unavailable
+// when it is not. The HTTP status code (not just the JSON body) is
+// the load-bearing signal because Kubernetes-style readiness probes
+// gate traffic on status code alone; a 200 with `status:"degraded"`
+// would not pull the pod out of rotation during startup priming.
 func (s *AdminServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -18,11 +23,13 @@ func (s *AdminServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := "healthy"
+	httpStatus := http.StatusOK
 	if !resolverReady {
 		status = "degraded"
+		httpStatus = http.StatusServiceUnavailable
 	}
 
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
+	jsonResponse(w, httpStatus, map[string]interface{}{
 		"status":         status,
 		"resolver_ready": resolverReady,
 	})
