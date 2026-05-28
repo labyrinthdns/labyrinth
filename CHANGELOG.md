@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.27] - 2026-05-28
+
+### Hardened
+- **Panic recovery at the `MainHandler.Handle` boundary — every transport now returns SERVFAIL on a crashing query path** — the existing `defer recover()` blocks in [server/udp.go](server/udp.go) and [server/tcp.go](server/tcp.go) only LOGGED the panic; the client received nothing (UDP) or a torn-down connection (TCP). On UDP this is a feedback-loop DoS: a deterministic panic causes the client to re-query, panic again, and never see an answer. The handler now wraps its body in `defer func() { if r := recover(); r != nil { ...; resp, err = h.buildError(query, dns.RCodeServFail) } }()` so panics escaping from the resolver, validator, cache, or any third-party transport (DoH/DoT/DoQ) become a clean SERVFAIL the client can actually act on. The SERVFAIL counter is incremented so a panic shows up in `labyrinth_responses_total{rcode="SERVFAIL"}` Prometheus alerts, not just in logs. Pins in [server/panic_recovery_test.go](server/panic_recovery_test.go) trigger a real nil-deref via a deliberately misconfigured handler (nil cache) and assert (a) no panic propagates out of `Handle`, (b) the response is SERVFAIL with QR=1, (c) the SERVFAIL counter increments — pre-recovery this test would crash the test process.
+
 ## [0.7.26] - 2026-05-28
 
 ### Hardened

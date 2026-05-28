@@ -560,7 +560,30 @@ func (h *MainHandler) shouldBypassCache(clientIP string) bool {
 	return false
 }
 
-func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) ([]byte, error) {
+func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, err error) {
+	// Defence-in-depth: any panic that escapes from the resolver, the
+	// validator, the cache, or a third-party transport (DoH/DoT/DoQ)
+	// must not propagate out to the transport loop. Letting it crash a
+	// goroutine takes down a single connection on TCP, but on UDP it
+	// silently drops the client's request — they then re-query, which
+	// re-triggers the panic, and we have a feedback loop that looks
+	// like a deterministic DoS. Catch it here, return a SERVFAIL so the
+	// client sees a real answer, and keep the resolver running.
+	defer func() {
+		if r := recover(); r != nil {
+			if h.metrics != nil {
+				h.metrics.IncResponses("SERVFAIL")
+			}
+			if h.logger != nil {
+				h.logger.Error("panic in MainHandler.Handle",
+					"client", clientAddr,
+					"panic", r,
+				)
+			}
+			resp, err = h.buildError(query, dns.RCodeServFail)
+		}
+	}()
+
 	start := time.Now()
 
 	// Extract client IP
