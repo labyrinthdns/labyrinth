@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.39] - 2026-05-28
+
+### Hardened
+- **Non-positive `window` / `interval` rejected on `/api/stats/timeseries`** — `time.ParseDuration` happily returns negative or zero durations for inputs like `-5m` or `0s`. The downstream `Snapshot` / `SnapshotAggregated` routines treat those as "no data" or produce empty bucket arrays — leaking the misleading impression to dashboards and Prometheus scrapers that the resolver has no traffic. The endpoint now refuses both with a clean 400 BEFORE the snapshot call rather than returning a silent empty 200. Pins in [web/api_stats_window_test.go](web/api_stats_window_test.go) cover (a) negative window rejected, (b) zero window rejected, (c) negative interval rejected, (d) negative control — a valid `5m` window still succeeds.
+
 ## [0.7.38] - 2026-05-28
 
 ### Hardened
