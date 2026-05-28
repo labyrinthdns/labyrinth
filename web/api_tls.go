@@ -34,6 +34,7 @@ func (s *AdminServer) handleTLSStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
@@ -55,6 +56,7 @@ func (s *AdminServer) handleTLSRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"certificate cache cleared, will renew on next handshake"}`))
 }
@@ -105,6 +107,12 @@ func (s *AdminServer) handleDNSGuide(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Same no-store contract as every other API response (see
+	// jsonResponse): the guide reflects live config and must never be
+	// cached by an intermediate proxy or the browser. The handler
+	// writes the body directly rather than through jsonResponse so
+	// the header is set explicitly here.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.45] - 2026-05-28
+
+### Hardened
+- **`Cache-Control: no-store` on every handler that bypasses `jsonResponse`** — three handlers in `api_tls.go` (TLS status, TLS renew, and the unauthenticated `/api/dns-guide`) wrote their JSON bodies directly via `json.NewEncoder` / `w.Write` rather than through the shared `jsonResponse` helper. That bypassed the `Cache-Control: no-store` header `jsonResponse` had been emitting since v0.7.20, leaving these three responses cacheable by intermediate proxies and the browser. The most operator-visible impact: an admin who flipped TLS/DoH on or off would see the OLD endpoint URL when reopening the setup-guide page, because the browser had cached the live-config payload. All three handlers now set the no-store header. Pin in [web/api_tls_no_store_test.go](web/api_tls_no_store_test.go) locks the contract on `/api/dns-guide`.
+
 ## [0.7.44] - 2026-05-28
 
 ### Fixed
