@@ -87,6 +87,16 @@ func (s *AdminServer) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refuse non-positive durations explicitly. time.ParseDuration is
+	// happy to return a negative or zero value, but the downstream
+	// snapshot routines treat those as "no data" or produce empty
+	// buckets — which leaks the impression that the resolver has no
+	// traffic. A bad-input 400 is much clearer than a misleading
+	// empty 200.
+	if window <= 0 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "window must be positive"})
+		return
+	}
 	// Cap at 24 hours
 	if window > 24*time.Hour {
 		window = 24 * time.Hour
@@ -100,6 +110,14 @@ func (s *AdminServer) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		interval, err := time.ParseDuration(intervalStr)
 		if err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid interval duration"})
+			return
+		}
+		// Same reasoning as window: a non-positive interval produces
+		// nonsense buckets (division-by-zero risk in the aggregator if
+		// it ever multiplied by interval seconds). 400 is clearer than
+		// a silently-empty response.
+		if interval <= 0 {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "interval must be positive"})
 			return
 		}
 		buckets = s.timeSeries.SnapshotAggregated(window, interval)
