@@ -296,6 +296,15 @@ func run() int {
 	if rl != nil {
 		go rl.StartCleanup(ctx)
 	}
+	if rrl != nil {
+		// RRL is created in NewRRL but its cleanup goroutine was never
+		// started until v0.8.6. Without this, the entries map only
+		// shed on the new MaxRRLEntries cap (1M) — the natural idle-
+		// entry pruning that bounds the steady-state working set was
+		// dormant, and the resolver paid a permanent ~hundreds-of-MB
+		// memory tax under any spoofed-source attack pattern.
+		go rrl.StartCleanup(ctx)
+	}
 
 	// Infra cache cleanup (stale NS RTT entries)
 	go res.InfraCache().StartCleanup(ctx, infraCleanupInterval, infraEntryMaxAge)
