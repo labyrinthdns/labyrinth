@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-05-29
+
+### Hardened
+- **`clampConfigBounds` now caps `server.tcp_idle_timeout` at 1 h and `server.tcp_timeout` at 60 s** — two more duration-typed knobs closing the slow-loris and conn-slot-exhaustion surfaces. `tcp_idle_timeout` controls how long an idle TCP DNS connection stays open before the server closes it; combined with `clampMaxTCPConns = 100 k` (v0.8.1), a 24 h idle timeout lets an attacker holding 100 k idle TCP connections occupy every conn slot for a day and prevent legitimate clients from connecting. RFC 7766 §6.2 recommends ~30 s for non-keepalive flows and 5 min for keepalive; 1 h is the paranoid upper bound for long-poll observability tools. `tcp_timeout` is the per-request read/write deadline; a 24 h value lets a single slow-loris connection pin a worker (same DoS class as the v0.8.8 `upstream_timeout` clamp), and 60 s matches that ceiling. Pin matrix in [config/clamp_config_test.go](config/clamp_config_test.go) extended for both duration fields: 10× over-cap clamps to ceiling; realistic values (5 min idle, 10 s timeout) pass through unchanged.
+
 ## [0.8.8] - 2026-05-29
 
 ### Hardened
