@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.22] - 2026-05-28
+
+### Added
+- **Prometheus export — DNSSEC verdicts, blocked-queries, and per-EDE breakdown** — the existing Prometheus `/metrics` exposition was missing three counter families that observability tooling relies on: DNSSEC verdict ratio (operators alert on "Bogus rate > 0.1%"), blocked-query total (effectiveness of the blocklist surface), and the per-info-code EDE emission breakdown that v0.7.13 wired into the dashboard. New series are `labyrinth_dnssec_verdicts_total{verdict="secure|insecure|bogus"}`, `labyrinth_blocked_queries_total`, and `labyrinth_ede_emissions_total{code="N"}` — one series per code observed (zero-valued series deliberately omitted to keep the scrape lean). Pins in [metrics/http_export_test.go](metrics/http_export_test.go) lock the line shapes AND the negative control that no EDE series appears when none have been emitted.
+
 ## [0.7.21] - 2026-05-28
 
 ### Added
