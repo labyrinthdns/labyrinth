@@ -178,9 +178,26 @@ func handleZabbixConn(conn net.Conn, m *metrics.Metrics, c *cache.Cache, logger 
 	}
 	key = strings.TrimSpace(key)
 
+	// Same length cap as the HTTP variant — real Zabbix keys are short
+	// identifiers; rejecting larger inputs avoids reflecting attacker-
+	// controlled bytes into the ZBX_NOTSUPPORTED reason field (which
+	// Zabbix server logs verbatim).
+	if len(key) > maxZabbixKeyLength {
+		conn.Write([]byte("ZBXD\x01"))
+		conn.Write(make([]byte, 8)) // length placeholder
+		return
+	}
+
 	value, err := resolveZabbixKey(key, m, c)
 	if err != nil {
-		value = "ZBX_NOTSUPPORTED\x00" + err.Error()
+		// Do not echo the user-supplied key back through the
+		// ZBX_NOTSUPPORTED reason — the Zabbix listener has no
+		// authentication and is typically reachable from anywhere on
+		// the operator's internal network, so reflection is a real
+		// log-injection vector. Generic message keeps the response
+		// shape attacker-independent while still satisfying the
+		// Zabbix protocol contract.
+		value = "ZBX_NOTSUPPORTED\x00unknown key"
 	}
 
 	// Write ZBXD response: "ZBXD\x01" + 8-byte little-endian length + data

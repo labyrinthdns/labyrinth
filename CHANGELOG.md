@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.48] - 2026-05-28
+
+### Hardened
+- **Zabbix ZBXD agent: length cap + no-reflection on unknown keys** — the raw TCP ZBXD listener (the unauthenticated variant of v0.7.47's `/api/zabbix/item`) carried the same two log-injection gaps. It echoed the user-supplied key back through the `ZBX_NOTSUPPORTED\x00<reason>` payload that Zabbix server logs verbatim, and had no length cap (the 1024-byte read buffer was the only bound). Reflection on this listener is materially worse than on the HTTP variant because the listener has NO authentication and is typically reachable from anywhere on the operator's internal network. Now (a) keys longer than `maxZabbixKeyLength` (256 bytes) get an empty ZBXD reply with no payload, and (b) the unknown-key branch emits a generic `ZBX_NOTSUPPORTED\x00unknown key` payload that no longer carries attacker-controlled bytes into Zabbix server logs. Pins in [web/api_zabbix_agent_test.go](web/api_zabbix_agent_test.go) drive the handler via `net.Pipe()` and assert the sentinel string is not present in either response shape.
+
 ## [0.7.47] - 2026-05-28
 
 ### Hardened
