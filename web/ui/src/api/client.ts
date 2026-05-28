@@ -18,6 +18,7 @@ import type {
   TLSStatusResponse,
   DNSGuideResponse,
   FallbackEventsResponse,
+  DNSSECStatusResponse,
 } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
@@ -207,6 +208,8 @@ export const api = {
     request<{ entries: NegativeCacheEntry[] }>(`/api/cache/negative?limit=${limit}`),
 
   fallbackEvents: () => request<FallbackEventsResponse>('/api/fallback-events'),
+
+  dnssec: () => request<DNSSECStatusResponse>('/api/dnssec'),
 
   checkUpdate: (force = false) => {
     if (force) {

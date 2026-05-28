@@ -5,6 +5,7 @@ import {
   Activity,
   Database,
   Shield,
+  ShieldCheck,
   Settings,
   BarChart3,
   FileText,
@@ -34,6 +35,7 @@ const mainNavItems = [
   { to: '/config', icon: Settings, label: 'Config' },
   { to: '/reports', icon: FileText, label: 'Reports' },
   { to: '/diagnostics', icon: Bug, label: 'Diagnostics' },
+  { to: '/dnssec', icon: ShieldCheck, label: 'DNSSEC' },
 ]
 const aboutNavItem = { to: '/about', icon: Info, label: 'About & Updates' }
 

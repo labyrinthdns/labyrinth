@@ -379,3 +379,19 @@ export interface TraceClientMsg {
   bypass_cache?: boolean
   skip_dnssec?: boolean
 }
+
+export interface DNSSECNTAEntry {
+  zone: string
+  expires_at: string
+  expires_in_seconds: number
+  reason: string
+  state: 'active' | 'expired'
+}
+
+export interface DNSSECStatusResponse {
+  enabled: boolean
+  allow_sha1: boolean
+  nta_count: number
+  nta_matches: number
+  ntas: DNSSECNTAEntry[]
+}

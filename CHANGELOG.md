@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-28 — DNSSEC milestone (M1 + UI-M1)
+
+This release closes out the DNSSEC milestone from `PLAN.md`. Backend
+work landed across v0.6.42 (algorithm rollover pin + NTA core) and
+v0.6.43 (CDS/CDNSKEY parser + RFC 5011 trust-anchor lifecycle); this
+release bundles the operator-facing surface: `/api/dnssec` endpoint
+and the new **DNSSEC** dashboard page.
+
+### Added
+- **`/api/dnssec` endpoint** — surfaces validator state for the
+  operator UI: enabled/disabled, SHA-1 acceptance, active NTA count,
+  cumulative `nta_matches` counter, and per-NTA status rows (zone,
+  RFC3339 expiry, remaining-seconds window, reason, active vs expired
+  flag). Returns 200 with zero-valued payload when DNSSEC is disabled
+  so the UI handles "off" cleanly. New shape in [web/api_dnssec.go](web/api_dnssec.go) and matching `DNSSECStatusResponse` / `DNSSECNTAEntry` TS types.
+- **DNSSEC dashboard page** — new `/dnssec` route in [web/ui/src/pages/DNSSECPage.tsx](web/ui/src/pages/DNSSECPage.tsx) renders the three M1 observability cards (validator badge, active NTA count, override counter) plus a per-NTA table with the remaining-validity window. Polls `/api/dnssec` every 10s — NTAs change on operator timescales (minutes-to-days), not query timescales, so cheap polling is the right shape. Linked from the main nav as **DNSSEC** via the `ShieldCheck` icon.
+
 ## [0.6.43] - 2026-05-28
 
 ### Added
