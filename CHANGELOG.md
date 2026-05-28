@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.52] - 2026-05-28
+
+### Hardened
+- **Sanity caps on every user-controlled `/api/setup/complete` field** — the setup endpoint can be hit before any authentication exists (it's the bootstrap that creates the first admin user). An attacker reaching it first could submit pathological values that round-trip into YAML on disk and either crash the resolver on next startup or balloon resolver memory: a 1e9 `max_depth` would cause stack overflow + extreme query latency on every resolution; a 10-million-entry `max_cache_size` could OOM the cache init; a 4 KiB `username` survives the body cap but spills into the config YAML escape path. `validateSetupRequest` now enforces hard ceilings: 256 bytes on every string field (listen_addr, web_addr, username, log_level, log_format), 10 million entries on cache size, 1024 on max_depth, 1e6 / 1e6 on rate-limit knobs. Pins in [web/api_setup_validate_test.go](web/api_setup_validate_test.go) cover (a) over-cap username rejected, (b) over-cap max_depth rejected, (c) a sane real-world setup passes the validator unchanged (negative control).
+
 ## [0.7.51] - 2026-05-28
 
 ### Hardened
