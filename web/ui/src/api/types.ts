@@ -394,6 +394,12 @@ export interface DNSSECStatusResponse {
   nta_count: number
   nta_matches: number
   ntas: DNSSECNTAEntry[]
+  // M5.5 safety-net values surfaced for transparency. Optional so an
+  // older API server is still parsed.
+  safety_net?: {
+    max_rrsig_verify_attempts: number
+    max_trust_chain_depth: number
+  }
 }
 
 export interface SecurityStatusResponse {

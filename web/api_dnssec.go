@@ -9,6 +9,17 @@ import (
 	"github.com/labyrinthdns/labyrinth/dnssec"
 )
 
+// dnssecSafetyNet returns the constants the validator enforces against
+// pathological inputs (RFC 4035 §5.3.3 RRSIG flood; deep-chain DoS).
+// Surfaced so the UI's "DNSSEC safety net" panel reflects the actual
+// runtime values rather than hard-coding them in the frontend.
+func dnssecSafetyNet() map[string]int {
+	return map[string]int{
+		"max_rrsig_verify_attempts": dnssec.MaxRRSIGVerifyAttempts(),
+		"max_trust_chain_depth":     dnssec.MaxTrustChainDepth(),
+	}
+}
+
 // handleDNSSEC handles GET /api/dnssec — operator-facing DNSSEC state.
 // Surfaces:
 //
@@ -39,6 +50,7 @@ func (s *AdminServer) handleDNSSEC(w http.ResponseWriter, r *http.Request) {
 		"nta_count":   0,
 		"nta_matches": int64(0),
 		"ntas":        []interface{}{},
+		"safety_net":  dnssecSafetyNet(),
 	}
 
 	if s.resolver == nil {

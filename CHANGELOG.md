@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.19] - 2026-05-28
+
+### Added
+- **DNSSEC safety-net values surfaced on `/dnssec`** — the two M5.5 caps (`max_rrsig_verify_attempts`, `max_trust_chain_depth`) are now exposed via `/api/dnssec.safety_net` and rendered as a card on the DNSSEC page. Operators can confirm the actual runtime values without grepping source — important when a future tuning patch lands and the operator needs to verify which value is in production. New `dnssec.MaxRRSIGVerifyAttempts()` and `dnssec.MaxTrustChainDepth()` accessors on the validator side keep the constants encapsulated.
+
 ## [0.7.18] - 2026-05-28
 
 M5.5 (DNSSEC validation safety net, continued) + M4.6 (EDE counter wiring, integration pin).

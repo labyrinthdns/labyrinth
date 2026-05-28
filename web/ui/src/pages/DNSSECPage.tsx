@@ -249,6 +249,28 @@ export default function DNSSECPage() {
         </div>
       </div>
 
+      {/* M5.5 safety-net values */}
+      {data?.safety_net && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 mb-6">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-white mb-1">Validation Safety Net</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+            Bounds the worst-case CPU and network cost a hostile authoritative can induce per validation. Values reflect the resolver's actual runtime constants.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-md border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-950">
+              <div className="text-xs text-slate-500 dark:text-slate-400">Max RRSIG verify attempts</div>
+              <div className="text-xl font-semibold text-slate-900 dark:text-white font-mono mt-0.5">{data.safety_net.max_rrsig_verify_attempts}</div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-500 mt-1">RFC 4035 §5.3.3 — bounds crypto verifies per RRset</div>
+            </div>
+            <div className="rounded-md border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-950">
+              <div className="text-xs text-slate-500 dark:text-slate-400">Max trust-chain depth</div>
+              <div className="text-xl font-semibold text-slate-900 dark:text-white font-mono mt-0.5">{data.safety_net.max_trust_chain_depth}</div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-500 mt-1">Caps DNSKEY+DS fetch round-trips per chain walk</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* NTA list */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800">
