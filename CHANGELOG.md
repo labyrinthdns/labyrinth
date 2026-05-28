@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-05-28
+
+Begins the M2 (Transport Modernization) milestone. The big-ticket
+items (DoQ over QUIC, XFR over TLS) are deferred to dedicated point
+releases because they introduce external dependencies; this release
+delivers the pure-logic backbone.
+
+### Added
+- **RFC 8914 EDE codes 25-27 backfill** — three EDE info codes were assigned after the initial RFC 8914 table and were not yet defined locally: `EDECodeSignatureExpiredBeforeValid` (25, RFC 9606 — RRSIG whose Expiration < Inception; a signer bug rather than clock skew), `EDECodeTooEarly` (26, RFC 9539 — 0-RTT path the upstream could not safely replay), and `EDECodeUnsupportedNSEC3IterationsValue` (27, RFC 9276 §3.2 — NSEC3 iteration cap rejection). All-codes-0-through-27 pin in [dns/rfc8914_ede_iana_table_test.go](dns/rfc8914_ede_iana_table_test.go) locks the numeric assignments individually (wire format MUST NOT renumber) plus a uniqueness guard catching copy-paste duplicates on the late backfill.
+
+### Hardened
+- **RFC 8467 §6 — Padding never on plaintext transports (truth-table pin)** — four-corner pin in [server/rfc8467_padding_policy_test.go](server/rfc8467_padding_policy_test.go) locks the `applyTCPTransportPolicies` gate: `encrypted=true + client opted in → pad`; `encrypted=true + no opt → no pad`; `encrypted=false + client opted in → no pad` (RFC 8467 §6 hard rule — pad on cleartext is pure overhead and teaches downstream tooling to misclassify channel privacy); `encrypted=false + no opt → no pad`. A regression that flipped the `encrypted` gate would silently leak padding bytes onto plaintext TCP responses.
+
 ## [0.7.0] - 2026-05-28 — DNSSEC milestone (M1 + UI-M1)
 
 This release closes out the DNSSEC milestone from `PLAN.md`. Backend
