@@ -61,6 +61,16 @@ type AdminServer struct {
 	// create. The CAS gate serialises the handler — first caller runs,
 	// others see 409 immediately without touching disk.
 	setupRunning atomic.Bool
+	// configFileMu serialises read-modify-write of the on-disk YAML
+	// config across /api/config/raw PUT and /api/dashboard/layout PUT.
+	// Both handlers do (1) os.ReadFile(path) → (2) compute new content
+	// → (3) writeFileAtomically(path). Without mutual exclusion two
+	// concurrent admin PUTs (e.g. one editor + one dashboard reorder)
+	// race: both read the same baseline, both write their independent
+	// modifications, and the second writer's writeFileAtomically wipes
+	// the first writer's delta — classic lost-update. The mutex covers
+	// the entire read-modify-write so the loser sees the winner's bytes.
+	configFileMu sync.Mutex
 	// updateApplyRunning is the CAS gate around /api/system/update/apply.
 	// The handler downloads a ~10–30 MiB binary, writes it to a temp
 	// file, verifies SHA-256, and renames it over the running executable

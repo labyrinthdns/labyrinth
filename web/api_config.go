@@ -340,6 +340,12 @@ func (s *AdminServer) handleConfigRaw(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
+		// Serialise concurrent config writes — see configFileMu on
+		// AdminServer for why. ensurePasswordHashUnchanged reads the
+		// current on-disk config, so it MUST run under the lock to
+		// avoid TOCTOU between the read and the writeFileAtomically.
+		s.configFileMu.Lock()
+		defer s.configFileMu.Unlock()
 		if err := s.ensurePasswordHashUnchanged(req.Content); err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return

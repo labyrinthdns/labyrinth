@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.57] - 2026-05-28
+
+### Hardened
+- **Mutex on `/api/config/raw` PUT and `/api/dashboard/layout` PUT** — both handlers do a read-modify-write of the on-disk YAML config: `os.ReadFile(path)` → compute new content → `writeFileAtomically(path)`. With two concurrent admin PUTs (e.g. one operator editing YAML in the dashboard while another reorders panels, or any automation script racing a UI save), both readers see the same baseline, both compute their own delta, and the second `writeFileAtomically` silently overwrites the first writer's bytes — classic lost-update. The dashboard layout handler is especially exposed because it parses the YAML, edits one block, and re-serialises; a concurrent raw-YAML editor save would be wiped wholesale. A new `configFileMu sync.Mutex` on `AdminServer` covers the entire read-modify-write critical section in both handlers (including `ensurePasswordHashUnchanged`, which itself reads the live config). Pin in [web/api_config_lost_update_test.go](web/api_config_lost_update_test.go) fires 20 concurrent `/api/config/raw` PUTs each carrying a uniquely-marked YAML body, then asserts the final on-disk file contains exactly one marker — without the mutex, mixed bytes from interleaved write sequences would leave zero or two+ markers visible.
+
 ## [0.7.56] - 2026-05-28
 
 ### Hardened
