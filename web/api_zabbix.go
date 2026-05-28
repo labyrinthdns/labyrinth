@@ -46,6 +46,13 @@ func (s *AdminServer) handleZabbixItems(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// maxZabbixKeyLength caps the `key` query parameter on /api/zabbix/item.
+// Real Zabbix item keys are short identifiers (labyrinth.queries.total etc.);
+// anything longer is malformed input and would only ever match the
+// "unknown key" branch — refusing pre-empts an attacker echoing a
+// multi-megabyte string into the error path.
+const maxZabbixKeyLength = 256
+
 // handleZabbixItem handles GET /api/zabbix/item?key=X — returns plain text metric value.
 func (s *AdminServer) handleZabbixItem(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -53,15 +60,29 @@ func (s *AdminServer) handleZabbixItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Live metric values — never cache. A scraped item showing the
+	// previous reading would mask a real failure during an incident.
+	w.Header().Set("Cache-Control", "no-store")
+
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		http.Error(w, "missing key parameter", http.StatusBadRequest)
 		return
 	}
+	if len(key) > maxZabbixKeyLength {
+		http.Error(w, "key exceeds length cap", http.StatusBadRequest)
+		return
+	}
 
 	value, err := resolveZabbixKey(key, s.metrics, s.cache)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Do not echo the user-supplied key back in the response body
+		// (resolveZabbixKey embeds the key in its error message). The
+		// endpoint is auth-gated so this is defence in depth, but
+		// reflecting attacker-controlled bytes into log lines and
+		// monitoring pipelines is a poor habit — a generic message
+		// keeps the response shape attacker-independent.
+		http.Error(w, "unknown key", http.StatusNotFound)
 		return
 	}
 
