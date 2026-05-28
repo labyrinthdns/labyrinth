@@ -38,7 +38,7 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
   { rfc: 'RFC 2308', title: 'Negative Caching', summary: 'NXDOMAIN / NODATA cached with SOA-MINIMUM TTL, type-bitmap awareness.', category: 'core' },
   { rfc: 'RFC 3596', title: 'AAAA Records', summary: 'IPv6 address records — full parity with A in iterative path.', category: 'core' },
   { rfc: 'RFC 3597', title: 'Handling Unknown RR Types', summary: 'Unknown RDATA passed through verbatim without re-interpretation.', category: 'core' },
-  { rfc: 'RFC 5452', title: 'Forgery Resilience', summary: 'Random query IDs, source-port randomisation, in-bailiwick checks.', category: 'core' },
+  { rfc: 'RFC 5452', title: 'Forgery Resilience', summary: 'Random query IDs, source-port randomisation, in-bailiwick checks. Empirical source-port randomisation pin landed v0.7.4.', category: 'core' },
   { rfc: 'RFC 6604', title: 'xNAME RCODE and Status Bits', summary: 'CNAME synthesis preserves AA, AD, RCODE per §3.', category: 'core' },
   { rfc: 'RFC 6672', title: 'DNAME Redirection', summary: 'DNAME substitution, CNAME synthesis chained correctly.', category: 'core' },
   { rfc: 'RFC 9156', title: 'QNAME Minimisation', summary: 'Default-on minimisation with NS-label probing; full fallback on referral.', category: 'core' },
@@ -56,6 +56,11 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
   { rfc: 'RFC 8624', section: '§3.1 / §3.3', title: 'DNSSEC Algorithm Implementation Requirements', summary: 'MUST-NOT algorithms (RSAMD5, DSA, DSA-NSEC3, RSASHA1-NSEC3) gated by IANA-named constants.', category: 'dnssec', since: 'v0.6.25' },
   { rfc: 'RFC 9018', title: 'Interoperable Domain Name System Cookies', summary: 'COOKIE option encoded per §3 with the standard server-cookie key.', category: 'dnssec' },
   { rfc: 'RFC 9276', title: 'NSEC3 Iteration and Salt Guidance', summary: 'Iteration counts above 100 rejected at validation per §3.1.', category: 'dnssec' },
+  { rfc: 'RFC 4035', section: '§4.6', title: 'Algorithm Rollover — Dual-Signature Acceptance', summary: 'Validator iterates ALL RRSIGs; one valid signature suffices during a multi-algorithm rollover. Four-corner pin locks the iteration.', category: 'dnssec', since: 'v0.6.42' },
+  { rfc: 'RFC 7344 / RFC 8078', title: 'Child-Signalled DS Updates (CDS / CDNSKEY)', summary: 'CDS (type 59) and CDNSKEY (type 60) parsers + RFC 8078 §4 "delete" sentinel classifier. Anti-hijack guard rejects mixed sentinel + publish records.', category: 'dnssec', since: 'v0.6.43' },
+  { rfc: 'RFC 5011', section: '§2.1 / §2.4', title: 'Full Trust-Anchor Lifecycle', summary: 'Five-state machine (AddPending → Valid → Missing → Removed, plus Revoked via §2.1) with 30-day hold-downs and substitution-attack defence.', category: 'dnssec', since: 'v0.6.43' },
+  { rfc: 'RFC 7646', title: 'Negative Trust Anchors (NTA)', summary: 'Operator-installed time-bounded validation override per zone subtree. Runtime install / remove via UI; suffix-walk matcher with §6 bounded-lifetime safety.', category: 'dnssec', since: 'v0.6.42' },
+  { rfc: 'RFC 8901', title: 'Multi-Signer DNSSEC', summary: 'Two-operator model: both KSKs in apex DNSKEY, parent publishes one DS per signer, answer signed by either operator validates.', category: 'dnssec', since: 'v0.7.4' },
 
   // Aggressive use of DNSSEC denials
   { rfc: 'RFC 8198', section: '§5.2', title: 'Aggressive NXDOMAIN Synthesis', summary: 'NSEC/NSEC3 ranges synthesise NXDOMAIN for subsequent queries without re-asking the auth.', category: 'nsec-aggressive', since: 'v0.6.20' },
@@ -67,6 +72,8 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
   { rfc: 'RFC 7830 + RFC 8467', title: 'EDNS(0) Padding', summary: 'DoT/DoH responses padded to 468-byte block boundary (§4.1 recommendation).', category: 'edns', since: 'v0.6.20' },
   { rfc: 'RFC 7871', title: 'Client Subnet (ECS)', summary: 'Outbound ECS forwarding configurable per-zone; client privacy preserved by default.', category: 'edns' },
   { rfc: 'RFC 7873', section: '§5.3 / §5.4', title: 'DNS Cookies (server-side cache + BADCOOKIE retry)', summary: 'Server-cookie cache avoids per-query BADCOOKIE round trip; outbound retry handles cold cache.', category: 'edns', since: 'v0.6.21' },
+  { rfc: 'RFC 7873', section: '§5.4', title: 'Strict Cookie Mode — Cookie-less UDP Refused', summary: 'Operator opt-in: UDP queries without a client cookie get BADCOOKIE + server cookie; TCP/DoT/DoH skip the gate.', category: 'edns', since: 'v0.7.3' },
+  { rfc: 'RFC 8467', section: '§6', title: 'Padding Never on Plaintext Transports', summary: 'PADDING option honoured only on encrypted transports (DoT/DoH); plaintext TCP responses pass through unpadded.', category: 'edns', since: 'v0.7.1' },
 
   // Transport security
   { rfc: 'RFC 7858', title: 'DNS over TLS (DoT)', summary: 'TCP/853 with strict TLS 1.2+ and EDNS padding for response privacy.', category: 'transport-security' },
@@ -81,7 +88,7 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
   { rfc: 'RFC 8375', title: '.home.arpa', summary: 'Locally-served zone for residential routers per §6.', category: 'special-use' },
 
   // Error signalling
-  { rfc: 'RFC 8914', title: 'Extended DNS Errors (EDE)', summary: 'EDE codes 13 (Cached Error), 17 (Filtered), 18 (Prohibited), 22 (No Reachable Authority) emitted; full set surfaced in diagnostics trace.', category: 'error-signalling', since: 'v0.6.23' },
+  { rfc: 'RFC 8914', title: 'Extended DNS Errors (EDE)', summary: 'EDE codes 0-27 (IANA-complete through Jan 2026). RFC 9606 (25), RFC 9539 (26), RFC 9276 (27) backfill landed in v0.7.1.', category: 'error-signalling', since: 'v0.6.23' },
 
   // Caching
   { rfc: 'RFC 8767', section: '§3.1', title: 'Serve-Stale + Stale-While-Refresh', summary: 'Stale answer served when origin fails; async refresh kicked in parallel.', category: 'caching', since: 'v0.6.22' },
