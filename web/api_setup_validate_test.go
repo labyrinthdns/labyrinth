@@ -19,7 +19,7 @@ import (
 // one is enough to prove the validator is wired.
 func TestSetupComplete_RejectsOverlongString(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.setupDone = false
+	srv.setupDone.Store(false)
 	srv.config.Web.Auth.Username = "" // pass-through auth
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
@@ -40,7 +40,7 @@ func TestSetupComplete_RejectsOverlongString(t *testing.T) {
 // latency on every resolution; the cap stops it at config-write time.
 func TestSetupComplete_RejectsAbsurdMaxDepth(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.setupDone = false
+	srv.setupDone.Store(false)
 	srv.config.Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)

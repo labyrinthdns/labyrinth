@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.55] - 2026-05-28
+
+### Hardened
+- **Singleflight gate on unauthenticated `/api/setup/complete`** — the setup endpoint is unauthenticated by design (it bootstraps the very first admin user), and `setupDone` was a plain `bool` field. An attacker reaching the endpoint before a legitimate operator could fire dozens of concurrent POSTs that all raced past the `setupDone` check, all reached `writeConfigYAML`, and all hit `os.Create` (which opens with `O_TRUNC`) — the second writer's `O_TRUNC` would blow away the first writer's bytes mid-flush, producing a corrupt config on disk. Worse, the racing goroutines could write *different* admin credentials with the last writer winning the bcrypt-hashed `password_hash` line. `setupDone` is now `atomic.Bool`, and a new `setupRunning atomic.Bool` CAS gate at the top of `handleSetupComplete` serialises the handler: first caller flips it and runs, losers see `409 Conflict — setup already in progress` immediately without touching disk. The gate is reset via `defer` so a panicking setup still unblocks retry. Pin in [web/api_setup_singleflight_test.go](web/api_setup_singleflight_test.go) fires 50 concurrent setup requests and asserts exactly one 200 and 49 × 409.
+
 ## [0.7.54] - 2026-05-28
 
 ### Hardened
