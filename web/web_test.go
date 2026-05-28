@@ -1256,14 +1256,14 @@ func TestHandleSetupComplete(t *testing.T) {
 	if !strings.Contains(content, "admin") {
 		t.Fatal("config missing username")
 	}
-	if !srv.setupDone {
+	if !srv.setupDone.Load() {
 		t.Fatal("setupDone should be true")
 	}
 }
 
 func TestHandleSetupComplete_AlreadyDone(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.setupDone = true
+	srv.setupDone.Store(true)
 
 	req := httptest.NewRequest("POST", "/api/setup/complete", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()

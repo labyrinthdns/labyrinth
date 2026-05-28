@@ -48,7 +48,19 @@ type AdminServer struct {
 	logger                *slog.Logger
 	jwtSecret          []byte
 	revokedTokens     sync.Map // maps revoked jti string → bool; cleared on secret rotation
-	setupDone         bool
+	// setupDone is set true when the bootstrap config exists (either
+	// seeded from disk at NewAdminServer time, or after a successful
+	// /api/setup/complete). atomic so concurrent setup requests race
+	// safely instead of producing torn reads on the gate.
+	setupDone atomic.Bool
+	// setupRunning is the CAS gate around /api/setup/complete. The
+	// endpoint is unauthenticated by design (it bootstraps the very
+	// first admin), so an attacker who reaches it before a legitimate
+	// operator could fire dozens of concurrent POSTs and race the
+	// "is config already written?" check against the actual file
+	// create. The CAS gate serialises the handler — first caller runs,
+	// others see 409 immediately without touching disk.
+	setupRunning atomic.Bool
 	nextID                atomic.Uint64
 	topClients            *TopTracker
 	topDomains            *TopTracker
@@ -105,7 +117,6 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		timeSeries:            NewTimeSeriesAggregator(),
 		logger:                logger,
 		jwtSecret:             secret,
-		setupDone:             setupDone,
 		topClients:            NewTopTracker(topTrackingLimitClients),
 		topDomains:            NewTopTracker(topTrackingLimitDomains),
 		clientQueryNum:        make(map[string]*clientQueryEntry),
@@ -113,6 +124,7 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		blocklist:             bl,
 		loginLimiter:          newLoginLimiter(),
 	}
+	s.setupDone.Store(setupDone)
 
 	// Wire fallback time-series: route fallback events into the aggregator.
 	s.wireFallbackTimeSeries()

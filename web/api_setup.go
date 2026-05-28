@@ -75,7 +75,7 @@ func (s *AdminServer) handleSetupStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"setup_required": !s.setupDone,
+		"setup_required": !s.setupDone.Load(),
 		"version":        Version,
 	})
 }
@@ -87,10 +87,23 @@ func (s *AdminServer) handleSetupComplete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if s.setupDone {
+	if s.setupDone.Load() {
 		jsonResponse(w, http.StatusConflict, map[string]string{"error": "setup already completed"})
 		return
 	}
+
+	// Singleflight gate: the endpoint is unauthenticated, and an
+	// attacker could otherwise fire dozens of concurrent POSTs that
+	// all race past the setupDone check and into writeConfigYAML —
+	// where os.Create's O_TRUNC semantics let the second writer
+	// blow away the first writer's bytes mid-flush, producing a
+	// corrupt config on disk. The CAS gate serialises the handler;
+	// the loser sees 409 immediately without touching the file system.
+	if !s.setupRunning.CompareAndSwap(false, true) {
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": "setup already in progress"})
+		return
+	}
+	defer s.setupRunning.Store(false)
 
 	var req SetupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -156,7 +169,7 @@ func (s *AdminServer) handleSetupComplete(w http.ResponseWriter, r *http.Request
 	// Best-effort — Windows permissions semantics differ; ignore failure.
 	_ = os.Chmod(cfgPath, 0o600)
 
-	s.setupDone = true
+	s.setupDone.Store(true)
 	s.logger.Info("setup completed, config written", "path", cfgPath)
 
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "setup complete"})
