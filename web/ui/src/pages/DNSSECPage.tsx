@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ShieldCheck, ShieldOff, AlertTriangle, RefreshCw } from 'lucide-react'
+import { ShieldCheck, ShieldOff, AlertTriangle, RefreshCw, Plus, Trash2 } from 'lucide-react'
 import { api } from '@/api/client'
 import type { DNSSECStatusResponse, DNSSECNTAEntry } from '@/api/types'
 
@@ -47,7 +47,7 @@ function StatusBadge({ enabled }: { enabled: boolean }) {
   )
 }
 
-function NTARow({ nta }: { nta: DNSSECNTAEntry }) {
+function NTARow({ nta, onRemove }: { nta: DNSSECNTAEntry; onRemove: (zone: string) => void }) {
   const expired = nta.state === 'expired'
   return (
     <tr className={expired ? 'opacity-60' : ''}>
@@ -64,7 +64,96 @@ function NTARow({ nta }: { nta: DNSSECNTAEntry }) {
       </td>
       <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400 font-mono">{nta.expires_at}</td>
       <td className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300">{nta.reason || <span className="text-slate-400">—</span>}</td>
+      <td className="px-4 py-2 text-right">
+        <button
+          onClick={() => onRemove(nta.zone)}
+          className="inline-flex items-center gap-1 px-2 py-1 text-xs text-rose-700 dark:text-rose-400 hover:bg-rose-500/10 rounded-md"
+          title="Remove this NTA"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          Remove
+        </button>
+      </td>
     </tr>
+  )
+}
+
+function AddNTAForm({ onAdded }: { onAdded: () => void }) {
+  const [zone, setZone] = useState('')
+  const [hours, setHours] = useState(24)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!zone.trim()) return
+    setBusy(true)
+    setError(null)
+    try {
+      await api.addNTA(zone.trim(), hours, reason.trim())
+      setZone('')
+      setReason('')
+      setHours(24)
+      onAdded()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to add')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/30">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-3">Add Negative Trust Anchor</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+        <div className="sm:col-span-4">
+          <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Zone</label>
+          <input
+            type="text"
+            value={zone}
+            onChange={e => setZone(e.target.value)}
+            placeholder="example.test"
+            required
+            className="w-full px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Hours (max 720)</label>
+          <input
+            type="number"
+            min={1}
+            max={720}
+            value={hours}
+            onChange={e => setHours(Number(e.target.value) || 24)}
+            className="w-full px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500"
+          />
+        </div>
+        <div className="sm:col-span-4">
+          <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Reason</label>
+          <input
+            type="text"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="incident #1234"
+            className="w-full px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <button
+            type="submit"
+            disabled={busy || !zone.trim()}
+            className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-md"
+          >
+            <Plus className="h-4 w-4" />
+            Install
+          </button>
+        </div>
+      </div>
+      {error && (
+        <div className="mt-2 text-xs text-rose-600 dark:text-rose-400">{error}</div>
+      )}
+    </form>
   )
 }
 
@@ -91,6 +180,16 @@ export default function DNSSECPage() {
     const id = setInterval(fetchData, 10_000)
     return () => clearInterval(id)
   }, [])
+
+  async function handleRemove(zone: string) {
+    if (!confirm(`Remove NTA for ${zone}?`)) return
+    try {
+      await api.removeNTA(zone)
+      fetchData()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'failed to remove')
+    }
+  }
 
   return (
     <div className="px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto">
@@ -166,19 +265,21 @@ export default function DNSSECPage() {
                 <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Remaining</th>
                 <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Expires</th>
                 <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Reason</th>
+                <th className="px-4 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {data.ntas.map(nta => (
-                <NTARow key={nta.zone} nta={nta} />
+                <NTARow key={nta.zone} nta={nta} onRemove={handleRemove} />
               ))}
             </tbody>
           </table>
         ) : (
           <div className="px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
-            No NTAs configured. Add entries to <code className="text-xs px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800">resolver.dnssec_negative_trust_anchors</code> in the config to install a temporary validation override for a broken zone.
+            No NTAs configured. Use the form below to install a temporary validation override, or add entries to <code className="text-xs px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800">resolver.dnssec_negative_trust_anchors</code> for permanence across restarts.
           </div>
         )}
+        {data?.enabled && <AddNTAForm onAdded={fetchData} />}
       </div>
     </div>
   )

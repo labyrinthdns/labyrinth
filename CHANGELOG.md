@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-05-28
+
+### Added
+- **Runtime NTA management — `POST /api/dnssec/nta` + `DELETE /api/dnssec/nta?zone=…`** — operator can install / remove an RFC 7646 NTA without editing config and restarting. Request body: `{zone, duration_hours OR expires_at, reason}`. `duration_hours` is clamped to a 30-day ceiling so a UI typo cannot install a multi-year override. Already-past `expires_at` is rejected with 400. If the validator was started with no NTA store (operator did not set `resolver.dnssec_negative_trust_anchors`), the first runtime install lazily creates one — no restart required.
+- **DNSSEC dashboard install / remove controls** — `/dnssec` page now shows the **Add Negative Trust Anchor** inline form (zone + hours + reason) and a per-row **Remove** action. Hours input capped at 720 (30 days). Successful add triggers an immediate refresh; remove asks for confirmation.
+
 ## [0.7.1] - 2026-05-28
 
 Begins the M2 (Transport Modernization) milestone. The big-ticket
