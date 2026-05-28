@@ -120,6 +120,18 @@ type Metrics struct {
 	// means the prefetch hook is mis-wired.
 	staleWhileRefreshTriggers atomic.Int64
 
+	// M4.6 / UI-M6.3 — Per-EDE-code emission counters (RFC 8914 §4).
+	// Each entry in the map counts how many times the resolver has
+	// emitted an EDE with that info code. Operators answering
+	// "what's failing today?" pivot on this: a spike in EDE 6
+	// (DNSSEC Bogus) means the upstream zone is broken; a spike in
+	// EDE 17 (Filtered) means rate-limiting is biting real clients.
+	// The map is keyed by uint16 info code so unknown / future codes
+	// (RFC 8914 makes the registry open) are tracked without code
+	// changes. Read/write goes through edeMu (existing m.mu protects
+	// the map ALLOCATION but the per-code Int64 is lock-free).
+	edeCounts map[uint16]*atomic.Int64
+
 	fallbackEventRing *FallbackEventRing
 
 	// RecordFallbackFunc is an optional callback invoked each time a fallback
@@ -139,6 +151,7 @@ func NewMetrics() *Metrics {
 	return &Metrics{
 		queriesTotal:   make(map[string]*atomic.Int64),
 		responsesTotal: make(map[string]*atomic.Int64),
+		edeCounts:      make(map[uint16]*atomic.Int64),
 		startTime:      time.Now(),
 		queryDurations: newHistogram([]float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0}),
 		fallbackEventRing: NewFallbackEventRing(),
@@ -180,6 +193,40 @@ func (m *Metrics) IncNSEC3AggressiveSynthND()    { m.nsec3AggressiveSynthND.Add(
 // Y36 — cookie retry & stale-while-refresh.
 func (m *Metrics) IncOutboundBadCookieRetries()  { m.outboundBadCookieRetries.Add(1) }
 func (m *Metrics) IncStaleWhileRefreshTriggers() { m.staleWhileRefreshTriggers.Add(1) }
+
+// IncEDE counts one emission of EDE info-code `code` (RFC 8914 §4).
+// The map allocates a counter the first time a code is seen — for the
+// fixed RFC-8914 code set this is bounded; the lazy approach also lets
+// us absorb future IANA-assigned codes without code changes.
+func (m *Metrics) IncEDE(code uint16) {
+	m.mu.RLock()
+	v, ok := m.edeCounts[code]
+	m.mu.RUnlock()
+	if ok {
+		v.Add(1)
+		return
+	}
+	m.mu.Lock()
+	if v, ok = m.edeCounts[code]; !ok {
+		v = &atomic.Int64{}
+		m.edeCounts[code] = v
+	}
+	m.mu.Unlock()
+	v.Add(1)
+}
+
+// EDECounts returns a snapshot of every EDE code observed so far
+// mapped to its emission count. Snapshot copy — callers may iterate
+// freely without holding any lock from this package.
+func (m *Metrics) EDECounts() map[uint16]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[uint16]int64, len(m.edeCounts))
+	for k, v := range m.edeCounts {
+		out[k] = v.Load()
+	}
+	return out
+}
 
 // FallbackEventRing returns the fallback event ring buffer.
 func (m *Metrics) FallbackEventRing() *FallbackEventRing { return m.fallbackEventRing }

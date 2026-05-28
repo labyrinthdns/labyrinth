@@ -1,7 +1,42 @@
 import { useEffect, useState } from 'react'
-import { Lock, ShieldAlert, Activity, Cookie, RefreshCw } from 'lucide-react'
+import { Lock, ShieldAlert, Activity, Cookie, RefreshCw, AlertCircle } from 'lucide-react'
 import { api } from '@/api/client'
 import type { SecurityStatusResponse } from '@/api/types'
+
+// RFC 8914 §4 Extended-DNS-Error info codes — friendly names so the
+// operator's "what's failing?" pivot reads as English rather than
+// magic numbers. Codes 0-24 land via RFC 8914; 25-27 are post-8914
+// IANA-assigned (RFC 9606, RFC 9539, RFC 9276 §3.2 respectively).
+const EDE_LABELS: Record<string, string> = {
+  '0': 'Other',
+  '1': 'Unsupported DNSKEY Algorithm',
+  '2': 'Unsupported DS Digest Type',
+  '3': 'Stale Answer',
+  '4': 'Forged Answer',
+  '5': 'DNSSEC Indeterminate',
+  '6': 'DNSSEC Bogus',
+  '7': 'Signature Expired',
+  '8': 'Signature Not Yet Valid',
+  '9': 'DNSKEY Missing',
+  '10': 'RRSIGs Missing',
+  '11': 'No Zone Key Bit Set',
+  '12': 'NSEC Missing',
+  '13': 'Cached Error',
+  '14': 'Not Ready',
+  '15': 'Blocked',
+  '16': 'Censored',
+  '17': 'Filtered',
+  '18': 'Prohibited',
+  '19': 'Stale NXDOMAIN Answer',
+  '20': 'Not Authoritative',
+  '21': 'Not Supported',
+  '22': 'No Reachable Authority',
+  '23': 'Network Error',
+  '24': 'Invalid Data',
+  '25': 'Signature Expired Before Valid',
+  '26': 'Too Early',
+  '27': 'Unsupported NSEC3 Iterations',
+}
 
 // Security panel — operator-facing snapshot of the three defensive
 // knobs that determine whether the resolver can be abused as an
@@ -43,7 +78,7 @@ function Card({ icon, title, children }: { icon: React.ReactNode; title: string;
   )
 }
 
-function Row({ label, value }: { label: string; value: React.ReactNode }) {
+function Row({ label, value }: { label: React.ReactNode; value: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between">
       <span className="text-slate-600 dark:text-slate-400">{label}</span>
@@ -142,6 +177,32 @@ export default function SecurityPage() {
           <p className="pt-2 text-xs text-slate-500 dark:text-slate-400">
             Counts of queries refused by global / per-zone ACL and queries rewritten by an active blocklist entry.
           </p>
+        </Card>
+
+        <Card icon={<AlertCircle className="h-4 w-4" />} title="Extended DNS Errors (RFC 8914)">
+          {data?.ede_counts && Object.keys(data.ede_counts).length > 0 ? (
+            <>
+              {Object.entries(data.ede_counts)
+                .sort(([, a], [, b]) => b - a)
+                .map(([code, count]) => (
+                  <Row
+                    key={code}
+                    label={
+                      <span>
+                        <span className="font-mono text-xs text-slate-500 dark:text-slate-500 mr-2">EDE {code}</span>
+                        {EDE_LABELS[code] ?? 'Unknown'}
+                      </span>
+                    }
+                    value={count.toLocaleString()}
+                  />
+                ))}
+              <p className="pt-2 text-xs text-slate-500 dark:text-slate-400">
+                Per-info-code count of EDEs the resolver has emitted since startup. A spike on code 6 (Bogus) means upstream zones broke; on code 17 (Filtered) means rate-limiting hit real clients.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-slate-500 dark:text-slate-400">No EDE emissions recorded yet. Counts appear here as the resolver returns diagnostic responses.</p>
+          )}
         </Card>
       </div>
     </div>

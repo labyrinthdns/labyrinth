@@ -1539,6 +1539,15 @@ func queryHasEDNS(query []byte) bool {
 }
 
 func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint16, edeText string) ([]byte, error) {
+	// M4.6 / UI-M6.3 — count the EDE emission BEFORE we touch the
+	// fallible packing path. The metric reflects the resolver's
+	// DECISION to emit an EDE with this info code; if the subsequent
+	// pack fails and we ship plain REFUSED, the metric still tells
+	// the operator the reason the resolver tried to give.
+	if h.metrics != nil {
+		h.metrics.IncEDE(edeCode)
+	}
+
 	resp, err := h.buildError(query, rcode)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-05-28
+
+M4.6 (Compliance counter scaffolding, partial) + UI-M6.3 (EDE breakdown) — operator-facing per-info-code visibility into Extended DNS Error emissions.
+
+### Added
+- **Per-EDE-code emission counters (RFC 8914 §4)** — every time the resolver emits an Extended DNS Error, [server/handler.go:1543](server/handler.go) calls the new `metrics.IncEDE(code)` so an operator can pivot the "what's failing today?" question on the info code rather than the opaque RCODE bucket. A spike on code 6 (DNSSEC Bogus) implicates upstream zones; on code 17 (Filtered) implicates rate-limiting biting real clients; on code 25 (Signature Expired Before Valid, RFC 9606) implicates a broken signer. Counter storage is `map[uint16]*atomic.Int64` with lazy allocation behind a double-checked write lock — bounded by the IANA EDE registry but absorbing future codes without code changes. New [metrics/rfc8914_ede_counters_test.go](metrics/rfc8914_ede_counters_test.go) pins per-code independence, concurrent increment correctness under 32×1000-write contention, and that `EDECounts()` returns a defensive snapshot copy callers can iterate without locks.
+- **`/api/security` now carries `ede_counts`** — a `Record<string,number>` where string keys are decimal info codes. Empty map when no EDE has been emitted (the UI distinguishes "not yet seen" from "API broken"). String keys instead of uint16 so JSON consumers across languages can use them as map keys directly.
+- **Security page EDE breakdown card** — new card on `/security` lists every observed EDE code sorted by count, with the IANA-registered friendly name next to the numeric code. Friendly-name table covers codes 0–27 (the full RFC 8914 + RFC 9606 + RFC 9539 + RFC 9276 §3.2 set this resolver currently emits). Codes the resolver hasn't emitted yet are absent rather than zero so the operator's eye lands on the active diagnostics.
+
 ## [0.7.12] - 2026-05-28
 
 UI-M5.4 from PLAN.md — compliance export.
