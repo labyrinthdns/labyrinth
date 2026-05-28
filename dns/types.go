@@ -23,6 +23,13 @@ const (
 	TypeDNSKEY     uint16 = 48
 	TypeNSEC3      uint16 = 50
 	TypeNSEC3PARAM uint16 = 51
+	// RFC 7344 — child-published DS/DNSKEY records the parent zone uses
+	// to update the child's delegation. CDS RDATA is byte-identical to
+	// DS; CDNSKEY RDATA is byte-identical to DNSKEY. Distinct types
+	// only at the owner-side semantics: present at the apex of the
+	// CHILD zone, signed by the child's keys, instructing the parent.
+	TypeCDS     uint16 = 59
+	TypeCDNSKEY uint16 = 60
 
 	// Modern service-discovery types. We do not parse their RDATA into
 	// rich Go structs (the wire layer treats them as opaque, which is
@@ -75,6 +82,7 @@ var TypeToString = map[uint16]string{
 	TypeAAAA: "AAAA", TypeSRV: "SRV", TypeDNAME: "DNAME", TypeOPT: "OPT",
 	TypeDS: "DS", TypeRRSIG: "RRSIG", TypeNSEC: "NSEC",
 	TypeDNSKEY: "DNSKEY", TypeNSEC3: "NSEC3", TypeNSEC3PARAM: "NSEC3PARAM",
+	TypeCDS: "CDS", TypeCDNSKEY: "CDNSKEY",
 	TypeANY: "ANY",
 	TypeSVCB: "SVCB", TypeHTTPS: "HTTPS", TypeCAA: "CAA",
 }
