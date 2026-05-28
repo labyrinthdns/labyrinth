@@ -521,7 +521,62 @@ func applyEnv(cfg *Config) {
 	}
 }
 
+// Upper-bound clamps on integer config fields. The setup wizard
+// already rejects values above these caps (see web/api_setup.go
+// validateSetupRequest), but an operator can bypass the wizard by
+// editing labyrinth.yaml directly or by hitting /api/config/raw with
+// a YAML payload that planted pathological values. Without a clamp
+// here, those bypasses can OOM or stall the resolver:
+//
+//   - resolver.max_depth = 1e9 → a single recursion-failing query
+//     iterates the resolver loop 1e9 times, each iteration kicking
+//     an upstream query — both time and bandwidth amplification.
+//   - cache.max_entries = 1e10 → the LRU eviction threshold lets the
+//     cache grow to ~10 GB before any pressure relief.
+//   - web.query_log_buffer is already clamped in NewQueryLog (v0.7.69).
+//
+// Clamps log a warning but DO NOT fail-stop the resolver — an
+// over-eager value should boot at the safe ceiling rather than
+// refuse to start, so an operator typo doesn't take down service.
+const (
+	clampMaxResolverDepth     = 1024
+	clampMaxCacheEntries      = 10_000_000
+	clampMaxRateLimitRate     = 1_000_000.0
+	clampMaxRateLimitBurst    = 1_000_000
+	clampMaxQueryLogBuffer    = 1_000_000
+	clampMaxTopClientsLimit   = 1_000_000
+	clampMaxTopDomainsLimit   = 1_000_000
+)
+
+// clampConfigBounds enforces sane upper bounds on integer fields.
+// Called from validate so config-load paths (file, env, /api/config/raw)
+// all see the same ceilings.
+func clampConfigBounds(cfg *Config) {
+	if cfg.Resolver.MaxDepth > clampMaxResolverDepth {
+		cfg.Resolver.MaxDepth = clampMaxResolverDepth
+	}
+	if cfg.Cache.MaxEntries > clampMaxCacheEntries {
+		cfg.Cache.MaxEntries = clampMaxCacheEntries
+	}
+	if cfg.Security.RateLimit.Rate > clampMaxRateLimitRate {
+		cfg.Security.RateLimit.Rate = clampMaxRateLimitRate
+	}
+	if cfg.Security.RateLimit.Burst > clampMaxRateLimitBurst {
+		cfg.Security.RateLimit.Burst = clampMaxRateLimitBurst
+	}
+	if cfg.Web.QueryLogBuffer > clampMaxQueryLogBuffer {
+		cfg.Web.QueryLogBuffer = clampMaxQueryLogBuffer
+	}
+	if cfg.Web.TopClientsLimit > clampMaxTopClientsLimit {
+		cfg.Web.TopClientsLimit = clampMaxTopClientsLimit
+	}
+	if cfg.Web.TopDomainsLimit > clampMaxTopDomainsLimit {
+		cfg.Web.TopDomainsLimit = clampMaxTopDomainsLimit
+	}
+}
+
 func validate(cfg *Config) error {
+	clampConfigBounds(cfg)
 	if cfg.Resolver.MaxDepth <= 0 {
 		return fmt.Errorf("resolver.max_depth must be > 0")
 	}

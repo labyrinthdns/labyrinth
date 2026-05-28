@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.70] - 2026-05-29
+
+### Hardened
+- **`config.validate` now clamps every integer config knob to a safe ceiling** — the setup wizard already rejected oversized values in v0.7.52 (`setupMaxResolverDepth=1024`, `setupMaxCacheEntries=10M`, `setupMaxRateLimitBurst=1M`), but operators can bypass the wizard by editing `labyrinth.yaml` directly OR by hitting `/api/config/raw` PUT with a YAML payload that planted pathological values. The clamps were missing from the load path. Without them: `resolver.max_depth: 1000000000` made a single recursion-failing query iterate the resolver loop 1B times (each iteration kicking an upstream query — both time and bandwidth amplification on the auth side); `cache.max_entries: 1e10` let the LRU eviction threshold allow ~10 GB of cached RR bytes before any pressure relief; `security.rate_limit.burst: 1e9` let one client burn unbounded tokens. `clampConfigBounds` runs from `validate` (the central load-path gate) and clamps `Resolver.MaxDepth`, `Cache.MaxEntries`, `Security.RateLimit.{Rate,Burst}`, `Web.QueryLogBuffer`, `Web.TopClientsLimit`, `Web.TopDomainsLimit` to defence-in-depth ceilings. Clamps DON'T fail-stop the resolver — an over-eager YAML still boots at the safe ceiling rather than refusing to start, so an operator typo doesn't take down service. Pins in [config/clamp_config_test.go](config/clamp_config_test.go) cover (a) every clamped field with 10×-over-cap → clamped to ceiling, (b) under-cap values pass through unchanged across a realistic workload, (c) the validate entry-point actually invokes the clamp (regression guard against a refactor that bypassed it).
+
 ## [0.7.69] - 2026-05-29
 
 ### Hardened
