@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-05-29
+
+### Fixed
+- **`resolver.StartRootRefresh` no longer panics on `resolver.root_hints_refresh: 0`** — same class as the v0.8.10 fix for `cache.StartSweeper`. `time.NewTicker(0)` panics with `"non-positive interval for NewTicker"`; the root-refresh goroutine, launched from `main.go:364` via `go res.StartRootRefresh(ctx, cfg.Resolver.RootHintsRefresh)` when DNSSEC is enabled, would panic-and-die silently — the resolver kept resolving with whatever root hints it had at startup, never re-priming, and stale hints would only surface as resolution failures weeks or months later when an IANA root server actually moved (the addresses do change occasionally per RFC 8109). A YAML `resolver.root_hints_refresh: 0` (operator typo: meant `30d`, typed `0`) triggered this on every restart. The fix introduces `MinRootRefreshInterval = time.Minute` — well above the panic threshold, well below the RFC 8109 recommendation of ~25 hours, so it floors the truly-pathological values without disturbing legitimate operator settings. Pins in [resolver/root_refresh_floor_test.go](resolver/root_refresh_floor_test.go) cover the zero, negative, and constant-stability cases the same way `cache/sweeper_floor_test.go` does for the cache sweeper.
+
 ## [0.8.10] - 2026-05-29
 
 ### Fixed
