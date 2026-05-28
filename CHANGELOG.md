@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-05-29
+
+### Fixed
+- **`cache.Cache.StartSweeper` no longer panics on `cache.sweep_interval: 0`** — `time.NewTicker(0)` panics with `"non-positive interval for NewTicker"`. The sweeper goroutine launched in `main.go:295` via `go c.StartSweeper(ctx, cfg.Cache.SweepInterval)` ran on a background goroutine, so the panic surfaced as a `goroutine exited with panic` log and a silently-dead sweep loop — the resolver kept serving queries but never evicted expired entries, growing the cache without bound until process restart. A YAML `cache.sweep_interval: 0` (operator typo) or a `/api/config/raw` PUT that planted a zero value triggered this on every restart. The fix introduces `cache.MinSweepInterval = 10 * time.Millisecond` and `StartSweeper` floors its interval argument before passing to `time.NewTicker`. 10 ms is just above the panic threshold and well below any legitimate operator setting (the default is 60 s); kept low deliberately to avoid disturbing existing fast-tick tests that pass sub-second intervals. Pins in [cache/sweeper_floor_test.go](cache/sweeper_floor_test.go): (a) `StartSweeper(ctx, 0)` no longer panics — the deferred recover catches and fails the test if it does; (b) `StartSweeper(ctx, -10s)` symmetric coverage of the negative-interval branch; (c) tripwire on `MinSweepInterval` against regressions that drop it back to ≤ 0.
+
 ## [0.8.9] - 2026-05-29
 
 ### Hardened

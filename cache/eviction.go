@@ -5,8 +5,21 @@ import (
 	"time"
 )
 
+// MinSweepInterval is the floor StartSweeper applies to its interval
+// argument. time.NewTicker(0) panics, so a YAML cache.sweep_interval: 0
+// (or a /api/config/raw PUT that planted a zero value) would crash the
+// resolver at boot. 10 ms is just above the panic threshold and well
+// below any legitimate operator setting (the default is 60 s); kept
+// low to avoid disturbing existing fast-tick tests that pass sub-second
+// intervals deliberately.
+const MinSweepInterval = 10 * time.Millisecond
+
 // StartSweeper runs a background goroutine that periodically evicts expired entries.
+// Floors interval at MinSweepInterval so a bad config never crashes the sweeper.
 func (c *Cache) StartSweeper(ctx context.Context, interval time.Duration) {
+	if interval < MinSweepInterval {
+		interval = MinSweepInterval
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
