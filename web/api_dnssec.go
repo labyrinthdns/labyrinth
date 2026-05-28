@@ -9,6 +9,16 @@ import (
 	"github.com/labyrinthdns/labyrinth/dnssec"
 )
 
+// MaxNTAReasonBytes caps the free-text reason field on an NTA install.
+// The reason is held in memory for the NTA's lifetime (up to 30 days
+// per the duration ceiling) and copied on every audit/list response.
+// With MaxNTAEntries=10000, an uncapped reason field exposed a 10 GiB
+// memory-amplification surface to an authenticated attacker who could
+// re-install the same zone 10k times with megabyte-scale reasons; 1024
+// bytes is well above any human-readable explanation and well under
+// the worst-case multi-NTA memory ceiling.
+const MaxNTAReasonBytes = 1024
+
 // dnssecSafetyNet returns the constants the validator enforces against
 // pathological inputs (RFC 4035 §5.3.3 RRSIG flood; deep-chain DoS).
 // Surfaced so the UI's "DNSSEC safety net" panel reflects the actual
@@ -118,18 +128,11 @@ func (s *AdminServer) handleNTAAdd(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if s.resolver == nil || s.resolver.DNSSECValidator() == nil {
-		jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "DNSSEC validator not enabled"})
-		return
-	}
-	v := s.resolver.DNSSECValidator()
-	// GetOrCreateNTAStore handles concurrent lazy-init via CAS.
-	// Before v0.7.59 the handler did Load → if nil → New → Store as
-	// three separate operations, so two concurrent POSTs both saw
-	// nil, both created stores, and the loser's store.Add wrote to
-	// an orphaned store that the validator never consulted.
-	store := v.GetOrCreateNTAStore()
 
+	// Pure-data validation runs BEFORE the resolver/validator check so
+	// a malformed payload is rejected even when DNSSEC is disabled.
+	// This also lets the reason-cap pin test exercise the cap without
+	// needing a fully-wired DNSSEC validator in the test harness.
 	var req addNTARequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -149,6 +152,30 @@ func (s *AdminServer) handleNTAAdd(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "zone exceeds RFC 1035 §2.3.4 length cap"})
 		return
 	}
+	// Cap the free-text reason so an authenticated attacker cannot push
+	// megabytes of payload into every NTA entry. The reason is held in
+	// memory for the lifetime of the NTA (up to 30 days) and copied on
+	// every audit/list response; 1024 bytes is well above any
+	// human-readable explanation (one operator paragraph) and well
+	// under the threshold at which 10k NTAs × Reason becomes a memory
+	// concern. With MaxNTAEntries=10000 (v0.7.61), the worst-case
+	// reason payload is now 10 MiB instead of 10 GiB.
+	if len(req.Reason) > MaxNTAReasonBytes {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "reason exceeds 1024 bytes"})
+		return
+	}
+
+	if s.resolver == nil || s.resolver.DNSSECValidator() == nil {
+		jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "DNSSEC validator not enabled"})
+		return
+	}
+	v := s.resolver.DNSSECValidator()
+	// GetOrCreateNTAStore handles concurrent lazy-init via CAS.
+	// Before v0.7.59 the handler did Load → if nil → New → Store as
+	// three separate operations, so two concurrent POSTs both saw
+	// nil, both created stores, and the loser's store.Add wrote to
+	// an orphaned store that the validator never consulted.
+	store := v.GetOrCreateNTAStore()
 
 	var expiry time.Time
 	switch {

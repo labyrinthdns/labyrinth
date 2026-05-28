@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-05-29
+
+### Hardened
+- **1024-byte cap on the NTA install handler's free-text `reason` field** — the NTA install path validated zone length (255 bytes per RFC 1035 §2.3.4) but did NOT cap the `reason` field. The request-body cap (1 MiB, v0.6.x audit finding) limited a single POST, but with `MaxNTAEntries=10000` (v0.7.61) an authenticated attacker could re-install 10 k distinct zones with megabyte-scale reasons each — ~10 GiB of validator-resident reason payload, copied on every `/api/dnssec/nta` list response and held for the NTA's full lifetime (up to 30 days). `MaxNTAReasonBytes = 1024` is well above any human-readable operator explanation (one paragraph) and reduces the worst-case multi-NTA reason payload from 10 GiB to ~10 MiB. As part of the same change, the handler's pure-data validation (JSON decode + zone length + reason length) now runs BEFORE the resolver/validator check, so a malformed payload is rejected with 400 even when DNSSEC is disabled — cleaner ordering and lets the pin test exercise the cap without a fully-wired DNSSEC validator. Pins in [web/api_dnssec_reason_cap_test.go](web/api_dnssec_reason_cap_test.go): (a) a POST with `reason` length `MaxNTAReasonBytes + 1` returns 400 with a clear error; (b) tripwire on the constant so a refactor cannot widen the cap past 16 KiB.
+
 ## [0.8.3] - 2026-05-29
 
 ### Hardened
