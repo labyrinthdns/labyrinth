@@ -557,6 +557,21 @@ const (
 	// limits on most kernels) and well under the OOM threshold.
 	clampMaxUDPWorkers        = 100_000
 	clampMaxTCPConns          = 100_000
+	// resolver.upstream_retries: caps the retry count for upstream
+	// queries. Each retry is a bounded-timeout call, so this isn't an
+	// OOM gap, but a typo'd YAML `upstream_retries: 1000000` turns a
+	// single failing query into a 1M-round amplification attack toward
+	// the auth NS (we send a query, get failure, retry... 1M times)
+	// — both bandwidth burnout for the operator and DDoS-amplification
+	// risk for any auth being probed. 16 is well above the 3 retries
+	// the default config picks and well above any RFC guidance.
+	clampMaxUpstreamRetries   = 16
+	// resolver.max_cname_depth: bounds CNAME-chasing recursion. The DNS
+	// RFC has no hard cap, but a value above ~32 is operationally
+	// unreasonable and a 1M value lets a single carefully-crafted
+	// CNAME loop (or a zone that returns long synthetic CNAME chains)
+	// consume CPU for seconds-to-minutes per query.
+	clampMaxCNAMEDepth        = 64
 )
 
 // clampConfigBounds enforces sane upper bounds on integer fields.
@@ -589,6 +604,12 @@ func clampConfigBounds(cfg *Config) {
 	}
 	if cfg.Server.MaxTCPConns > clampMaxTCPConns {
 		cfg.Server.MaxTCPConns = clampMaxTCPConns
+	}
+	if cfg.Resolver.UpstreamRetries > clampMaxUpstreamRetries {
+		cfg.Resolver.UpstreamRetries = clampMaxUpstreamRetries
+	}
+	if cfg.Resolver.MaxCNAMEDepth > clampMaxCNAMEDepth {
+		cfg.Resolver.MaxCNAMEDepth = clampMaxCNAMEDepth
 	}
 }
 
