@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.67] - 2026-05-29
+
+### Hardened
+- **50k-zone LRU cap on `cache.nsecIdx.byZone` + `cache.nsec3Idx.byZone`** — the RFC 8198 aggressive-use NSEC and NSEC3 indexes kept a per-zone interval list (capped per-zone at 256) but had no cap on the number of zones tracked. Each interval holds the SOA + NSEC/NSEC3 + RRSIG bytes needed to reconstruct a verifiable synth response on cache hit, so per-entry memory is a few KB. An attacker who controls many DNSSEC-signed sibling zones — trivially arrangeable by registering siblings under any TLD they control, or by chaining delegations through their own auth — can flood the resolver with Secure NXDOMAIN responses whose SOAs name distinct zones, growing `byZone` without bound until the cache hits multi-GB resident size. `MaxNSECZones = 50_000` caps both maps; on registration of a NEW zone past the cap, the zone whose freshest interval has the OLDEST `registeredAt` is evicted to make room (LRU on zone-activity recency, not interval recency — a zone you haven't seen new intervals from is the right one to drop). Existing-zone updates are exempt from the cap so legitimate refreshes are never blocked. The defence is symmetric across NSEC (RFC 4034) and NSEC3 (RFC 5155) indexes. Pins in [cache/nsec_zone_cap_test.go](cache/nsec_zone_cap_test.go) cover (a) NSEC eviction picks the zone with the oldest freshest-interval `registeredAt`, (b) NSEC3 counterpart, (c) a sanity tripwire on the constant so a future refactor cannot silently drop it to a single-digit value (defeating aggressive-use) or balloon it to gigabyte-scale (defeating the DoS cap).
+
 ## [0.7.66] - 2026-05-29
 
 ### Hardened

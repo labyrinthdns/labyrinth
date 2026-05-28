@@ -53,6 +53,24 @@ type nsecInterval struct {
 	typeBitmap []uint16
 }
 
+// MaxNSECZones caps the number of distinct DNSSEC-signed zones the
+// aggressive-use NSEC index will track at once. Each entry holds the
+// SOA + NSEC + RRSIG bytes needed to reconstruct a verifiable synth
+// response, so per-entry memory is non-trivial (a few KB). An
+// attacker who controls many DNSSEC-signed sibling zones — easy to
+// arrange by registering siblings under a TLD they control, or by
+// chaining delegations through their auth — can flood the resolver
+// with Secure NXDOMAIN responses whose SOAs name distinct zones,
+// growing `byZone` without bound. The per-zone interval list is
+// already capped (256), but the zone count was not. 50k tracked
+// zones is far above any realistic legitimate workload (the resolver
+// would have to actively query into 50k distinct signed zones to
+// benefit from any one of them) and small enough that the worst-
+// case footprint stays bounded to a few hundred MB. When the cap is
+// reached, the OLDEST-registeredAt zone (the one whose newest
+// entry's registeredAt is oldest) is evicted to make room.
+const MaxNSECZones = 50_000
+
 // nsecIndex is the per-zone collection of cached intervals.
 type nsecIndex struct {
 	mu sync.RWMutex
@@ -63,6 +81,36 @@ type nsecIndex struct {
 
 func newNSECIndex() *nsecIndex {
 	return &nsecIndex{byZone: make(map[string][]nsecInterval)}
+}
+
+// evictOldestZoneLocked drops the zone whose freshest interval has the
+// oldest registeredAt timestamp. Caller holds idx.mu in write mode.
+// O(n*k) where n = zones, k = avg intervals per zone (max 256), so
+// O(12.8M) worst-case for n=50000 — runs at most once per registration
+// after the cap is reached and only on first growth past the cap.
+func (idx *nsecIndex) evictOldestZoneLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+	for zone, intervals := range idx.byZone {
+		// Use the freshest interval's registeredAt as the zone's
+		// activity timestamp. A zone whose newest interval was
+		// registered long ago is the right one to drop.
+		var newest time.Time
+		for _, iv := range intervals {
+			if iv.registeredAt.After(newest) {
+				newest = iv.registeredAt
+			}
+		}
+		if first || newest.Before(oldestTime) {
+			oldestKey = zone
+			oldestTime = newest
+			first = false
+		}
+	}
+	if oldestKey != "" {
+		delete(idx.byZone, oldestKey)
+	}
 }
 
 // RegisterNSECInterval stores the NSEC intervals from a Secure NXDOMAIN
@@ -125,6 +173,12 @@ func (c *Cache) RegisterNSECInterval(zone string, negTTL uint32, authority []dns
 
 	c.nsecIdx.mu.Lock()
 	defer c.nsecIdx.mu.Unlock()
+	// Cap-enforced LRU eviction on NEW zone insertion. Existing
+	// zone updates are exempt — they don't grow the map and the
+	// fresh interval is exactly what we want to keep.
+	if _, exists := c.nsecIdx.byZone[zone]; !exists && len(c.nsecIdx.byZone) >= MaxNSECZones {
+		c.nsecIdx.evictOldestZoneLocked()
+	}
 	// Dedup: when the same interval is registered repeatedly, replace the
 	// older entry (newer expiry wins). Limit per-zone to avoid unbounded
 	// growth on hostile traffic.

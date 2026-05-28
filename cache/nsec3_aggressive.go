@@ -69,6 +69,9 @@ type nsec3Interval struct {
 }
 
 // nsec3Index is the per-zone collection of cached NSEC3 intervals.
+// Same MaxNSECZones cap applies as for the NSEC index (declared in
+// nsec_aggressive.go) — the threat model and per-entry footprint are
+// equivalent.
 type nsec3Index struct {
 	mu     sync.RWMutex
 	byZone map[string][]nsec3Interval
@@ -76,6 +79,31 @@ type nsec3Index struct {
 
 func newNSEC3Index() *nsec3Index {
 	return &nsec3Index{byZone: make(map[string][]nsec3Interval)}
+}
+
+// evictOldestZoneLocked drops the zone whose freshest interval has the
+// oldest registeredAt timestamp. Counterpart to nsecIndex's eviction.
+// Caller holds idx.mu in write mode.
+func (idx *nsec3Index) evictOldestZoneLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+	for zone, intervals := range idx.byZone {
+		var newest time.Time
+		for _, iv := range intervals {
+			if iv.registeredAt.After(newest) {
+				newest = iv.registeredAt
+			}
+		}
+		if first || newest.Before(oldestTime) {
+			oldestKey = zone
+			oldestTime = newest
+			first = false
+		}
+	}
+	if oldestKey != "" {
+		delete(idx.byZone, oldestKey)
+	}
 }
 
 // RegisterNSEC3Interval is the NSEC3 counterpart of
@@ -146,6 +174,10 @@ func (c *Cache) RegisterNSEC3Interval(zone string, negTTL uint32, authority []dn
 
 	c.nsec3Idx.mu.Lock()
 	defer c.nsec3Idx.mu.Unlock()
+	// Cap-enforced LRU eviction on NEW zone insertion.
+	if _, exists := c.nsec3Idx.byZone[zone]; !exists && len(c.nsec3Idx.byZone) >= MaxNSECZones {
+		c.nsec3Idx.evictOldestZoneLocked()
+	}
 	const maxPerZone = 256
 	existing := c.nsec3Idx.byZone[zone]
 	for _, iv := range harvested {
