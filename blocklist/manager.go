@@ -418,29 +418,70 @@ func (mgr *Manager) RemoveList(url string) {
 	}
 }
 
+// ErrCustomBlocklistFull is returned by BlockDomain / UnblockDomain
+// when the corresponding custom-rule map has reached
+// MaxCustomBlocklistEntries. Callers (the admin API handlers) surface
+// this as 507 Insufficient Storage so the operator sees the cap
+// rather than a silent no-op.
+var ErrCustomBlocklistFull = errors.New("custom blocklist is full")
+
+// MaxCustomBlocklistEntries caps the size of the customBlocks and
+// customAllows maps. /api/blocklist/{block,unblock} are authenticated
+// admin endpoints, so unbounded growth is a defence-in-depth concern
+// rather than a directly exploitable DoS — but a runaway automation
+// script, a misconfigured "import every domain in a 100M-row CSV"
+// integration, or a malicious operator with valid credentials could
+// pin gigabytes of resolver RAM by spamming unique block calls. The
+// matcher's exact/wildcard tries already incur per-entry allocation;
+// 100k custom entries is far above any realistic operator workload
+// (real custom-block lists in the wild are in the low thousands) and
+// well below the threshold at which the map alone bloats GC pressure.
+const MaxCustomBlocklistEntries = 100_000
+
 // BlockDomain adds a custom exact-match block rule that persists across
-// refreshes.
-func (mgr *Manager) BlockDomain(domain string) {
+// refreshes. Returns ErrCustomBlocklistFull when the per-map cap is
+// reached; the matcher is left untouched in that case so a retry after
+// removing entries works as expected.
+func (mgr *Manager) BlockDomain(domain string) error {
 	domain = normalize(domain)
 	if domain == "" {
-		return
+		return nil
 	}
 	mgr.mu.Lock()
+	if _, exists := mgr.customBlocks[domain]; !exists && len(mgr.customBlocks) >= MaxCustomBlocklistEntries {
+		mgr.mu.Unlock()
+		mgr.logger.Warn("custom block rejected: capacity reached",
+			"domain", domain,
+			"cap", MaxCustomBlocklistEntries,
+		)
+		return ErrCustomBlocklistFull
+	}
 	mgr.customBlocks[domain] = struct{}{}
 	mgr.mu.Unlock()
 
 	mgr.matcher.AddExact(domain)
 	mgr.logger.Info("custom block added", "domain", domain)
+	return nil
 }
 
 // UnblockDomain adds a custom whitelist rule that persists across
-// refreshes.
-func (mgr *Manager) UnblockDomain(domain string) {
+// refreshes. Returns ErrCustomBlocklistFull when the per-map cap is
+// reached; the existing block (if any) is left intact in that case so
+// the operator's view of the system stays consistent.
+func (mgr *Manager) UnblockDomain(domain string) error {
 	domain = normalize(domain)
 	if domain == "" {
-		return
+		return nil
 	}
 	mgr.mu.Lock()
+	if _, exists := mgr.customAllows[domain]; !exists && len(mgr.customAllows) >= MaxCustomBlocklistEntries {
+		mgr.mu.Unlock()
+		mgr.logger.Warn("custom unblock rejected: capacity reached",
+			"domain", domain,
+			"cap", MaxCustomBlocklistEntries,
+		)
+		return ErrCustomBlocklistFull
+	}
 	mgr.customAllows[domain] = struct{}{}
 	delete(mgr.customBlocks, domain)
 	mgr.mu.Unlock()
@@ -448,6 +489,7 @@ func (mgr *Manager) UnblockDomain(domain string) {
 	mgr.matcher.AddWhitelist(domain)
 	mgr.matcher.Remove(domain)
 	mgr.logger.Info("custom unblock added", "domain", domain)
+	return nil
 }
 
 // CheckDomain returns whether a domain is blocked without incrementing

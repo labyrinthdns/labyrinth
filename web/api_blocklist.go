@@ -74,7 +74,14 @@ func (s *AdminServer) handleBlocklistBlock(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusOK, map[string]string{"status": "blocklist not enabled"})
 		return
 	}
-	s.blocklist.BlockDomain(req.Domain)
+	if err := s.blocklist.BlockDomain(req.Domain); err != nil {
+		// Capacity exhaustion: surface 507 Insufficient Storage so the
+		// admin UI can show a clear "you've hit the cap" message
+		// instead of a silent success. Other errors are not expected
+		// from BlockDomain but get the same treatment defensively.
+		jsonResponse(w, http.StatusInsufficientStorage, map[string]string{"error": err.Error()})
+		return
+	}
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "blocked", "domain": req.Domain})
 }
 
@@ -100,7 +107,10 @@ func (s *AdminServer) handleBlocklistUnblock(w http.ResponseWriter, r *http.Requ
 		jsonResponse(w, http.StatusOK, map[string]string{"status": "blocklist not enabled"})
 		return
 	}
-	s.blocklist.UnblockDomain(req.Domain)
+	if err := s.blocklist.UnblockDomain(req.Domain); err != nil {
+		jsonResponse(w, http.StatusInsufficientStorage, map[string]string{"error": err.Error()})
+		return
+	}
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "unblocked", "domain": req.Domain})
 }
 
