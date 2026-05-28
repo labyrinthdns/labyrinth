@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-05-29
+
+### Fixed
+- **Data race on `*sub` in `handleTimeSeriesWS` initial-snapshot path** — the timeseries WebSocket handler starts a read goroutine that mutates `*sub` under `subMu` (when the client sends a subscription update), then sends the initial snapshot via `s.pushTimeSeries(ctx, conn, sub)`. The ticker loop on subsequent fires correctly copy-under-lock (`subMu.Lock(); currentSub := *sub; subMu.Unlock()`) before calling pushTimeSeries, but the INITIAL snapshot at line 165 dereferenced `sub` without holding the mutex. A client that raced a `tsClientUpdate` against the WS upgrade would cause the read goroutine to write `*sub = *newSub` concurrently with `pushTimeSeries`'s reads of `sub.Window`, `sub.Interval`, `sub.WindowStr`, `sub.InterStr`, `sub.Mode` — the textbook unsynchronised access on a Go struct field (torn read of the time.Duration values on 32-bit; data race UB on all platforms). The fix copies `*sub` under the lock to a stack-local `initialSub` and passes `&initialSub` to pushTimeSeries so the network write happens off the lock. No behaviour change for clients that don't race subscription updates; clients that do race no longer observe undefined state. The race detector did not catch this in CI because `go test -race` requires cgo on Windows and the project's CI does not build with cgo, so this is the kind of bug a static-analysis pass catches before the race detector ever fires in production.
+
 ## [0.8.4] - 2026-05-29
 
 ### Hardened
