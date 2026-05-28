@@ -142,7 +142,23 @@ func startHTTPServices(
 			}
 		})
 		logger.Info("metrics server starting", "addr", cfg.Server.MetricsAddr)
-		if err := http.ListenAndServe(cfg.Server.MetricsAddr, mux); err != nil {
+		// Standalone metrics server: must carry the same slowloris
+		// timeout regime as the admin HTTP servers, otherwise an
+		// attacker reaching the metrics port (which is often left
+		// exposed for Prometheus scrapers) can hold thousands of
+		// half-open connections sending one byte every few seconds
+		// and exhaust the resolver's file descriptors. http.ListenAndServe
+		// with default timeouts (=zero) is the documented Go footgun
+		// this defends against.
+		metricsSrv := &http.Server{
+			Addr:              cfg.Server.MetricsAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+		if err := metricsSrv.ListenAndServe(); err != nil {
 			logger.Error("metrics server error", "error", err)
 		}
 	}()
