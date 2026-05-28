@@ -217,9 +217,22 @@ func (r *Resolver) PrimeRootHints() error {
 	return errors.New("root hint priming failed after 3 attempts")
 }
 
+// MinRootRefreshInterval is the floor StartRootRefresh applies. The
+// loop calls time.NewTicker(interval) which panics on a non-positive
+// value; a YAML resolver.root_hints_refresh: 0 (or a misconfigured
+// /api/config/raw PUT) would crash the resolver at boot. RFC 8109
+// recommends ~25 hours (just over a day); 1 minute is well below any
+// legitimate operator setting and just above the panic threshold.
+const MinRootRefreshInterval = time.Minute
+
 // StartRootRefresh runs a background goroutine that re-primes root hints
 // at the given interval (RFC 8109). Call this after the initial PrimeRootHints.
+// Floors interval at MinRootRefreshInterval so a bad config never crashes the
+// refresher.
 func (r *Resolver) StartRootRefresh(ctx context.Context, interval time.Duration) {
+	if interval < MinRootRefreshInterval {
+		interval = MinRootRefreshInterval
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
