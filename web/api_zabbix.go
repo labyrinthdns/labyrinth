@@ -128,6 +128,13 @@ func resolveZabbixKey(key string, m *metrics.Metrics, c *cache.Cache) (string, e
 	}
 }
 
+// maxZabbixConcurrentConns bounds how many ZBXD client goroutines may
+// be in flight at once. Production Zabbix deployments poll from 1-3
+// monitoring stations, so this is well above any legitimate workload
+// — but it puts a hard ceiling on the goroutine + fd footprint an
+// attacker can force by opening many concurrent connections.
+const maxZabbixConcurrentConns = 100
+
 // StartZabbixAgent starts a TCP listener implementing the Zabbix agent protocol (ZBXD header).
 func StartZabbixAgent(ctx context.Context, addr string, m *metrics.Metrics, c *cache.Cache, logger *slog.Logger) error {
 	ln, err := net.Listen("tcp", addr)
@@ -142,6 +149,13 @@ func StartZabbixAgent(ctx context.Context, addr string, m *metrics.Metrics, c *c
 		ln.Close()
 	}()
 
+	// Semaphore caps concurrent connections. A spike that exceeds the
+	// cap blocks Accept() in `sem <- struct{}{}` rather than spawning
+	// unbounded goroutines — the listener's kernel-side backlog
+	// absorbs the burst and the attacker's TCP RTT becomes the
+	// bottleneck instead of resolver memory.
+	sem := make(chan struct{}, maxZabbixConcurrentConns)
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -153,7 +167,11 @@ func StartZabbixAgent(ctx context.Context, addr string, m *metrics.Metrics, c *c
 				continue
 			}
 		}
-		go handleZabbixConn(conn, m, c, logger)
+		sem <- struct{}{}
+		go func(c2 net.Conn) {
+			defer func() { <-sem }()
+			handleZabbixConn(c2, m, c, logger)
+		}(conn)
 	}
 }
 
