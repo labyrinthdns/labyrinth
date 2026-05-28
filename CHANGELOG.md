@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.42] - 2026-05-28
+
+### Added
+- **RFC 7646 — Negative Trust Anchor (NTA) support** — operators can now disable DNSSEC validation for a specific zone subtree for a bounded time window, the canonical incident-response lever for major-TLD signature outages. New config key `resolver.dnssec_negative_trust_anchors` accepts a comma-separated list of `<zone>|<RFC3339-expiry>|<reason>` entries; expired NTAs are treated as removed per RFC 7646 §6 (bounded lifetime is the entire safety story). The new `dnssec/NTAStore` is suffix-matched (an NTA at `example.test` covers `example.test` and every descendant but never a sibling like `evil-example.test`), case-insensitive, clock-injectable for tests, and exposes `Match`, `Add`, `Remove`, `Cleanup`, `List`. Matches short-circuit the validator to `Insecure` with the new `ReasonNTAOverride` failure reason so the audit trail distinguishes "operator suppressed" from "happened to be Insecure anyway". Validator counter `NTAMatches()` surfaces the cumulative override count for the metrics API. Five-test pin suite in [dnssec/rfc7646_nta_test.go](dnssec/rfc7646_nta_test.go) covers subtree-and-sibling matching (including the `evil-example.test` string-substring trap), expiry transitions via mocked clock, past-expiry rejection on `Add`, `Cleanup` reaping behaviour, the integration override path (Insecure verdict + `ReasonNTAOverride` tag), and the reason-string roundtrip used at the EDE network boundary.
+
+### Hardened
+- **RFC 4035 §4.6 — Algorithm rollover dual-signature acceptance** — pin in [dnssec/rfc4035_algorithm_rollover_test.go](dnssec/rfc4035_algorithm_rollover_test.go) locks the validator's "at least one RRSIG suffices" iteration strategy across a true multi-algorithm rollover scenario. The test signs the same A RRset with two different algorithms (ED25519 and ECDSA-P256), wires both ZSKs into the root DNSKEY RRset, and walks the four-corner truth table: ED25519 expired / ECDSA fresh → Secure (rollover survival); ED25519 fresh / ECDSA expired → Secure (order-independence); both fresh → Secure (steady state); both expired → Bogus (negative control proving the iteration never silently downgrades to Insecure when every candidate fails). A regression that hard-coded a single algorithm path or short-circuited on first signature failure would turn every algorithm rollover into a resolver-wide SERVFAIL outage; this pin makes that regression impossible to land.
+
 ## [0.6.41] - 2026-05-28
 
 ### Hardened

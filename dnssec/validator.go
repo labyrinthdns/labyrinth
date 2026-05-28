@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/dns"
@@ -101,6 +102,19 @@ type Validator struct {
 	inflightMu      sync.Mutex
 	inflightDNSKEY  map[string]*inflightFetch
 	inflightDS      map[string]*inflightFetch
+
+	// ntaStore is the per-validator Negative Trust Anchor registry
+	// (RFC 7646). When non-nil, ValidateResponse consults it before
+	// running the trust-chain walk. Any qname covered by an active NTA
+	// short-circuits to Insecure with reason ReasonNTAOverride. The
+	// store is optional: validators constructed via NewValidator get
+	// a nil store and behave exactly as before. Operators wire one in
+	// via SetNTAStore.
+	ntaStore *NTAStore
+
+	// ntaMatches is incremented every time an NTA hides a validation
+	// outcome. Surfaced via NTAMatches() for the observability layer.
+	ntaMatches atomic.Int64
 }
 
 // NewValidator creates a new DNSSEC Validator that uses the given Querier to
@@ -117,6 +131,28 @@ func NewValidator(querier Querier, logger *slog.Logger) *Validator {
 		inflightDNSKEY: make(map[string]*inflightFetch),
 		inflightDS:     make(map[string]*inflightFetch),
 	}
+}
+
+// SetNTAStore wires a Negative Trust Anchor (RFC 7646) registry into
+// the validator. Pass nil to disable NTA enforcement. Once set, every
+// ValidateResponse call consults the store first; matching qnames are
+// short-circuited to Insecure with ReasonNTAOverride before any
+// chain work runs.
+func (v *Validator) SetNTAStore(store *NTAStore) {
+	v.ntaStore = store
+}
+
+// NTAStore returns the configured store, or nil if none is wired.
+// Operator-facing UI reads from here.
+func (v *Validator) NTAStore() *NTAStore {
+	return v.ntaStore
+}
+
+// NTAMatches reports the cumulative count of validations short-
+// circuited by an NTA match. Surfaced via /api/stats so operators can
+// see whether an NTA is actually doing anything.
+func (v *Validator) NTAMatches() int64 {
+	return v.ntaMatches.Load()
 }
 
 // AllowSHA1 toggles acceptance of RSASHA1 RRSIGs and SHA1 DS digests.
@@ -245,6 +281,24 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	}
 	if response == nil {
 		return Insecure, steps, ReasonNone
+	}
+
+	// RFC 7646 §1: a Negative Trust Anchor for the queried subtree
+	// suppresses validation. The operator installed it precisely
+	// because the zone's chain is broken; we honour that decision
+	// before doing any signature work. The verdict is Insecure (not
+	// Bogus or Secure) — "we deliberately stopped looking", which is
+	// what the RFC 8914 EDE consumer should see too.
+	if v.ntaStore != nil {
+		if nta, matched := v.ntaStore.Match(qname); matched {
+			v.ntaMatches.Add(1)
+			push(ValidationStep{
+				Stage:   "nta-override",
+				Outcome: "insecure",
+				Detail:  fmt.Sprintf("NTA active for %q (expires %s)", nta.Zone, nta.Expiry.Format(time.RFC3339)),
+			})
+			return Insecure, steps, ReasonNTAOverride
+		}
 	}
 
 	// Handle NXDOMAIN/NODATA: validate NSEC3 proofs in authority section

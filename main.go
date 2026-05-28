@@ -295,8 +295,20 @@ func run() int {
 		if cfg.Resolver.DNSSECEnabled {
 			res.EnableDNSSEC(logger)
 			res.SetDNSSECAllowSHA1(cfg.Resolver.DNSSECAllowSHA1)
+			// RFC 7646 Negative Trust Anchors. We surface the count and any
+			// parse failures so the operator can tell at startup whether
+			// their NTA list landed.
+			ntaFailed := res.SetDNSSECNegativeTrustAnchors(cfg.Resolver.DNSSECNegativeTrustAnchors)
+			for _, line := range ntaFailed {
+				logger.Warn("dnssec NTA entry rejected", "entry", line)
+			}
+			ntaActive := 0
+			if v := res.DNSSECValidator(); v != nil && v.NTAStore() != nil {
+				ntaActive = len(v.NTAStore().List())
+			}
 			logger.Info("DNSSEC validation enabled",
-				"allow_sha1", cfg.Resolver.DNSSECAllowSHA1)
+				"allow_sha1", cfg.Resolver.DNSSECAllowSHA1,
+				"nta_count", ntaActive)
 		}
 		// Root hints auto-refresh (RFC 8109)
 		if cfg.Resolver.RootHintsRefresh > 0 {
