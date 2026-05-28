@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-05-29
+
+### Hardened
+- **`NTAStore.Cleanup` now actually runs on a 1-minute tick** — the cleanup primitive existed since v0.6.x but was never wired up. `NegativeTrustAnchor` entries past their expiry stayed resident in the store map, consuming slots toward the `MaxNTAEntries = 10000` cap (v0.7.61). Lookup correctly ignored them (line 172 of `nta.go` checks `nta.Expiry.After(now)`), so this was not a correctness gap — but it was an operator-availability gap. An attacker or careless operator who installs 10 k NTAs with 1-minute expiry (each one valid at install-time so the past-expiry rejection at install does not fire) fills the cap permanently once those entries expire; the next legitimate NTA install returns `ErrNTAStoreFull` (v0.7.63) and no admin API exists to batch-prune. The only recovery is a resolver restart. The fix: spawn an unconditional goroutine in `main` that ticks every minute and calls `validator.NTAStore().Cleanup()` when both are non-nil. The goroutine handles the lifecycle gracefully — it no-ops when DNSSEC is disabled or the store has not been lazily created yet (the validator comes up after PrimeRootHints, and the store may not exist until the first install). Pins in [dnssec/nta_cleanup_test.go](dnssec/nta_cleanup_test.go): (a) seed 3 expired + 2 active entries, call Cleanup, assert exactly the 3 expired entries were removed and the 2 active ones survived; (b) Cleanup on an empty store returns 0 without panicking (since the goroutine ticks unconditionally, the empty-store path runs ~constantly).
+
 ## [0.8.6] - 2026-05-29
 
 ### Hardened
