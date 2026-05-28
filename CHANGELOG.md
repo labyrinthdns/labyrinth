@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.62] - 2026-05-28
+
+### Hardened
+- **100k-entry cap on custom block / allow maps** — `blocklist.Manager.customBlocks` and `customAllows` are populated by the authenticated admin endpoints `/api/blocklist/{block,unblock}` and grew without any cap. While the endpoints are admin-only, a runaway automation script, a misconfigured "import every domain from a 100M-row CSV" integration, or a malicious operator with valid credentials could pin gigabytes of resolver RAM — every distinct domain becomes both a map entry AND a node in the matcher's exact-match / whitelist trie, so the per-entry footprint compounds. A new `MaxCustomBlocklistEntries = 100_000` cap (well above any realistic operator workload; real custom lists in the wild are in the low thousands) gates additions: `BlockDomain` / `UnblockDomain` now return a typed `ErrCustomBlocklistFull` sentinel when the corresponding map is at capacity, and `handleBlocklistBlock` / `handleBlocklistUnblock` surface that as `507 Insufficient Storage` so the admin UI shows a clear cap message instead of a silent no-op. Idempotent re-adds of existing entries continue to succeed at the cap (they don't grow the map). Pins in [blocklist/custom_cap_test.go](blocklist/custom_cap_test.go) cover (a) the (cap+1)th `BlockDomain` returns `ErrCustomBlocklistFull` and the map size is unchanged, (b) the same for `UnblockDomain`, and (c) re-adding an existing entry still succeeds at the cap.
+
 ## [0.7.61] - 2026-05-28
 
 ### Hardened
