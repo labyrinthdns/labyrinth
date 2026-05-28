@@ -299,6 +299,24 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		if err := validateResponseQuestionEx(msg, queryName, qtype, qclass, r.config.Caps0x20Enabled); err != nil {
 			return nil, err
 		}
+		// RFC 7873 §5.4 cookie echo applies to EVERY response, not just
+		// the UDP one. The earlier check on the truncated UDP message
+		// does not cover the TCP fallback — without this line a bug
+		// (or a man-in-the-middle who can intercept TCP) could inject
+		// a wrong-cookie response on the TCP retry that the resolver
+		// would accept. TCP makes blind spoofing harder due to the
+		// three-way handshake, but RFC 7873 is unambiguous that the
+		// check applies regardless of transport.
+		if !r.validateResponseCookie(msg) {
+			return nil, errors.New("TCP response cookie mismatch")
+		}
+		// RFC 7766 §4 — "The TC flag SHOULD NOT be set ... for responses
+		// arriving over TCP." A TCP response with TC=1 indicates a
+		// confused authoritative; treat as a malformed answer rather
+		// than re-recursing into TCP (which would loop).
+		if msg.Header.TC() {
+			return nil, errors.New("TCP response carries TC=1 (RFC 7766 §4 violation)")
+		}
 	}
 
 	return msg, nil
