@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.69] - 2026-05-29
+
+### Hardened
+- **1M-entry clamp on `web.query_log_buffer`** — `NewQueryLog(capacity)` allocated `make([]QueryEntry, capacity)` upfront with no upper bound. `QueryEntry` is ~80 bytes (strings + ints + float + bool), so a typo'd YAML `web.query_log_buffer: 1000000000` (intended 1M) or a malicious `/api/config/raw` PUT that planted a gigabyte-scale value would allocate that slice at startup and instant-OOM the resolver before the first DNS query even arrived — a config-replay denial-of-service. `MaxQueryLogCapacity = 1_000_000` (~80 MiB) caps the ring buffer. Over-cap requests are clamped (not rejected) so an over-eager config doesn't fail-stop the resolver; it just trims the buffer to the cap. Pins in [web/querylog_cap_test.go](web/querylog_cap_test.go) cover (a) 10×-over-cap request clamps to the cap, (b) values under the cap are honoured unchanged across a range of legitimate sizes, (c) the zero / negative fallback to 1000 still works, (d) a tripwire on the constant to catch refactors that drop it below thrash-threshold or balloon it past the OOM defence.
+
 ## [0.7.68] - 2026-05-29
 
 ### Hardened
