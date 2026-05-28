@@ -238,6 +238,19 @@ func run() int {
 	// Security: private address filtering
 	handler.SetPrivateFilter(cfg.Security.PrivateAddressFilter)
 
+	// Security: DNS Cookies (RFC 7873). Optional anti-amplification
+	// shield against spoofed UDP queries. Strict mode (§5.4) is a
+	// further opt-in for hostile networks — refuses cookie-less UDP.
+	if cfg.Security.DNSCookies {
+		if err := handler.EnableCookies(); err != nil {
+			logger.Warn("could not enable DNS cookies", "error", err)
+		} else {
+			handler.SetCookiesEnforce(cfg.Security.DNSCookiesEnforce)
+			logger.Info("DNS cookies enabled",
+				"enforce_strict_udp", cfg.Security.DNSCookiesEnforce)
+		}
+	}
+
 	// Security: advertise small EDNS0 buffer (RFC 9018 / DNS Flag Day 2020)
 	handler.SetDownstreamUDPBufferSize(cfg.Server.MaxUDPSize)
 
