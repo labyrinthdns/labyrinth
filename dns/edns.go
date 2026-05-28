@@ -134,6 +134,21 @@ const (
 	// is reported Insecure rather than Bogus so the client knows to
 	// trust it for non-DNSSEC purposes.
 	EDECodeUnsupportedNSEC3IterationsValue uint16 = 27
+	// EDECodeUnableToConformToPolicy — IANA EDE 28. Signals that the
+	// upstream did not return an answer the resolver considers
+	// policy-acceptable (e.g. an unsigned answer when the operator
+	// requires DO=1 + AD=1). Distinct from "filtered" (17) which is
+	// the resolver's OWN policy refusing to forward; code 28 covers
+	// the case where the upstream's response itself violates a local
+	// policy gate the resolver enforces post-receipt.
+	EDECodeUnableToConformToPolicy uint16 = 28
+	// EDECodeSynthesized — IANA EDE 29. Signals that the answer was
+	// synthesized by the resolver (DNS64 AAAA synthesis, RFC 8198
+	// aggressive NSEC NXDOMAIN/NODATA, NSEC3-aggressive synthesis)
+	// rather than fetched as-is from the authoritative. Clients that
+	// need a verifiable upstream answer can re-query with synthesis
+	// disabled or take corrective action.
+	EDECodeSynthesized uint16 = 29
 )
 
 // EDNS option codes.

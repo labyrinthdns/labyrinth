@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-05-28
+
+M2.5 (Extended DNS Errors full table) — closes the remaining gap in the RFC 8914 §4 info-code registry: codes 28 (Unable to Conform to Policy) and 29 (Synthesized) are now defined and round-trip-tested. These two completed the IANA-registered set the resolver may need to surface as its emission paths evolve (policy-rejection of unsigned answers; aggregate signal for RFC 8198/DNS64-synthesised replies).
+
+### Added
+- **EDE codes 28 + 29** — new constants `EDECodeUnableToConformToPolicy = 28` and `EDECodeSynthesized = 29` in [dns/edns.go](dns/edns.go) with documentation explaining how each differs from the close-neighbour codes (EDE 28 is distinct from EDE 17 "Filtered" — the latter is the resolver's own policy refusing to forward; the former covers the case where the upstream's response itself violates a local policy gate the resolver enforces post-receipt). The Security page's friendly-name table in [web/ui/src/pages/SecurityPage.tsx](web/ui/src/pages/SecurityPage.tsx) gains the matching entries so any future EDE 28 or 29 emission reads as English to operators rather than "Unknown".
+- **Wire-format roundtrip pin for all EDE codes** — new [dns/rfc8914_ede_roundtrip_test.go](dns/rfc8914_ede_roundtrip_test.go) walks the full 0-29 set via `BuildEDEOption` → `ParseEDEOption` and asserts both the numeric code and the extra-text survive the round trip verbatim. A second pin (`TestEDE_ParseRejectsTooShort`) confirms the §2 minimum-length gate (2-byte info code) rejects truncated option data rather than silently returning code 0.
+- **IANA table pin extended to 0..29** — the existing [dns/rfc8914_ede_iana_table_test.go](dns/rfc8914_ede_iana_table_test.go) (renamed `TestEDECodes_IANA0Through29`) and its sibling distinctness check now cover the two new codes too.
+
 ## [0.7.15] - 2026-05-28
 
 M3.4 partial (TCP fallback hardening) — two real cross-cut fixes on the UDP→TCP retry path.
