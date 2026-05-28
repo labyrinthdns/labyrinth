@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-05-28
+
+M3.4 partial (TCP fallback hardening) — two real cross-cut fixes on the UDP→TCP retry path.
+
+### Hardened
+- **RFC 7873 §5.4 cookie echo now applies to TCP retries** — when a UDP response carries TC=1 the resolver falls back to TCP, re-unpacks the response, and re-validates TXID + question. It did NOT re-validate the cookie. This left a small but real gap: an attacker who could intercept the TCP retry (e.g. on a compromised intermediate) would not be ejected even when the original UDP path was protected by the cookie check. [resolver/upstream.go:298](resolver/upstream.go) now runs `validateResponseCookie` on the TCP response too. The check is cheap (no DNSKEY fetch, just an EDNS option compare) so the overhead is invisible.
+- **RFC 7766 §4 — TC=1 over TCP rejected** — RFC 7766 §4 says "The TC flag SHOULD NOT be set for responses arriving over TCP." A confused authoritative might still set TC=1 on its TCP answer; a naive resolver that loops on the TC bit without checking the transport would chain TCP retries forever. The new guard at [resolver/upstream.go:307](resolver/upstream.go) returns an explicit "RFC 7766 §4 violation" error rather than recursing. New pin in [resolver/rfc7766_tcp_fallback_test.go](resolver/rfc7766_tcp_fallback_test.go) stands up a mock auth that intentionally returns TC=1 on both UDP and TCP and asserts (a) the resolver makes exactly ONE TCP attempt (not infinity), (b) the returned error mentions the §4 violation.
+
 ## [0.7.14] - 2026-05-28
 
 UI-M5.1 from PLAN.md — RFC compliance matrix as a first-class page.
