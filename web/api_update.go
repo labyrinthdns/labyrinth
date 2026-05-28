@@ -359,8 +359,9 @@ func checkForUpdate() (*UpdateInfo, error) {
 		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
 	}
 
+	// Same 1 MiB cap as findAssetURLWithChecksums — see comment there.
 	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&release); err != nil {
 		return nil, fmt.Errorf("failed to parse release info: %w", err)
 	}
 
@@ -434,8 +435,15 @@ func findAssetURLWithChecksums(assetName string) (string, string, error) {
 		return "", "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
 	}
 
+	// Cap the GitHub release JSON body. A genuine release payload is
+	// a few KB (asset list + release notes); without a LimitReader an
+	// intercepted/poisoned response could stream gigabytes into the
+	// JSON decoder before the update flow gave up. 1 MiB is well
+	// above any real release JSON (the largest releases with long
+	// markdown release notes stay well under 100 KiB) and well below
+	// the threshold at which the decoder would create memory pressure.
 	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&release); err != nil {
 		return "", "", fmt.Errorf("failed to parse release info: %w", err)
 	}
 
