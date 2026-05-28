@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.34] - 2026-05-28
+
+### Hardened
+- **RFC 1035 §2.3.4 length cap on `/api/blocklist/{block,unblock,check}` domain inputs + validation moved before subsystem-nil check** — the three blocklist admin endpoints had no length cap on the `domain` field. A 1 MB POST body to `/api/blocklist/block` would persist that string into the in-memory blocklist set forever — balloons resolver memory while never matching a real query (real qnames cannot exceed 255 octets either). `/api/blocklist/check` lookups would also cost time proportional to the key length per call. Validation runs BEFORE the `s.blocklist == nil` check so malformed input is uniformly rejected with 400 regardless of whether the blocklist subsystem is configured (defence in depth — a lazily-initialised blocklist would otherwise silently swallow junk POSTs as success). Pins in [web/api_blocklist_name_cap_test.go](web/api_blocklist_name_cap_test.go) cover all three routes against a 4 KiB hostile domain.
+
 ## [0.7.33] - 2026-05-28
 
 ### Hardened
