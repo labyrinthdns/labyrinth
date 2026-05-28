@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.58] - 2026-05-28
+
+### Hardened
+- **`/api/auth/change-password` now takes `configFileMu`** — v0.7.57 added the mutex to `/api/config/raw` PUT and `/api/dashboard/layout` PUT, but `handleChangePassword` slipped through. It also reads the on-disk YAML, rewrites the `password_hash:` line, and writes back via `updatePasswordInConfigAtPath`. A concurrent `/api/config/raw` PUT — which uses `s.config.Web.Auth.PasswordHash` as the "current" reference in `ensurePasswordHashUnchanged` — could land its own file write *after* change-password had rotated the in-memory hash but *before* change-password landed its disk write. The operator would then be authenticated against the new password in memory (the JWT secret has rotated, sessions are torn) yet the on-disk file would carry the OLD hash. A restart would silently revert the password change, locking the operator out with a "wrong password" error against credentials that worked moments earlier. The handler now takes `configFileMu` covering the bcrypt verify, in-memory rotation, and disk write so the operation is one atomic critical section against the other two YAML writers. Pin in [web/api_change_password_lost_update_test.go](web/api_change_password_lost_update_test.go) races change-password against config-raw PUT and asserts the on-disk `password_hash:` line always equals the in-memory hash after both finish.
+
 ## [0.7.57] - 2026-05-28
 
 ### Hardened
