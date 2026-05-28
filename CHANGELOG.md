@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.46] - 2026-05-28
+
+### Hardened
+- **Method gate + `Cache-Control: no-store` on standalone-mode `/health` and `/ready`** — the legacy standalone metrics server's `/health` and `/ready` handlers (used when the full admin UI is disabled and only Prometheus + a Kubernetes-style probe scrape the resolver) had neither a method check nor a Cache-Control header. POST/PUT/PATCH/DELETE all ran the full cache-stats / IsReady() path, and an intermediate cache could serve a stale "healthy" payload during an incident — a fake green dashboard at the worst possible moment. Both routes now refuse non-GET/HEAD with 405 + `Allow: GET, HEAD` and set `Cache-Control: no-store` on every successful response. Matches the contract already applied to the admin-server siblings (`/api/system/health`, `/api/system/readyz`, `/api/system/livez`).
+
 ## [0.7.45] - 2026-05-28
 
 ### Hardened
