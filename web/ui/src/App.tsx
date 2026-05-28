@@ -20,6 +20,7 @@ const DiagnosticsPage = lazy(() => import('@/pages/DiagnosticsPage'))
 const DNSSECPage = lazy(() => import('@/pages/DNSSECPage'))
 const SecurityPage = lazy(() => import('@/pages/SecurityPage'))
 const AuditPage = lazy(() => import('@/pages/AuditPage'))
+const CompliancePage = lazy(() => import('@/pages/CompliancePage'))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = getToken()
@@ -212,6 +213,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <AuditPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/compliance"
+              element={
+                <ProtectedRoute>
+                  <CompliancePage />
                 </ProtectedRoute>
               }
             />
