@@ -307,6 +307,19 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Serialise the read-modify-write of the on-disk YAML against
+	// /api/config/raw PUT and /api/dashboard/layout PUT. Without
+	// this, a concurrent config-raw PUT could win the on-disk write
+	// after change-password has rotated the in-memory hash but
+	// before it lands the new hash on disk — leaving the operator
+	// authenticated against the new password in memory while disk
+	// still carries the old hash, so a restart silently reverts the
+	// password change. The same mutex also serialises the bcrypt
+	// `checkPassword` against the in-memory hash so the verify and
+	// the disk write see a single coherent snapshot.
+	s.configFileMu.Lock()
+	defer s.configFileMu.Unlock()
+
 	// Verify current password
 	if !checkPassword(req.CurrentPassword, s.config.Web.Auth.PasswordHash) {
 		jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
