@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.47] - 2026-05-28
+
+### Hardened
+- **`/api/zabbix/item?key=…` — length cap, no-reflection error, no-store header** — the Zabbix item endpoint had three small but real hygiene gaps. (1) No length cap on the `key` query parameter — a multi-MB key would only ever land on the "unknown key" branch but until the cap it was reflected back in the response, billed CPU on the snapshot path, and consumed log/response bandwidth. Now capped at 256 bytes (real Zabbix keys are short identifiers like `labyrinth.queries.total`). (2) Error response used to echo the attacker-controlled key (`"unknown key: <key>"`) — generic `"unknown key"` now. Endpoint is auth-gated so this is defence-in-depth, but reflecting attacker-controlled bytes into text/plain bodies that get piped into Zabbix log lines is a poor habit. (3) `Cache-Control: no-store` on both success and error responses so a scraping pipeline or intermediate proxy cannot serve a stale metric value during an incident. Pins in [web/api_zabbix_item_test.go](web/api_zabbix_item_test.go) cover all three: oversize key rejected, sentinel string never echoed back, no-store on success.
+
 ## [0.7.46] - 2026-05-28
 
 ### Hardened
