@@ -43,6 +43,11 @@ const (
 	// ReasonOther — cryptographic verify failed, bailiwick failed, or some
 	// other Bogus cause the validator has not classified further.
 	ReasonOther
+	// ReasonNTAOverride — a Negative Trust Anchor (RFC 7646) is active for
+	// the queried zone subtree, suppressing the validation verdict to
+	// Insecure regardless of what the chain would have produced. The
+	// operator installed the NTA explicitly; this is the audit trail.
+	ReasonNTAOverride
 )
 
 // String returns a stable token for the reason — used in logs, metrics,
@@ -66,6 +71,8 @@ func (r FailureReason) String() string {
 		return "unsupported-ds-digest"
 	case ReasonOther:
 		return "other"
+	case ReasonNTAOverride:
+		return "nta-override"
 	}
 	return ""
 }
@@ -91,6 +98,8 @@ func FailureReasonFromString(s string) FailureReason {
 		return ReasonUnsupportedDNSKEYAlgo
 	case "unsupported-ds-digest":
 		return ReasonUnsupportedDSDigest
+	case "nta-override":
+		return ReasonNTAOverride
 	}
 	return ReasonOther
 }

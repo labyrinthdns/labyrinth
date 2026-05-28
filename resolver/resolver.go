@@ -253,6 +253,27 @@ func (r *Resolver) SetDNSSECAllowSHA1(allow bool) {
 	r.dnssecValidator.AllowSHA1(allow)
 }
 
+// SetDNSSECNegativeTrustAnchors installs the operator-configured
+// RFC 7646 NTA list onto the active validator. Each entry is
+// "<zone>|<RFC3339-expiry>|<reason>". Returns the list of entries that
+// failed to parse (caller logs them); the validator still receives the
+// entries that did parse. No-op if DNSSEC is not enabled.
+func (r *Resolver) SetDNSSECNegativeTrustAnchors(entries []string) []string {
+	if r.dnssecValidator == nil {
+		return nil
+	}
+	store, failed := dnssec.LoadNTAStoreFromStrings(entries)
+	r.dnssecValidator.SetNTAStore(store)
+	return failed
+}
+
+// DNSSECValidator exposes the active DNSSEC validator (or nil if DNSSEC
+// is disabled). Used by the observability layer to surface validator
+// counters (e.g. NTAMatches) through the metrics endpoint.
+func (r *Resolver) DNSSECValidator() *dnssec.Validator {
+	return r.dnssecValidator
+}
+
 // supportedDNSSECAlgorithms returns the list of DNSKEY/RRSIG algorithm
 // numbers this resolver advertises in the RFC 6975 DAU option. The list
 // reflects what the validator will actually accept — RSASHA1 is omitted

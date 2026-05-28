@@ -145,6 +145,12 @@ type ResolverConfig struct {
 	PreferIPv4            bool
 	DNSSECEnabled         bool
 	DNSSECAllowSHA1       bool
+	// DNSSECNegativeTrustAnchors is the operator-installed NTA list
+	// (RFC 7646). Each entry is "<zone>|<RFC3339 expiry>|<reason>" — the
+	// pipe separator keeps the format trivially parseable from a YAML
+	// list of strings without inventing a nested schema. Empty list
+	// disables NTA enforcement.
+	DNSSECNegativeTrustAnchors []string
 	HardenBelowNXDomain   bool
 	RootHintsRefresh      time.Duration
 	ECSEnabled            bool
@@ -364,6 +370,10 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setBool(&cfg.Resolver.PreferIPv4, "resolver.prefer_ipv4")
 	setBool(&cfg.Resolver.DNSSECEnabled, "resolver.dnssec_enabled")
 	setBool(&cfg.Resolver.DNSSECAllowSHA1, "resolver.dnssec_allow_sha1")
+	// RFC 7646 NTAs: comma-separated list of "<zone>|<RFC3339-expiry>|<reason>"
+	// entries. The pipe separator inside an entry keeps fields scalar so we can
+	// piggy-back on the existing CSV loader without inventing a nested YAML schema.
+	setCSV(&cfg.Resolver.DNSSECNegativeTrustAnchors, "resolver.dnssec_negative_trust_anchors")
 	setBool(&cfg.Resolver.HardenBelowNXDomain, "resolver.harden_below_nxdomain")
 	setDuration(&cfg.Resolver.RootHintsRefresh, "resolver.root_hints_refresh")
 	setBool(&cfg.Resolver.ECSEnabled, "resolver.ecs_enabled")
