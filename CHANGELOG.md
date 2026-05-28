@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.26] - 2026-05-28
+
+### Hardened
+- **1 MiB request-body cap on every authenticated API route** — without this gate an attacker (or a buggy automation script) POSTing a 1GB JSON blob would force the resolver to allocate 1GB of RAM before the decoder failed, a trivial OOM DoS against the admin API. The `requireAuth` middleware now wraps every request body with `http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)` so any handler attempting to read past the cap gets a clean `http.MaxBytesError`. 1 MiB is well above any legitimate request (the largest is a few-hundred-byte NTA install or blocklist domain list) and well below the threshold at which a single body would create memory pressure. New pins in [web/middleware_body_cap_test.go](web/middleware_body_cap_test.go) cover both the cap-triggers-error behaviour (positive) and the under-cap-passes-through behaviour (negative control — a regression that mangled small bodies would break every POST flow).
+
 ## [0.7.25] - 2026-05-28
 
 ### Added
