@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.23] - 2026-05-28
+
+### Hardened
+- **Kubernetes-style readiness contract on `/api/system/health`** — a degraded (resolver not primed) state now returns HTTP 503 Service Unavailable instead of HTTP 200 with `status:"degraded"` in the body. Kubernetes-style readiness probes gate traffic on status code ALONE; without 503 during startup priming a pod would receive client traffic before the resolver had primed the root NS cache, causing every initial query to SERVFAIL. New pin in [web/api_health_status_test.go](web/api_health_status_test.go) locks the 503 contract; pre-existing tests updated to expect either 200 or 503 depending on fixture state.
+
 ## [0.7.22] - 2026-05-28
 
 ### Added

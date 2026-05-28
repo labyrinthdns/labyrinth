@@ -1335,8 +1335,12 @@ func TestHandleHealth(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleHealth(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d", w.Code)
+	// Kubernetes-style readiness contract: a degraded (nil-resolver)
+	// state produces 503 so a readiness probe pulls the pod from
+	// rotation. The JSON body still carries the human-readable
+	// status string for operator-facing surfaces.
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 (resolver not ready), got %d", w.Code)
 	}
 	body := decodeJSON(t, w)
 	if body["status"] != "degraded" {
@@ -1674,8 +1678,11 @@ func TestRegisterRoutes(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("want 200 from registered route, got %d", w.Code)
+	// 200 (resolver ready) or 503 (degraded — no resolver in this
+	// fixture) both confirm the route is registered. The Kubernetes-
+	// readiness 503 contract is pinned separately.
+	if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 200 or 503 from registered route, got %d", w.Code)
 	}
 }
 
@@ -2216,8 +2223,12 @@ func TestAdminServerStart(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("want 200, got %d", resp.StatusCode)
+	// Either 200 (resolver ready) or 503 (degraded — no resolver wired in
+	// this test setup) is acceptable; the test asserts the endpoint
+	// answered at all. Kubernetes-style readiness behaviour is pinned
+	// in api_health_status_test.go.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 200 or 503, got %d", resp.StatusCode)
 	}
 
 	body, _ := io.ReadAll(resp.Body)

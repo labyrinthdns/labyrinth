@@ -907,11 +907,11 @@ func TestHandleHealth_WithResolver(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleHealth(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d", w.Code)
+	// resolver is not primed → degraded → 503 readiness response.
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 (resolver not primed), got %d", w.Code)
 	}
 	body := decodeJSON(t, w)
-	// resolver is not ready (not primed), so still "degraded"
 	if body["resolver_ready"] != false {
 		t.Fatalf("expected resolver_ready=false, got %v", body["resolver_ready"])
 	}
