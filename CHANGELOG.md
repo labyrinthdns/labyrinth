@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.18] - 2026-05-28
+
+M5.5 (DNSSEC validation safety net, continued) + M4.6 (EDE counter wiring, integration pin).
+
+### Hardened
+- **Trust-chain depth cap (`maxTrustChainDepth = 32`)** — a hostile authoritative can publish an RRSIG whose `SignerName` carries an arbitrary label count; the trust-chain walker in [dnssec/validator.go:649](dnssec/validator.go) would issue a DNSKEY + DS fetch per chain step. A 127-label name (the RFC 1034 §3.1 theoretical maximum) would cost 128 round-trips per validation; an attacker pointing many queries at us could weaponise this. The new cap collapses any chain deeper than 32 to `Indeterminate` *before* the first network call fires. New pins in [dnssec/validation_chain_depth_test.go](dnssec/validation_chain_depth_test.go) confirm: (a) `buildZoneChain` growth is linear with label count, (b) a 200-label zone returns `Indeterminate` against a `nil` querier (cap engaged before any dispatch attempted; a leak would panic), (c) the cap value stays above the realistic-name upper bound so a future tighten-the-cap regression breaks the test.
+
+### Tests
+- **EDE counter integration pin** — new [server/rfc8914_ede_counter_integration_test.go](server/rfc8914_ede_counter_integration_test.go) closes the loop between the metrics-level `IncEDE` unit test (added in v0.7.13) and the handler-level emission. Issues an ACL-denied EDNS query against a real `MainHandler` and asserts (a) `EDECodeProhibited` count goes up by exactly 1, (b) NO other EDE counter moved (cross-counter contamination guard), (c) a second refusal increments by exactly 1 more (idempotence — not duplicated, not gated incorrectly).
+
 ## [0.7.17] - 2026-05-28
 
 UI-M5.2 from PLAN.md — per-RFC counter widgets. The compliance matrix at `/compliance` now carries live evidence beside the static claims: every RFC entry that has a natural counter source displays its current value inline as a chip on the card.

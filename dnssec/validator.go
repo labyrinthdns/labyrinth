@@ -30,6 +30,21 @@ const rrsigClockSkew = 60 * time.Second
 // already observed, which is the safe collapse for "we cannot validate".
 const maxRRSIGVerifyAttempts = 16
 
+// maxTrustChainDepth caps the number of zone hops the trust-chain
+// walker will traverse before giving up. The chain length grows with
+// the label count of the signer zone, which a hostile authoritative
+// can control via the RRSIG SignerName field. Each chain step does a
+// DNSKEY fetch + a DS fetch — both potentially network round-trips.
+// A 127-label name (the RFC 1034 §3.1 theoretical maximum) would
+// cost 128 round-trips per validation; an attacker pointing many
+// queries at us could weaponise this. Real DNSSEC-signed zones top
+// out around 5-7 labels (e.g. www.api.staging.eu-west.example.com.);
+// 32 is a comfortable margin above any legitimate depth and far
+// below the RFC-1034 maximum. Beyond the cap the validator returns
+// Indeterminate — the chain "could not be completed" — rather than
+// Bogus (no signature failed) or Insecure (no positive denial).
+const maxTrustChainDepth = 32
+
 // ValidationResult represents the outcome of DNSSEC validation.
 type ValidationResult int
 
@@ -635,6 +650,17 @@ func verdictToOutcome(v ValidationResult) string {
 func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord) ValidationResult {
 	// Build the chain of zones from root to the signer zone.
 	chain := buildZoneChain(zone)
+
+	// M5.5 — refuse to walk pathologically deep chains. A hostile
+	// authoritative could publish an RRSIG whose SignerName is 127
+	// labels long; the walker would do 128 DNSKEY + 128 DS fetches
+	// per query. The cap collapses such an attempt to Indeterminate
+	// before any network round-trip fires.
+	if len(chain) > maxTrustChainDepth {
+		v.logger.Debug("trust chain exceeds depth cap; refusing to walk",
+			"zone", zone, "depth", len(chain), "cap", maxTrustChainDepth)
+		return Indeterminate
+	}
 
 	// parentKeys holds the previous chain element's verified DNSKEY RRset.
 	// Required for authenticating the parent's denial-of-DS (RFC 4035 §5.2 /
