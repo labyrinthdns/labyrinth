@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.37] - 2026-05-28
+
+### Hardened
+- **RFC 1035 §2.3.4 length cap on NTA install/remove `zone` parameter** — the negative-trust-anchor admin endpoints (`POST /api/dnssec/nta`, `DELETE /api/dnssec/nta?zone=…`) accepted arbitrary-length zone strings. The NTA store is consulted on every DNSSEC validation decision, so a malformed POST that persisted a multi-megabyte zone string would balloon memory AND make every validation pass slower forever. Both routes now reject anything longer than 255 octets with a clean 400. Pins in [web/api_dnssec_zone_cap_test.go](web/api_dnssec_zone_cap_test.go) cover both routes against a 4 KiB hostile zone.
+
 ## [0.7.36] - 2026-05-28
 
 ### Changed
