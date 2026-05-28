@@ -19,6 +19,7 @@ import type {
   DNSGuideResponse,
   FallbackEventsResponse,
   DNSSECStatusResponse,
+  SecurityStatusResponse,
 } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
@@ -225,6 +226,8 @@ export const api = {
       `/api/dnssec/nta?zone=${encodeURIComponent(zone)}`,
       { method: 'DELETE' },
     ),
+
+  security: () => request<SecurityStatusResponse>('/api/security'),
 
   checkUpdate: (force = false) => {
     if (force) {

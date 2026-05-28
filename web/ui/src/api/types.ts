@@ -395,3 +395,26 @@ export interface DNSSECStatusResponse {
   nta_matches: number
   ntas: DNSSECNTAEntry[]
 }
+
+export interface SecurityStatusResponse {
+  cookies: {
+    enabled: boolean
+    enforce_strict_udp: boolean
+    badcookie_responses: number
+  }
+  rate_limit: {
+    enabled: boolean
+    rate_per_second: number
+    burst: number
+    rate_limited_total: number
+  }
+  rrl: {
+    enabled: boolean
+    responses_per_second: number
+    slip_ratio: number
+    ipv4_prefix: number
+    ipv6_prefix: number
+  }
+  acl_refused_total: number
+  blocklist_blocked_total: number
+}

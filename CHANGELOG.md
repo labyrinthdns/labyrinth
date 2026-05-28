@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-05-28
+
+UI-M6 (Security panel) — operator-facing visibility into the three
+defensive knobs that decide whether the resolver can be turned into
+an amplifier: DNS Cookies, per-IP rate limit, and per-prefix RRL.
+
+### Added
+- **`/api/security` endpoint** — surfaces cookie / rate-limit / RRL configuration and counters (BADCOOKIE responses, rate-limited drops, ACL-refused, blocklist-blocked) in a single payload. The cookie BADCOOKIE count sums both reasons it can fire (stale post-rotation cookie + §5.4 cookie-less UDP rejection) — disambiguation comes from the `enabled` / `enforce_strict_udp` flags also in the same payload, so the operator can interpret the count from one fetch instead of cross-checking config.
+- **Security dashboard page** at `/security` — four cards (Cookies, Rate Limit, RRL, Access Control) with status badges and live counters; nav sidebar entry uses the `ShieldAlert` icon to differentiate from the existing `Shield` (Blocklist) and `ShieldCheck` (DNSSEC) routes. Polls every 10s. Each card carries a short explanatory caption tying the metric to its defensive purpose (e.g. "Per-client token-bucket. Limits user fairness, not amplification — use RRL for that.") so an operator looking at the page for the first time can tell the per-IP limit apart from RRL without leaving the page.
+
 ## [0.7.4] - 2026-05-28
 
 ### Hardened
