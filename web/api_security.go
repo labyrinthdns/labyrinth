@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 )
 
 // handleSecurity handles GET /api/security — operator-facing security
@@ -55,6 +56,12 @@ func (s *AdminServer) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		},
 		"acl_refused_total":      int64(0),
 		"blocklist_blocked_total": int64(0),
+		// UI-M6.3 — per-EDE-code emission counters (RFC 8914 §4).
+		// Map of "code" → emission count. Empty when no EDE has been
+		// emitted yet — the UI shows that as "no diagnostic emissions
+		// recorded" rather than "API broken". String keys (not uint16)
+		// so the JSON shape is stable across language clients.
+		"ede_counts": map[string]int64{},
 	}
 
 	if s.config != nil {
@@ -67,6 +74,17 @@ func (s *AdminServer) handleSecurity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.metrics != nil {
+		// EDE breakdown — convert uint16 keys to strings so JSON
+		// consumers can use them as map keys without coercion.
+		edeCounts := s.metrics.EDECounts()
+		if len(edeCounts) > 0 {
+			out := make(map[string]int64, len(edeCounts))
+			for code, n := range edeCounts {
+				out[strconv.FormatUint(uint64(code), 10)] = n
+			}
+			resp["ede_counts"] = out
+		}
+
 		snap := s.metrics.Snapshot()
 		// BADCOOKIE rejections sit in the responses_by_rcode bucket
 		// (handler.go emits IncResponses("BADCOOKIE") for both the

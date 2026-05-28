@@ -417,4 +417,8 @@ export interface SecurityStatusResponse {
   }
   acl_refused_total: number
   blocklist_blocked_total: number
+  // UI-M6.3 — per-EDE-code emission counts (RFC 8914 §4). Keyed by
+  // info code as a decimal string ("6", "17", "25", …). Empty map
+  // when the resolver has not emitted any EDE since startup.
+  ede_counts?: Record<string, number>
 }
