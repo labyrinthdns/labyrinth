@@ -28,6 +28,8 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	cfg.Web.TopDomainsLimit = clampMaxTopDomainsLimit * 10
 	cfg.Server.MaxUDPWorkers = clampMaxUDPWorkers * 10
 	cfg.Server.MaxTCPConns = clampMaxTCPConns * 10
+	cfg.Resolver.UpstreamRetries = clampMaxUpstreamRetries * 10
+	cfg.Resolver.MaxCNAMEDepth = clampMaxCNAMEDepth * 10
 
 	clampConfigBounds(cfg)
 
@@ -58,6 +60,12 @@ func TestClampConfigBounds_OverCapValuesGetClamped(t *testing.T) {
 	if got := cfg.Server.MaxTCPConns; got != clampMaxTCPConns {
 		t.Errorf("Server.MaxTCPConns = %d, want %d", got, clampMaxTCPConns)
 	}
+	if got := cfg.Resolver.UpstreamRetries; got != clampMaxUpstreamRetries {
+		t.Errorf("Resolver.UpstreamRetries = %d, want %d", got, clampMaxUpstreamRetries)
+	}
+	if got := cfg.Resolver.MaxCNAMEDepth; got != clampMaxCNAMEDepth {
+		t.Errorf("Resolver.MaxCNAMEDepth = %d, want %d", got, clampMaxCNAMEDepth)
+	}
 }
 
 // TestClampConfigBounds_UnderCapValuesPassThrough pins that legitimate
@@ -75,6 +83,8 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	cfg.Web.TopDomainsLimit = 5000
 	cfg.Server.MaxUDPWorkers = 1024
 	cfg.Server.MaxTCPConns = 256
+	cfg.Resolver.UpstreamRetries = 3
+	cfg.Resolver.MaxCNAMEDepth = 16
 
 	clampConfigBounds(cfg)
 
@@ -92,6 +102,12 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	}
 	if cfg.Server.MaxTCPConns != 256 {
 		t.Errorf("Server.MaxTCPConns got clamped from 256 to %d", cfg.Server.MaxTCPConns)
+	}
+	if cfg.Resolver.UpstreamRetries != 3 {
+		t.Errorf("Resolver.UpstreamRetries got clamped from 3 to %d", cfg.Resolver.UpstreamRetries)
+	}
+	if cfg.Resolver.MaxCNAMEDepth != 16 {
+		t.Errorf("Resolver.MaxCNAMEDepth got clamped from 16 to %d", cfg.Resolver.MaxCNAMEDepth)
 	}
 }
 

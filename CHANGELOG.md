@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-05-29
+
+### Hardened
+- **`clampConfigBounds` now caps `resolver.upstream_retries` (16) and `resolver.max_cname_depth` (64)** — these are CPU and amplification gaps, not OOM gaps, but the same operator-bypass surface as the v0.7.70 and v0.8.1 ceilings. `UpstreamRetries` controls how many times the forwarder retries a failing upstream query: a YAML typo of `upstream_retries: 1000000` turns one client-side failing query into a 1M-round amplification attack against the auth nameserver — both bandwidth burnout on the operator's link and DDoS-amplification risk for any auth being probed. Each retry is a bounded-timeout call so the resolver itself doesn't hang, but the network damage is real. `MaxCNAMEDepth` bounds CNAME-chasing recursion in `r.resolveIterative`; a pathological 1M value combined with a zone that returns long synthetic CNAME chains (trivially set up by anyone with control of a single zone — point CNAME a→b→c→...→z) lets a single client query consume seconds of CPU per request, hitting the per-worker semaphore and starving legitimate traffic. New constants `clampMaxUpstreamRetries = 16` and `clampMaxCNAMEDepth = 64` are well above the defaults (3 retries, 16 CNAME hops) and any RFC guidance, well under the threshold where the loop becomes a weapon. Pins in [config/clamp_config_test.go](config/clamp_config_test.go) extend the existing matrix to cover both new fields in both the over-cap-clamps and under-cap-passes scenarios.
+
 ## [0.8.1] - 2026-05-29
 
 ### Hardened
