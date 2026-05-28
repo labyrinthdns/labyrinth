@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.38] - 2026-05-28
+
+### Hardened
+- **64 KiB cap on the DoH GET `?dns=` parameter (RFC 8484)** — the POST surface was already capped at 65536 raw bytes via `io.LimitReader`, but the GET decode path read `r.URL.Query().Get("dns")` with no length validation. An attacker could `?dns=<megabytes of base64>` and the `base64.RawURLEncoding.DecodeString` call would expand that input to ~75 % of its size in RAM before the DNS parser even saw it — a memory-amplification gap that bypassed the POST cap entirely. `dohDecodeGet` now refuses parameters longer than `dohMaxGetParamBytes` (65536, matching the POST surface) with a clean error before any allocation. Pins in [web/api_doh_get_cap_test.go](web/api_doh_get_cap_test.go) cover (a) over-cap input rejected with a cap-mentioning error, (b) negative control that an under-cap parameter is not caught by the length gate.
+
 ## [0.7.37] - 2026-05-28
 
 ### Hardened
