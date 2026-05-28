@@ -467,6 +467,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/tls/renew", s.requireAuth(s.handleTLSRenew))
 	mux.HandleFunc("/api/diagnostics/trace", s.requireAuth(s.handleDiagnosticsTrace))
 	mux.HandleFunc("/api/dnssec", s.requireAuth(s.handleDNSSEC))
+	mux.HandleFunc("/api/security", s.requireAuth(s.handleSecurity))
 	mux.HandleFunc("/api/dnssec/nta", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
