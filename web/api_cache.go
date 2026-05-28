@@ -17,6 +17,13 @@ import (
 
 const clusterFanoutHeader = "X-Labyrinth-Cluster-Fanout"
 
+// maxNegativeCachePage caps a single /api/cache/negative response so
+// a misconfigured UI or hostile admin URL can't request millions of
+// entries at once. Iteration is O(n) over the negative cache and the
+// JSON payload size scales proportionally, so without a cap a single
+// request can balloon both CPU and memory.
+const maxNegativeCachePage = 2000
+
 // formatRData converts raw DNS RDATA bytes to a human-readable string.
 func formatRData(rr dns.ResourceRecord) string {
 	switch rr.Type {
@@ -374,6 +381,14 @@ func (s *AdminServer) handleNegativeCache(w http.ResponseWriter, r *http.Request
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
 		}
+	}
+	// Hard upper bound on a single page so a misconfigured UI or a
+	// hostile admin URL cannot request millions of entries at once
+	// (negative cache iteration is O(n) and the serialised JSON
+	// payload would balloon proportionally — the same defence the
+	// other paginated admin routes already carry).
+	if limit > maxNegativeCachePage {
+		limit = maxNegativeCachePage
 	}
 
 	entries := s.cache.NegativeEntries(limit)
