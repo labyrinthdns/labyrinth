@@ -419,12 +419,14 @@ func (s *AdminServer) cleanupStaleClients() {
 
 // registerRoutes sets up all API routes on the given mux.
 func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
-	// Auth routes (no auth required)
-	mux.HandleFunc("/api/auth/login", s.handleLogin)
+	// Auth routes (no auth required, but still body-capped so a 1GB
+	// JSON POST to /api/auth/login can't OOM the resolver before the
+	// JSON decoder gives up).
+	mux.HandleFunc("/api/auth/login", withBodyCap(s.handleLogin))
 
-	// Setup routes (no auth required)
-	mux.HandleFunc("/api/setup/status", s.handleSetupStatus)
-	mux.HandleFunc("/api/setup/complete", s.handleSetupComplete)
+	// Setup routes (no auth required, body-capped — see above).
+	mux.HandleFunc("/api/setup/status", withBodyCap(s.handleSetupStatus))
+	mux.HandleFunc("/api/setup/complete", withBodyCap(s.handleSetupComplete))
 
 	// Public routes (no auth required)
 	mux.HandleFunc("/api/system/health", s.handleHealth)

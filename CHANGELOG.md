@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.29] - 2026-05-28
+
+### Hardened
+- **Body cap closed on the unauthenticated `/api/auth/login`, `/api/setup/status`, `/api/setup/complete` routes** — the 1 MiB body cap installed in v0.7.26 lived inside `requireAuth`, so anonymous routes (login, setup) bypassed it entirely. An unauthenticated attacker could POST a 1 GB JSON blob to `/api/auth/login` and force the resolver to allocate it into RAM before the decoder failed — a trivial OOM DoS that did not even require credentials. The cap is now a separate `withBodyCap` middleware applied at route registration to all three anonymous POST endpoints in addition to remaining inside `requireAuth`. Pins in [web/login_body_cap_test.go](web/login_body_cap_test.go) cover (a) the bare middleware caps reads at the limit, (b) under-cap bodies pass through unchanged, (c) the live `/api/auth/login` route registered on the real ServeMux returns a clean 4xx (not a 500/hang) when given an oversize body.
+
 ## [0.7.28] - 2026-05-28
 
 ### Added

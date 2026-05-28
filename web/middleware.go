@@ -26,6 +26,24 @@ const (
 // exceeded, which jsonResponse turns into a clean 400.
 const MaxRequestBodyBytes = 1 << 20 // 1 MiB
 
+// withBodyCap wraps a handler so that any read from r.Body returns
+// http.MaxBytesError once MaxRequestBodyBytes has been read. This is
+// the OOM defence and MUST be applied to every POST/PUT/PATCH route
+// — including unauthenticated ones like /api/auth/login, where an
+// attacker has not yet been turned away and so the cap is the only
+// thing standing between a malicious 1GB JSON blob and the JSON
+// decoder allocating it all into RAM.
+//
+// WebSocket upgrade requests have a small handshake body that is
+// well under the cap; once upgraded, the cap no longer applies (the
+// protocol moves off http.Request.Body).
+func withBodyCap(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+		next(w, r)
+	}
+}
+
 // requireAuth returns a middleware that validates the JWT from the Authorization header
 // or ?token= query parameter. If no auth is configured (username is empty), it passes through.
 func (s *AdminServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
