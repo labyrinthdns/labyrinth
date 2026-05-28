@@ -35,6 +35,28 @@ func (s *AdminServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleReadyz handles GET /api/system/readyz — a status-code-only
+// readiness probe. Unlike /api/system/health which returns a JSON
+// body, this endpoint emits NO body at all so a Kubernetes-style
+// probe scraping it costs zero allocations and the response fits in
+// a single TCP segment. The body-less shape is the conventional
+// k8s.io/component-base/healthz signal.
+//
+//   200 OK              — resolver primed and serving
+//   503 Service Unavail — resolver not ready (still priming)
+func (s *AdminServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if s.resolver == nil || !s.resolver.IsReady() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handleVersion handles GET /api/system/version — version info.
 func (s *AdminServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
