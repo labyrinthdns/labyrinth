@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.61] - 2026-05-28
+
+### Hardened
+- **TLS status / TLS renew / DNS guide error responses now carry `Cache-Control: no-store`** — same class of gap closed by v0.7.60 for DoH: `handleTLSStatus`, `handleTLSRenew`, and `handleDNSGuide` set `Cache-Control: no-store` only in the success branch (and `handleTLSRenew` not even there until the body write). Every `http.Error` branch — 405 method-not-allowed on all three, 400 "auto-tls not enabled" and 500 "renew failed" on `tls/renew` — left the header unset, falling back to Go's default of "no cache directive". A CDN or browser cache could then store the error response. The worst case: an operator just flipped on auto-TLS in config, hits `tls/renew`, and an intermediary serves the stale "auto-tls not enabled" 400 cached from a minute earlier — misleading them into thinking the toggle did not take effect. The endpoints surface live state (cert NotAfter, ACME issuer, DoH URL, listen address); none is ever appropriate to cache. Each handler now sets `Cache-Control: no-store` at the top so `http.Error` (which preserves previously-set headers) inherits it on every error path. Pin in [web/api_tls_error_no_store_test.go](web/api_tls_error_no_store_test.go) covers four error paths and two success paths to guard against accidentally dropping the header during a refactor.
+
 ## [0.7.60] - 2026-05-28
 
 ### Hardened
