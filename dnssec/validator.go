@@ -30,6 +30,11 @@ const rrsigClockSkew = 60 * time.Second
 // already observed, which is the safe collapse for "we cannot validate".
 const maxRRSIGVerifyAttempts = 16
 
+// MaxRRSIGVerifyAttempts exposes the verify-cap value for the
+// observability UI. Operators reading the DNSSEC page can confirm the
+// safety-net value without having to grep the source.
+func MaxRRSIGVerifyAttempts() int { return maxRRSIGVerifyAttempts }
+
 // maxTrustChainDepth caps the number of zone hops the trust-chain
 // walker will traverse before giving up. The chain length grows with
 // the label count of the signer zone, which a hostile authoritative
@@ -44,6 +49,11 @@ const maxRRSIGVerifyAttempts = 16
 // Indeterminate — the chain "could not be completed" — rather than
 // Bogus (no signature failed) or Insecure (no positive denial).
 const maxTrustChainDepth = 32
+
+// MaxTrustChainDepth exposes the chain-depth cap value (see the
+// constant above). Surfaced through /api/dnssec so the UI's safety-
+// net panel can reflect the value the resolver is actually enforcing.
+func MaxTrustChainDepth() int { return maxTrustChainDepth }
 
 // ValidationResult represents the outcome of DNSSEC validation.
 type ValidationResult int
