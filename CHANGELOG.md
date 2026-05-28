@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-05-29
+
+### Hardened
+- **`clampConfigBounds` now caps `server.tcp_pipeline_max` at 10 k** — the TCP and DoT request loops both wrap their per-connection handler in `for i := 0; i < pipelineMax; i++`. A YAML typo of `tcp_pipeline_max: 1000000000` (intended 100) lets a single attacker who holds one TCP/DoT connection open keep one server worker pinned for 1 B sequential queries before the loop exits — a slow-loris amplifier that bypasses the per-connection idle timeout (each query resets the deadline) and the per-worker semaphore (the same goroutine slot stays held the whole time). RFC 7828 (edns-tcp-keepalive) expects ~100–1000 queries per connection in a healthy keep-alive flow. The 10 k cap is well above any legitimate pattern and well under the worker-starvation threshold. Pins in [config/clamp_config_test.go](config/clamp_config_test.go) extend the matrix: (a) `Server.TCPPipelineMax = clampMaxTCPPipelineMax * 10` is clamped to the cap; (b) realistic value (100) passes through unchanged. Constant `clampMaxTCPPipelineMax` keeps the bound explicit so a refactor cannot silently widen it.
+
 ## [0.8.2] - 2026-05-29
 
 ### Hardened
