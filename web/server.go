@@ -61,6 +61,15 @@ type AdminServer struct {
 	// create. The CAS gate serialises the handler — first caller runs,
 	// others see 409 immediately without touching disk.
 	setupRunning atomic.Bool
+	// updateApplyRunning is the CAS gate around /api/system/update/apply.
+	// The handler downloads a ~10–30 MiB binary, writes it to a temp
+	// file, verifies SHA-256, and renames it over the running executable
+	// before re-execing. Two concurrent admin POSTs (or a runaway
+	// automation script, or a duplicated WebSocket-triggered click)
+	// would each download the binary independently, fight for the
+	// Windows rename of the running exe → .old, and race two restart()s.
+	// The gate serialises the handler; the loser sees 409 immediately.
+	updateApplyRunning atomic.Bool
 	nextID                atomic.Uint64
 	topClients            *TopTracker
 	topDomains            *TopTracker

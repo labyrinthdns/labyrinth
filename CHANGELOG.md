@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.56] - 2026-05-28
+
+### Hardened
+- **Singleflight gate on `/api/system/update/apply`** — the update-apply handler downloads a ~10–30 MiB release binary, writes it to a temp file in the same directory as the running executable, verifies SHA-256, and (on Windows) renames the running exe → `.old` before renaming the temp → exe and re-execing. Two concurrent admin POSTs — from a double-clicked button, a duplicated automation script, or any race between the dashboard mutation and a power-user `curl` — would each download the binary independently, fight for the Windows `.old` rename (the second loses because the first already moved the exe), and triple-write the binary on disk. Worst case both succeed past the rename and the resolver re-execs twice. A new `updateApplyRunning atomic.Bool` CAS gate at the top of `handleApplyUpdate` serialises the handler: the first caller runs, contenders see `409 update already in progress` immediately without touching the network or disk. The gate is reset via `defer` so a panicking apply still unblocks retry. Pin in [web/api_update_singleflight_test.go](web/api_update_singleflight_test.go) parks the first call inside its upstream-fetch transport, fires 9 contending POSTs, asserts all 9 return 409 without reaching the upstream transport, then releases and verifies the first call completes normally.
+
 ## [0.7.55] - 2026-05-28
 
 ### Hardened

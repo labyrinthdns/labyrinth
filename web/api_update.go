@@ -190,6 +190,17 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Singleflight gate: the handler downloads ~10–30 MiB of binary,
+	// writes it to a temp file, renames it over the running executable,
+	// and re-execs. Two concurrent calls would download twice, fight
+	// over the Windows .old rename, and race two restarts. The CAS
+	// gate serialises the handler; the loser sees 409 immediately.
+	if !s.updateApplyRunning.CompareAndSwap(false, true) {
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": "update already in progress"})
+		return
+	}
+	defer s.updateApplyRunning.Store(false)
+
 	info, err := checkForUpdate()
 	if err != nil {
 		jsonResponse(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("update check failed: %v", err)})
