@@ -733,6 +733,32 @@ func clampConfigBounds(cfg *Config) {
 	if cfg.Resolver.UpstreamTimeout <= 0 {
 		cfg.Resolver.UpstreamTimeout = defaultUpstreamTimeout
 	}
+
+	// TCP server timeout floor. `cfg.Server.TCPTimeout` is passed
+	// directly to `NewTCPServer(..., timeout, ...)` which stashes it
+	// in the struct and uses it on the initial `conn.SetDeadline
+	// (time.Now().Add(s.timeout))` at server/tcp.go:114 — the deadline
+	// applied BEFORE the server reads the 2-byte length prefix. With
+	// timeout == 0 the deadline is "now" and every read fails before
+	// the prefix arrives; with timeout < 0 the deadline is in the past
+	// and the failure is the same. The DoT server uses the same value
+	// for its own TLS read deadline. Effect: every TCP DNS query
+	// SERVFAILs (or RST-closes, depending on how the client times its
+	// reads), DoT is similarly dead, BUT UDP keeps working — so a
+	// monitoring smoke test that uses `dig` (defaults to UDP) sees a
+	// healthy resolver while DoT clients, large-response clients, and
+	// any TCP fallback (RFC 7766) all fail. Notable because TCP DNS is
+	// where the recent privacy/RFC traffic lives (RFC 7858 DoT, RFC
+	// 8484 DoH falling back to TCP at the underlying layer for very
+	// large answers), so an operator running a privacy-focused
+	// resolver gets "the new stuff is broken but the classic UDP
+	// queries work" with no obvious cause. Reachable via YAML typo or
+	// /api/config/raw PUT — `tcp_timeout: 0` reads as "no timeout —
+	// allow long-poll clients" but means the opposite. Fall back to
+	// constructor default 5s, matching `config/defaults.go`.
+	if cfg.Server.TCPTimeout <= 0 {
+		cfg.Server.TCPTimeout = defaultTCPTimeout
+	}
 }
 
 // Default values used by the lower-bound clamp. Match the constructor
@@ -746,6 +772,7 @@ const (
 	defaultRateLimitBurst  = 100
 	defaultMaxCNAMEDepth   = 10
 	defaultUpstreamTimeout = 2 * time.Second
+	defaultTCPTimeout      = 10 * time.Second
 )
 
 func validate(cfg *Config) error {
