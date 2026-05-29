@@ -53,8 +53,19 @@ type Stats struct {
 // Manager coordinates blocklist downloads, parsing, and matching. It is
 // safe for concurrent use.
 type Manager struct {
-	matcher         *Matcher
-	rpzMatcher      *RPZMatcher
+	// matcher and rpzMatcher are swapped wholesale by RefreshAll under
+	// mu.Lock(). The hot-path readers (IsBlocked, RPZAction, Stats)
+	// previously read these as plain pointers without holding mu — a
+	// data race on the pointer publication. Go pointer stores are
+	// atomic in practice on all supported platforms, but the memory
+	// model gives no happens-before edge without sync, so a reader on
+	// a weak-ordering CPU could continue observing the pre-refresh
+	// matcher indefinitely. The Matcher / RPZMatcher structs are
+	// independently synchronised internally, so atomic.Pointer is the
+	// minimum publication primitive that gives readers an up-to-date
+	// snapshot without taking mu on every query.
+	matcher         atomic.Pointer[Matcher]
+	rpzMatcher      atomic.Pointer[RPZMatcher]
 	sources         []*ListSource
 	customBlocks    map[string]struct{}
 	customAllows    map[string]struct{}
@@ -107,8 +118,6 @@ func NewManager(cfg ManagerConfig, logger *slog.Logger) *Manager {
 	}
 
 	mgr := &Manager{
-		matcher:         NewMatcher(),
-		rpzMatcher:      NewRPZMatcher(),
 		sources:         sources,
 		customBlocks:    make(map[string]struct{}),
 		customAllows:    customAllows,
@@ -127,6 +136,8 @@ func NewManager(cfg ManagerConfig, logger *slog.Logger) *Manager {
 		},
 		logger: logger,
 	}
+	mgr.matcher.Store(NewMatcher())
+	mgr.rpzMatcher.Store(NewRPZMatcher())
 	return mgr
 }
 
@@ -184,11 +195,13 @@ func (mgr *Manager) Start(ctx context.Context) {
 func (mgr *Manager) IsBlocked(domain string) bool {
 	// Check RPZ first: passthru returns nil (not blocked), other actions
 	// mean the domain is blocked.
-	if action := mgr.rpzMatcher.Match(domain); action != nil {
-		mgr.blockedTotal.Add(1)
-		return true
+	if rpz := mgr.rpzMatcher.Load(); rpz != nil {
+		if action := rpz.Match(domain); action != nil {
+			mgr.blockedTotal.Add(1)
+			return true
+		}
 	}
-	if mgr.matcher.Match(domain) {
+	if m := mgr.matcher.Load(); m != nil && m.Match(domain) {
 		mgr.blockedTotal.Add(1)
 		return true
 	}
@@ -197,7 +210,11 @@ func (mgr *Manager) IsBlocked(domain string) bool {
 
 // RPZAction returns the RPZ action for a domain, or nil if no RPZ rule matches.
 func (mgr *Manager) RPZAction(domain string) *RPZAction {
-	return mgr.rpzMatcher.Match(domain)
+	rpz := mgr.rpzMatcher.Load()
+	if rpz == nil {
+		return nil
+	}
+	return rpz.Match(domain)
 }
 
 // BlockingMode returns the active blocking mode ("nxdomain", "null_ip",
@@ -317,11 +334,11 @@ func (mgr *Manager) RefreshAll() {
 	}
 	mgr.mu.RUnlock()
 
-	// Atomic swap of both matchers.
-	mgr.mu.Lock()
-	mgr.matcher = newMatcher
-	mgr.rpzMatcher = newRPZMatcher
-	mgr.mu.Unlock()
+	// Atomic swap of both matchers. mu is not needed for the pointer
+	// publication itself (atomic.Pointer handles that), but other code
+	// paths that read non-atomic fields under mu still rely on it.
+	mgr.matcher.Store(newMatcher)
+	mgr.rpzMatcher.Store(newRPZMatcher)
 
 	exact, wildcards, wl := newMatcher.Stats()
 	rpzExact, rpzWild, rpzPT := newRPZMatcher.Stats()
@@ -459,7 +476,9 @@ func (mgr *Manager) BlockDomain(domain string) error {
 	mgr.customBlocks[domain] = struct{}{}
 	mgr.mu.Unlock()
 
-	mgr.matcher.AddExact(domain)
+	if m := mgr.matcher.Load(); m != nil {
+		m.AddExact(domain)
+	}
 	mgr.logger.Info("custom block added", "domain", domain)
 	return nil
 }
@@ -486,8 +505,10 @@ func (mgr *Manager) UnblockDomain(domain string) error {
 	delete(mgr.customBlocks, domain)
 	mgr.mu.Unlock()
 
-	mgr.matcher.AddWhitelist(domain)
-	mgr.matcher.Remove(domain)
+	if m := mgr.matcher.Load(); m != nil {
+		m.AddWhitelist(domain)
+		m.Remove(domain)
+	}
 	mgr.logger.Info("custom unblock added", "domain", domain)
 	return nil
 }
@@ -495,12 +516,16 @@ func (mgr *Manager) UnblockDomain(domain string) error {
 // CheckDomain returns whether a domain is blocked without incrementing
 // the blocked-query counter.
 func (mgr *Manager) CheckDomain(domain string) bool {
-	return mgr.matcher.Match(domain)
+	m := mgr.matcher.Load()
+	return m != nil && m.Match(domain)
 }
 
 // Stats returns aggregate blocklist statistics.
 func (mgr *Manager) Stats() Stats {
-	exact, wildcards, wl := mgr.matcher.Stats()
+	var exact, wildcards, wl int
+	if m := mgr.matcher.Load(); m != nil {
+		exact, wildcards, wl = m.Stats()
+	}
 	_ = wl
 
 	mgr.mu.RLock()

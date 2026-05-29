@@ -22,7 +22,7 @@ func newSilentLogger() *slog.Logger {
 
 func TestRPZAction_Blocked(t *testing.T) {
 	mgr := NewManager(ManagerConfig{}, newSilentLogger())
-	mgr.rpzMatcher.AddRule(RPZRule{
+	mgr.rpzMatcher.Load().AddRule(RPZRule{
 		Name:       "malware.com",
 		IsWildcard: false,
 		Action:     RPZAction{Type: RPZActionNXDomain},
@@ -52,7 +52,7 @@ func TestRPZAction_NoMatch(t *testing.T) {
 
 func TestIsBlocked_ViaRPZMatcher(t *testing.T) {
 	mgr := NewManager(ManagerConfig{}, newSilentLogger())
-	mgr.rpzMatcher.AddRule(RPZRule{
+	mgr.rpzMatcher.Load().AddRule(RPZRule{
 		Name:       "rpz-blocked.com",
 		IsWildcard: false,
 		Action:     RPZAction{Type: RPZActionDrop},
@@ -135,11 +135,11 @@ func TestRefreshAll_RPZList(t *testing.T) {
 	mgr.RefreshAll()
 
 	// Verify RPZ rules are loaded
-	action := mgr.rpzMatcher.Match("malware.com")
+	action := mgr.rpzMatcher.Load().Match("malware.com")
 	if action == nil {
 		t.Error("malware.com should be blocked via RPZ")
 	}
-	action = mgr.rpzMatcher.Match("sub.tracking.com")
+	action = mgr.rpzMatcher.Load().Match("sub.tracking.com")
 	if action == nil {
 		t.Error("sub.tracking.com should be blocked via RPZ wildcard")
 	}
