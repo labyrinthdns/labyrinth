@@ -711,6 +711,28 @@ func clampConfigBounds(cfg *Config) {
 	if cfg.Resolver.MaxCNAMEDepth <= 0 {
 		cfg.Resolver.MaxCNAMEDepth = defaultMaxCNAMEDepth
 	}
+
+	// Upstream timeout floor. `r.config.UpstreamTimeout` feeds two call
+	// sites: `net.DialTimeout("udp"|"tcp", addr, r.config.UpstreamTimeout)`
+	// and `conn.SetDeadline(time.Now().Add(r.config.UpstreamTimeout))`.
+	// The SetDeadline path is the killer at zero or negative: a deadline
+	// of `time.Now().Add(0)` is "right now", a deadline of
+	// `time.Now().Add(-1s)` is in the past, and either way every read/
+	// write on every upstream socket returns i/o timeout instantly. The
+	// resolver still answers from cache (so monitoring sees a partial
+	// pulse) but every cache miss SERVFAILs and every uncached domain
+	// is unreachable. Reachable via YAML typo (`upstream_timeout: 0`
+	// reads like "no timeout — wait forever" which is the OPPOSITE of
+	// what the value does at `SetDeadline`) or by a /api/config/raw PUT
+	// that planted a negative duration. The dial path with `timeout: 0`
+	// actually behaves "no timeout" per net.Dialer semantics — so the
+	// zero value is a footgun precisely because the two call sites
+	// interpret it inversely. Fall back to the constructor default
+	// rather than 1ns; an operator booting with a 1ns upstream timeout
+	// would experience the same outage with no useful pointer.
+	if cfg.Resolver.UpstreamTimeout <= 0 {
+		cfg.Resolver.UpstreamTimeout = defaultUpstreamTimeout
+	}
 }
 
 // Default values used by the lower-bound clamp. Match the constructor
@@ -723,6 +745,7 @@ const (
 	defaultTCPPipelineMax  = 100
 	defaultRateLimitBurst  = 100
 	defaultMaxCNAMEDepth   = 10
+	defaultUpstreamTimeout = 2 * time.Second
 )
 
 func validate(cfg *Config) error {

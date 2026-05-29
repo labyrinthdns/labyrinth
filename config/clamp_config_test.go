@@ -254,6 +254,47 @@ func TestClampConfigBounds_MaxCNAMEDepthUntouchedWhenPositive(t *testing.T) {
 	}
 }
 
+// TestClampConfigBounds_UpstreamTimeoutFloor pins the v0.8.21 floor:
+// resolver.upstream_timeout <= 0 black-holes every cache miss. The
+// resolver feeds the value to `conn.SetDeadline(time.Now().Add(t))`
+// where `t = 0` means "deadline = now" and `t < 0` means "deadline
+// in the past" — both cause every upstream read/write to return
+// i/o timeout instantly, so every uncached domain SERVFAILs. The
+// cache hit path still works, so the resolver looks half-alive
+// in monitoring (some queries return) while every fresh resolution
+// fails. The zero value is especially nasty because `net.DialTimeout`
+// interprets `timeout == 0` as "no timeout" (the OPPOSITE of what
+// `SetDeadline(now)` does) — same config value, two different sites,
+// inverted semantics. Reachable via YAML typo (`upstream_timeout: 0`
+// reads like "wait forever") or /api/config/raw PUT.
+func TestClampConfigBounds_UpstreamTimeoutFloor(t *testing.T) {
+	for _, sentinel := range []time.Duration{0, -1 * time.Millisecond, -1 * time.Hour} {
+		cfg := &Config{}
+		cfg.Resolver.UpstreamTimeout = sentinel
+
+		clampConfigBounds(cfg)
+
+		if cfg.Resolver.UpstreamTimeout != defaultUpstreamTimeout {
+			t.Errorf("sentinel=%v: UpstreamTimeout = %v, want default %v",
+				sentinel, cfg.Resolver.UpstreamTimeout, defaultUpstreamTimeout)
+		}
+	}
+}
+
+// TestClampConfigBounds_UpstreamTimeoutUntouchedWhenPositive pins
+// that legitimate sub-default values (e.g. 100ms for fast LANs or
+// tight test fixtures) are NOT rewritten.
+func TestClampConfigBounds_UpstreamTimeoutUntouchedWhenPositive(t *testing.T) {
+	cfg := &Config{}
+	cfg.Resolver.UpstreamTimeout = 100 * time.Millisecond
+
+	clampConfigBounds(cfg)
+
+	if cfg.Resolver.UpstreamTimeout != 100*time.Millisecond {
+		t.Errorf("positive UpstreamTimeout=100ms got rewritten to %v", cfg.Resolver.UpstreamTimeout)
+	}
+}
+
 // TestClampConfigBounds_RunsViaValidate pins that the validate
 // entry-point invokes the clamp. A regression that moved validate
 // callers off the clamp (or replaced validate with a custom flow
