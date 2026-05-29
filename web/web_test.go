@@ -442,7 +442,7 @@ func TestRequireAuth_MissingToken(t *testing.T) {
 func TestRequireAuth_ValidBearerToken(t *testing.T) {
 	srv, _ := testAdminServerWithAuth(t)
 
-	token, err := generateJWT("admin", srv.jwtSecret)
+	token, err := generateJWT("admin", *srv.jwtSecret.Load())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestRequireAuth_ValidBearerToken(t *testing.T) {
 // don't leak via Referer / proxy access logs / browser history.
 func TestRequireAuth_QueryTokenRejectedOnPlainHTTP(t *testing.T) {
 	srv, _ := testAdminServerWithAuth(t)
-	token, _ := generateJWT("admin", srv.jwtSecret)
+	token, _ := generateJWT("admin", *srv.jwtSecret.Load())
 
 	handler := srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler must not be reached on plain HTTP ?token=")
@@ -491,7 +491,7 @@ func TestRequireAuth_QueryTokenRejectedOnPlainHTTP(t *testing.T) {
 // both Upgrade: websocket AND Connection: Upgrade.
 func TestRequireAuth_QueryTokenAcceptedOnWebSocketUpgrade(t *testing.T) {
 	srv, _ := testAdminServerWithAuth(t)
-	token, _ := generateJWT("admin", srv.jwtSecret)
+	token, _ := generateJWT("admin", *srv.jwtSecret.Load())
 
 	var gotUser string
 	handler := srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -1597,8 +1597,8 @@ func TestNewAdminServer(t *testing.T) {
 	if srv.timeSeries == nil {
 		t.Fatal("nil timeSeries")
 	}
-	if len(srv.jwtSecret) != 32 {
-		t.Fatalf("expected 32-byte JWT secret, got %d", len(srv.jwtSecret))
+	if got := *srv.jwtSecret.Load(); len(got) != 32 {
+		t.Fatalf("expected 32-byte JWT secret, got %d", len(got))
 	}
 }
 
