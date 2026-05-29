@@ -116,12 +116,12 @@ func TestStartUpdateChecker_EarlyExitPaths(t *testing.T) {
 	srv := testAdminServer(t)
 
 	// Branch: auto update disabled.
-	srv.config.Web.AutoUpdate = false
+	srv.config.Load().Web.AutoUpdate = false
 	srv.StartUpdateChecker(context.Background())
 
 	// Branch: context done before initial 30s wait.
-	srv.config.Web.AutoUpdate = true
-	srv.config.Web.UpdateCheckInterval = time.Second // exercise min interval clamp
+	srv.config.Load().Web.AutoUpdate = true
+	srv.config.Load().Web.UpdateCheckInterval = time.Second // exercise min interval clamp
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	srv.StartUpdateChecker(ctx)

@@ -15,7 +15,7 @@ import (
 // password_hash with the previous value AFTER the in-memory hash
 // has already rotated. Without the lock the sequence is:
 //
-//   1. change-password rotates s.config.Web.Auth.PasswordHash in memory
+//   1. change-password rotates s.config.Load().Web.Auth.PasswordHash in memory
 //   2. config-raw PUT (started concurrently) finishes its on-disk
 //      write carrying the OLD hash that ensurePasswordHashUnchanged
 //      compared against before step 1 landed
@@ -31,7 +31,7 @@ import (
 // the password change is durable.
 func TestChangePassword_NoLostUpdateVsConfigRaw(t *testing.T) {
 	srv, _ := testAdminServerWithAuth(t)
-	originalHash := srv.config.Web.Auth.PasswordHash
+	originalHash := srv.config.Load().Web.Auth.PasswordHash
 
 	cfgPath := t.TempDir() + "/labyrinth.yaml"
 	seed := "web:\n  auth:\n    username: admin\n    password_hash: " + originalHash + "\n"
@@ -76,7 +76,7 @@ func TestChangePassword_NoLostUpdateVsConfigRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read final config: %v", err)
 	}
-	inMem := strings.TrimSpace(srv.config.Web.Auth.PasswordHash)
+	inMem := strings.TrimSpace(srv.config.Load().Web.Auth.PasswordHash)
 	if !strings.Contains(string(got), "password_hash: "+inMem) {
 		t.Errorf("on-disk password_hash does not match in-memory hash — change-password lost update vs config-raw PUT.\nin-memory: %q\nfile: %s", inMem, string(got))
 	}

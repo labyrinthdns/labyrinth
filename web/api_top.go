@@ -36,7 +36,7 @@ func (s *AdminServer) handleTopClients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, offset := parseTopPagination(r, s.config.Web.TopClientsLimit)
+	limit, offset := parseTopPagination(r, s.config.Load().Web.TopClientsLimit)
 	entries, total := s.topClients.TopPage(limit, offset)
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"entries":  entries,
@@ -54,7 +54,7 @@ func (s *AdminServer) handleTopDomains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, offset := parseTopPagination(r, s.config.Web.TopDomainsLimit)
+	limit, offset := parseTopPagination(r, s.config.Load().Web.TopDomainsLimit)
 	entries, total := s.topDomains.TopPage(limit, offset)
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"entries":  entries,

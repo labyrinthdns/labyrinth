@@ -41,7 +41,35 @@ type AdminServer struct {
 	cache                 *cache.Cache
 	metrics               *metrics.Metrics
 	resolver              *resolver.Resolver
-	config                *config.Config
+	// config is published via atomic.Pointer so the ~60 HTTP handler
+	// read sites that touch `s.Config().*` see a complete config
+	// snapshot even while /api/config/raw PUT or
+	// /api/auth/change-password is rotating the value. Before v0.8.26
+	// this was a plain `*config.Config` mutated in place by the
+	// password-change handler (`s.config.Load().Web.Auth.PasswordHash = newHash`
+	// at auth.go) and swapped wholesale by the raw-config PUT
+	// (`s.config = parsedCfg` at api_config.go). Both writers took
+	// configFileMu, but readers did not — every login handler reading
+	// `s.config.Load().Web.Auth.PasswordHash` could in principle observe a torn
+	// Go string header (16-byte ptr+len struct) under heavy contention,
+	// the cluster / TLS / dashboard endpoints could observe a half-applied
+	// config during a hot-reload swap, and `go test -race` flagged every
+	// concurrent test that exercised auth-rotation paths.
+	//
+	// Mutating writers (password change, dashboard layout fallback) now
+	// copy-on-write: Load → shallow struct copy → mutate the copy →
+	// Store. The shallow copy is correct because every field the
+	// mutators touch is either a value type (Go string is a value-type
+	// header even though it has internal pointer semantics) or a fresh
+	// slice from the caller. configFileMu is still held by the writers
+	// to keep the on-disk lost-update gate that v0.7.58 pinned
+	// (TestChangePassword_NoLostUpdateVsConfigRaw).
+	//
+	// v0.8.24 closed the auth-credential sub-race via a targeted
+	// configFileMu extension on the reader side; this release retires
+	// that extension in favour of the proper atomic publication, so the
+	// reader no longer pays the lock cost.
+	config                atomic.Pointer[config.Config]
 	configPath            string
 	queryLog              *QueryLog
 	timeSeries            *TimeSeriesAggregator
@@ -150,7 +178,6 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		cache:                 c,
 		metrics:               m,
 		resolver:              r,
-		config:                cfg,
 		configPath:            "labyrinth.yaml",
 		queryLog:              NewQueryLog(bufSize),
 		timeSeries:            NewTimeSeriesAggregator(),
@@ -164,6 +191,7 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 	}
 	s.setupDone.Store(setupDone)
 	s.jwtSecret.Store(&secret)
+	s.config.Store(cfg)
 
 	// Wire fallback time-series: route fallback events into the aggregator.
 	s.wireFallbackTimeSeries()
@@ -214,7 +242,7 @@ func (s *AdminServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
-	addr := s.config.Web.Addr
+	addr := s.config.Load().Web.Addr
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
@@ -225,7 +253,7 @@ func (s *AdminServer) Start(ctx context.Context) error {
 	// We do not refuse to start (would break test fixtures and explicit
 	// "behind reverse proxy with mTLS" deployments), but the operator
 	// should see this clearly in logs.
-	if s.config.Web.Auth.Username == "" {
+	if s.config.Load().Web.Auth.Username == "" {
 		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
 			ip := net.ParseIP(host)
 			if ip == nil || (!ip.IsLoopback() && host != "localhost") {
@@ -238,13 +266,13 @@ func (s *AdminServer) Start(ctx context.Context) error {
 
 	var h3Server *http3.Server
 	tlsActive := func() bool {
-		return autoTLS || (s.config.Web.TLSEnabled && s.config.Web.TLSCertFile != "" && s.config.Web.TLSKeyFile != "")
+		return autoTLS || (s.config.Load().Web.TLSEnabled && s.config.Load().Web.TLSCertFile != "" && s.config.Load().Web.TLSKeyFile != "")
 	}
 	// H-3: emit security response headers globally.
 	baseHandler := securityHeaders(tlsActive)(mux)
 
-	if s.config.Web.DoH3Enabled {
-		if !autoTLS && (!s.config.Web.TLSEnabled || s.config.Web.TLSCertFile == "" || s.config.Web.TLSKeyFile == "") {
+	if s.config.Load().Web.DoH3Enabled {
+		if !autoTLS && (!s.config.Load().Web.TLSEnabled || s.config.Load().Web.TLSCertFile == "" || s.config.Load().Web.TLSKeyFile == "") {
 			return fmt.Errorf("web.doh3_enabled=true requires TLS (auto_tls or tls_cert_file/tls_key_file)")
 		}
 
@@ -327,7 +355,7 @@ func (s *AdminServer) Start(ctx context.Context) error {
 				// TLSConfig already set on h3Server
 				err = h3Server.ListenAndServeTLS("", "")
 			} else {
-				err = h3Server.ListenAndServeTLS(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile)
+				err = h3Server.ListenAndServeTLS(s.config.Load().Web.TLSCertFile, s.config.Load().Web.TLSKeyFile)
 			}
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				select {
@@ -347,9 +375,9 @@ func (s *AdminServer) Start(ctx context.Context) error {
 				default:
 				}
 			}
-		} else if s.config.Web.TLSEnabled && s.config.Web.TLSCertFile != "" && s.config.Web.TLSKeyFile != "" {
+		} else if s.config.Load().Web.TLSEnabled && s.config.Load().Web.TLSCertFile != "" && s.config.Load().Web.TLSKeyFile != "" {
 			s.logger.Info("admin dashboard starting with TLS", "addr", addr)
-			if err := srv.ListenAndServeTLS(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+			if err := srv.ListenAndServeTLS(s.config.Load().Web.TLSCertFile, s.config.Load().Web.TLSKeyFile); err != nil && err != http.ErrServerClosed {
 				select {
 				case errCh <- err:
 				default:

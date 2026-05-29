@@ -15,7 +15,7 @@ import (
 // misleading empty 200.
 func TestTimeSeries_RejectsNegativeWindow(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -31,7 +31,7 @@ func TestTimeSeries_RejectsNegativeWindow(t *testing.T) {
 // TestTimeSeries_RejectsZeroWindow — companion negative input.
 func TestTimeSeries_RejectsZeroWindow(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -51,7 +51,7 @@ func TestTimeSeries_RejectsZeroWindow(t *testing.T) {
 // negative values.
 func TestTimeSeries_RejectsNegativeInterval(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -69,7 +69,7 @@ func TestTimeSeries_RejectsNegativeInterval(t *testing.T) {
 // non-positive inputs.
 func TestTimeSeries_AcceptsValidWindow(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 

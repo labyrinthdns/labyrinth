@@ -13,7 +13,7 @@ import (
 
 func TestAdminServerStart_InvalidAddrReturnsServerError(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Addr = "127.0.0.1:bad"
+	srv.config.Load().Web.Addr = "127.0.0.1:bad"
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -29,10 +29,10 @@ func TestAdminServerStart_InvalidAddrReturnsServerError(t *testing.T) {
 
 func TestAdminServerStart_DoH3WithoutTLSFailsFast(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.DoH3Enabled = true
-	srv.config.Web.TLSEnabled = false
-	srv.config.Web.TLSCertFile = ""
-	srv.config.Web.TLSKeyFile = ""
+	srv.config.Load().Web.DoH3Enabled = true
+	srv.config.Load().Web.TLSEnabled = false
+	srv.config.Load().Web.TLSCertFile = ""
+	srv.config.Load().Web.TLSKeyFile = ""
 
 	err := srv.Start(context.Background())
 	if err == nil {
@@ -45,11 +45,11 @@ func TestAdminServerStart_DoH3WithoutTLSFailsFast(t *testing.T) {
 
 func TestAdminServerStart_DoH3Enabled_MissingCertFails(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Addr = "127.0.0.1:0"
-	srv.config.Web.DoH3Enabled = true
-	srv.config.Web.TLSEnabled = true
-	srv.config.Web.TLSCertFile = "missing-cert.pem"
-	srv.config.Web.TLSKeyFile = "missing-key.pem"
+	srv.config.Load().Web.Addr = "127.0.0.1:0"
+	srv.config.Load().Web.DoH3Enabled = true
+	srv.config.Load().Web.TLSEnabled = true
+	srv.config.Load().Web.TLSCertFile = "missing-cert.pem"
+	srv.config.Load().Web.TLSKeyFile = "missing-key.pem"
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -105,7 +105,7 @@ func (s *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) 
 	checkedAt := s.updateCheckedAt
 	s.updateMu.RUnlock()
 
-	if !force && cached != nil && time.Since(checkedAt) < s.config.Web.UpdateCheckInterval {
+	if !force && cached != nil && time.Since(checkedAt) < s.config.Load().Web.UpdateCheckInterval {
 		jsonResponse(w, http.StatusOK, cached)
 		return
 	}
@@ -132,11 +132,11 @@ func (s *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) 
 
 // StartUpdateChecker runs a background goroutine that periodically checks for updates.
 func (s *AdminServer) StartUpdateChecker(ctx context.Context) {
-	if !s.config.Web.AutoUpdate {
+	if !s.config.Load().Web.AutoUpdate {
 		return
 	}
 
-	interval := s.config.Web.UpdateCheckInterval
+	interval := s.config.Load().Web.UpdateCheckInterval
 	if interval < time.Minute {
 		interval = 24 * time.Hour
 	}

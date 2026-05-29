@@ -16,7 +16,7 @@ import (
 // expects a clean 400.
 func TestBlocklistBlock_RejectsOverlongDomain(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = "" // pass-through auth
+	srv.config.Load().Web.Auth.Username = "" // pass-through auth
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -35,7 +35,7 @@ func TestBlocklistBlock_RejectsOverlongDomain(t *testing.T) {
 // unblock route. Same reasoning, same surface.
 func TestBlocklistUnblock_RejectsOverlongDomain(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -57,7 +57,7 @@ func TestBlocklistUnblock_RejectsOverlongDomain(t *testing.T) {
 // proportional to its length per call.
 func TestBlocklistCheck_RejectsOverlongDomain(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 

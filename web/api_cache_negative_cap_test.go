@@ -18,7 +18,7 @@ import (
 // maxNegativeCachePage in the response.
 func TestNegativeCache_CapsPageSize(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = "" // pass-through auth
+	srv.config.Load().Web.Auth.Username = "" // pass-through auth
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 

@@ -665,7 +665,7 @@ func TestHandleCheckUpdate_MethodAndFreshCache(t *testing.T) {
 	srv.updateMu.Lock()
 	srv.updateCache = &UpdateInfo{CurrentVersion: "v0.4.1", LatestVersion: "v0.4.2", UpdateAvailable: true}
 	srv.updateCheckedAt = time.Now()
-	srv.config.Web.UpdateCheckInterval = time.Hour
+	srv.config.Load().Web.UpdateCheckInterval = time.Hour
 	srv.updateMu.Unlock()
 
 	updateHTTPGet = func(string) (*http.Response, error) {
@@ -683,8 +683,8 @@ func TestHandleCheckUpdate_MethodAndFreshCache(t *testing.T) {
 
 func TestStartUpdateChecker_PeriodicPath(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.AutoUpdate = true
-	srv.config.Web.UpdateCheckInterval = time.Minute
+	srv.config.Load().Web.AutoUpdate = true
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
 
 	var calls atomic.Int32
 	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -753,7 +753,7 @@ func TestHandleCheckUpdate_StaleCacheFallbackDeterministic(t *testing.T) {
 		UpdateAvailable: true,
 	}
 	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour)
-	srv.config.Web.UpdateCheckInterval = time.Minute
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
 	srv.updateMu.Unlock()
 
 	updateHTTPGet = func(string) (*http.Response, error) {
@@ -788,7 +788,7 @@ func TestHandleCheckUpdate_ForceBypassesFreshCache(t *testing.T) {
 		UpdateAvailable: true,
 	}
 	srv.updateCheckedAt = time.Now()
-	srv.config.Web.UpdateCheckInterval = time.Hour
+	srv.config.Load().Web.UpdateCheckInterval = time.Hour
 	srv.updateMu.Unlock()
 
 	calls := int32(0)
@@ -830,7 +830,7 @@ func TestHandleCheckUpdate_ForceDoesNotFallbackToStaleCache(t *testing.T) {
 		UpdateAvailable: true,
 	}
 	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour)
-	srv.config.Web.UpdateCheckInterval = time.Minute
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
 	srv.updateMu.Unlock()
 
 	updateHTTPGet = func(string) (*http.Response, error) {
@@ -849,7 +849,7 @@ func TestHandleCheckUpdate_NoCacheFetchErrorDeterministic(t *testing.T) {
 	srv := testAdminServer(t)
 	withUpdateHooksReset(t)
 
-	srv.config.Web.UpdateCheckInterval = time.Minute
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
 	updateHTTPGet = func(string) (*http.Response, error) {
 		return nil, errors.New("network down")
 	}
@@ -877,7 +877,7 @@ func TestHandleCheckUpdate_RefreshesStaleCacheOnSuccess(t *testing.T) {
 		UpdateAvailable: false,
 	}
 	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour)
-	srv.config.Web.UpdateCheckInterval = time.Minute
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
 	srv.updateMu.Unlock()
 
 	updateHTTPGet = func(string) (*http.Response, error) {
@@ -906,8 +906,8 @@ func TestStartUpdateChecker_IntervalClampToDaily(t *testing.T) {
 	srv := testAdminServer(t)
 	withUpdateHooksReset(t)
 
-	srv.config.Web.AutoUpdate = true
-	srv.config.Web.UpdateCheckInterval = time.Second
+	srv.config.Load().Web.AutoUpdate = true
+	srv.config.Load().Web.UpdateCheckInterval = time.Second
 
 	prevDelay := updateInitialDelay
 	prevTickerFactory := updateTickerFactory
@@ -964,8 +964,8 @@ func TestStartUpdateChecker_TickerErrorContinues(t *testing.T) {
 	srv := testAdminServer(t)
 	withUpdateHooksReset(t)
 
-	srv.config.Web.AutoUpdate = true
-	srv.config.Web.UpdateCheckInterval = time.Minute
+	srv.config.Load().Web.AutoUpdate = true
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
 
 	prevDelay := updateInitialDelay
 	prevTickerFactory := updateTickerFactory

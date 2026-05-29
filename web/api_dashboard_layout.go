@@ -106,8 +106,9 @@ func upsertDashboardLayoutBlock(content string, panelOrder, hiddenPanels []strin
 func (s *AdminServer) handleDashboardLayout(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		order := completeDashboardPanelOrder(s.config.Web.Dashboard.PanelOrder)
-		hidden := normalizeDashboardPanelIDs(s.config.Web.Dashboard.HiddenPanels)
+		cfg := s.config.Load()
+		order := completeDashboardPanelOrder(cfg.Web.Dashboard.PanelOrder)
+		hidden := normalizeDashboardPanelIDs(cfg.Web.Dashboard.HiddenPanels)
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"panel_order":   order,
 			"hidden_panels": hidden,
@@ -145,11 +146,18 @@ func (s *AdminServer) handleDashboardLayout(w http.ResponseWriter, r *http.Reque
 		}
 
 		// Keep in-memory config in sync; preserve runtime config if parse fails.
+		// On parse failure, copy-on-write: load → shallow copy → set the
+		// dashboard fields on the copy → publish. New slices come from the
+		// caller (panelOrder, hiddenPanels), so no aliasing with the
+		// previous-snapshot readers.
 		if parsed, parseErr := config.Parse([]byte(updated)); parseErr == nil {
-			s.config = parsed
+			s.config.Store(parsed)
 		} else {
-			s.config.Web.Dashboard.PanelOrder = panelOrder
-			s.config.Web.Dashboard.HiddenPanels = hiddenPanels
+			curCfg := s.config.Load()
+			newCfg := *curCfg
+			newCfg.Web.Dashboard.PanelOrder = panelOrder
+			newCfg.Web.Dashboard.HiddenPanels = hiddenPanels
+			s.config.Store(&newCfg)
 		}
 
 		jsonResponse(w, http.StatusOK, map[string]interface{}{

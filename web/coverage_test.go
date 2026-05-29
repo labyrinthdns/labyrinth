@@ -959,7 +959,7 @@ func TestHandleChangePassword_Success(t *testing.T) {
 	defer os.Chdir(origDir)
 
 	// Write a config file with a password_hash line
-	cfgContent := "web:\n  auth:\n    username: admin\n    password_hash: " + srv.config.Web.Auth.PasswordHash + "\n"
+	cfgContent := "web:\n  auth:\n    username: admin\n    password_hash: " + srv.config.Load().Web.Auth.PasswordHash + "\n"
 	os.WriteFile(filepath.Join(tmpDir, "labyrinth.yaml"), []byte(cfgContent), 0644)
 
 	reqBody := fmt.Sprintf(`{"current_password":"%s","new_password":"newSecurePass123"}`, password)
@@ -1178,7 +1178,7 @@ func TestHandleCheckUpdate_CachedResult(t *testing.T) {
 		UpdateAvailable: false,
 	}
 	srv.updateCheckedAt = time.Now()
-	srv.config.Web.UpdateCheckInterval = time.Hour
+	srv.config.Load().Web.UpdateCheckInterval = time.Hour
 	srv.updateMu.Unlock()
 
 	req := httptest.NewRequest("GET", "/api/system/update/check", nil)
@@ -1494,7 +1494,7 @@ func TestRegisterRoutes_WithDoH(t *testing.T) {
 
 func TestAdminServerStart_DefaultAddr(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Addr = "" // empty — should default to 127.0.0.1:8080
+	srv.config.Load().Web.Addr = "" // empty — should default to 127.0.0.1:8080
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1879,7 +1879,7 @@ func TestHandleCheckUpdate_StaleCacheFallback(t *testing.T) {
 		UpdateAvailable: true,
 	}
 	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour) // stale
-	srv.config.Web.UpdateCheckInterval = time.Minute     // short interval
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute     // short interval
 	srv.updateMu.Unlock()
 
 	// This will try to fetch fresh from GitHub (which may fail), then return stale
@@ -1896,7 +1896,7 @@ func TestHandleCheckUpdate_StaleCacheFallback(t *testing.T) {
 func TestHandleCheckUpdate_NoCacheAndFetchFails(t *testing.T) {
 	srv := testAdminServer(t)
 	// No cache set, very short interval so it won't use cache
-	srv.config.Web.UpdateCheckInterval = time.Nanosecond
+	srv.config.Load().Web.UpdateCheckInterval = time.Nanosecond
 
 	req := httptest.NewRequest("GET", "/api/system/update/check", nil)
 	w := httptest.NewRecorder()
@@ -2023,10 +2023,10 @@ func TestAdminServerStart_TLS(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv.config.Web.Addr = addr
-	srv.config.Web.TLSEnabled = true
-	srv.config.Web.TLSCertFile = "nonexistent-cert.pem"
-	srv.config.Web.TLSKeyFile = "nonexistent-key.pem"
+	srv.config.Load().Web.Addr = addr
+	srv.config.Load().Web.TLSEnabled = true
+	srv.config.Load().Web.TLSCertFile = "nonexistent-cert.pem"
+	srv.config.Load().Web.TLSKeyFile = "nonexistent-key.pem"
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -37,8 +37,8 @@ func TestFanoutCacheFlush_CapsPeerResponseBody(t *testing.T) {
 	defer peer.Close()
 
 	srv := testAdminServer(t)
-	srv.config.Cluster.Enabled = true
-	srv.config.Cluster.Peers = []config.ClusterPeerConfig{{
+	srv.config.Load().Cluster.Enabled = true
+	srv.config.Load().Cluster.Peers = []config.ClusterPeerConfig{{
 		Name:    "fake",
 		APIBase: peer.URL,
 		Enabled: true,
