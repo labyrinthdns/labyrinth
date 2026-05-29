@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.23] - 2026-05-29
+
+### Fixed
+- **Response Rate Limiter silently drops every answer on `security.rrl.responses_per_second <= 0`** — same exposure shape as the v0.8.19 rate-limit burst floor but on the RESPONSE side, and arguably worse because the resolver still does the full upstream work before throwing the answer away. `NewRRL(responsesPerSecond, ...)` stashes the value as `r.responsesPerSecond` and the hot path uses it at two sites: the first-seen-key initialiser at [security/rrl.go:97-99](security/rrl.go) (`tokens: r.responsesPerSecond - 1`) and the per-tick refill at line 105 (`entry.tokens += elapsed * r.responsesPerSecond`). With the value at `0`: the first response per `(prefix, qname, response_type)` key escapes through the early-return at line 101 (RRLAllow), but every subsequent response on that key has `tokens = -1` and refills at `elapsed * 0 = 0` — the bucket can never recover, every future response is RRLDrop or RRLSlip. The resolver completes full DNS resolution (cache lookup, upstream query if needed, validation, answer assembly), then silently drops the formed response on the way out. The client sees a query timeout with no DNS error code; upstream metrics show successful queries; only the RRL drop counter rises. An operator who set `responses_per_second: 0` thinking "no rate limit on responses" gets the opposite — wholesale response drop after the first per key. With a negative value the bucket starts even further underwater; outcome identical. `validate` checked `RateLimit.Rate <= 0` (v0.7.x) but never mirrored the check on the RRL side. Fix: `clampConfigBounds` now floors `RRL.ResponsesPerSecond <= 0` to `defaultRRLResponsesPerSecond` (5.0, matching `config/defaults.go`) when RRL is enabled. Disabled RRL never constructs the limiter, so the value is unread — leave the operator's "record but don't enforce" sentinel alone. Pins in [config/clamp_config_test.go](config/clamp_config_test.go): sentinel ∈ {0, -0.001, -100} with RRL enabled → rescued; disabled + value=0 → unchanged.
+
 ## [0.8.22] - 2026-05-29
 
 ### Fixed
