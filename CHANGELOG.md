@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.21] - 2026-05-29
+
+### Fixed
+- **Every cache miss SERVFAILs on `resolver.upstream_timeout <= 0`** — the fourth gap in the v0.8.18–v0.8.20 lower-bound family, and the nastiest because the zero value reads like the OPPOSITE of what it does. The resolver feeds `UpstreamTimeout` to two call sites with inverted semantics: `net.DialTimeout("udp"|"tcp", addr, t)` treats `t == 0` as "no timeout — block forever", but `conn.SetDeadline(time.Now().Add(t))` with `t == 0` sets the deadline to "right now", so the very first read/write on every upstream socket returns i/o timeout instantly. Negative durations land deadline-in-the-past, same outcome. Effect: every cache miss SERVFAILs. The cache hit path still works — so monitoring sees QPS continuing and latency on the hits looks fine — while every fresh resolution fails with an i/o-timeout log line that names the upstream, not the config. An operator hunting "why are my fresh queries timing out?" looks at upstream health, network connectivity, firewall rules; the config value sitting at `0` looks like "we removed the timeout cap" and nobody touches it. Trivially reachable: a YAML typo where the operator meant "5s" but typed `0` (forms-with-default-checkbox UX often defaults the field to zero when unchecked), a hot-reload that planted a `time.Duration(0)` from a missing key in `/api/config/raw`, or a downstream tool that emitted `upstream_timeout: -1` as a "disable" sentinel. Fix: `clampConfigBounds` now floors `UpstreamTimeout <= 0` to `defaultUpstreamTimeout` (2s, matching `config/defaults.go`). Default chosen over `1ns` (the lowest legal value) because a resolver booting with a 1ns timeout would have the same outage with no useful pointer. Pins in [config/clamp_config_test.go](config/clamp_config_test.go): sentinel ∈ {0, -1ms, -1h} → rescued; 100ms (legit fast-LAN value) → untouched. With this, every numeric config field that flows into a `make(chan)` capacity, a token-bucket cap, a depth limit, or a deadline now has a floor — the "operator plants a zero, resolver silently breaks" class of footgun is closed for the entire YAML surface.
+
 ## [0.8.20] - 2026-05-29
 
 ### Fixed
