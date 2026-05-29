@@ -99,7 +99,7 @@ func (r *Resolver) Trace(
 		"bypass_cache":    opts.BypassCache,
 		"skip_dnssec":     opts.SkipDNSSEC,
 		"qmin_enabled":    r.config.QMinEnabled,
-		"dnssec_enabled":  r.config.DNSSECEnabled && !opts.SkipDNSSEC && r.dnssecValidator != nil,
+		"dnssec_enabled":  r.config.DNSSECEnabled && !opts.SkipDNSSEC && r.dnssecValidator.Load() != nil,
 		"max_depth":       maxDepth,
 		"max_cname_depth": maxCNAME,
 		"resolver_ready":  r.IsReady(),
@@ -481,9 +481,9 @@ func (r *Resolver) traceIterative(
 			})
 
 			cnameVerdict := dnssec.Insecure
-			if r.dnssecValidator != nil && !opts.SkipDNSSEC {
+			if v := r.dnssecValidator.Load(); v != nil && !opts.SkipDNSSEC {
 				var steps []dnssec.ValidationStep
-				cnameVerdict, steps = r.dnssecValidator.ValidateResponseDetailed(response, name, dns.TypeCNAME)
+				cnameVerdict, steps = v.ValidateResponseDetailed(response, name, dns.TypeCNAME)
 				emitValidationSteps(t, steps, "cname")
 				st := verdictStatus(cnameVerdict)
 				t.emit("dnssec", st, fmt.Sprintf("CNAME hop %s → %s: %s", name, target, cnameVerdict), map[string]any{
@@ -578,7 +578,7 @@ func (r *Resolver) traceIterative(
 				Authority: response.Authority,
 				RCODE:     dns.RCodeNXDomain,
 			}
-			if r.dnssecValidator != nil && !opts.SkipDNSSEC {
+			if r.dnssecValidator.Load() != nil && !opts.SkipDNSSEC {
 				status := r.validateDenialIfEnabled(response, name, qtype, false)
 				result.DNSSECStatus = status
 				t.emit("dnssec", denialStatus(status), fmt.Sprintf("NXDOMAIN denial proof: %s", nzs(status)), map[string]any{
@@ -596,7 +596,7 @@ func (r *Resolver) traceIterative(
 				Authority: response.Authority,
 				RCODE:     dns.RCodeNoError,
 			}
-			if r.dnssecValidator != nil && !opts.SkipDNSSEC {
+			if r.dnssecValidator.Load() != nil && !opts.SkipDNSSEC {
 				status := r.validateDenialIfEnabled(response, name, qtype, false)
 				result.DNSSECStatus = status
 				t.emit("dnssec", denialStatus(status), fmt.Sprintf("NODATA denial proof: %s", nzs(status)), map[string]any{
@@ -643,13 +643,14 @@ func (r *Resolver) traceIterative(
 }
 
 func (r *Resolver) traceDNSSEC(t *tracer, response *dns.Message, name string, qtype uint16, opts TraceOptions, result *ResolveResult) {
-	if r.dnssecValidator == nil || opts.SkipDNSSEC {
+	v := r.dnssecValidator.Load()
+	if v == nil || opts.SkipDNSSEC {
 		t.emit("dnssec", TraceStatusInfo, "DNSSEC validation skipped", map[string]any{
-			"reason": dnssecSkipReason(r.dnssecValidator == nil, opts.SkipDNSSEC),
+			"reason": dnssecSkipReason(v == nil, opts.SkipDNSSEC),
 		})
 		return
 	}
-	verdict, steps := r.dnssecValidator.ValidateResponseDetailed(response, name, qtype)
+	verdict, steps := v.ValidateResponseDetailed(response, name, qtype)
 	emitValidationSteps(t, steps, "answer")
 	st := verdictStatus(verdict)
 	t.emit("dnssec", st, fmt.Sprintf("validator verdict: %s", verdict), map[string]any{
