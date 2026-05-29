@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.20] - 2026-05-29
+
+### Fixed
+- **CNAME-fronted traffic black-holed on `resolver.max_cname_depth <= 0`** — the third gap in the v0.8.18/v0.8.19 lower-bound family. `clampConfigBounds` enforced an UPPER cap of 64 on `MaxCNAMEDepth` but no floor, and `validate` never rejected a zero or negative value. The resolver's CNAME-chasing loop at [resolver/resolver.go:615](resolver/resolver.go) checks `if cnameDepth > r.config.MaxCNAMEDepth { return "CNAME chain too long" }`. With the cap at `0`, the first CNAME chase (depth 1) immediately exceeds it and errors out; with the cap at `-1`, even a depth-0 lookup that has the misfortune to be evaluated against the inverted comparison errors out the same way. Apex `A`/`AAAA` queries still succeed, so the resolver looks alive and healthy in monitoring — but every CDN-fronted, ESP-fronted, SaaS-fronted hostname on the modern web (which is almost all of them — `www.example.com` → CDN edge CNAME → CDN origin CNAME is the default deployment pattern for every major CDN) returns SERVFAIL with a log line that reads "CNAME chain too long" rather than anything pointing at the config. Trivially reachable by YAML typo: `max_cname_depth: 0` is a common operator slip for "no CNAME chasing please" (which is not actually a sensible config but reads like one), and a `/api/config/raw` PUT planting `-1` lands here too. The fix adds a lower-bound rescue to `clampConfigBounds`: when `MaxCNAMEDepth <= 0`, fall back to the stock default of 10 (matching `config/defaults.go`). Default chosen over 1 because real-world CDN chains run 2-4 deep (`www.example.com` → `example.cdn.example.net` → `example.cdn.example.net.akamai.net`); a 1-deep cap would silently break Akamai/Fastly/Cloudflare-fronted traffic even though the resolver "started cleanly". Pins in [config/clamp_config_test.go](config/clamp_config_test.go): (a) `MaxCNAMEDepth` ∈ {0, -1, -100} → rescued to `defaultMaxCNAMEDepth` (10); (b) `MaxCNAMEDepth = 3` (legit hostile-zone defence) → left untouched. This completes the lower-bound clamp family started in v0.8.18: every integer config field that an operator can plant a zero or negative value in and silently break the resolver now has a floor.
+
 ## [0.8.19] - 2026-05-29
 
 ### Fixed

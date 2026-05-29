@@ -692,6 +692,25 @@ func clampConfigBounds(cfg *Config) {
 	if cfg.Security.RateLimit.Enabled && cfg.Security.RateLimit.Burst <= 0 {
 		cfg.Security.RateLimit.Burst = defaultRateLimitBurst
 	}
+
+	// CNAME-depth floor. The resolver's CNAME chasing loop checks
+	// `if cnameDepth > r.config.MaxCNAMEDepth { ...error "CNAME chain
+	// too long" }`. With MaxCNAMEDepth <= 0, every domain that uses
+	// CNAMEs — which is most CDN-backed traffic on the modern web
+	// (www.* → CDN CNAME, every cloud SaaS, every ESP) — fails on
+	// the first chase. The resolver still answers A/AAAA queries for
+	// apex records, so monitoring won't show a dead resolver, just
+	// "the internet is broken for CNAME-fronted services" with no
+	// log line that names the cause. Reachable by YAML typo
+	// (`max_cname_depth: 0` is a common slip for "no CNAMEs please")
+	// or by a /api/config/raw PUT planting a negative value. Fall
+	// back to the stock default rather than 1 — a 1-deep chase
+	// can't resolve www.example.com → example.cdn.example.net →
+	// example.cdn.example.net.akamai.net (real-world chains run 2-4
+	// deep on production CDNs).
+	if cfg.Resolver.MaxCNAMEDepth <= 0 {
+		cfg.Resolver.MaxCNAMEDepth = defaultMaxCNAMEDepth
+	}
 }
 
 // Default values used by the lower-bound clamp. Match the constructor
@@ -703,6 +722,7 @@ const (
 	defaultMaxTCPConns     = 256
 	defaultTCPPipelineMax  = 100
 	defaultRateLimitBurst  = 100
+	defaultMaxCNAMEDepth   = 10
 )
 
 func validate(cfg *Config) error {
