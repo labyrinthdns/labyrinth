@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.22] - 2026-05-29
+
+### Fixed
+- **TCP DNS and DoT silently dead on `server.tcp_timeout <= 0` while UDP keeps working** — sibling to v0.8.21 for the TCP listener side. `cfg.Server.TCPTimeout` is passed directly to `NewTCPServer(..., timeout, ...)` (and the DoT server inherits the same value for its TLS read deadline). The constructor stashes it as `s.timeout` and uses it on the initial `conn.SetDeadline(time.Now().Add(s.timeout))` at [server/tcp.go:114](server/tcp.go) — the deadline set BEFORE the server reads the 2-byte length prefix that opens every TCP DNS message. `timeout == 0` → deadline = "now" → every read fails before the prefix arrives; `timeout < 0` → deadline in the past → identical outcome. The really painful asymmetry: UDP keeps working unchanged. An operator's monitoring smoke test that uses `dig` (defaults to UDP) reports a perfectly healthy resolver, while every DoT client gets TLS-handshake-then-RST, every RFC 7766 TCP fallback for large answers fails, and every client that opens TCP because the answer truncated returns SERVFAIL. Privacy-focused deployments (DoT clients, browsers using oblivious DNS, anything that uses TCP-only by policy) silently fail. Trivially reachable: `tcp_timeout: 0` reads like "no timeout — allow long-poll observability clients to keep the connection open" but means the OPPOSITE; a hot-reload with a missing key plants `time.Duration(0)`; the existing `WithIdleTimeout` constructor option DOES guard against zero (line 64: `if d > 0`) but the initial-timeout pathway doesn't, so the inconsistency goes unnoticed. Fix: `clampConfigBounds` floors `TCPTimeout <= 0` to `defaultTCPTimeout` (10s, matching `config/defaults.go`). Default chosen over 1ns for the same reason as v0.8.21 — the lowest legal value produces the same outage with no operator-facing pointer. Pins in [config/clamp_config_test.go](config/clamp_config_test.go): sentinel ∈ {0, -1ms, -1h} → rescued; 500ms (legit tight-timing fixture) → untouched. After this, all four hot-path deadline/timeout/depth fields that the v0.8.18 family considered have lower-bound rescues: max_udp_workers, max_tcp_connections, tcp_pipeline_max, rate_limit.burst, max_cname_depth, upstream_timeout, tcp_timeout.
+
 ## [0.8.21] - 2026-05-29
 
 ### Fixed

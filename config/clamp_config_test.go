@@ -295,6 +295,44 @@ func TestClampConfigBounds_UpstreamTimeoutUntouchedWhenPositive(t *testing.T) {
 	}
 }
 
+// TestClampConfigBounds_TCPTimeoutFloor pins the v0.8.22 floor:
+// server.tcp_timeout <= 0 black-holes all TCP DNS (and DoT, which
+// reuses the value for its TLS read deadline). The value is passed
+// to `NewTCPServer` which uses it as the initial
+// `conn.SetDeadline(time.Now().Add(s.timeout))` BEFORE reading the
+// 2-byte length prefix — a zero value makes the deadline "now",
+// every connection drops at the first read, and UDP keeps working
+// so a `dig` smoke test reports a healthy resolver. Privacy-focused
+// deployments (DoT, RFC 7766 TCP fallback) silently fail.
+func TestClampConfigBounds_TCPTimeoutFloor(t *testing.T) {
+	for _, sentinel := range []time.Duration{0, -1 * time.Millisecond, -1 * time.Hour} {
+		cfg := &Config{}
+		cfg.Server.TCPTimeout = sentinel
+
+		clampConfigBounds(cfg)
+
+		if cfg.Server.TCPTimeout != defaultTCPTimeout {
+			t.Errorf("sentinel=%v: TCPTimeout = %v, want default %v",
+				sentinel, cfg.Server.TCPTimeout, defaultTCPTimeout)
+		}
+	}
+}
+
+// TestClampConfigBounds_TCPTimeoutUntouchedWhenPositive pins that
+// legitimate sub-default values (a 1s tight-timing fixture, or a
+// 500ms aggressive timeout on a tightly-controlled LAN) are NOT
+// rewritten.
+func TestClampConfigBounds_TCPTimeoutUntouchedWhenPositive(t *testing.T) {
+	cfg := &Config{}
+	cfg.Server.TCPTimeout = 500 * time.Millisecond
+
+	clampConfigBounds(cfg)
+
+	if cfg.Server.TCPTimeout != 500*time.Millisecond {
+		t.Errorf("positive TCPTimeout=500ms got rewritten to %v", cfg.Server.TCPTimeout)
+	}
+}
+
 // TestClampConfigBounds_RunsViaValidate pins that the validate
 // entry-point invokes the clamp. A regression that moved validate
 // callers off the clamp (or replaced validate with a custom flow
