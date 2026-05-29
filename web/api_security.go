@@ -37,18 +37,18 @@ func (s *AdminServer) handleSecurity(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]interface{}{
 		"cookies": map[string]interface{}{
-			"enabled":             s.config != nil && s.config.Security.DNSCookies,
-			"enforce_strict_udp":  s.config != nil && s.config.Security.DNSCookiesEnforce,
+			"enabled":             s.config.Load() != nil && s.config.Load().Security.DNSCookies,
+			"enforce_strict_udp":  s.config.Load() != nil && s.config.Load().Security.DNSCookiesEnforce,
 			"badcookie_responses": int64(0),
 		},
 		"rate_limit": map[string]interface{}{
-			"enabled":            s.config != nil && s.config.Security.RateLimit.Enabled,
+			"enabled":            s.config.Load() != nil && s.config.Load().Security.RateLimit.Enabled,
 			"rate_per_second":    float64(0),
 			"burst":              0,
 			"rate_limited_total": int64(0),
 		},
 		"rrl": map[string]interface{}{
-			"enabled":              s.config != nil && s.config.Security.RRL.Enabled,
+			"enabled":              s.config.Load() != nil && s.config.Load().Security.RRL.Enabled,
 			"responses_per_second": float64(0),
 			"slip_ratio":           0,
 			"ipv4_prefix":          0,
@@ -64,13 +64,13 @@ func (s *AdminServer) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		"ede_counts": map[string]int64{},
 	}
 
-	if s.config != nil {
-		resp["rate_limit"].(map[string]interface{})["rate_per_second"] = s.config.Security.RateLimit.Rate
-		resp["rate_limit"].(map[string]interface{})["burst"] = s.config.Security.RateLimit.Burst
-		resp["rrl"].(map[string]interface{})["responses_per_second"] = s.config.Security.RRL.ResponsesPerSecond
-		resp["rrl"].(map[string]interface{})["slip_ratio"] = s.config.Security.RRL.SlipRatio
-		resp["rrl"].(map[string]interface{})["ipv4_prefix"] = s.config.Security.RRL.IPv4Prefix
-		resp["rrl"].(map[string]interface{})["ipv6_prefix"] = s.config.Security.RRL.IPv6Prefix
+	if s.config.Load() != nil {
+		resp["rate_limit"].(map[string]interface{})["rate_per_second"] = s.config.Load().Security.RateLimit.Rate
+		resp["rate_limit"].(map[string]interface{})["burst"] = s.config.Load().Security.RateLimit.Burst
+		resp["rrl"].(map[string]interface{})["responses_per_second"] = s.config.Load().Security.RRL.ResponsesPerSecond
+		resp["rrl"].(map[string]interface{})["slip_ratio"] = s.config.Load().Security.RRL.SlipRatio
+		resp["rrl"].(map[string]interface{})["ipv4_prefix"] = s.config.Load().Security.RRL.IPv4Prefix
+		resp["rrl"].(map[string]interface{})["ipv6_prefix"] = s.config.Load().Security.RRL.IPv6Prefix
 	}
 
 	if s.metrics != nil {

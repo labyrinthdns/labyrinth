@@ -15,7 +15,7 @@ import (
 // expects a clean 400 BEFORE the store sees anything.
 func TestNTAAdd_RejectsOverlongZone(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = "" // pass-through auth
+	srv.config.Load().Web.Auth.Username = "" // pass-through auth
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -38,7 +38,7 @@ func TestNTAAdd_RejectsOverlongZone(t *testing.T) {
 // DELETE side, which takes the zone in a query string.
 func TestNTARemove_RejectsOverlongZone(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 

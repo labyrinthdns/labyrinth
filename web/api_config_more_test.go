@@ -38,7 +38,7 @@ func TestEnsurePasswordHashUnchanged_Branches(t *testing.T) {
 	}
 
 	srvAuth, _ := testAdminServerWithAuth(t)
-	current := srvAuth.config.Web.Auth.PasswordHash
+	current := srvAuth.config.Load().Web.Auth.PasswordHash
 
 	// current non-empty + missing password_hash should fail
 	if err := srvAuth.ensurePasswordHashUnchanged("web:\n  auth:\n    username: admin\n"); err == nil {
@@ -314,11 +314,11 @@ func TestWriteFileAtomically_BackupAndReplaceFailures(t *testing.T) {
 
 func TestHandleGetConfig_RedactsSensitiveValues(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.PasswordHash = "secret-hash"
-	srv.config.Blocklist.Lists = []config.BlocklistEntry{
+	srv.config.Load().Web.Auth.PasswordHash = "secret-hash"
+	srv.config.Load().Blocklist.Lists = []config.BlocklistEntry{
 		{URL: "https://example.com/list.txt", Format: "hosts"},
 	}
-	srv.config.Cluster.Peers = []config.ClusterPeerConfig{
+	srv.config.Load().Cluster.Peers = []config.ClusterPeerConfig{
 		{
 			Name:       "peer-a",
 			Enabled:    true,

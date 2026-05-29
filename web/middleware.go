@@ -68,7 +68,7 @@ func (s *AdminServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 
 		// If no auth configured, pass through
-		if s.config.Web.Auth.Username == "" {
+		if s.config.Load().Web.Auth.Username == "" {
 			next(w, r)
 			return
 		}

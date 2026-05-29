@@ -48,7 +48,7 @@ func TestFanoutCacheFlush_MixedOutcomes(t *testing.T) {
 	}))
 	defer failServer.Close()
 
-	srv.config.Cluster.Peers = []config.ClusterPeerConfig{
+	srv.config.Load().Cluster.Peers = []config.ClusterPeerConfig{
 		// skipped
 		{Name: "disabled", Enabled: false, APIBase: okServer.URL},
 		// invalid URL branch

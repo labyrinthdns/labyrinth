@@ -251,7 +251,7 @@ func (s *AdminServer) fanoutCacheFlush() (int, int) {
 	okCount, failCount := 0, 0
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	for _, peer := range s.config.Cluster.Peers {
+	for _, peer := range s.config.Load().Cluster.Peers {
 		if !peer.Enabled {
 			continue
 		}
@@ -308,7 +308,7 @@ func (s *AdminServer) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("cache flushed via admin API")
 	fromPeer := r.Header.Get(clusterFanoutHeader) == "1"
 	fanoutOK, fanoutFailed := 0, 0
-	if !fromPeer && s.config.Cluster.Enabled && s.config.Cluster.Actions.FanoutCacheFlush {
+	if !fromPeer && s.config.Load().Cluster.Enabled && s.config.Load().Cluster.Actions.FanoutCacheFlush {
 		fanoutOK, fanoutFailed = s.fanoutCacheFlush()
 		s.logger.Info("cluster cache flush fanout completed", "ok", fanoutOK, "failed", fanoutFailed)
 	}
@@ -319,7 +319,7 @@ func (s *AdminServer) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 			"attempted": fanoutOK + fanoutFailed,
 			"ok":        fanoutOK,
 			"failed":    fanoutFailed,
-			"skipped":   fromPeer || !s.config.Cluster.Enabled || !s.config.Cluster.Actions.FanoutCacheFlush,
+			"skipped":   fromPeer || !s.config.Load().Cluster.Enabled || !s.config.Load().Cluster.Actions.FanoutCacheFlush,
 		},
 	})
 }

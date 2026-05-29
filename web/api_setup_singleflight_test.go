@@ -27,7 +27,7 @@ import (
 func TestSetupComplete_Singleflight(t *testing.T) {
 	srv := testAdminServer(t)
 	srv.setupDone.Store(false)
-	srv.config.Web.Auth.Username = "" // pass-through auth
+	srv.config.Load().Web.Auth.Username = "" // pass-through auth
 	// Point config at a temp file so the test does not litter cwd.
 	cfgPath := t.TempDir() + "/labyrinth.yaml"
 	srv.SetConfigPath(cfgPath)

@@ -18,11 +18,11 @@ import (
 //
 // Before the fix, handleLogin did:
 //
-//	cfgUser := s.config.Web.Auth.Username
-//	cfgHash := s.config.Web.Auth.PasswordHash
+//	cfgUser := s.config.Load().Web.Auth.Username
+//	cfgHash := s.config.Load().Web.Auth.PasswordHash
 //
 // without any synchronisation, while handleChangePassword writes
-// `s.config.Web.Auth.PasswordHash = newHash` under configFileMu. The
+// `s.config.Load().Web.Auth.PasswordHash = newHash` under configFileMu. The
 // 60+ second exposure is the visible-to-race-detector window during
 // every routine credential rotation: every login that lands while
 // the change-password handler is mid-rewrite races on the string
@@ -35,7 +35,7 @@ import (
 // The pin fires N login goroutines against the auth endpoint while a
 // single goroutine rotates the password via change-password. Without
 // the configFileMu coverage on the reader side, `go test -race`
-// reports a data race on s.config.Web.Auth.PasswordHash; with the fix
+// reports a data race on s.config.Load().Web.Auth.PasswordHash; with the fix
 // the test passes cleanly.
 func TestHandleLogin_CredentialReadIsRaceSafeVsPasswordChange(t *testing.T) {
 	srv, password := testAdminServerWithAuth(t)
@@ -75,7 +75,7 @@ func TestHandleLogin_CredentialReadIsRaceSafeVsPasswordChange(t *testing.T) {
 
 	// Many readers: hammer handleLogin in parallel. We don't care
 	// about the success/failure split — only that the read of
-	// s.config.Web.Auth.* is race-free.
+	// s.config.Load().Web.Auth.* is race-free.
 	for g := 0; g < loginGoroutines; g++ {
 		go func() {
 			defer wg.Done()

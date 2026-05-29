@@ -15,7 +15,7 @@ import (
 // the wasted work and the reflection.
 func TestZabbixItem_RejectsOverlongKey(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = "" // pass-through auth
+	srv.config.Load().Web.Auth.Username = "" // pass-through auth
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -36,7 +36,7 @@ func TestZabbixItem_RejectsOverlongKey(t *testing.T) {
 // poor habit even on an authenticated route.
 func TestZabbixItem_DoesNotReflectUnknownKey(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -64,7 +64,7 @@ func TestZabbixItem_DoesNotReflectUnknownKey(t *testing.T) {
 // no data.
 func TestZabbixItem_EmitsNoStoreOnSuccess(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 

@@ -23,7 +23,7 @@ import (
 func TestRequireAuth_AppliesBodyCap(t *testing.T) {
 	srv := testAdminServer(t)
 	// pass-through auth so the body cap is the only gate
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 
 	// Build a body that exceeds the cap.
 	body := strings.NewReader(strings.Repeat("x", MaxRequestBodyBytes+1))
@@ -46,7 +46,7 @@ func TestRequireAuth_AppliesBodyCap(t *testing.T) {
 // POST flows (NTA install, config update) aren't broken.
 func TestRequireAuth_AllowsBodyUnderCap(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 
 	small := bytes.NewReader([]byte(`{"zone":"example.test"}`))
 	req := httptest.NewRequest("POST", "/api/dnssec/nta", small)

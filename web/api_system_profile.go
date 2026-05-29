@@ -28,7 +28,7 @@ func (s *AdminServer) handleSystemProfile(w http.ResponseWriter, r *http.Request
 
 	hostname, _ := os.Hostname()
 	interfaces, ips := collectSystemInterfaces()
-	dnsListenIPs := resolveListenIPs(s.config.Server.ListenAddr, ips)
+	dnsListenIPs := resolveListenIPs(s.config.Load().Server.ListenAddr, ips)
 	rxBytes, txBytes, rxPackets, txPackets := readNetworkIOCounters()
 	memStats := readMemoryStats()
 	cpuSeconds := readProcessCPUSeconds()

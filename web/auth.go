@@ -234,23 +234,15 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot the credential fields under configFileMu so the read is
-	// serialised against /api/auth/change-password (which rewrites
-	// s.config.Web.Auth.PasswordHash in place) and /api/config/raw PUT
-	// (which swaps s.config wholesale). Without the lock, login readers
-	// could observe a torn Go string header — the PasswordHash field is
-	// a 16-byte ptr+len struct, not a single word, so a concurrent
-	// in-place rewrite can leave the reader holding a pointer from the
-	// old string and a length from the new one. bcrypt against the
-	// resulting garbage bytes would intermittently reject the operator's
-	// correct password during a routine credential rotation. The
-	// configFileMu is the same mutex the writers already hold for the
-	// on-disk lost-update gate; we extend its coverage to readers here.
-	// Lock window is minimal: just the two field copies.
-	s.configFileMu.Lock()
-	cfgUser := s.config.Web.Auth.Username
-	cfgHash := s.config.Web.Auth.PasswordHash
-	s.configFileMu.Unlock()
+	// Load the config snapshot once and use it for both credential field
+	// reads. atomic.Pointer guarantees the snapshot is complete; the
+	// v0.8.24 configFileMu extension on the reader side has been removed
+	// because the proper atomic publication on the writer side (v0.8.26)
+	// makes the reader lock unnecessary — readers always observe a
+	// coherent *config.Config that the writer Stored in one operation.
+	cfg := s.config.Load()
+	cfgUser := cfg.Web.Auth.Username
+	cfgHash := cfg.Web.Auth.PasswordHash
 
 	if cfgUser == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "authentication not configured"})
@@ -336,7 +328,7 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	defer s.configFileMu.Unlock()
 
 	// Verify current password
-	if !checkPassword(req.CurrentPassword, s.config.Web.Auth.PasswordHash) {
+	if !checkPassword(req.CurrentPassword, s.config.Load().Web.Auth.PasswordHash) {
 		jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
 		return
 	}
@@ -372,7 +364,16 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	})
 
 	// Update config in memory — only after secret rotation succeeded.
-	s.config.Web.Auth.PasswordHash = newHash
+	// Copy-on-write: load the current config, shallow-copy the struct,
+	// mutate the copy's PasswordHash field, atomically publish the copy.
+	// Shallow copy is correct because PasswordHash is a Go string (value-
+	// type header) and the other fields (slices, maps inside Web.Dashboard)
+	// are either untouched here or already-shared safely with readers
+	// that loaded the previous snapshot.
+	curCfg := s.config.Load()
+	newCfg := *curCfg
+	newCfg.Web.Auth.PasswordHash = newHash
+	s.config.Store(&newCfg)
 
 	// Update YAML config file on disk
 	if err := updatePasswordInConfigAtPath(s.configFilePath(), newHash); err != nil {

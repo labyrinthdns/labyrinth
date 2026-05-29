@@ -803,9 +803,9 @@ func TestHandleCacheFlush_FanoutToPeer(t *testing.T) {
 	}))
 	defer peer.Close()
 
-	srv.config.Cluster.Enabled = true
-	srv.config.Cluster.Actions.FanoutCacheFlush = true
-	srv.config.Cluster.Peers = []config.ClusterPeerConfig{
+	srv.config.Load().Cluster.Enabled = true
+	srv.config.Load().Cluster.Actions.FanoutCacheFlush = true
+	srv.config.Load().Cluster.Peers = []config.ClusterPeerConfig{
 		{
 			Name:     "dns-2",
 			Enabled:  true,
@@ -837,9 +837,9 @@ func TestHandleCacheFlush_FanoutToPeer(t *testing.T) {
 
 func TestHandleCacheFlush_NoFanoutOnForwardedRequest(t *testing.T) {
 	srv := testAdminServer(t)
-	srv.config.Cluster.Enabled = true
-	srv.config.Cluster.Actions.FanoutCacheFlush = true
-	srv.config.Cluster.Peers = []config.ClusterPeerConfig{
+	srv.config.Load().Cluster.Enabled = true
+	srv.config.Load().Cluster.Actions.FanoutCacheFlush = true
+	srv.config.Load().Cluster.Peers = []config.ClusterPeerConfig{
 		{
 			Name:    "dns-2",
 			Enabled: true,
@@ -1096,8 +1096,8 @@ func TestHandleConfigRawPut_SavesValidatedConfig(t *testing.T) {
 		t.Fatalf("file not updated.\nwant:\n%s\ngot:\n%s", updated, string(raw))
 	}
 
-	if srv.config.Resolver.MaxDepth != 42 {
-		t.Fatalf("in-memory config not updated, max_depth=%d", srv.config.Resolver.MaxDepth)
+	if srv.config.Load().Resolver.MaxDepth != 42 {
+		t.Fatalf("in-memory config not updated, max_depth=%d", srv.config.Load().Resolver.MaxDepth)
 	}
 
 	backupPath := path + ".bak"
@@ -1110,7 +1110,7 @@ func TestHandleConfigRawPut_RejectsPasswordHashChange(t *testing.T) {
 	srv, _ := testAdminServerWithAuth(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "labyrinth.yaml")
-	original := fmt.Sprintf("web:\n  auth:\n    username: admin\n    password_hash: %s\nresolver:\n  max_depth: 30\n", srv.config.Web.Auth.PasswordHash)
+	original := fmt.Sprintf("web:\n  auth:\n    username: admin\n    password_hash: %s\nresolver:\n  max_depth: 30\n", srv.config.Load().Web.Auth.PasswordHash)
 	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
 		t.Fatalf("write original config: %v", err)
 	}
@@ -2198,7 +2198,7 @@ func TestAdminServerStart(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv.config.Web.Addr = addr
+	srv.config.Load().Web.Addr = addr
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

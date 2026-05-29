@@ -70,7 +70,7 @@ func TestHandleTLSRenew_MethodNotAllowed(t *testing.T) {
 
 func TestHandleDNSGuide(t *testing.T) {
 	s := testAdminServer(t)
-	s.config.Server.ListenAddr = ":53"
+	s.config.Load().Server.ListenAddr = ":53"
 	req := httptest.NewRequest("GET", "/api/dns-guide", nil)
 	w := httptest.NewRecorder()
 	s.handleDNSGuide(w, req)
@@ -95,11 +95,11 @@ func TestHandleDNSGuide(t *testing.T) {
 
 func TestHandleDNSGuide_WithDoH(t *testing.T) {
 	s := testAdminServer(t)
-	s.config.Web.DoHEnabled = true
-	s.config.Web.TLSEnabled = true
-	s.config.Web.AutoTLS = true
-	s.config.Web.AutoTLSDomain = "dns.example.com"
-	s.config.Web.Addr = "0.0.0.0:443"
+	s.config.Load().Web.DoHEnabled = true
+	s.config.Load().Web.TLSEnabled = true
+	s.config.Load().Web.AutoTLS = true
+	s.config.Load().Web.AutoTLSDomain = "dns.example.com"
+	s.config.Load().Web.Addr = "0.0.0.0:443"
 
 	req := httptest.NewRequest("GET", "/api/dns-guide", nil)
 	w := httptest.NewRecorder()

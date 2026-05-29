@@ -34,7 +34,7 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := s.config
+	cfg := s.config.Load()
 
 	authPassword := ""
 	if cfg.Web.Auth.PasswordHash != "" {
@@ -264,7 +264,7 @@ func extractPasswordHashFromYAML(content string) (string, bool) {
 }
 
 func (s *AdminServer) ensurePasswordHashUnchanged(content string) error {
-	current := strings.TrimSpace(s.config.Web.Auth.PasswordHash)
+	current := strings.TrimSpace(s.config.Load().Web.Auth.PasswordHash)
 	incoming, found := extractPasswordHashFromYAML(content)
 	incoming = strings.TrimSpace(incoming)
 
@@ -364,7 +364,7 @@ func (s *AdminServer) handleConfigRaw(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Keep API responses in sync with the last validated file content.
-		s.config = parsedCfg
+		s.config.Store(parsedCfg)
 
 		liveApplied := false
 		if s.runtimeApplier != nil {

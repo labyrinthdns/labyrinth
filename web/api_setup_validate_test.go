@@ -20,7 +20,7 @@ import (
 func TestSetupComplete_RejectsOverlongString(t *testing.T) {
 	srv := testAdminServer(t)
 	srv.setupDone.Store(false)
-	srv.config.Web.Auth.Username = "" // pass-through auth
+	srv.config.Load().Web.Auth.Username = "" // pass-through auth
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -41,7 +41,7 @@ func TestSetupComplete_RejectsOverlongString(t *testing.T) {
 func TestSetupComplete_RejectsAbsurdMaxDepth(t *testing.T) {
 	srv := testAdminServer(t)
 	srv.setupDone.Store(false)
-	srv.config.Web.Auth.Username = ""
+	srv.config.Load().Web.Auth.Username = ""
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 

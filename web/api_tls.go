@@ -28,14 +28,14 @@ func (s *AdminServer) handleTLSStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := tlsResponse{
-		Enabled: s.config.Web.TLSEnabled,
-		AutoTLS: s.config.Web.AutoTLS,
+		Enabled: s.config.Load().Web.TLSEnabled,
+		AutoTLS: s.config.Load().Web.AutoTLS,
 	}
 
 	if s.certMgr != nil {
 		resp.Cert = s.certMgr.Info()
-	} else if s.config.Web.TLSEnabled && s.config.Web.TLSCertFile != "" {
-		info, err := certmanager.InfoFromStatic(s.config.Web.TLSCertFile, s.config.Web.TLSKeyFile)
+	} else if s.config.Load().Web.TLSEnabled && s.config.Load().Web.TLSCertFile != "" {
+		info, err := certmanager.InfoFromStatic(s.config.Load().Web.TLSCertFile, s.config.Load().Web.TLSKeyFile)
 		if err == nil {
 			resp.Cert = info
 		}
@@ -98,30 +98,30 @@ func (s *AdminServer) handleDNSGuide(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := guideResponse{
-		ListenAddr: s.config.Server.ListenAddr,
-		DoHEnabled: s.config.Web.DoHEnabled || s.config.Web.DoH3Enabled,
-		DoTEnabled: s.config.Server.DoTEnabled,
-		TLSEnabled: s.config.Web.TLSEnabled,
+		ListenAddr: s.config.Load().Server.ListenAddr,
+		DoHEnabled: s.config.Load().Web.DoHEnabled || s.config.Load().Web.DoH3Enabled,
+		DoTEnabled: s.config.Load().Server.DoTEnabled,
+		TLSEnabled: s.config.Load().Web.TLSEnabled,
 		Version:    Version,
 	}
 
 	if resp.DoHEnabled {
 		scheme := "http"
-		if s.config.Web.TLSEnabled {
+		if s.config.Load().Web.TLSEnabled {
 			scheme = "https"
 		}
-		host := s.config.Web.Addr
-		if s.config.Web.AutoTLS && s.config.Web.AutoTLSDomain != "" {
-			host = s.config.Web.AutoTLSDomain
+		host := s.config.Load().Web.Addr
+		if s.config.Load().Web.AutoTLS && s.config.Load().Web.AutoTLSDomain != "" {
+			host = s.config.Load().Web.AutoTLSDomain
 		}
 		resp.DoHURL = scheme + "://" + host + "/dns-query"
 	}
 
 	if resp.DoTEnabled {
-		if s.config.Web.AutoTLS && s.config.Web.AutoTLSDomain != "" {
-			resp.DoTHost = s.config.Web.AutoTLSDomain
+		if s.config.Load().Web.AutoTLS && s.config.Load().Web.AutoTLSDomain != "" {
+			resp.DoTHost = s.config.Load().Web.AutoTLSDomain
 		} else {
-			resp.DoTHost = s.config.Server.DoTListenAddr
+			resp.DoTHost = s.config.Load().Server.DoTListenAddr
 		}
 	}
 
