@@ -58,11 +58,11 @@ func (h *slowHandler) Handle(query []byte, addr net.Addr) ([]byte, error) {
 func TestSetPrivateFilter(t *testing.T) {
 	h := testHandler()
 	h.SetPrivateFilter(true)
-	if !h.privateFilter {
+	if !h.privateFilter.Load() {
 		t.Error("expected privateFilter to be true")
 	}
 	h.SetPrivateFilter(false)
-	if h.privateFilter {
+	if h.privateFilter.Load() {
 		t.Error("expected privateFilter to be false")
 	}
 }

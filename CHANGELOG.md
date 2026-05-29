@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.14] - 2026-05-29
+
+### Fixed
+- **Data race on `MainHandler.privateFilter` during hot-reload** — `SetPrivateFilter(enabled bool)` is called from the `/api/config/raw` PUT hot-reload callback (`runtimeApplier` wired in main_runtime_helpers.go), writing to a plain `bool` field that the DNS handler reads on every query that returns an answer section (twice: in the cache-write path at handler.go:1029 and in the buildResponse path at handler.go:1340). The two sites do not share a mutex; without an explicit happens-before edge, a reader could observe a stale value indefinitely on architectures with weak memory ordering, or — more subtly — the compiler is free to reorder the field read across other operations. Same class as the v0.8.13 jwtSecret race, just smaller surface. The fix migrates `privateFilter` from `bool` to `atomic.Bool`; the setter does `Store(enabled)`, the readers do `Load()`, and the new value is published with the right barrier. The change is API-internal — `SetPrivateFilter`'s signature is unchanged. Per-query overhead is one `atomic.Load` (~ns on amd64); negligible against DNS resolution cost. ECS fields (`ecsEnabled`, `ecsMaxPrefix`, `ecsMaxPrefixV6`) sit in the same hot-reload surface and merit the same migration; deferred to a follow-up because they need to be read atomically as a group, which is a bigger refactor than this single-bool fix.
+
 ## [0.8.13] - 2026-05-29
 
 ### Fixed
