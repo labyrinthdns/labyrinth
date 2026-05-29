@@ -174,15 +174,22 @@ func (s *AdminServer) handleTimeSeriesWS(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Ticker loop.
-	ticker := time.NewTicker(sub.PushEvery)
+	// Ticker loop. Use initialSub (copied under subMu above) rather
+	// than dereferencing *sub here — the read goroutine spawned for
+	// client subscription updates can be concurrently rewriting *sub,
+	// so reading sub.PushEvery directly is a data race that the race
+	// detector flags. lastPush is seeded from the same initial copy
+	// so the comparison at the first tick is meaningful (otherwise
+	// lastPush is zero and the first tick fires a redundant
+	// ticker.Reset to the same interval).
+	ticker := time.NewTicker(initialSub.PushEvery)
 	defer ticker.Stop()
 
 	// Keepalive ping — see handleQueryStreamWS for rationale.
 	pingTicker := time.NewTicker(30 * time.Second)
 	defer pingTicker.Stop()
 
-	var lastPush time.Duration
+	lastPush := initialSub.PushEvery
 	for {
 		select {
 		case <-ctx.Done():
