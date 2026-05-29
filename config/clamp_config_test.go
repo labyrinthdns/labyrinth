@@ -215,6 +215,45 @@ func TestClampConfigBounds_RateLimitBurstUntouchedWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestClampConfigBounds_MaxCNAMEDepthFloor pins the v0.8.20 floor:
+// resolver.max_cname_depth <= 0 silently black-holes every CNAME-
+// fronted query. The resolver's CNAME loop checks
+// `if cnameDepth > r.config.MaxCNAMEDepth` — with the cap at 0 (or
+// negative), the very first CNAME chase errors with "CNAME chain
+// too long", but apex A/AAAA queries still succeed, so the operator
+// sees a half-working resolver with no log line pointing at config.
+// Most modern web traffic is CDN-fronted (www.* → CNAME → CDN apex),
+// so this is a wholesale outage for a misconfig that looks harmless.
+func TestClampConfigBounds_MaxCNAMEDepthFloor(t *testing.T) {
+	for _, sentinel := range []int{0, -1, -100} {
+		cfg := &Config{}
+		cfg.Resolver.MaxCNAMEDepth = sentinel
+
+		clampConfigBounds(cfg)
+
+		if cfg.Resolver.MaxCNAMEDepth != defaultMaxCNAMEDepth {
+			t.Errorf("sentinel=%d: MaxCNAMEDepth = %d, want default %d",
+				sentinel, cfg.Resolver.MaxCNAMEDepth, defaultMaxCNAMEDepth)
+		}
+	}
+}
+
+// TestClampConfigBounds_MaxCNAMEDepthUntouchedWhenPositive pins that
+// the floor does NOT rewrite a legitimately small but positive value
+// (e.g. an operator forcing max_cname_depth: 3 to defend against
+// CNAME-loop CPU exhaustion in a hostile-zone environment). Only
+// the <=0 sentinel triggers the rescue.
+func TestClampConfigBounds_MaxCNAMEDepthUntouchedWhenPositive(t *testing.T) {
+	cfg := &Config{}
+	cfg.Resolver.MaxCNAMEDepth = 3
+
+	clampConfigBounds(cfg)
+
+	if cfg.Resolver.MaxCNAMEDepth != 3 {
+		t.Errorf("positive MaxCNAMEDepth=3 got rewritten to %d", cfg.Resolver.MaxCNAMEDepth)
+	}
+}
+
 // TestClampConfigBounds_RunsViaValidate pins that the validate
 // entry-point invokes the clamp. A regression that moved validate
 // callers off the clamp (or replaced validate with a custom flow
