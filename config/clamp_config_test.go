@@ -176,6 +176,45 @@ func TestClampConfigBounds_LowerBoundsRescueZeroAndNegative(t *testing.T) {
 	}
 }
 
+// TestClampConfigBounds_RateLimitBurstRescuedWhenEnabled pins the
+// v0.8.19 floor: when the rate limiter is enabled and Burst <= 0, the
+// clamp must rescue it to the default. NewRateLimiter accepts any
+// burst, but burst <= 0 makes the token bucket start at -1 tokens and
+// the `tb.tokens >= 1` gate never holds — every queried client is
+// permanently denied, effectively black-holing the resolver while
+// logs say nothing useful.
+func TestClampConfigBounds_RateLimitBurstRescuedWhenEnabled(t *testing.T) {
+	for _, sentinel := range []int{0, -1, -100} {
+		cfg := &Config{}
+		cfg.Security.RateLimit.Enabled = true
+		cfg.Security.RateLimit.Rate = 100
+		cfg.Security.RateLimit.Burst = sentinel
+
+		clampConfigBounds(cfg)
+
+		if cfg.Security.RateLimit.Burst != defaultRateLimitBurst {
+			t.Errorf("sentinel=%d: Burst = %d, want default %d",
+				sentinel, cfg.Security.RateLimit.Burst, defaultRateLimitBurst)
+		}
+	}
+}
+
+// TestClampConfigBounds_RateLimitBurstUntouchedWhenDisabled pins that
+// the rescue only fires when the rate limiter is actually enabled.
+// Disabled limiters don't read burst, so an operator using burst=0
+// as a "record but don't enforce" marker shouldn't be rewritten.
+func TestClampConfigBounds_RateLimitBurstUntouchedWhenDisabled(t *testing.T) {
+	cfg := &Config{}
+	cfg.Security.RateLimit.Enabled = false
+	cfg.Security.RateLimit.Burst = 0
+
+	clampConfigBounds(cfg)
+
+	if cfg.Security.RateLimit.Burst != 0 {
+		t.Errorf("disabled rate limiter: Burst = %d, want 0 (unchanged)", cfg.Security.RateLimit.Burst)
+	}
+}
+
 // TestClampConfigBounds_RunsViaValidate pins that the validate
 // entry-point invokes the clamp. A regression that moved validate
 // callers off the clamp (or replaced validate with a custom flow
