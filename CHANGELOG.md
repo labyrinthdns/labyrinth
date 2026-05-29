@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.19] - 2026-05-29
+
+### Fixed
+- **Rate limiter black-holes the resolver on `security.rate_limit.burst <= 0`** — `validate` rejects `Rate <= 0` when the limiter is enabled but never checked `Burst`. `NewRateLimiter(rate, burst)` accepts any burst; on first request the token bucket is initialised with `float64(burst) - 1` tokens, which is `-1` when `burst == 0` and even more negative when `burst < 0`. The `tb.tokens >= 1` gate then never holds, every queried client is permanently denied, and the resolver answers no DNS at all — process is up, the rate limiter is logging "blocked" forever, but the operator sees a silent outage with no useful pointer to "your `burst` value is wrong". Trivially reachable: an operator who set `rate_limit: { enabled: true, rate: 100 }` and forgot `burst`, or who typo'd `burst: 0` meaning "no burst on top of rate", or a `/api/config/raw` PUT that planted the zero. The fix adds a lower-bound rescue to `clampConfigBounds`: when the limiter is enabled and `Burst <= 0`, fall back to the stock default (100, matching `config/defaults.go`). The rescue only fires when the limiter is enabled — disabled limiters don't read `burst`, so an operator using `burst: 0` as a "record but don't enforce" marker isn't rewritten. Pins in [config/clamp_config_test.go](config/clamp_config_test.go): (a) sentinel ∈ {0, -1, -100} with limiter enabled → rescued to default; (b) limiter disabled + burst=0 → unchanged.
+
 ## [0.8.18] - 2026-05-29
 
 ### Fixed

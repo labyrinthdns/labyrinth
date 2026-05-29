@@ -679,6 +679,19 @@ func clampConfigBounds(cfg *Config) {
 	if cfg.Server.TCPPipelineMax <= 0 {
 		cfg.Server.TCPPipelineMax = defaultTCPPipelineMax
 	}
+
+	// Rate limiter burst floor. NewRateLimiter accepts any burst value;
+	// when called with burst <= 0 the token bucket starts at
+	// float64(burst) - 1 = negative tokens, and `tb.tokens >= 1` never
+	// holds — every queried client is permanently denied. A YAML
+	// `security.rate_limit: { enabled: true, burst: 0 }` (or `-1`)
+	// effectively black-holes the resolver while logs say nothing
+	// useful. Only floors when the rate limiter is actually enabled —
+	// disabled rate limiters don't read burst, so leave the operator's
+	// value alone for the record-keeping use case.
+	if cfg.Security.RateLimit.Enabled && cfg.Security.RateLimit.Burst <= 0 {
+		cfg.Security.RateLimit.Burst = defaultRateLimitBurst
+	}
 }
 
 // Default values used by the lower-bound clamp. Match the constructor
@@ -686,9 +699,10 @@ func clampConfigBounds(cfg *Config) {
 // entirely gets the same behaviour as one who set them to a sentinel
 // "fall back" value like -1 or 0.
 const (
-	defaultMaxUDPWorkers  = 10000
-	defaultMaxTCPConns    = 256
-	defaultTCPPipelineMax = 100
+	defaultMaxUDPWorkers   = 10000
+	defaultMaxTCPConns     = 256
+	defaultTCPPipelineMax  = 100
+	defaultRateLimitBurst  = 100
 )
 
 func validate(cfg *Config) error {
