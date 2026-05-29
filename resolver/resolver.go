@@ -100,7 +100,15 @@ type Resolver struct {
 	logger          *slog.Logger
 	ready           atomic.Bool
 	inflight        *inflight
-	dnssecValidator *dnssec.Validator
+	// dnssecValidator is set lazily by EnableDNSSEC from a startup
+	// goroutine that runs in parallel with the DNS server's request
+	// handlers. A plain *dnssec.Validator publish would be a data race
+	// on every query path that does `r.dnssecValidator != nil` followed
+	// by `r.dnssecValidator.X()` — the two reads could observe a torn
+	// half-published pointer on weak-ordering architectures. atomic.Pointer
+	// publishes the validator atomically; readers Load() once and use
+	// the snapshot, never re-reading the field mid-use.
+	dnssecValidator atomic.Pointer[dnssec.Validator]
 	localZones      *LocalZoneTable
 	forwardTable    *ForwardTable
 	infraCache      *InfraCache
@@ -253,17 +261,18 @@ func (r *Resolver) StartRootRefresh(ctx context.Context, interval time.Duration)
 // EnableDNSSEC creates the DNSSEC validator, allowing the resolver to
 // validate signed responses. Call this after PrimeRootHints.
 func (r *Resolver) EnableDNSSEC(logger *slog.Logger) {
-	r.dnssecValidator = dnssec.NewValidator(r, logger)
+	r.dnssecValidator.Store(dnssec.NewValidator(r, logger))
 }
 
 // SetDNSSECAllowSHA1 toggles acceptance of weak SHA1-based DNSSEC primitives
 // (RSASHA1 RRSIGs and SHA1 DS digests) on the active validator. Default is
 // false, matching modern resolver behavior. No-op if DNSSEC is not enabled.
 func (r *Resolver) SetDNSSECAllowSHA1(allow bool) {
-	if r.dnssecValidator == nil {
+	v := r.dnssecValidator.Load()
+	if v == nil {
 		return
 	}
-	r.dnssecValidator.AllowSHA1(allow)
+	v.AllowSHA1(allow)
 }
 
 // SetDNSSECNegativeTrustAnchors installs the operator-configured
@@ -272,11 +281,12 @@ func (r *Resolver) SetDNSSECAllowSHA1(allow bool) {
 // failed to parse (caller logs them); the validator still receives the
 // entries that did parse. No-op if DNSSEC is not enabled.
 func (r *Resolver) SetDNSSECNegativeTrustAnchors(entries []string) []string {
-	if r.dnssecValidator == nil {
+	v := r.dnssecValidator.Load()
+	if v == nil {
 		return nil
 	}
 	store, failed := dnssec.LoadNTAStoreFromStrings(entries)
-	r.dnssecValidator.SetNTAStore(store)
+	v.SetNTAStore(store)
 	return failed
 }
 
@@ -284,7 +294,7 @@ func (r *Resolver) SetDNSSECNegativeTrustAnchors(entries []string) []string {
 // is disabled). Used by the observability layer to surface validator
 // counters (e.g. NTAMatches) through the metrics endpoint.
 func (r *Resolver) DNSSECValidator() *dnssec.Validator {
-	return r.dnssecValidator
+	return r.dnssecValidator.Load()
 }
 
 // supportedDNSSECAlgorithms returns the list of DNSKEY/RRSIG algorithm
@@ -301,7 +311,7 @@ func (r *Resolver) supportedDNSSECAlgorithms() []uint8 {
 		dns.AlgECDSAP384,
 		dns.AlgED25519,
 	}
-	if r.dnssecValidator != nil && r.dnssecValidator.SHA1Allowed() {
+	if v := r.dnssecValidator.Load(); v != nil && v.SHA1Allowed() {
 		algs = append(algs, dns.AlgRSASHA1)
 	}
 	return algs
@@ -315,7 +325,7 @@ func (r *Resolver) supportedDSDigests() []uint8 {
 		dns.DigestSHA256,
 		dns.DigestSHA384,
 	}
-	if r.dnssecValidator != nil && r.dnssecValidator.SHA1Allowed() {
+	if v := r.dnssecValidator.Load(); v != nil && v.SHA1Allowed() {
 		digests = append(digests, dns.DigestSHA1)
 	}
 	return digests
@@ -707,8 +717,8 @@ func (r *Resolver) resolveIterativeFromInner(
 				// client subnet.
 				UpstreamECS: extractResponseECS(response),
 			}
-			if r.dnssecValidator != nil && !skipValidation {
-				vr, reason := r.dnssecValidator.ValidateResponseWithReason(response, name, qtype)
+			if v := r.dnssecValidator.Load(); v != nil && !skipValidation {
+				vr, reason := v.ValidateResponseWithReason(response, name, qtype)
 				switch vr {
 				case dnssec.Secure:
 					r.metrics.IncDNSSECSecure()
@@ -747,9 +757,9 @@ func (r *Resolver) resolveIterativeFromInner(
 			// verdict is the AND of every hop's verdict (RFC 4035 §3.2.3:
 			// AD set only if every RRset in the answer is Authentic).
 			cnameVerdict := dnssec.Insecure
-			if r.dnssecValidator != nil && !skipValidation {
+			if v := r.dnssecValidator.Load(); v != nil && !skipValidation {
 				var cnameReason dnssec.FailureReason
-				cnameVerdict, cnameReason = r.dnssecValidator.ValidateResponseWithReason(response, name, dns.TypeCNAME)
+				cnameVerdict, cnameReason = v.ValidateResponseWithReason(response, name, dns.TypeCNAME)
 				if cnameVerdict == dnssec.Bogus {
 					r.metrics.IncDNSSECBogus()
 					return &ResolveResult{
@@ -796,9 +806,9 @@ func (r *Resolver) resolveIterativeFromInner(
 			// Same chain-validation logic as for CNAME: a forged DNAME would
 			// redirect the entire subtree below the owner.
 			dnameVerdict := dnssec.Insecure
-			if r.dnssecValidator != nil && !skipValidation {
+			if v := r.dnssecValidator.Load(); v != nil && !skipValidation {
 				var dnameReason dnssec.FailureReason
-				dnameVerdict, dnameReason = r.dnssecValidator.ValidateResponseWithReason(response, name, dns.TypeDNAME)
+				dnameVerdict, dnameReason = v.ValidateResponseWithReason(response, name, dns.TypeDNAME)
 				if dnameVerdict == dnssec.Bogus {
 					r.metrics.IncDNSSECBogus()
 					return &ResolveResult{
@@ -1217,10 +1227,11 @@ func verdictToStatus(v dnssec.ValidationResult) string {
 // Empty string keeps the result unsigned, leaving the caller free to
 // classify it as "insecure" by default.
 func (r *Resolver) validateDenialIfEnabled(response *dns.Message, name string, qtype uint16, skipValidation bool) string {
-	if r.dnssecValidator == nil || skipValidation {
+	v := r.dnssecValidator.Load()
+	if v == nil || skipValidation {
 		return ""
 	}
-	switch r.dnssecValidator.ValidateResponse(response, name, qtype) {
+	switch v.ValidateResponse(response, name, qtype) {
 	case dnssec.Secure:
 		r.metrics.IncDNSSECSecure()
 		return "secure"

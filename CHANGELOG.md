@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.16] - 2026-05-29
+
+### Fixed
+- **Data race on `r.dnssecValidator` publication** — `EnableDNSSEC` is invoked from a startup goroutine that runs in parallel with the DNS server's request handlers (UDP/TCP listeners spin up first, then a `go func()` in `main.go` runs `PrimeRootHints` and finally calls `EnableDNSSEC` once root hints are loaded). Until v0.8.16 `dnssecValidator` was a plain `*dnssec.Validator` pointer. Every hot-path read site — 17 of them across `resolver.go` and `trace.go` — used the unsafe pattern `if r.dnssecValidator != nil { r.dnssecValidator.X(...) }`. Two failure modes: (1) on weak-ordering CPUs the reader could keep observing `nil` indefinitely after `EnableDNSSEC` ran on another core, silently skipping DNSSEC validation for the queries that landed in the gap — a security regression that would not show up in any log or metric; (2) the two field reads in the `if`/method-call pair are independent, so a reader who observed non-nil on the first read could in principle observe a torn or stale pointer on the second read, crashing on a method dispatch against unmapped memory. The fix migrates the field to `atomic.Pointer[dnssec.Validator]`. `EnableDNSSEC` does `r.dnssecValidator.Store(dnssec.NewValidator(...))`; every reader does `v := r.dnssecValidator.Load()` once at the top and uses the snapshot for every decision in that call, never re-reading the field mid-use. All 17 read sites updated to the new pattern. Per-query overhead: one `atomic.Load` + nil check (~ns on amd64) — negligible vs the DNSSEC validation cost itself. Pin in [resolver/dnssec_validator_race_test.go](resolver/dnssec_validator_race_test.go): 8 readers × 500 ops + 1 concurrent `EnableDNSSEC` writer, asserts every observed non-nil pointer is a complete, dereferenceable validator. After v0.8.13–v0.8.16, every field a startup or hot-reload goroutine publishes for a query-path reader is now atomic-published; the resolver's racy-publication surface is closed.
+
 ## [0.8.15] - 2026-05-29
 
 ### Fixed

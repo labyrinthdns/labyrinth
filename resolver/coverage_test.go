@@ -581,14 +581,14 @@ func TestEnableDNSSEC(t *testing.T) {
 	defer mock.close()
 
 	r := testResolver(t, mock)
-	if r.dnssecValidator != nil {
+	if r.dnssecValidator.Load() != nil {
 		t.Fatal("validator should be nil before EnableDNSSEC")
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	r.EnableDNSSEC(logger)
 
-	if r.dnssecValidator == nil {
+	if r.dnssecValidator.Load() == nil {
 		t.Fatal("validator should be non-nil after EnableDNSSEC")
 	}
 }
