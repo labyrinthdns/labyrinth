@@ -10,33 +10,41 @@ import (
 )
 
 // TestHandleLogin_CredentialReadIsRaceSafeVsPasswordChange pins the
-// v0.8.24 gate: handleLogin must hold configFileMu when reading the
-// credential fields from s.config so a concurrent password change can
-// neither tear the in-memory PasswordHash string (16-byte Go header
-// = ptr + len) nor leave the login handler comparing against a
-// half-applied snapshot.
+// invariant introduced by v0.8.24 and tightened by v0.8.26: a
+// handleLogin reading credential fields off the runtime config must be
+// race-free against a concurrent /api/auth/change-password rewriting
+// them.
 //
-// Before the fix, handleLogin did:
+// History:
+//   - v0.8.24 implemented this with a `configFileMu` extension on the
+//     reader side. Login took the same mutex the writer was already
+//     holding for the on-disk lost-update gate.
+//   - v0.8.26 migrated `s.config` from `*config.Config` to
+//     `atomic.Pointer[config.Config]`. Readers now do
+//     `s.config.Load()` and use the returned snapshot. Writers do
+//     copy-on-write `Load → shallow copy → mutate → Store`. The
+//     reader-side `configFileMu` extension was retired (no longer
+//     needed; reader pays no lock cost).
 //
-//	cfgUser := s.config.Load().Web.Auth.Username
-//	cfgHash := s.config.Load().Web.Auth.PasswordHash
+// What was racy before v0.8.24:
 //
-// without any synchronisation, while handleChangePassword writes
-// `s.config.Load().Web.Auth.PasswordHash = newHash` under configFileMu. The
-// 60+ second exposure is the visible-to-race-detector window during
-// every routine credential rotation: every login that lands while
-// the change-password handler is mid-rewrite races on the string
-// header. The race detector flags it, and on a sufficiently
-// adversarial scheduler the login handler can observe a torn header
-// (old ptr + new len, or vice versa) — bcrypt against the resulting
-// garbage bytes then rejects the operator's correct password during
-// the rotation window.
+//	cfgUser := s.config.Web.Auth.Username       // plain field read
+//	cfgHash := s.config.Web.Auth.PasswordHash   // plain field read
+//
+// while handleChangePassword did `s.config.Web.Auth.PasswordHash =
+// newHash` under configFileMu — the writer was synchronised but the
+// reader was not. The race detector flagged it on every routine
+// credential rotation, and on a sufficiently adversarial scheduler
+// the login handler could observe a torn Go string header (old ptr +
+// new len, or vice versa) — bcrypt against the resulting garbage
+// bytes then rejects the operator's correct password during the
+// rotation window.
 //
 // The pin fires N login goroutines against the auth endpoint while a
-// single goroutine rotates the password via change-password. Without
-// the configFileMu coverage on the reader side, `go test -race`
-// reports a data race on s.config.Load().Web.Auth.PasswordHash; with the fix
-// the test passes cleanly.
+// single goroutine rotates the password. Under the v0.8.26 atomic
+// publication this passes silently; `go test -race` flags any future
+// regression that drops the atomic publication AND fails to add an
+// equivalent lock back.
 func TestHandleLogin_CredentialReadIsRaceSafeVsPasswordChange(t *testing.T) {
 	srv, password := testAdminServerWithAuth(t)
 
@@ -49,8 +57,9 @@ func TestHandleLogin_CredentialReadIsRaceSafeVsPasswordChange(t *testing.T) {
 	wg.Add(loginGoroutines + 1)
 
 	// One writer: rotate the password back and forth. Both rotations
-	// land via the production handler, so configFileMu is held the way
-	// the production path does.
+	// land via the production handler, which still takes configFileMu
+	// for the on-disk lost-update gate and Stores a new *Config via
+	// atomic.Pointer.
 	go func() {
 		defer wg.Done()
 		alt := "altPass!1234"
@@ -74,8 +83,8 @@ func TestHandleLogin_CredentialReadIsRaceSafeVsPasswordChange(t *testing.T) {
 	}()
 
 	// Many readers: hammer handleLogin in parallel. We don't care
-	// about the success/failure split — only that the read of
-	// s.config.Load().Web.Auth.* is race-free.
+	// about the success/failure split — only that the read of the
+	// credential fields off the runtime config is race-free.
 	for g := 0; g < loginGoroutines; g++ {
 		go func() {
 			defer wg.Done()
