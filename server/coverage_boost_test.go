@@ -110,11 +110,12 @@ func TestEnableCookiesWithSecret(t *testing.T) {
 func TestSetECS(t *testing.T) {
 	h := testHandler()
 	h.SetECS(true, 24)
-	if !h.ecsEnabled {
-		t.Error("expected ecsEnabled to be true")
+	cfg := h.ecsCfg.Load()
+	if cfg == nil || !cfg.enabled {
+		t.Error("expected ecsCfg.enabled to be true")
 	}
-	if h.ecsMaxPrefix != 24 {
-		t.Errorf("expected ecsMaxPrefix=24, got %d", h.ecsMaxPrefix)
+	if cfg == nil || cfg.maxPrefixV4 != 24 {
+		t.Errorf("expected ecsCfg.maxPrefixV4=24, got %v", cfg)
 	}
 }
 

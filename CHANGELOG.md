@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.15] - 2026-05-29
+
+### Fixed
+- **Data race + inconsistent-snapshot race on ECS hot-reload (`ecsEnabled`, `ecsMaxPrefix`, `ecsMaxPrefixV6`)** — the follow-up to v0.8.14 that the v0.8.14 changelog noted as deferred. `SetECSPrefixes(enabled, v4, v6)` is called from the `/api/config/raw` hot-reload callback and rewrites all three fields one-after-the-other as plain Go assignments. `buildOutboundECS` reads them on every query that carries an OPT, also one-at-a-time. Two failure modes: (1) the bare data race on each field's read/write pair (Go memory model gives no happens-before edge without sync); (2) — more pernicious — even if each field were individually atomic, a query racing a reload could observe `(enabled=true, maxPrefixV4=0, maxPrefixV6=0)` for the moment between the three writes, hit the "fall back to RFC default" branch in lines 261-268, and produce a query with `/24+/56` even though the operator just set tighter ceilings. The fix packages the trio into an immutable `ecsRuntime` struct and stores it via `atomic.Pointer[ecsRuntime]`. `SetECSPrefixes` allocates a fresh struct and `Store`s it in one atomic publication. `buildOutboundECS` calls `h.ecsCfg.Load()` once at the top and uses the same snapshot for every decision in that call — never observes a half-applied update. Read overhead is one `atomic.Load` + nil check per query; comparable to the v0.8.14 atomic.Bool. With this, every field the hot-reload callback writes is now atomic-published.
+
 ## [0.8.14] - 2026-05-29
 
 ### Fixed
