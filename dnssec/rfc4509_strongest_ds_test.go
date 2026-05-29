@@ -15,7 +15,8 @@ import (
 // subset. A SHA-1 collision against the same key MUST NOT validate when a
 // SHA-256 DS is also present — that's the whole point of the rule.
 func TestStrongestDSDigestForKey_SHA256BeatsSHA1(t *testing.T) {
-	v := &Validator{allowSHA1: true} // accept SHA1 by policy
+	v := &Validator{}
+	v.allowSHA1.Store(true) // accept SHA1 by policy
 	dsList := []*dns.DSRecord{
 		{KeyTag: 1234, Algorithm: dns.AlgECDSAP256, DigestType: dns.DigestSHA1, Digest: []byte{0x01}},
 		{KeyTag: 1234, Algorithm: dns.AlgECDSAP256, DigestType: dns.DigestSHA256, Digest: []byte{0x02}},
@@ -47,7 +48,7 @@ func TestStrongestDSDigestForKey_SHA384BeatsSHA256(t *testing.T) {
 // key, the function returns 0 — caller's verify loop falls through and
 // the key is treated as having no DS chain (Indeterminate).
 func TestStrongestDSDigestForKey_OnlyWeakReturnsZeroWhenWeakRejected(t *testing.T) {
-	v := &Validator{allowSHA1: false}
+	v := &Validator{} // allowSHA1 defaults to false
 	dsList := []*dns.DSRecord{
 		{KeyTag: 7, Algorithm: dns.AlgRSASHA256, DigestType: dns.DigestSHA1, Digest: []byte{0x01}},
 	}
@@ -63,7 +64,8 @@ func TestStrongestDSDigestForKey_OnlyWeakReturnsZeroWhenWeakRejected(t *testing.
 // (keytag=A, SHA256) with (keytag=B, SHA1) and trick the validator into
 // thinking B's SHA-1 was the strongest for A.
 func TestStrongestDSDigestForKey_IgnoresUnrelatedKeys(t *testing.T) {
-	v := &Validator{allowSHA1: true}
+	v := &Validator{}
+	v.allowSHA1.Store(true)
 	dsList := []*dns.DSRecord{
 		{KeyTag: 100, Algorithm: dns.AlgECDSAP256, DigestType: dns.DigestSHA256, Digest: []byte{0x02}},
 		{KeyTag: 200, Algorithm: dns.AlgECDSAP256, DigestType: dns.DigestSHA1, Digest: []byte{0x01}},

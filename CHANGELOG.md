@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.25] - 2026-05-29
+
+### Fixed
+- **Data race on `dnssec.Validator.allowSHA1` publication** — the v0.8.16 dnssecValidator atomic-pointer migration closed the publication race on the VALIDATOR pointer itself but did NOT migrate the fields INSIDE the validator. `allowSHA1` was a plain `bool`, written by `SetDNSSECAllowSHA1` from the startup goroutine that runs `EnableDNSSEC` (main.go:340 `go func() { PrimeRootHints(); res.EnableDNSSEC(...); res.SetDNSSECAllowSHA1(...) }()`) and read on every signed-RR validation by `isWeakRRSIGAlg` (validator.go:270) and `isWeakDSDigest` (validator.go:309). By the time the writer fires, the UDP/TCP/DoT listeners are already accepting queries — they were started before the priming goroutine. Two failure modes: (1) the Go race detector flags this on every concurrent DNSSEC-enabled CI run; (2) on a weak-ordering CPU a reader could keep observing the default (false) indefinitely after the writer landed — every legacy SHA1-signed zone the operator opted in to via `dnssec_allow_sha1: true` would intermittently fail with Bogus until the value propagated across cores. Same exposure shape as the v0.8.16 dnssecValidator race itself, just one level deeper. Fix migrates `Validator.allowSHA1` to `atomic.Bool`. `AllowSHA1(bool)` does `Store`; `SHA1Allowed`, `isWeakRRSIGAlg`, and `isWeakDSDigest` do `Load`. Per-validation overhead is one atomic.Load — negligible against the bcrypt-class signature verify cost on the same path. Pin in [dnssec/allow_sha1_race_test.go](dnssec/allow_sha1_race_test.go): 8 readers × 500 ops calling the two hot-path checks + SHA1Allowed in parallel with a writer toggling AllowSHA1 — passes silently under `go test`, and `go test -race` catches any future regression that drops the atomic publication. The three existing tests that constructed `&Validator{allowSHA1: true}` literal-style were updated to `v := &Validator{}; v.allowSHA1.Store(true)`.
+
 ## [0.8.24] - 2026-05-29
 
 ### Fixed
