@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/cache"
@@ -35,7 +36,17 @@ type MainHandler struct {
 	metrics       *metrics.Metrics
 	logger        *slog.Logger
 	noCacheNets   []*net.IPNet
-	privateFilter bool
+	// privateFilter toggles RFC 6303 / private-address filtering of
+	// upstream answers. SetPrivateFilter is called from the
+	// /api/config/raw PUT hot-reload callback (runtimeApplier), while
+	// the DNS handler reads it on every query that returns an answer
+	// section. The two sites do not share a mutex; a plain bool field
+	// would be a data race (no torn-read risk for a 1-byte field on
+	// modern Go runtimes, but the memory-model visibility guarantee
+	// for cross-goroutine reads is not provided without sync). The
+	// atomic.Bool wrapper publishes the new value with the right
+	// happens-before edge while keeping the read overhead negligible.
+	privateFilter atomic.Bool
 	blocklist     interface {
 		IsBlocked(string) bool
 		BlockingMode() string
@@ -82,8 +93,11 @@ type MainHandler struct {
 }
 
 // SetPrivateFilter enables or disables private address filtering.
+// Called from the /api/config/raw hot-reload callback. The atomic store
+// publishes the new value to the DNS handler reader sites with the
+// right happens-before edge (see field comment).
 func (h *MainHandler) SetPrivateFilter(enabled bool) {
-	h.privateFilter = enabled
+	h.privateFilter.Store(enabled)
 }
 
 // SetBlocklist configures an optional blocklist for the handler.
@@ -1012,7 +1026,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			// Filtering at the write site means subsequent cache hits
 			// (buildCacheResponse) are clean by construction.
 			answersToCache := result.Answers
-			if h.privateFilter {
+			if h.privateFilter.Load() {
 				answersToCache = security.FilterPrivateAddresses(answersToCache)
 			}
 			if ecsKey == "" {
@@ -1323,7 +1337,7 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 	// "resolver rebind-protected the answer."
 	answers := result.Answers
 	privateStripped := false
-	if h.privateFilter {
+	if h.privateFilter.Load() {
 		filtered := security.FilterPrivateAddresses(answers)
 		if len(filtered) != len(answers) {
 			privateStripped = true
