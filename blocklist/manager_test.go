@@ -207,15 +207,15 @@ func TestRefreshAll_LoadsListsAndAppliesCustomRules(t *testing.T) {
 	mgr.RefreshAll()
 
 	// ads.example.com should be blocked (from list).
-	if !mgr.matcher.Match("ads.example.com") {
+	if !mgr.matcher.Load().Match("ads.example.com") {
 		t.Error("ads.example.com should be blocked")
 	}
 	// tracker.net should NOT be blocked (whitelisted).
-	if mgr.matcher.Match("tracker.net") {
+	if mgr.matcher.Load().Match("tracker.net") {
 		t.Error("tracker.net should be whitelisted and not blocked")
 	}
 	// custom-block.com should be blocked.
-	if !mgr.matcher.Match("custom-block.com") {
+	if !mgr.matcher.Load().Match("custom-block.com") {
 		t.Error("custom-block.com should be blocked via custom block")
 	}
 
@@ -323,7 +323,7 @@ func TestStart_ImmediateRefreshAndCancellation(t *testing.T) {
 
 func TestIsBlocked(t *testing.T) {
 	mgr := NewManager(ManagerConfig{}, newTestLogger())
-	mgr.matcher.AddExact("ads.example.com")
+	mgr.matcher.Load().AddExact("ads.example.com")
 
 	if !mgr.IsBlocked("ads.example.com") {
 		t.Error("ads.example.com should be blocked")
@@ -454,7 +454,7 @@ func TestBlockDomain(t *testing.T) {
 	mgr := NewManager(ManagerConfig{}, newTestLogger())
 
 	mgr.BlockDomain("evil.com")
-	if !mgr.matcher.Match("evil.com") {
+	if !mgr.matcher.Load().Match("evil.com") {
 		t.Error("evil.com should be blocked after BlockDomain")
 	}
 
@@ -484,13 +484,13 @@ func TestUnblockDomain(t *testing.T) {
 
 	// First block, then unblock.
 	mgr.BlockDomain("evil.com")
-	if !mgr.matcher.Match("evil.com") {
+	if !mgr.matcher.Load().Match("evil.com") {
 		t.Fatal("evil.com should be blocked first")
 	}
 
 	mgr.UnblockDomain("evil.com")
 
-	if mgr.matcher.Match("evil.com") {
+	if mgr.matcher.Load().Match("evil.com") {
 		t.Error("evil.com should not be blocked after UnblockDomain")
 	}
 
@@ -522,7 +522,7 @@ func TestUnblockDomain_Empty(t *testing.T) {
 
 func TestCheckDomain(t *testing.T) {
 	mgr := NewManager(ManagerConfig{}, newTestLogger())
-	mgr.matcher.AddExact("ads.example.com")
+	mgr.matcher.Load().AddExact("ads.example.com")
 
 	if !mgr.CheckDomain("ads.example.com") {
 		t.Error("CheckDomain should return true for blocked domain")

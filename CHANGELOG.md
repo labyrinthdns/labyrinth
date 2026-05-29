@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.17] - 2026-05-29
+
+### Fixed
+- **Data race on `blocklist.Manager.matcher` / `rpzMatcher` publication** — `RefreshAll` rebuilds the per-list matchers from scratch and swaps them in one pair of pointer assignments. Until v0.8.17 the writer took `mgr.mu.Lock()` for the swap, but the hot-path readers — `IsBlocked` and `RPZAction`, called on every DNS query before any cache lookup — read the pointers without holding `mu`. Go pointer stores are atomic in practice on every supported arch, so a torn pointer was not the failure mode; the actual gap was the memory-model one: without a happens-before edge a reader on a weak-ordering CPU could keep observing the pre-refresh matcher indefinitely after the swap. Effect on a busy resolver: queries against the OLD blocklist (often a full day stale, since the default `blocklist.refresh_interval` is 24 h) until that reader's core happened to observe the new pointer. The fix migrates both fields to `atomic.Pointer[Matcher]` / `atomic.Pointer[RPZMatcher]`. `RefreshAll` does `mgr.matcher.Store(newMatcher)` / `mgr.rpzMatcher.Store(newRPZMatcher)` — atomic publication, no `mu` needed for that step. Readers (`IsBlocked`, `RPZAction`, `CheckDomain`, `Stats`) all load once at the top and nil-check the snapshot, so a manager whose matcher hasn't been initialised yet (an impossible state for production code, but reachable in tests via `&Manager{}` literals) degrades cleanly to "nothing matched" rather than nil-derefing. Per-query overhead: one `atomic.Load` + nil check (~ns on amd64) — negligible vs the matcher's lookup itself. Pin in [blocklist/matcher_race_test.go](blocklist/matcher_race_test.go): 8 readers × 500 ops + 1 writer swapping matchers 50 times mid-stream; asserts no read panicked and the final published pointers are non-nil.
+
 ## [0.8.16] - 2026-05-29
 
 ### Fixed
