@@ -234,8 +234,23 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Snapshot the credential fields under configFileMu so the read is
+	// serialised against /api/auth/change-password (which rewrites
+	// s.config.Web.Auth.PasswordHash in place) and /api/config/raw PUT
+	// (which swaps s.config wholesale). Without the lock, login readers
+	// could observe a torn Go string header — the PasswordHash field is
+	// a 16-byte ptr+len struct, not a single word, so a concurrent
+	// in-place rewrite can leave the reader holding a pointer from the
+	// old string and a length from the new one. bcrypt against the
+	// resulting garbage bytes would intermittently reject the operator's
+	// correct password during a routine credential rotation. The
+	// configFileMu is the same mutex the writers already hold for the
+	// on-disk lost-update gate; we extend its coverage to readers here.
+	// Lock window is minimal: just the two field copies.
+	s.configFileMu.Lock()
 	cfgUser := s.config.Web.Auth.Username
 	cfgHash := s.config.Web.Auth.PasswordHash
+	s.configFileMu.Unlock()
 
 	if cfgUser == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "authentication not configured"})
