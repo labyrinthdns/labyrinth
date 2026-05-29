@@ -75,10 +75,17 @@ type MainHandler struct {
 	prevCookieSecret []byte
 	prevExpiresAt    time.Time
 
-	// ECS forwarding
-	ecsEnabled     bool
-	ecsMaxPrefix   int // IPv4 source-prefix ceiling
-	ecsMaxPrefixV6 int // IPv6 source-prefix ceiling
+	// ECS forwarding. The three values must be read as a consistent
+	// snapshot — SetECSPrefixes is called from the /api/config/raw
+	// hot-reload callback and rewrites all three together. Reading
+	// them as plain fields would let the DNS handler observe a mix of
+	// new+old values during the (small but non-zero) window between
+	// the three writes — e.g. (enabled=true, max=0) which would then
+	// fall through to the RFC-default branch, producing an inconsistent
+	// query under reload. atomic.Pointer publishes the whole struct
+	// in one store; readers load once at the top of buildOutboundECS
+	// and use the same snapshot for every decision in that call.
+	ecsCfg atomic.Pointer[ecsRuntime]
 
 	// downstreamUDPBufferSize is the EDNS0 UDP payload size advertised in
 	// outgoing OPT records on responses to clients. RFC 9018 / DNS Flag Day
@@ -98,6 +105,15 @@ type MainHandler struct {
 // right happens-before edge (see field comment).
 func (h *MainHandler) SetPrivateFilter(enabled bool) {
 	h.privateFilter.Store(enabled)
+}
+
+// ecsRuntime is the immutable snapshot of the three ECS knobs the DNS
+// handler reads on every query that carries an OPT. See ecsCfg field
+// comment for why the trio is packaged together.
+type ecsRuntime struct {
+	enabled     bool
+	maxPrefixV4 int
+	maxPrefixV6 int
 }
 
 // SetBlocklist configures an optional blocklist for the handler.
@@ -214,9 +230,11 @@ func (h *MainHandler) SetECS(enabled bool, maxPrefix int) {
 // is preserved as a convenience wrapper for callers that only care about
 // IPv4 limits.
 func (h *MainHandler) SetECSPrefixes(enabled bool, maxPrefixV4, maxPrefixV6 int) {
-	h.ecsEnabled = enabled
-	h.ecsMaxPrefix = maxPrefixV4
-	h.ecsMaxPrefixV6 = maxPrefixV6
+	h.ecsCfg.Store(&ecsRuntime{
+		enabled:     enabled,
+		maxPrefixV4: maxPrefixV4,
+		maxPrefixV6: maxPrefixV6,
+	})
 }
 
 // buildOutboundECS prepares the EDNS Client Subnet option (RFC 7871) that
@@ -237,7 +255,8 @@ func (h *MainHandler) SetECSPrefixes(enabled bool, maxPrefixV4, maxPrefixV6 int)
 //
 // Returns nil when no ECS should be forwarded for this query.
 func (h *MainHandler) buildOutboundECS(opt *dns.EDNS0) *dns.ECSOption {
-	if !h.ecsEnabled || opt == nil {
+	cfg := h.ecsCfg.Load()
+	if cfg == nil || !cfg.enabled || opt == nil {
 		return nil
 	}
 	clientECS, err := dns.ExtractECSFromOPT(opt)
@@ -258,11 +277,11 @@ func (h *MainHandler) buildOutboundECS(opt *dns.EDNS0) *dns.ECSOption {
 	// Cap source prefix at the operator's per-family ceiling (RFC 7871
 	// §11.1 recommends /24 for IPv4 and /56 for IPv6). Out-of-range or
 	// zero configuration falls back to those recommended defaults.
-	maxV4 := h.ecsMaxPrefix
+	maxV4 := cfg.maxPrefixV4
 	if maxV4 <= 0 || maxV4 > 32 {
 		maxV4 = 24
 	}
-	maxV6 := h.ecsMaxPrefixV6
+	maxV6 := cfg.maxPrefixV6
 	if maxV6 <= 0 || maxV6 > 128 {
 		maxV6 = 56
 	}
