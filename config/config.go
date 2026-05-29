@@ -657,7 +657,39 @@ func clampConfigBounds(cfg *Config) {
 	if cfg.Server.TCPTimeout > clampMaxTCPTimeout {
 		cfg.Server.TCPTimeout = clampMaxTCPTimeout
 	}
+
+	// Lower-bound floors. Three integer fields feed directly into
+	// `make(chan struct{}, N)` calls inside the UDP/TCP/DoT server
+	// constructors: MaxUDPWorkers, MaxTCPConns, TCPPipelineMax.
+	//   - N < 0 → make() panics, resolver crashes at boot.
+	//   - N == 0 → unbuffered channel; the spawn loop blocks forever
+	//     on `sem <- struct{}{}`, so every incoming query stalls.
+	// Both states are reachable by YAML typo (`max_udp_workers: -1`
+	// is a common operator slip for "disable this") or by a
+	// /api/config/raw PUT that planted a zero. Fall back to the
+	// stock defaults rather than the lowest legal value — a
+	// resolver booting with a 1-worker semaphore is barely usable
+	// and the operator would not know why.
+	if cfg.Server.MaxUDPWorkers <= 0 {
+		cfg.Server.MaxUDPWorkers = defaultMaxUDPWorkers
+	}
+	if cfg.Server.MaxTCPConns <= 0 {
+		cfg.Server.MaxTCPConns = defaultMaxTCPConns
+	}
+	if cfg.Server.TCPPipelineMax <= 0 {
+		cfg.Server.TCPPipelineMax = defaultTCPPipelineMax
+	}
 }
+
+// Default values used by the lower-bound clamp. Match the constructor
+// defaults in config/defaults.go so an operator who omitted the keys
+// entirely gets the same behaviour as one who set them to a sentinel
+// "fall back" value like -1 or 0.
+const (
+	defaultMaxUDPWorkers  = 10000
+	defaultMaxTCPConns    = 256
+	defaultTCPPipelineMax = 100
+)
 
 func validate(cfg *Config) error {
 	clampConfigBounds(cfg)
