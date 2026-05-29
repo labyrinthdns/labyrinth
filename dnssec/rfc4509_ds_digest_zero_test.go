@@ -20,7 +20,7 @@ func TestIsWeakDSDigest_DigestZeroAlwaysRejected(t *testing.T) {
 
 	// Opt into SHA-1: SHA-1 becomes acceptable, but digest 0 is STILL
 	// weak — the §3.3 constraint is hard, not subject to the toggle.
-	v.allowSHA1 = true
+	v.allowSHA1.Store(true)
 	if !v.isWeakDSDigest(dns.DigestReserved) {
 		t.Error("digest type 0 must remain weak even with allowSHA1=true (RFC 8624 §3.3 hard constraint)")
 	}

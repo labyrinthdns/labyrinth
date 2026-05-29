@@ -164,7 +164,18 @@ type Validator struct {
 	// Default false. Per RFC 8624 / draft-ietf-dnsop-rfc8624-bis these are
 	// "MUST NOT" for signing; modern resolvers (Unbound, BIND ≥ 9.18) reject
 	// them by default. Set true only for legacy zones that have not migrated.
-	allowSHA1 bool
+	//
+	// atomic.Bool wrapper publishes the value with the right barrier so
+	// the resolver.Resolver startup goroutine's
+	// `res.SetDNSSECAllowSHA1(...)` is visible to the DNS handler goroutines
+	// that call `isWeakRRSIGAlg` / `isWeakDSDigest` on every signed RR. The
+	// writer runs in the same startup goroutine that calls EnableDNSSEC
+	// (after PrimeRootHints completes), and DNS handlers are already
+	// serving by then — so a plain bool field has a publication race
+	// identical to the v0.8.16 dnssecValidator race: queries landing in
+	// the gap between EnableDNSSEC and SetDNSSECAllowSHA1 use the default
+	// (false), even when the operator opted in to legacy SHA1 acceptance.
+	allowSHA1 atomic.Bool
 
 	mu       sync.RWMutex
 	keyCache map[string]*dnskeyCache
@@ -254,20 +265,20 @@ func (v *Validator) NTAMatches() int64 {
 // When false (the default), responses that depend on SHA1 are treated as
 // insecure (as if the zone published no signatures we can validate).
 func (v *Validator) AllowSHA1(allow bool) {
-	v.allowSHA1 = allow
+	v.allowSHA1.Store(allow)
 }
 
 // SHA1Allowed reports the current allowSHA1 setting. Used by callers that
 // advertise their accepted primitives via RFC 6975 DAU/DHU options — the
 // advertised list must match what the validator will actually accept.
 func (v *Validator) SHA1Allowed() bool {
-	return v.allowSHA1
+	return v.allowSHA1.Load()
 }
 
 // isWeakRRSIGAlg reports whether the algorithm is on the weak/deprecated list
 // the validator rejects by default. Currently only RSASHA1.
 func (v *Validator) isWeakRRSIGAlg(alg uint8) bool {
-	if v.allowSHA1 {
+	if v.allowSHA1.Load() {
 		return false
 	}
 	return alg == dns.AlgRSASHA1
@@ -306,7 +317,7 @@ func (v *Validator) isWeakDSDigest(d uint8) bool {
 	if d == dns.DigestReserved {
 		return true
 	}
-	if v.allowSHA1 {
+	if v.allowSHA1.Load() {
 		return false
 	}
 	return d == dns.DigestSHA1
