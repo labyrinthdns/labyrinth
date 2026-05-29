@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.18] - 2026-05-29
+
+### Fixed
+- **Boot-time crash + hang on `server.max_udp_workers / max_tcp_connections / tcp_pipeline_max <= 0`** — every clamp added in v0.7.70 / v0.8.1 / v0.8.3 enforces an UPPER bound but none had a lower bound. Three integer config fields feed directly into `make(chan struct{}, N)` calls inside the UDP/TCP/DoT server constructors: `MaxUDPWorkers` (UDP semaphore), `MaxTCPConns` (TCP semaphore), and `TCPPipelineMax` (per-connection request loop). Two operator-reachable failure modes: (1) `N < 0` panics — `make` rejects a negative capacity at runtime, the resolver crashes at startup with a stack trace mentioning channels and no operator-facing pointer to "your YAML value is wrong"; (2) `N == 0` creates an unbuffered semaphore — the spawn loop's `sem <- struct{}{}` blocks forever, every incoming query hangs, the process is up but not serving anything. Both states are trivially reachable by YAML typo (`max_udp_workers: -1` is a common operator slip meaning "disable") or by a `/api/config/raw` PUT that planted a zero value. The fix adds lower-bound rescue clauses to `clampConfigBounds`: when any of the three fields is `<= 0`, fall back to the stock defaults (10 000 UDP workers / 256 TCP conns / 100 pipeline max) — the same values an operator who simply omitted the keys gets. Defaults chosen over "lowest legal value" because a resolver booting with a 1-worker semaphore is barely usable and the operator would not know why. Pin in [config/clamp_config_test.go](config/clamp_config_test.go): for sentinel ∈ {0, -1, -100}, set all three fields to the sentinel and assert each is rescued to its constructor default exactly.
+
 ## [0.8.17] - 2026-05-29
 
 ### Fixed

@@ -144,6 +144,38 @@ func TestClampConfigBounds_UnderCapValuesPassThrough(t *testing.T) {
 	}
 }
 
+// TestClampConfigBounds_LowerBoundsRescueZeroAndNegative pins the v0.8.18
+// gate: the three integer fields that feed `make(chan struct{}, N)` calls
+// in the UDP/TCP/DoT server constructors must be rescued to a working
+// default when the operator-supplied value is <= 0. Without the rescue,
+// `max_udp_workers: -1` panics the resolver at boot, `max_udp_workers: 0`
+// creates an unbuffered semaphore that blocks every spawn forever, and
+// the operator gets a crash log or a hung process with no helpful
+// pointer to "your config value is wrong".
+func TestClampConfigBounds_LowerBoundsRescueZeroAndNegative(t *testing.T) {
+	for _, sentinel := range []int{0, -1, -100} {
+		cfg := &Config{}
+		cfg.Server.MaxUDPWorkers = sentinel
+		cfg.Server.MaxTCPConns = sentinel
+		cfg.Server.TCPPipelineMax = sentinel
+
+		clampConfigBounds(cfg)
+
+		if cfg.Server.MaxUDPWorkers != defaultMaxUDPWorkers {
+			t.Errorf("sentinel=%d: MaxUDPWorkers = %d, want default %d",
+				sentinel, cfg.Server.MaxUDPWorkers, defaultMaxUDPWorkers)
+		}
+		if cfg.Server.MaxTCPConns != defaultMaxTCPConns {
+			t.Errorf("sentinel=%d: MaxTCPConns = %d, want default %d",
+				sentinel, cfg.Server.MaxTCPConns, defaultMaxTCPConns)
+		}
+		if cfg.Server.TCPPipelineMax != defaultTCPPipelineMax {
+			t.Errorf("sentinel=%d: TCPPipelineMax = %d, want default %d",
+				sentinel, cfg.Server.TCPPipelineMax, defaultTCPPipelineMax)
+		}
+	}
+}
+
 // TestClampConfigBounds_RunsViaValidate pins that the validate
 // entry-point invokes the clamp. A regression that moved validate
 // callers off the clamp (or replaced validate with a custom flow
