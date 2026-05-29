@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.13] - 2026-05-29
+
+### Fixed
+- **Data race on `s.jwtSecret` during password rotation** — `handleChangePassword` writes a freshly-generated 32-byte secret to `s.jwtSecret` under `configFileMu`, but every authenticated HTTP request reads `s.jwtSecret` from `requireAuth` → `validateJWT` WITHOUT that mutex. The field was a plain `[]byte`; a slice header is 24 bytes on 64-bit Go (pointer + len + cap), not an atomically-published value. A reader concurrent with the rotation write could observe a torn header — a NEW pointer with the OLD length, or vice versa — and either crash on out-of-bounds access during JWT HMAC, or silently validate against a malformed secret and reject legitimate tokens. The race never surfaced in CI because `go test -race` requires cgo on Windows and the project doesn't build with cgo, so this is the second straight race (after v0.8.5's timeseries fix) that static-analysis logic identified before the race detector ever would have. The fix migrates `s.jwtSecret` to `atomic.Pointer[[]byte]`; readers do `*s.jwtSecret.Load()`, the rotation path does `s.jwtSecret.Store(&newSecret)`, and the slice header is published atomically. Existing callers (login, change-password handlers, requireAuth middleware, every JWT test) were updated to the new shape. Pin in [web/jwt_secret_race_test.go](web/jwt_secret_race_test.go) spawns 8 readers and 8 rotators each running 500 ops against the gate and asserts every read returns a complete 32-byte secret — fails fast under data race UB even without `-race`.
+
 ## [0.8.12] - 2026-05-29
 
 ### Hardened

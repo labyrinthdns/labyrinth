@@ -261,7 +261,7 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := generateJWT(req.Username, s.jwtSecret)
+	token, err := generateJWT(req.Username, *s.jwtSecret.Load())
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
 		return
@@ -350,7 +350,7 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to rotate session secret; password not changed"})
 		return
 	}
-	s.jwtSecret = newSecret
+	s.jwtSecret.Store(&newSecret)
 	s.revokedTokens.Range(func(k, _ any) bool {
 		s.revokedTokens.Delete(k)
 		return true

@@ -46,7 +46,13 @@ type AdminServer struct {
 	queryLog              *QueryLog
 	timeSeries            *TimeSeriesAggregator
 	logger                *slog.Logger
-	jwtSecret          []byte
+	// jwtSecret is rotated by handleChangePassword on a successful
+	// change. The read side (validateJWT, called on every authenticated
+	// HTTP request via requireAuth) accesses the secret without holding
+	// configFileMu, so a plain []byte assignment from the rotation path
+	// would be a data race on the slice header. atomic.Pointer publishes
+	// the new []byte atomically; readers always see a complete header.
+	jwtSecret         atomic.Pointer[[]byte]
 	revokedTokens     sync.Map // maps revoked jti string → bool; cleared on secret rotation
 	// setupDone is set true when the bootstrap config exists (either
 	// seeded from disk at NewAdminServer time, or after a successful
@@ -149,7 +155,6 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		queryLog:              NewQueryLog(bufSize),
 		timeSeries:            NewTimeSeriesAggregator(),
 		logger:                logger,
-		jwtSecret:             secret,
 		topClients:            NewTopTracker(topTrackingLimitClients),
 		topDomains:            NewTopTracker(topTrackingLimitDomains),
 		clientQueryNum:        make(map[string]*clientQueryEntry),
@@ -158,6 +163,7 @@ func NewAdminServer(cfg *config.Config, c *cache.Cache, m *metrics.Metrics, r *r
 		loginLimiter:          newLoginLimiter(),
 	}
 	s.setupDone.Store(setupDone)
+	s.jwtSecret.Store(&secret)
 
 	// Wire fallback time-series: route fallback events into the aggregator.
 	s.wireFallbackTimeSeries()

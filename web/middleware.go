@@ -97,7 +97,7 @@ func (s *AdminServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		username, err := validateJWT(token, s.jwtSecret, &s.revokedTokens)
+		username, err := validateJWT(token, *s.jwtSecret.Load(), &s.revokedTokens)
 		if err != nil {
 			jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
 			return
