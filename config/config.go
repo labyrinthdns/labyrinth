@@ -759,6 +759,30 @@ func clampConfigBounds(cfg *Config) {
 	if cfg.Server.TCPTimeout <= 0 {
 		cfg.Server.TCPTimeout = defaultTCPTimeout
 	}
+
+	// RRL responses-per-second floor. NewRRL stashes the value as
+	// `r.responsesPerSecond` and the AllowResponse hot path uses it
+	// at two sites: the first-seen-key initialiser at security/rrl.go:98
+	// (`tokens: r.responsesPerSecond - 1`) and the refill at line 105
+	// (`entry.tokens += elapsed * r.responsesPerSecond`). With the
+	// value at 0: first response per key returns RRLAllow (the early
+	// return at line 101 bypasses the token check), but every
+	// subsequent response on that key has `tokens = -1` and refills
+	// at `elapsed * 0 = 0` — the bucket can never recover, every
+	// future response is RRLDrop or RRLSlip. The resolver completes
+	// resolution but silently drops the answer on the way out, so
+	// the client sees a timeout / no response with no error code,
+	// the upstream metrics show successful queries, and only the
+	// RRL drop counter rises — which an operator who set
+	// `responses_per_second: 0` may not realise is the cause. With
+	// a negative value the bucket starts even further underwater
+	// and the same outcome holds. Same exposure shape as the
+	// rate-limit burst floor (v0.8.19) but on the response side.
+	// Only floors when the limiter is actually enabled — disabled
+	// RRL doesn't construct the limiter so the value is unread.
+	if cfg.Security.RRL.Enabled && cfg.Security.RRL.ResponsesPerSecond <= 0 {
+		cfg.Security.RRL.ResponsesPerSecond = defaultRRLResponsesPerSecond
+	}
 }
 
 // Default values used by the lower-bound clamp. Match the constructor
@@ -773,6 +797,7 @@ const (
 	defaultMaxCNAMEDepth   = 10
 	defaultUpstreamTimeout = 2 * time.Second
 	defaultTCPTimeout      = 10 * time.Second
+	defaultRRLResponsesPerSecond = 5.0
 )
 
 func validate(cfg *Config) error {

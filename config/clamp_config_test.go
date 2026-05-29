@@ -333,6 +333,46 @@ func TestClampConfigBounds_TCPTimeoutUntouchedWhenPositive(t *testing.T) {
 	}
 }
 
+// TestClampConfigBounds_RRLResponsesPerSecondFloor pins the v0.8.23
+// floor: security.rrl.responses_per_second <= 0 black-holes every
+// outgoing response after the first per (prefix, qname, response_type)
+// key. AllowResponse refills via `entry.tokens += elapsed * rate`, so
+// with rate=0 the bucket never recovers; the first response per key
+// passes through the early-return at security/rrl.go:101 but every
+// subsequent one is RRLDrop. Resolution completes, the answer is
+// formed, then silently dropped on the way out — client sees a
+// timeout with no DNS error code. Only floors when RRL is enabled.
+func TestClampConfigBounds_RRLResponsesPerSecondFloor(t *testing.T) {
+	for _, sentinel := range []float64{0, -0.001, -100} {
+		cfg := &Config{}
+		cfg.Security.RRL.Enabled = true
+		cfg.Security.RRL.ResponsesPerSecond = sentinel
+
+		clampConfigBounds(cfg)
+
+		if cfg.Security.RRL.ResponsesPerSecond != defaultRRLResponsesPerSecond {
+			t.Errorf("sentinel=%g: ResponsesPerSecond = %g, want default %g",
+				sentinel, cfg.Security.RRL.ResponsesPerSecond, defaultRRLResponsesPerSecond)
+		}
+	}
+}
+
+// TestClampConfigBounds_RRLResponsesPerSecondUntouchedWhenDisabled pins
+// that the floor only fires when RRL is enabled. A disabled RRL never
+// constructs the limiter, so the value is unread — leave the operator's
+// "record but don't enforce" sentinel alone.
+func TestClampConfigBounds_RRLResponsesPerSecondUntouchedWhenDisabled(t *testing.T) {
+	cfg := &Config{}
+	cfg.Security.RRL.Enabled = false
+	cfg.Security.RRL.ResponsesPerSecond = 0
+
+	clampConfigBounds(cfg)
+
+	if cfg.Security.RRL.ResponsesPerSecond != 0 {
+		t.Errorf("disabled RRL: ResponsesPerSecond = %g, want 0 (unchanged)", cfg.Security.RRL.ResponsesPerSecond)
+	}
+}
+
 // TestClampConfigBounds_RunsViaValidate pins that the validate
 // entry-point invokes the clamp. A regression that moved validate
 // callers off the clamp (or replaced validate with a custom flow
