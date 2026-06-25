@@ -622,6 +622,13 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 	// Extract client IP
 	clientIP := extractIP(clientAddr)
 
+	// Whether this query arrived over a stream transport (TCP / DoT / DoH),
+	// where RFC 7766 §5 says the 512-byte UDP cap and TC-bit truncation do not
+	// apply. UDP datagrams — and the nil-addr test path — stay false so the
+	// size cap still bites there. (A future DoQ transport rides QUIC/UDP and
+	// would need to opt in explicitly rather than be inferred from Network().)
+	isStream := isStreamTransport(clientAddr)
+
 	// Global ACL check (fast pre-parse check without zone context).
 	// Zone-specific ACL is checked after the query is parsed.
 	if h.acl != nil && !h.acl.Check(clientIP) {
@@ -835,7 +842,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 	// 2.6 Minimal ANY response (RFC 8482): return synthetic HINFO instead
 	// of resolving, to prevent DNS amplification via ANY queries.
 	if q.Type == dns.TypeANY {
-		resp, err := h.buildMinimalANYResponse(msg, q)
+		resp, err := h.buildMinimalANYResponse(msg, q, isStream)
 		if err != nil {
 			return nil, err
 		}
@@ -899,7 +906,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		}
 		if ok {
 			h.metrics.IncCacheHits()
-			resp, err := h.buildCacheResponseECS(msg, entry, outboundECS)
+			resp, err := h.buildCacheResponseECS(msg, entry, outboundECS, isStream)
 			if err == nil {
 				duration := time.Since(start)
 				h.metrics.ObserveQueryDuration(duration)
@@ -952,7 +959,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 	if !resolveOK {
 		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok {
 			h.logger.Info("serving stale cache", "qname", q.Name, "qtype", qtypeStr)
-			resp, buildErr := h.buildCacheResponse(msg, staleEntry)
+			resp, buildErr := h.buildCacheResponse(msg, staleEntry, isStream)
 			if buildErr == nil {
 				// EDE info-code selection (RFC 8914 / RFC 8767 §6):
 				// a stale NXDOMAIN gets its own code (19, STALE-NXDOMAIN-
@@ -1088,7 +1095,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		h.OnQuery(clientIP, q.Name, qtypeStr, rcodeStr, false, durationMs)
 	}
 
-	resp, buildErr := h.buildResponse(msg, result)
+	resp, buildErr := h.buildResponse(msg, result, isStream)
 	if buildErr != nil {
 		return nil, buildErr
 	}
@@ -1234,8 +1241,8 @@ func (h *MainHandler) buildSlipResponse(query []byte) ([]byte, error) {
 // option echoing the source prefix the client provided alongside the
 // SCOPE PREFIX-LENGTH from the cached entry (RFC 7871 §7.2.1). When the
 // client did not send ECS, the behaviour is identical to buildCacheResponse.
-func (h *MainHandler) buildCacheResponseECS(query *dns.Message, entry *cache.Entry, outboundECS *dns.ECSOption) ([]byte, error) {
-	resp, err := h.buildCacheResponse(query, entry)
+func (h *MainHandler) buildCacheResponseECS(query *dns.Message, entry *cache.Entry, outboundECS *dns.ECSOption, stream ...bool) ([]byte, error) {
+	resp, err := h.buildCacheResponse(query, entry, stream...)
 	if err != nil {
 		return nil, err
 	}
@@ -1251,7 +1258,7 @@ func (h *MainHandler) buildCacheResponseECS(query *dns.Message, entry *cache.Ent
 	return appendECSToResponse(resp, &echo), nil
 }
 
-func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry) ([]byte, error) {
+func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry, stream ...bool) ([]byte, error) {
 	// RFC 4035 §3.2.2: a recursive name server MUST clear the AD bit on a
 	// response unless and until it itself verified the data; if it did verify
 	// (or the client opted out of verification with CD=1), AD propagates.
@@ -1300,12 +1307,12 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry)
 	if err != nil {
 		return nil, err
 	}
-	return h.maybeTruncateUDP(packed, query), nil
+	return h.maybeTruncateUDP(packed, query, stream...), nil
 }
 
 // buildMinimalANYResponse returns a synthetic HINFO response per RFC 8482,
 // preventing DNS amplification attacks via ANY queries.
-func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question) ([]byte, error) {
+func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question, stream ...bool) ([]byte, error) {
 	// HINFO RDATA: <CPU-length> <CPU-string> <OS-length> <OS-string>
 	// CPU = "RFC8482", OS = ""
 	cpu := []byte("RFC8482")
@@ -1344,10 +1351,10 @@ func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question
 	if err != nil {
 		return nil, err
 	}
-	return h.maybeTruncateUDP(packed, query), nil
+	return h.maybeTruncateUDP(packed, query, stream...), nil
 }
 
-func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.ResolveResult) ([]byte, error) {
+func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.ResolveResult, stream ...bool) ([]byte, error) {
 	// Apply private address filtering before building the response. RFC 8914
 	// §4.6 "Forged Answer" (info code 4) is the standardised signal that the
 	// resolver replaced/stripped records relative to the authoritative
@@ -1420,7 +1427,7 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 		return nil, err
 	}
 
-	return h.maybeTruncateUDP(packed, query), nil
+	return h.maybeTruncateUDP(packed, query, stream...), nil
 }
 
 // maybeTruncateUDP enforces the effective UDP response size cap on a packed
@@ -1436,7 +1443,30 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 // where reassembly uses 32-bit per-connection sequence numbers and is
 // structurally immune to off-path fragment-injection (Brandt et al, USENIX
 // Security 2018). RFC 9018 / DNS Flag Day 2020.
-func (h *MainHandler) maybeTruncateUDP(packed []byte, query *dns.Message) []byte {
+// isStreamTransport reports whether a response to a query from clientAddr will
+// be delivered over a stream transport (TCP, DoT, DoH), where RFC 7766 §5
+// removes the UDP datagram size limit. UDP listeners pass a *net.UDPAddr
+// ("udp"); TCP/DoT pass a *net.TCPAddr and DoH synthesises one ("tcp"). A nil
+// address (test helpers, internal callers) is treated as a datagram so the
+// historic UDP-truncation behaviour is preserved.
+func isStreamTransport(clientAddr net.Addr) bool {
+	if clientAddr == nil {
+		return false
+	}
+	return strings.HasPrefix(clientAddr.Network(), "tcp")
+}
+
+func (h *MainHandler) maybeTruncateUDP(packed []byte, query *dns.Message, stream ...bool) []byte {
+	// RFC 7766 §5: over a stream transport (TCP, DoT, DoH) the 512-byte UDP
+	// datagram limit and the TC-bit truncation dance do not apply — the
+	// length-prefixed framing carries arbitrarily large messages. Truncating
+	// here would emit a TC=1 header-only answer that the client cannot recover
+	// from (there is no "retry over TCP" when it is already on TCP), which is
+	// exactly how a >512-byte response — e.g. a multi-hop CNAME chain — became
+	// unresolvable. Skip truncation entirely for stream transports.
+	if len(stream) > 0 && stream[0] {
+		return packed
+	}
 	const rfc6891MinUDPSize = 512
 	maxSize := rfc6891MinUDPSize
 	if query.EDNS0 != nil && int(query.EDNS0.UDPSize) >= rfc6891MinUDPSize {
