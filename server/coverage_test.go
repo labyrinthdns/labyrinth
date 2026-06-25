@@ -1396,8 +1396,9 @@ func TestNewUDPServerError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 44. handler.go buildResponse – dns.Pack error (lines 274-276, 164-166)
-//     Pack fails when the response exceeds the 4096-byte internal buffer.
+// 44. handler.go buildResponse – oversized response handling.
+//     A response exceeding the 4 KiB pooled scratch buffer must be re-packed at
+//     the 64 KiB ceiling (not dropped): truncated on UDP, intact on stream.
 // ---------------------------------------------------------------------------
 
 func TestBuildResponsePackError(t *testing.T) {
@@ -1433,9 +1434,32 @@ func TestBuildResponsePackError(t *testing.T) {
 	}
 
 	result := &resolver.ResolveResult{Answers: answers, RCODE: dns.RCodeNoError}
-	_, err := handler.buildResponse(queryMsg, result)
-	if err == nil {
-		t.Error("expected error from dns.Pack (buffer overflow)")
+
+	// A response larger than the 4 KiB pooled scratch buffer must NOT be dropped:
+	// packToOwnedBytes retries at the 64 KiB DNS-over-TCP ceiling. On the UDP
+	// path it then truncates (TC=1) so the client retries over TCP; on a stream
+	// transport it is delivered in full.
+	udpResp, err := handler.buildResponse(queryMsg, result)
+	if err != nil {
+		t.Fatalf("UDP buildResponse should not error on >4096B response, got %v", err)
+	}
+	if binary.BigEndian.Uint16(udpResp[2:4])>>9&1 != 1 {
+		t.Error("UDP response >512B without EDNS must have TC=1")
+	}
+
+	streamResp, err := handler.buildResponse(queryMsg, result, true)
+	if err != nil {
+		t.Fatalf("stream buildResponse should not error on >4096B response, got %v", err)
+	}
+	if len(streamResp) <= 4096 {
+		t.Fatalf("stream response should exceed 4096 bytes intact, got %d", len(streamResp))
+	}
+	if binary.BigEndian.Uint16(streamResp[2:4])>>9&1 != 0 {
+		t.Error("stream response must not set TC")
+	}
+	if int(binary.BigEndian.Uint16(streamResp[6:8])) != len(answers) {
+		t.Errorf("stream response should carry all %d answers, got ANCOUNT=%d",
+			len(answers), binary.BigEndian.Uint16(streamResp[6:8]))
 	}
 }
 

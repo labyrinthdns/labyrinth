@@ -21,6 +21,12 @@ import (
 	"github.com/labyrinthdns/labyrinth/security"
 )
 
+// maxDNSMessageSize is the largest a DNS message can be on the wire: the
+// DNS-over-TCP 2-byte length prefix (RFC 7766 §8) caps a message at 65535
+// bytes. Used as the fallback pack buffer when the pooled 4 KiB scratch buffer
+// cannot hold a large response.
+const maxDNSMessageSize = 65535
+
 // Handler processes a raw DNS query and returns a raw DNS response.
 type Handler interface {
 	Handle(query []byte, clientAddr net.Addr) ([]byte, error)
@@ -28,14 +34,14 @@ type Handler interface {
 
 // MainHandler ties together parsing, resolution, and response assembly.
 type MainHandler struct {
-	resolver      *resolver.Resolver
-	cache         *cache.Cache
-	limiter       *security.RateLimiter
-	rrl           *security.RRL
-	acl           *security.ACL
-	metrics       *metrics.Metrics
-	logger        *slog.Logger
-	noCacheNets   []*net.IPNet
+	resolver    *resolver.Resolver
+	cache       *cache.Cache
+	limiter     *security.RateLimiter
+	rrl         *security.RRL
+	acl         *security.ACL
+	metrics     *metrics.Metrics
+	logger      *slog.Logger
+	noCacheNets []*net.IPNet
 	// privateFilter toggles RFC 6303 / private-address filtering of
 	// upstream answers. SetPrivateFilter is called from the
 	// /api/config/raw PUT hot-reload callback (runtimeApplier), while
@@ -494,7 +500,12 @@ func appendECSToResponse(resp []byte, ecs *dns.ECSOption) []byte {
 	}
 	out, err := dns.Pack(msg, make([]byte, 4096))
 	if err != nil {
-		return resp
+		// Oversized for the 4 KiB scratch buffer — retry at the 64 KiB ceiling
+		// so a large answer keeps its ECS option instead of being dropped.
+		out, err = dns.Pack(msg, make([]byte, maxDNSMessageSize))
+		if err != nil {
+			return resp
+		}
 	}
 	return append([]byte(nil), out...)
 }
@@ -552,7 +563,16 @@ func (h *MainHandler) packToOwnedBytes(msg *dns.Message) ([]byte, error) {
 	packed, err := dns.Pack(msg, buf)
 	if err != nil {
 		pool.PutBuffer(bufPtr)
-		return nil, err
+		// The pooled buffer (4 KiB) is too small for this response — e.g. a long
+		// CNAME chain or a large RRset/DNSSEC answer. Retry once with the full
+		// 64 KiB DNS-over-TCP message ceiling so the answer is delivered intact
+		// on a stream transport instead of being silently dropped. UDP callers
+		// still truncate the result afterwards via maybeTruncateUDP.
+		retry, retryErr := dns.Pack(msg, make([]byte, maxDNSMessageSize))
+		if retryErr != nil {
+			return nil, retryErr
+		}
+		return append([]byte(nil), retry...), nil
 	}
 	out := append([]byte(nil), packed...)
 	pool.PutBuffer(bufPtr)
@@ -937,6 +957,14 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 					case security.RRLDrop:
 						return nil, nil
 					case security.RRLSlip:
+						// RRL slip forces a TCP retry via TC=1 — meaningless on a
+						// stream transport, where the client is already on TCP and
+						// cannot retry (RFC 7766 §4 also says TC SHOULD NOT be set
+						// on TCP). Stream defeats spoofed-source reflection anyway,
+						// so deliver the real answer instead of a dead-end stub.
+						if isStream {
+							return resp, nil
+						}
 						return h.buildSlipResponse(query)
 					}
 				}
@@ -1162,7 +1190,13 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		case security.RRLDrop:
 			return nil, nil // silently drop
 		case security.RRLSlip:
-			// Send truncated response (TC=1) to force TCP retry
+			// Send truncated response (TC=1) to force a UDP client to retry over
+			// TCP. On a stream transport that retry is impossible (already TCP)
+			// and TC=1 is a dead end, so deliver the real answer instead — the
+			// stream handshake already prevents spoofed-source amplification.
+			if isStream {
+				return resp, nil
+			}
 			return h.buildSlipResponse(query)
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
+	"github.com/labyrinthdns/labyrinth/security"
 )
 
 // TestStreamTransport_NoTruncation pins the fix for the TCP/DoT/DoH truncation
@@ -67,6 +68,48 @@ func TestStreamTransport_NoTruncation(t *testing.T) {
 	}
 	if len(streamResp) <= 512 {
 		t.Errorf("stream response unexpectedly small (%d bytes) — test no longer exercises >512 path", len(streamResp))
+	}
+}
+
+// TestRRLSlip_StreamDeliversRealAnswer pins that RRL slip (TC=1, "retry over
+// TCP") is suppressed on stream transports: a TCP/DoT/DoH client is already on
+// TCP and cannot retry, so it must get the real answer, never a TC=1 stub. The
+// same load over UDP must still slip, proving RRL actually engaged.
+func TestRRLSlip_StreamDeliversRealAnswer(t *testing.T) {
+	mk := func() *MainHandler {
+		m := metrics.NewMetrics()
+		c := cache.NewCache(1000, 5, 86400, 3600, m)
+		res := newFailFastResolver(c, m)
+		rrl := security.NewRRL(1, 1, 24, 56) // 1 rps, slipRatio 1 → slip every limited response
+		return NewMainHandler(res, c, nil, rrl, nil, m, discardLogger())
+	}
+	query := buildTestQuery("rrl-stream.example.com", dns.TypeA)
+	isTC := func(resp []byte) bool {
+		return resp != nil && len(resp) >= 4 && binary.BigEndian.Uint16(resp[2:4])>>9&1 == 1
+	}
+
+	// UDP control: the same flood must produce at least one TC=1 slip.
+	udp := mk()
+	udpAddr := &mockAddr{network: "udp", addr: "172.16.5.1:1234"}
+	udpSlipped := false
+	for i := 0; i < 25; i++ {
+		if resp, _ := udp.Handle(query, udpAddr); isTC(resp) {
+			udpSlipped = true
+			break
+		}
+	}
+	if !udpSlipped {
+		t.Fatal("UDP control did not slip — RRL not engaging, test is inconclusive")
+	}
+
+	// Stream: never a TC=1 slip stub, regardless of how hard we hit it.
+	stream := mk()
+	tcpAddr := &mockAddr{network: "tcp", addr: "172.16.5.2:1234"}
+	for i := 0; i < 25; i++ {
+		resp, _ := stream.Handle(query, tcpAddr)
+		if isTC(resp) {
+			t.Fatalf("stream transport returned a TC=1 RRL slip on query %d — RFC 7766 §4 dead-end", i)
+		}
 	}
 }
 
