@@ -223,9 +223,27 @@ func Pack(msg *Message, buf []byte) ([]byte, error) {
 	return w.bytes(), nil
 }
 
-// packRData writes a resource record's RDATA to the wire writer.
-// For types containing domain names (NS, CNAME, PTR, MX, SOA, SRV),
-// names are re-encoded with compression. Other types are written as raw bytes.
+// writeUncompressedName writes a domain name into RDATA WITHOUT compression.
+// RFC 3597 §4 forbids a receiver from decompressing names inside the RDATA of
+// any type not on the RFC 1035 §4.1.4 "well-known" list, so emitting a
+// compression pointer there is read back as literal bytes (0xC0…) and corrupts
+// the name. Several types mandate this explicitly: RRSIG Signer's Name
+// (RFC 4034 §3.1.7), NSEC Next Domain Name (RFC 4034 §4.1.3 / §6.2), DNAME
+// target (RFC 6672 §2.1) and SRV target (RFC 2782). Keying compression
+// case-insensitively (for 0x20) makes these names match earlier owners more
+// often, so they MUST be written out in full.
+func writeUncompressedName(w *wireWriter, name string) error {
+	nb, err := EncodeNameToBytes(name)
+	if err != nil {
+		return err
+	}
+	return w.writeBytes(nb)
+}
+
+// packRData writes a resource record's RDATA to the wire writer. RDATA domain
+// names on the RFC 1035 §4.1.4 well-known list (NS, CNAME, PTR, MX, SOA) are
+// re-encoded with compression; names in all other types (DNAME, SRV, RRSIG,
+// NSEC) are written uncompressed per RFC 3597 §4. Remaining types are raw.
 func packRData(w *wireWriter, rr ResourceRecord) error {
 	// Reserve 2 bytes for RDLENGTH, fill in after writing RDATA
 	rdLenOffset := w.offset
@@ -242,13 +260,23 @@ func packRData(w *wireWriter, rr ResourceRecord) error {
 	}
 
 	switch rr.Type {
-	case TypeNS, TypeCNAME, TypePTR, TypeDNAME:
+	case TypeNS, TypeCNAME, TypePTR:
 		// Single domain name — decompress from RData, re-encode with compression
+		// (RFC 1035 §4.1.4 lists these as compressible).
 		name, _, nameErr := DecodeName(rr.RData, 0)
 		if nameErr != nil {
 			err = w.writeBytes(rr.RData)
 		} else {
 			err = EncodeName(w, name)
+		}
+
+	case TypeDNAME:
+		// RFC 6672 §2.1: the DNAME target MUST NOT be compressed.
+		name, _, nameErr := DecodeName(rr.RData, 0)
+		if nameErr != nil {
+			err = w.writeBytes(rr.RData)
+		} else {
+			err = writeUncompressedName(w, name)
 		}
 
 	case TypeMX:
@@ -298,7 +326,7 @@ func packRData(w *wireWriter, rr ResourceRecord) error {
 			if nameErr != nil {
 				err = w.writeBytes(rr.RData[6:])
 			} else {
-				err = EncodeName(w, name)
+				err = writeUncompressedName(w, name) // RFC 2782: SRV target not compressed
 			}
 		} else {
 			err = w.writeBytes(rr.RData)
@@ -314,7 +342,7 @@ func packRData(w *wireWriter, rr ResourceRecord) error {
 			if nameErr != nil {
 				err = w.writeBytes(rr.RData[18:])
 			} else {
-				if err = EncodeName(w, signerName); err != nil {
+				if err = writeUncompressedName(w, signerName); err != nil {
 					return err
 				}
 				// Write signature bytes after the signer name
@@ -332,7 +360,7 @@ func packRData(w *wireWriter, rr ResourceRecord) error {
 		if nameErr != nil {
 			err = w.writeBytes(rr.RData)
 		} else {
-			if err = EncodeName(w, name); err != nil {
+			if err = writeUncompressedName(w, name); err != nil {
 				return err
 			}
 			if nameEnd < len(rr.RData) {
