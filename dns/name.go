@@ -99,8 +99,19 @@ func EncodeName(w *wireWriter, name string) error {
 		return w.writeBytes([]byte{0x00})
 	}
 
-	// Check if full name was previously written
-	if offset, ok := w.compressed[name]; ok && offset < 0x3FFF {
+	// DNS names are case-insensitive (RFC 1035 §2.3.3, §3.1) and a compression
+	// pointer may target an earlier occurrence of a name regardless of its
+	// case. Key the compression dictionary on the lowercased name so that
+	// 0x20-randomized variants (RFC 5452 §9.2) of the same name still compress
+	// against each other. This matters for multi-hop CNAME chains: each hop is
+	// resolved with independent 0x20 randomization, so the same domain comes
+	// back from upstream with different casing at each owner/target. Keyed by
+	// exact case, those variants never match and the whole chain is written out
+	// in full — inflating the response past the 512-byte UDP limit and forcing
+	// needless truncation + TCP retry (and an empty answer on transports where
+	// the TC dance is mishandled). The bytes written stay in their original
+	// case; only the dictionary lookup is case-folded.
+	if offset, ok := w.compressed[strings.ToLower(name)]; ok && offset < 0x3FFF {
 		pointer := uint16(0xC000) | uint16(offset)
 		return w.writeUint16(pointer)
 	}
@@ -108,15 +119,16 @@ func EncodeName(w *wireWriter, name string) error {
 	labels := splitLabels(name)
 
 	for i := 0; i < len(labels); i++ {
-		// Check if remaining suffix was previously written
+		// Check if remaining suffix was previously written (case-insensitively).
 		suffix := joinLabels(labels[i:])
-		if offset, ok := w.compressed[suffix]; ok && offset < 0x3FFF {
+		key := strings.ToLower(suffix)
+		if offset, ok := w.compressed[key]; ok && offset < 0x3FFF {
 			pointer := uint16(0xC000) | uint16(offset)
 			return w.writeUint16(pointer)
 		}
 
 		// Record this suffix's offset for future compression
-		w.compressed[suffix] = w.offset
+		w.compressed[key] = w.offset
 
 		label := labels[i]
 		if len(label) > maxLabelLength {
