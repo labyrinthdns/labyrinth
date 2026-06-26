@@ -16,10 +16,10 @@ import (
 // catch it.
 //
 // We pin two statistical invariants on 256 consecutive IDs:
-//   1. No duplicate (probability of collision in 256 16-bit values is
-//      ~1/2^7; we sample with replacement and tolerate one collision)
-//   2. Hamming-weight spread (the set must touch a wide swath of bits;
-//      a constant generator would fail this immediately)
+//  1. No duplicate (probability of collision in 256 16-bit values is
+//     ~1/2^7; we sample with replacement and tolerate one collision)
+//  2. Hamming-weight spread (the set must touch a wide swath of bits;
+//     a constant generator would fail this immediately)
 //
 // These are weak compared to the full NIST entropy test suite but are
 // the right shape for a regression pin: an actually-broken generator

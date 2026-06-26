@@ -26,10 +26,10 @@ import (
 // computes a different signed-data hash.
 //
 // We pin two invariants for each type:
-//   1. The embedded name is byte-identical-after-tolower in the
-//      canonical output.
-//   2. The total RDATA length is unchanged (lowercasing preserves
-//      length because ASCII A-Z and a-z occupy the same byte count).
+//  1. The embedded name is byte-identical-after-tolower in the
+//     canonical output.
+//  2. The total RDATA length is unchanged (lowercasing preserves
+//     length because ASCII A-Z and a-z occupy the same byte count).
 //
 // We also pin a negative: a type NOT on the list (e.g. TypeA) gets
 // its RDATA returned unchanged.

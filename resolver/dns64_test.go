@@ -9,9 +9,9 @@ func TestSynthesizeAAAA(t *testing.T) {
 	prefix := DefaultDNS64Prefix
 
 	tests := []struct {
-		name   string
-		ipv4   string
-		want   string
+		name string
+		ipv4 string
+		want string
 	}{
 		{
 			name: "basic",

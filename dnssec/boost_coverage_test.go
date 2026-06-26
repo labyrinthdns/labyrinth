@@ -313,8 +313,8 @@ func buildNSEC3RData(hashAlg uint8, flags uint8, iterations uint16, salt, nextHa
 		for _, t := range typeBitmaps {
 			bitmap[t/8] |= 0x80 >> (t % 8)
 		}
-		rdata = append(rdata, 0)                // window block 0
-		rdata = append(rdata, byte(bitmapLen))   // bitmap length
+		rdata = append(rdata, 0)               // window block 0
+		rdata = append(rdata, byte(bitmapLen)) // bitmap length
 		rdata = append(rdata, bitmap...)
 	}
 	return rdata
@@ -634,7 +634,7 @@ func TestValidateDenialResponse_NSEC3DenialError(t *testing.T) {
 	// VerifyNSEC3DenialFull -> ComputeNSEC3Hash. The owner name still has
 	// to be a valid base32hex first label so the validator collects the
 	// record (otherwise it would be skipped before the error path runs).
-	ownerHash := make([]byte, 20) // SHA-1-sized zero hash
+	ownerHash := make([]byte, 20)                                  // SHA-1-sized zero hash
 	nsec3RData := buildNSEC3RData(2, 0, 0, nil, []byte{0x01}, nil) // alg=2 unsupported
 	nsec3RR := dns.ResourceRecord{
 		Name:  NSEC3HashToString(ownerHash) + ".",
@@ -767,7 +767,7 @@ func TestValidateDenialResponse_MalformedNSEC3(t *testing.T) {
 		},
 		Authority: []dns.ResourceRecord{
 			{Name: "example.com.", Type: dns.TypeSOA, Class: dns.ClassIN, TTL: 300, RData: []byte{0x00}},
-			{Name: "example.com.", Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 300, RData: []byte{0x01}}, // too short
+			{Name: "example.com.", Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 300, RData: []byte{0x01}},       // too short
 			{Name: "example.com.", Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 300, RData: []byte{0x01, 0x02}}, // also malformed
 		},
 	}

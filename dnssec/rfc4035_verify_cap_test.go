@@ -19,9 +19,9 @@ import (
 // all valid so they reach VerifyRRSIG, but the signature bytes are
 // zeroed so the crypto check fails). The validator should:
 //
-//   1. Walk RRSIGs and attempt verifies up to the cap
-//   2. Stop the loop at the cap (verify-cap step emitted)
-//   3. Settle on Bogus (every attempted verify failed)
+//  1. Walk RRSIGs and attempt verifies up to the cap
+//  2. Stop the loop at the cap (verify-cap step emitted)
+//  3. Settle on Bogus (every attempted verify failed)
 //
 // The pin proves the BOUNDED-CPU property: a regression that removed
 // the cap would still produce Bogus, but at the cost of 30 verifies

@@ -20,23 +20,23 @@ import (
 //
 // Real-world failure mode this defends against:
 //
-//   A zone is mid-rollover from ED25519 to ECDSA-P256. The ED25519
-//   RRSIG has just expired (clock skew, slow signer). The ECDSA RRSIG
-//   is fresh. A "first failure short-circuits" validator would emit
-//   Bogus → SERVFAIL for every query against the zone until the
-//   operator notices, even though a perfectly valid signature was
-//   right there in the same answer.
+//	A zone is mid-rollover from ED25519 to ECDSA-P256. The ED25519
+//	RRSIG has just expired (clock skew, slow signer). The ECDSA RRSIG
+//	is fresh. A "first failure short-circuits" validator would emit
+//	Bogus → SERVFAIL for every query against the zone until the
+//	operator notices, even though a perfectly valid signature was
+//	right there in the same answer.
 //
 // We pin four corners of the truth table:
 //
-//   1. Old expired, new valid           → Secure (rollover survival)
-//   2. Old valid, new expired           → Secure (reverse, order matters not)
-//   3. Both valid                       → Secure (steady-state)
-//   4. Both expired                     → Bogus  (negative control:
-//                                                 the iteration does
-//                                                 not silently downgrade
-//                                                 to Insecure when every
-//                                                 candidate fails)
+//  1. Old expired, new valid           → Secure (rollover survival)
+//  2. Old valid, new expired           → Secure (reverse, order matters not)
+//  3. Both valid                       → Secure (steady-state)
+//  4. Both expired                     → Bogus  (negative control:
+//     the iteration does
+//     not silently downgrade
+//     to Insecure when every
+//     candidate fails)
 //
 // We sign with two different algorithms (ED25519 + ECDSA-P256) so the
 // pin also catches a refactor that accidentally hard-codes a single

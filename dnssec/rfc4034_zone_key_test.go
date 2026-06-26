@@ -10,9 +10,9 @@ import (
 // makes the Zone Key flag (bit 7, value 0x0100) a structural requirement
 // for any DNSKEY used to verify RRSIGs over RRsets:
 //
-//   "If bit 7 has value 0, then the DNSKEY record holds some other type
-//    of DNS public key and MUST NOT be used to verify RRSIGs that cover
-//    RRsets."
+//	"If bit 7 has value 0, then the DNSKEY record holds some other type
+//	 of DNS public key and MUST NOT be used to verify RRSIGs that cover
+//	 RRsets."
 //
 // Real-world threat model: a host's SIG(0) public key shares the DNSKEY
 // resource-record encoding but has Zone Key bit clear. A validator that
@@ -91,12 +91,12 @@ func TestDNSKEYRecord_IsZoneKey(t *testing.T) {
 		flags uint16
 		want  bool
 	}{
-		{0x0000, false},                // bare key, no flags
-		{0x0001, false},                // SEP only — host key shape
-		{0x0080, false},                // REVOKE only
-		{0x0100, true},                 // ZONE only (canonical ZSK)
-		{0x0101, true},                 // ZONE + SEP (canonical KSK)
-		{0x0181, true},                 // ZONE + REVOKE + SEP (revoked KSK)
+		{0x0000, false}, // bare key, no flags
+		{0x0001, false}, // SEP only — host key shape
+		{0x0080, false}, // REVOKE only
+		{0x0100, true},  // ZONE only (canonical ZSK)
+		{0x0101, true},  // ZONE + SEP (canonical KSK)
+		{0x0181, true},  // ZONE + REVOKE + SEP (revoked KSK)
 	} {
 		k := &dns.DNSKEYRecord{Flags: c.flags}
 		if got := k.IsZoneKey(); got != c.want {

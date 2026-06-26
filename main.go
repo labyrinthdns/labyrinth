@@ -203,6 +203,8 @@ func run() int {
 		MaxCNAMEDepth:         cfg.Resolver.MaxCNAMEDepth,
 		UpstreamTimeout:       cfg.Resolver.UpstreamTimeout,
 		UpstreamRetries:       cfg.Resolver.UpstreamRetries,
+		MaxQueriesPerRequest:  cfg.Resolver.MaxQueriesPerRequest,
+		RequestTimeout:        cfg.Resolver.RequestTimeout,
 		QMinEnabled:           cfg.Resolver.QMinEnabled,
 		Caps0x20Enabled:       cfg.Resolver.Caps0x20Enabled,
 		PreferIPv4:            cfg.Resolver.PreferIPv4,

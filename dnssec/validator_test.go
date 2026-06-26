@@ -256,8 +256,8 @@ func TestValidateResponse_WithMalformedRRSIG(t *testing.T) {
 func TestFetchDNSKEYs_CacheMiss(t *testing.T) {
 	dnskeyRData := make([]byte, 4+32)
 	binary.BigEndian.PutUint16(dnskeyRData[0:2], 256) // flags
-	dnskeyRData[2] = 3                                 // protocol
-	dnskeyRData[3] = dns.AlgED25519                    // algorithm
+	dnskeyRData[2] = 3                                // protocol
+	dnskeyRData[3] = dns.AlgED25519                   // algorithm
 	// 32 bytes of fake public key follow (already zeroed).
 
 	mq := &mockQuerier{
@@ -306,4 +306,3 @@ func TestFetchDNSKEYs_QueryError(t *testing.T) {
 		t.Error("expected error when querier has no response")
 	}
 }
-

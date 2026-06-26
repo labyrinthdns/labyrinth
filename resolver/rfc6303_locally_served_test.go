@@ -12,15 +12,15 @@ import (
 // 172.16-31 and 192.168 ranges.
 func TestRFC6303_MatchesRFC1918Reverse(t *testing.T) {
 	cases := []string{
-		"1.0.0.10.in-addr.arpa",      // 10/8
-		"5.4.3.2.10.in-addr.arpa",    // nested under 10/8
-		"99.16.172.in-addr.arpa",     // 172.16/12 lower edge
-		"1.31.172.in-addr.arpa",      // 172.16/12 upper edge
-		"77.168.192.in-addr.arpa",    // 192.168/16
+		"1.0.0.10.in-addr.arpa",    // 10/8
+		"5.4.3.2.10.in-addr.arpa",  // nested under 10/8
+		"99.16.172.in-addr.arpa",   // 172.16/12 lower edge
+		"1.31.172.in-addr.arpa",    // 172.16/12 upper edge
+		"77.168.192.in-addr.arpa",  // 192.168/16
 		"5.4.254.169.in-addr.arpa", // 169.254.4.5 (link-local), reverse-form
-		"1.0.0.127.in-addr.arpa",     // loopback
-		"99.0.in-addr.arpa",          // 0/8
-		"99.2.0.192.in-addr.arpa",    // TEST-NET-1
+		"1.0.0.127.in-addr.arpa",   // loopback
+		"99.0.in-addr.arpa",        // 0/8
+		"99.2.0.192.in-addr.arpa",  // TEST-NET-1
 	}
 	for _, name := range cases {
 		got := rfc6303LocallyServed(name, dns.TypePTR, dns.ClassIN)
@@ -60,10 +60,10 @@ func TestRFC6303_MatchesIPv6ULAReverse(t *testing.T) {
 // leaking private-network reverse queries.
 func TestRFC6303_DoesNotMatchPublicReverse(t *testing.T) {
 	cases := []string{
-		"1.1.1.1.in-addr.arpa",      // public Cloudflare
-		"8.8.8.8.in-addr.arpa",      // public Google
+		"1.1.1.1.in-addr.arpa",         // public Cloudflare
+		"8.8.8.8.in-addr.arpa",         // public Google
 		"153.133.185.147.in-addr.arpa", // the operator's broken-but-public reverse
-		"example.com",                // not a reverse at all
+		"example.com",                  // not a reverse at all
 		"google.com",
 	}
 	for _, name := range cases {

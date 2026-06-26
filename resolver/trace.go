@@ -342,7 +342,7 @@ func (r *Resolver) traceIterative(
 				"hostname": next,
 				"zone":     currentZone,
 			})
-			res, err := r.resolveNSAddr(next, dns.TypeA)
+			res, err := r.resolveNSAddr(next, dns.TypeA, nil)
 			if err == nil && res != nil {
 				for _, rr := range res.Answers {
 					if rr.Type == dns.TypeA {
@@ -356,7 +356,7 @@ func (r *Resolver) traceIterative(
 				break
 			}
 			// Try AAAA before moving on.
-			res, err = r.resolveNSAddr(next, dns.TypeAAAA)
+			res, err = r.resolveNSAddr(next, dns.TypeAAAA, nil)
 			if err == nil && res != nil {
 				for _, rr := range res.Answers {
 					if rr.Type == dns.TypeAAAA {
@@ -535,7 +535,7 @@ func (r *Resolver) traceIterative(
 			// we have an IP to query next iteration.
 			if len(nsIPs) == 0 {
 				for _, ns := range newNS {
-					if res, err := r.resolveNSAddr(ns.Hostname, dns.TypeA); err == nil {
+					if res, err := r.resolveNSAddr(ns.Hostname, dns.TypeA, nil); err == nil {
 						for _, rr := range res.Answers {
 							if rr.Type == dns.TypeA {
 								if ip, perr := dns.ParseA(rr.RData); perr == nil {

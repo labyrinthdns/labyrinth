@@ -48,7 +48,7 @@ func ParseDNS64Prefix(cidr string) (net.IPNet, error) {
 // the IPv4 addresses into the configured prefix.
 func (r *Resolver) dns64Synthesize(name string, qclass uint16, original *ResolveResult, prefix net.IPNet) (*ResolveResult, error) {
 	// Query for A record.
-	aResult, err := r.resolveIterative(name, dns.TypeA, qclass, 0, newVisitedSet())
+	aResult, err := r.resolveIterative(name, dns.TypeA, qclass, 0, r.newRequestVisited())
 	if err != nil {
 		return original, nil // fall back to original NODATA
 	}

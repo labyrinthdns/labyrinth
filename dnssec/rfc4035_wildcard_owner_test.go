@@ -7,11 +7,11 @@ import (
 // TestCanonicalWildcardOwner_RFC4035_5_3_2 pins the wildcard
 // reconstruction rule of RFC 4035 §5.3.2:
 //
-//   When an answer is synthesised from a wildcard, the owner name on
-//   the wire is the QUERIED name (e.g. "foo.example.com"), but the
-//   owner the auth server SIGNED was "*.example.com". The validator
-//   must rebuild the signed owner before computing canonical wire
-//   form, or every wildcard-served answer comes back Bogus.
+//	When an answer is synthesised from a wildcard, the owner name on
+//	the wire is the QUERIED name (e.g. "foo.example.com"), but the
+//	owner the auth server SIGNED was "*.example.com". The validator
+//	must rebuild the signed owner before computing canonical wire
+//	form, or every wildcard-served answer comes back Bogus.
 //
 // The rebuild rule:
 //   - rrsig.Labels counts labels in the originally-signed owner,

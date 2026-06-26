@@ -29,9 +29,9 @@ func TestOutboundQuery_0x20CaseRandomizationFollowsConfig(t *testing.T) {
 	const qname = "verylongnametestforypin.example.com"
 
 	for _, c := range []struct {
-		name        string
-		caps0x20    bool
-		wantMixed   bool
+		name      string
+		caps0x20  bool
+		wantMixed bool
 	}{
 		{"Caps0x20Enabled=true => mixed case", true, true},
 		{"Caps0x20Enabled=false => lowercase preserved", false, false},

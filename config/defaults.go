@@ -22,6 +22,8 @@ func defaultConfig() *Config {
 			MaxCNAMEDepth:         10,
 			UpstreamTimeout:       2 * time.Second,
 			UpstreamRetries:       3,
+			MaxQueriesPerRequest:  200,
+			RequestTimeout:        20 * time.Second,
 			QMinEnabled:           true,
 			Caps0x20Enabled:       true,
 			PreferIPv4:            true,

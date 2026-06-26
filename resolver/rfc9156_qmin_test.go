@@ -14,17 +14,17 @@ import (
 // invariants of QNAME minimisation that materially affect security and
 // chain-of-trust correctness:
 //
-//   1. Root-zone qname ("") never rewritten — keep the original qtype.
-//      Otherwise the root DNSKEY walk turns into a root-NS query and
-//      every DNSSEC validation downstream breaks (RFC 9156 §3 implicit:
-//      the root has no parent to minimise toward).
-//   2. TypeDS never minimised — DS lives at the parent zone, qmin's
-//      rewrite-to-NS would step one delegation too far and land at the
-//      child auth which has no DS for itself (RFC 9156 §4.1).
-//   3. At root (currentZone=""), the minimised query is TLD-only with
-//      TypeNS — the §3 "one extra label per iteration" rule.
-//   4. With one label remaining inside currentZone, the resolver MUST
-//      ask the FULL qtype (the final query is not rewritten to NS).
+//  1. Root-zone qname ("") never rewritten — keep the original qtype.
+//     Otherwise the root DNSKEY walk turns into a root-NS query and
+//     every DNSSEC validation downstream breaks (RFC 9156 §3 implicit:
+//     the root has no parent to minimise toward).
+//  2. TypeDS never minimised — DS lives at the parent zone, qmin's
+//     rewrite-to-NS would step one delegation too far and land at the
+//     child auth which has no DS for itself (RFC 9156 §4.1).
+//  3. At root (currentZone=""), the minimised query is TLD-only with
+//     TypeNS — the §3 "one extra label per iteration" rule.
+//  4. With one label remaining inside currentZone, the resolver MUST
+//     ask the FULL qtype (the final query is not rewritten to NS).
 //
 // A regression on any of these breaks something silently: #1 and #2
 // break DNSSEC for every query through the resolver; #3 leaks too much
@@ -34,13 +34,13 @@ func TestMinimizeQName_RFC9156Invariants(t *testing.T) {
 	r := newQMinTestResolver(t)
 
 	cases := []struct {
-		name         string
-		fullName     string
-		qtype        uint16
-		currentZone  string
-		wantQName    string
-		wantQType    uint16
-		rationale    string
+		name        string
+		fullName    string
+		qtype       uint16
+		currentZone string
+		wantQName   string
+		wantQType   uint16
+		rationale   string
 	}{
 		{
 			name:        "root-qname stays root",
