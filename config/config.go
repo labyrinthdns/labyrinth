@@ -136,30 +136,43 @@ type ServerConfig struct {
 
 // ResolverConfig holds resolver settings.
 type ResolverConfig struct {
-	MaxDepth              int
-	MaxCNAMEDepth         int
-	UpstreamTimeout       time.Duration
-	UpstreamRetries       int
-	QMinEnabled           bool
-	Caps0x20Enabled       bool
-	PreferIPv4            bool
-	DNSSECEnabled         bool
-	DNSSECAllowSHA1       bool
+	MaxDepth        int
+	MaxCNAMEDepth   int
+	UpstreamTimeout time.Duration
+	UpstreamRetries int
+	// MaxQueriesPerRequest caps the total number of outbound queries the
+	// resolver issues while resolving a single client request — across every
+	// CNAME hop, QNAME-minimisation step, and nameserver-address sub-
+	// resolution. It is the global backstop against NXNS-style delegation
+	// amplification (the CVE-2020-8616 family) and runaway referral trees,
+	// which MaxDepth (a per-iteration *depth* limit) does not bound. 0 or
+	// negative is floored to the default by clampConfigBounds.
+	MaxQueriesPerRequest int
+	// RequestTimeout is the wall-clock deadline for resolving a single client
+	// request. It bounds pathological delegation/CNAME trees that stay under
+	// the query budget but where each hop is slow. 0 or negative is floored
+	// to the default by clampConfigBounds.
+	RequestTimeout  time.Duration
+	QMinEnabled     bool
+	Caps0x20Enabled bool
+	PreferIPv4      bool
+	DNSSECEnabled   bool
+	DNSSECAllowSHA1 bool
 	// DNSSECNegativeTrustAnchors is the operator-installed NTA list
 	// (RFC 7646). Each entry is "<zone>|<RFC3339 expiry>|<reason>" — the
 	// pipe separator keeps the format trivially parseable from a YAML
 	// list of strings without inventing a nested schema. Empty list
 	// disables NTA enforcement.
 	DNSSECNegativeTrustAnchors []string
-	HardenBelowNXDomain   bool
-	RootHintsRefresh      time.Duration
-	ECSEnabled            bool
-	ECSMaxPrefix          int // IPv4 source-prefix ceiling (RFC 7871 §11.1 recommends /24)
-	ECSMaxPrefixV6        int // IPv6 source-prefix ceiling (RFC 7871 §11.1 recommends /56)
-	DNS64Enabled          bool
-	DNS64Prefix           string
-	FallbackResolvers     []string
-	UpstreamUDPBufferSize int
+	HardenBelowNXDomain        bool
+	RootHintsRefresh           time.Duration
+	ECSEnabled                 bool
+	ECSMaxPrefix               int // IPv4 source-prefix ceiling (RFC 7871 §11.1 recommends /24)
+	ECSMaxPrefixV6             int // IPv6 source-prefix ceiling (RFC 7871 §11.1 recommends /56)
+	DNS64Enabled               bool
+	DNS64Prefix                string
+	FallbackResolvers          []string
+	UpstreamUDPBufferSize      int
 }
 
 // CacheConfig holds cache settings.
@@ -370,6 +383,8 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setInt(&cfg.Resolver.MaxCNAMEDepth, "resolver.max_cname_depth")
 	setDuration(&cfg.Resolver.UpstreamTimeout, "resolver.upstream_timeout")
 	setInt(&cfg.Resolver.UpstreamRetries, "resolver.upstream_retries")
+	setInt(&cfg.Resolver.MaxQueriesPerRequest, "resolver.max_queries_per_request")
+	setDuration(&cfg.Resolver.RequestTimeout, "resolver.request_timeout")
 	setBool(&cfg.Resolver.QMinEnabled, "resolver.qname_minimization")
 	setBool(&cfg.Resolver.Caps0x20Enabled, "resolver.caps_for_id")
 	setBool(&cfg.Resolver.PreferIPv4, "resolver.prefer_ipv4")
@@ -539,13 +554,13 @@ func applyEnv(cfg *Config) {
 // over-eager value should boot at the safe ceiling rather than
 // refuse to start, so an operator typo doesn't take down service.
 const (
-	clampMaxResolverDepth     = 1024
-	clampMaxCacheEntries      = 10_000_000
-	clampMaxRateLimitRate     = 1_000_000.0
-	clampMaxRateLimitBurst    = 1_000_000
-	clampMaxQueryLogBuffer    = 1_000_000
-	clampMaxTopClientsLimit   = 1_000_000
-	clampMaxTopDomainsLimit   = 1_000_000
+	clampMaxResolverDepth   = 1024
+	clampMaxCacheEntries    = 10_000_000
+	clampMaxRateLimitRate   = 1_000_000.0
+	clampMaxRateLimitBurst  = 1_000_000
+	clampMaxQueryLogBuffer  = 1_000_000
+	clampMaxTopClientsLimit = 1_000_000
+	clampMaxTopDomainsLimit = 1_000_000
 	// server.max_udp_workers and server.max_tcp_connections are
 	// multiplier-on-make() values: the server constructors do
 	// `make(chan struct{}, max)` to bound concurrent request goroutines.
@@ -555,8 +570,8 @@ const (
 	// well above any legitimate workload (a single resolver handling
 	// 100k concurrent in-flight queries already exceeds the open-file
 	// limits on most kernels) and well under the OOM threshold.
-	clampMaxUDPWorkers        = 100_000
-	clampMaxTCPConns          = 100_000
+	clampMaxUDPWorkers = 100_000
+	clampMaxTCPConns   = 100_000
 	// resolver.upstream_retries: caps the retry count for upstream
 	// queries. Each retry is a bounded-timeout call, so this isn't an
 	// OOM gap, but a typo'd YAML `upstream_retries: 1000000` turns a
@@ -565,7 +580,7 @@ const (
 	// — both bandwidth burnout for the operator and DDoS-amplification
 	// risk for any auth being probed. 16 is well above the 3 retries
 	// the default config picks and well above any RFC guidance.
-	clampMaxUpstreamRetries   = 16
+	clampMaxUpstreamRetries = 16
 	// server.tcp_pipeline_max: caps the per-TCP-connection iteration in
 	// the handler's `for i := 0; i < pipelineMax; i++` loop. A typo of
 	// 1e9 lets a single attacker who holds one TCP connection open
@@ -573,13 +588,23 @@ const (
 	// amplifier. 10 k is well above any legitimate TCP keep-alive flow
 	// (RFC 7828 expects ~100–1000 queries per connection) and well
 	// under the worker-starvation threshold.
-	clampMaxTCPPipelineMax    = 10_000
+	clampMaxTCPPipelineMax = 10_000
 	// resolver.max_cname_depth: bounds CNAME-chasing recursion. The DNS
 	// RFC has no hard cap, but a value above ~32 is operationally
 	// unreasonable and a 1M value lets a single carefully-crafted
 	// CNAME loop (or a zone that returns long synthetic CNAME chains)
 	// consume CPU for seconds-to-minutes per query.
-	clampMaxCNAMEDepth        = 64
+	clampMaxCNAMEDepth = 64
+	// resolver.max_queries_per_request: global per-request outbound-query
+	// backstop (NXNS / runaway-referral defense). A 1M value would let one
+	// crafted delegation tree fan out unbounded; 100k is far above any
+	// legitimate resolution (the deepest real CNAME-over-CDN chains issue
+	// low hundreds of queries) and well under the amplification threshold.
+	clampMaxQueriesPerRequest = 100_000
+	// resolver.request_timeout: wall-clock whole-request deadline. Capped so
+	// a typo can't pin a worker for hours; 120s is far above any healthy
+	// resolution yet bounds the pathological tail.
+	clampMaxRequestTimeout = 120 * time.Second
 	// resolver.upstream_timeout: per-upstream-query deadline. A duration
 	// not an integer, but the same operator-bypass surface as the
 	// integer knobs. A YAML typo of `upstream_timeout: 24h` (intended
@@ -590,7 +615,7 @@ const (
 	// just stuck on upstream). 60s is well above the legitimate upper
 	// bound (default 2s; production tuning 5-10s for slow auths) and
 	// well under worker-starvation threshold.
-	clampMaxUpstreamTimeout   = 60 * time.Second
+	clampMaxUpstreamTimeout = 60 * time.Second
 	// server.tcp_idle_timeout: how long an idle TCP DNS connection
 	// stays open before the server closes it. Combined with the TCP
 	// conn cap (clampMaxTCPConns=100k from v0.8.1), a 24h idle
@@ -600,12 +625,12 @@ const (
 	// and 5 minutes for keepalive flows; 1 h is the paranoid upper
 	// bound for long-poll observability tools. Anything past 1 h
 	// is a slot-exhaustion vector.
-	clampMaxTCPIdleTimeout    = time.Hour
+	clampMaxTCPIdleTimeout = time.Hour
 	// server.tcp_timeout: per-request read/write deadline on a TCP
 	// connection. Bounded for the same reason as upstream_timeout —
 	// a 24 h value lets a single slow-loris connection pin a worker.
 	// 60s matches the upstream timeout cap.
-	clampMaxTCPTimeout        = 60 * time.Second
+	clampMaxTCPTimeout = 60 * time.Second
 )
 
 // clampConfigBounds enforces sane upper bounds on integer fields.
@@ -641,6 +666,12 @@ func clampConfigBounds(cfg *Config) {
 	}
 	if cfg.Resolver.UpstreamRetries > clampMaxUpstreamRetries {
 		cfg.Resolver.UpstreamRetries = clampMaxUpstreamRetries
+	}
+	if cfg.Resolver.MaxQueriesPerRequest > clampMaxQueriesPerRequest {
+		cfg.Resolver.MaxQueriesPerRequest = clampMaxQueriesPerRequest
+	}
+	if cfg.Resolver.RequestTimeout > clampMaxRequestTimeout {
+		cfg.Resolver.RequestTimeout = clampMaxRequestTimeout
 	}
 	if cfg.Resolver.MaxCNAMEDepth > clampMaxCNAMEDepth {
 		cfg.Resolver.MaxCNAMEDepth = clampMaxCNAMEDepth
@@ -710,6 +741,27 @@ func clampConfigBounds(cfg *Config) {
 	// deep on production CDNs).
 	if cfg.Resolver.MaxCNAMEDepth <= 0 {
 		cfg.Resolver.MaxCNAMEDepth = defaultMaxCNAMEDepth
+	}
+
+	// Per-request query-budget floor. The resolver charges every outbound
+	// query against `MaxQueriesPerRequest`; at 0 or negative the very first
+	// query of every request exceeds the budget and the resolver SERVFAILs
+	// every cache miss while still answering from cache — the same "looks
+	// half-alive" black-hole shape as the MaxCNAMEDepth floor. A YAML typo
+	// (`max_queries_per_request: 0` read as "no limit") or a hot-reload
+	// planting a negative value triggers it. Fall back to the default.
+	if cfg.Resolver.MaxQueriesPerRequest <= 0 {
+		cfg.Resolver.MaxQueriesPerRequest = defaultMaxQueriesPerRequest
+	}
+
+	// Per-request deadline floor. `RequestTimeout` becomes a
+	// `time.Now().Add(d)` deadline at the top of resolution; at 0 the
+	// deadline is "now" and at <0 it is in the past, so every request
+	// times out before its first upstream query — total outage with cache
+	// still serving (same inverted-zero footgun as upstream_timeout). Floor
+	// to the default rather than disable, matching the clamp family.
+	if cfg.Resolver.RequestTimeout <= 0 {
+		cfg.Resolver.RequestTimeout = defaultRequestTimeout
 	}
 
 	// Upstream timeout floor. `r.config.UpstreamTimeout` feeds two call
@@ -790,14 +842,16 @@ func clampConfigBounds(cfg *Config) {
 // entirely gets the same behaviour as one who set them to a sentinel
 // "fall back" value like -1 or 0.
 const (
-	defaultMaxUDPWorkers   = 10000
-	defaultMaxTCPConns     = 256
-	defaultTCPPipelineMax  = 100
-	defaultRateLimitBurst  = 100
-	defaultMaxCNAMEDepth   = 10
-	defaultUpstreamTimeout = 2 * time.Second
-	defaultTCPTimeout      = 10 * time.Second
+	defaultMaxUDPWorkers         = 10000
+	defaultMaxTCPConns           = 256
+	defaultTCPPipelineMax        = 100
+	defaultRateLimitBurst        = 100
+	defaultMaxCNAMEDepth         = 10
+	defaultUpstreamTimeout       = 2 * time.Second
+	defaultTCPTimeout            = 10 * time.Second
 	defaultRRLResponsesPerSecond = 5.0
+	defaultMaxQueriesPerRequest  = 200
+	defaultRequestTimeout        = 20 * time.Second
 )
 
 func validate(cfg *Config) error {

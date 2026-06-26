@@ -17,9 +17,9 @@ import (
 // of the priming query. RFC 8109 §3 says the priming MUST be a query
 // for the root zone's NS RRset:
 //
-//   QNAME  = "."  (root, encoded as a single zero byte on the wire)
-//   QTYPE  = NS   (type 2)
-//   QCLASS = IN   (class 1)
+//	QNAME  = "."  (root, encoded as a single zero byte on the wire)
+//	QTYPE  = NS   (type 2)
+//	QCLASS = IN   (class 1)
 //
 // A regression that asked for "." A (treating root like any other
 // name) would still get a NOERROR-empty response from a real root

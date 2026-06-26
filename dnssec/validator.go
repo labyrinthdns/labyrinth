@@ -35,6 +35,51 @@ const maxRRSIGVerifyAttempts = 16
 // safety-net value without having to grep the source.
 func MaxRRSIGVerifyAttempts() int { return maxRRSIGVerifyAttempts }
 
+// maxCryptoVerifyPerResponse bounds the TOTAL expensive signature
+// verifications across the whole validation of one response — the answer
+// RRset, the trust chain, and every NSEC/NSEC3 denial proof combined. The
+// per-RRset maxRRSIGVerifyAttempts cap (16) bounds a single RRset, but KeyTrap
+// (CVE-2023-50387) showed that an attacker can spread the cost across multiple
+// RRsets (and, critically, the uncapped authority-section RRSIG loops of a
+// denial/insecure-delegation proof), so the per-RRset cap alone leaks. This
+// response-wide counter is the global backstop every patched resolver added
+// (PowerDNS max-signature-validations-per-query=30, Unbound 16 global
+// suspensions). 32 covers the most elaborate legitimate validation — answer +
+// DNSKEY chain + denial across a couple of zones, each mid algorithm-rollover —
+// while bounding an attacker's crypto amplification to a small constant.
+const maxCryptoVerifyPerResponse = 32
+
+// cryptoBudget is a per-response signature-verification counter, created once
+// per top-level ValidateResponse* call and threaded (variadically, so existing
+// direct callers stay unlimited) to every VerifyRRSIG site. One validation runs
+// in a single goroutine sequentially, so no atomics are needed.
+type cryptoBudget struct {
+	used int
+	max  int
+}
+
+// allow charges one verification and reports whether it is within budget. A nil
+// budget (or max <= 0) is unlimited.
+func (c *cryptoBudget) allow() bool {
+	if c == nil || c.max <= 0 {
+		return true
+	}
+	if c.used >= c.max {
+		return false
+	}
+	c.used++
+	return true
+}
+
+// budgetFrom unpacks the variadic per-response crypto budget, returning nil
+// (unlimited) when a direct caller (e.g. a test) passed none.
+func budgetFrom(budget []*cryptoBudget) *cryptoBudget {
+	if len(budget) > 0 {
+		return budget[0]
+	}
+	return nil
+}
+
 // maxTrustChainDepth caps the number of zone hops the trust-chain
 // walker will traverse before giving up. The chain length grows with
 // the label count of the signer zone, which a hostile authoritative
@@ -184,9 +229,9 @@ type Validator struct {
 	// validator cache hit by N parallel queries would launch N identical
 	// upstream queries to the same zone; under load that turns a brief
 	// cache miss into a thundering herd against the auth server.
-	inflightMu      sync.Mutex
-	inflightDNSKEY  map[string]*inflightFetch
-	inflightDS      map[string]*inflightFetch
+	inflightMu     sync.Mutex
+	inflightDNSKEY map[string]*inflightFetch
+	inflightDS     map[string]*inflightFetch
 
 	// ntaStore is the per-validator Negative Trust Anchor registry
 	// (RFC 7646). When non-nil, ValidateResponse consults it before
@@ -389,6 +434,10 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		return Insecure, steps, ReasonNone
 	}
 
+	// Per-response crypto budget: the global KeyTrap backstop shared across the
+	// answer RRset, the trust chain, and every denial proof in this validation.
+	budget := &cryptoBudget{max: maxCryptoVerifyPerResponse}
+
 	// RFC 7646 §1: a Negative Trust Anchor for the queried subtree
 	// suppresses validation. The operator installed it precisely
 	// because the zone's chain is broken; we honour that decision
@@ -410,7 +459,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	// Handle NXDOMAIN/NODATA: validate NSEC3 proofs in authority section
 	rcode := response.Header.RCODE()
 	if rcode == dns.RCodeNXDomain || (rcode == dns.RCodeNoError && len(response.Answers) == 0) {
-		verdict := v.validateDenialResponse(response, qname, qtype)
+		verdict := v.validateDenialResponse(response, qname, qtype, budget)
 		push(ValidationStep{Stage: "denial", Outcome: verdictToOutcome(verdict), Detail: "NSEC/NSEC3 denial proof"})
 		reason := ReasonNone
 		if verdict == Bogus {
@@ -630,11 +679,11 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		// maxRRSIGVerifyAttempts cycles on this RRset we stop walking
 		// further RRSIGs even if more are present. A hostile auth that
 		// attached 1000 garbage RRSIGs cannot make us spend 1000 verifies.
-		if verifyAttempts >= maxRRSIGVerifyAttempts {
+		if verifyAttempts >= maxRRSIGVerifyAttempts || !budget.allow() {
 			step := baseStep
 			step.Stage = "verify-cap"
 			step.Outcome = "skipped"
-			step.Detail = fmt.Sprintf("RRSIG verify cap (%d) reached; refusing further crypto work", maxRRSIGVerifyAttempts)
+			step.Detail = fmt.Sprintf("RRSIG verify cap reached (per-RRset %d / per-response %d); refusing further crypto work", maxRRSIGVerifyAttempts, maxCryptoVerifyPerResponse)
 			push(step)
 			break
 		}
@@ -664,7 +713,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		verifyStep.Detail = "RRSIG cryptographic verification succeeded"
 		push(verifyStep)
 
-		result := v.validateTrustChain(signerZone, dnskeys)
+		result := v.validateTrustChain(signerZone, dnskeys, budget)
 		if result == Secure {
 			v.logger.Debug("DNSSEC validation successful",
 				"zone", signerZone, "key_tag", rrsig.KeyTag)
@@ -724,7 +773,8 @@ func verdictToOutcome(v ValidationResult) string {
 
 // validateTrustChain validates the DNSKEY trust chain from the given zone
 // back to the root trust anchors.
-func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord) ValidationResult {
+func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord, budget ...*cryptoBudget) ValidationResult {
+	cb := budgetFrom(budget)
 	// Build the chain of zones from root to the signer zone.
 	chain := buildZoneChain(zone)
 
@@ -778,7 +828,7 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 				// it can downgrade the chain to Insecure. Without this
 				// check, a spoofed empty DS reply downgrades any secure
 				// child to Insecure for the cache lifetime.
-				ok := v.verifyDSDenial(chainZone, parentZone, parentKeys, denialAuth)
+				ok := v.verifyDSDenial(chainZone, parentZone, parentKeys, denialAuth, cb)
 				if !ok {
 					v.logger.Debug("empty DS response without authenticated denial — treating as Bogus",
 						"zone", chainZone, "parent", parentZone)
@@ -838,7 +888,8 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 // Returns true only when at least one such proof is present AND signed by
 // parentKeys. A false return must be treated as Bogus by the caller (signed
 // chain with a forged/missing parent denial).
-func (v *Validator) verifyDSDenial(childZone, parentZone string, parentKeys []dns.ResourceRecord, authority []dns.ResourceRecord) bool {
+func (v *Validator) verifyDSDenial(childZone, parentZone string, parentKeys []dns.ResourceRecord, authority []dns.ResourceRecord, budget ...*cryptoBudget) bool {
+	cb := budgetFrom(budget)
 	// Defense in depth: if we have no parent keys (e.g. trust-anchor
 	// fast-path issue), refuse the denial — an unverified Insecure
 	// downgrade is what we are trying to prevent.
@@ -932,6 +983,11 @@ func (v *Validator) verifyDSDenial(childZone, parentZone string, parentKeys []dn
 		dnskey, err := findMatchingDNSKEY(parentKeys, rrsig.KeyTag, rrsig.Algorithm)
 		if err != nil {
 			continue
+		}
+		if !cb.allow() {
+			// Per-response crypto budget exhausted — stop verifying the
+			// attacker-supplied authority RRSIGs (KeyTrap backstop).
+			break
 		}
 		if err := VerifyRRSIG(rrset, rrsig, dnskey); err == nil {
 			authenticated[ownerTypeKey{
@@ -1117,10 +1173,10 @@ func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords [
 // in the in-memory key cache. A short TTL is required because an empty
 // result can mean either of two very different things:
 //
-//   1. The zone is genuinely unsigned (correct verdict, long cache is fine).
-//   2. The upstream answer was SERVFAIL/REFUSED/transient timeout (a wrong
-//      verdict, and caching it for an hour pins the zone into Indeterminate
-//      across the validator until the cache entry expires).
+//  1. The zone is genuinely unsigned (correct verdict, long cache is fine).
+//  2. The upstream answer was SERVFAIL/REFUSED/transient timeout (a wrong
+//     verdict, and caching it for an hour pins the zone into Indeterminate
+//     across the validator until the cache entry expires).
 //
 // Because the two cases are indistinguishable from the response alone, we
 // pessimistically use a short TTL for empty results. The cost of re-querying
@@ -1428,7 +1484,8 @@ func isInBailiwick(qname, signer string) bool {
 // proof is *not* a benign condition once RRSIGs are present in the authority
 // section: a signed-but-unverified denial response is treated as Bogus, not
 // Insecure, because the zone has clearly opted into DNSSEC.
-func (v *Validator) validateDenialResponse(response *dns.Message, qname string, qtype uint16) ValidationResult {
+func (v *Validator) validateDenialResponse(response *dns.Message, qname string, qtype uint16, budget ...*cryptoBudget) ValidationResult {
+	cb := budgetFrom(budget)
 	// Collect RRSIG and NSEC3 records from authority section. We retain the
 	// raw ResourceRecord for NSEC3 entries so that the NSEC3 owner-name hash
 	// (which lives in the RR's owner name, not the parsed RDATA) is
@@ -1482,6 +1539,20 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 				OwnerName:  rr.Name,
 			})
 		}
+	}
+
+	// NSEC3 records-per-proof cap. A legitimate denial proof needs at most a
+	// handful of NSEC3 records (closest-encloser + next-closer + wildcard, plus
+	// a few more for opt-out spans). An attacker stuffing the authority section
+	// with hundreds forces wasted parse + closest-encloser hashing work; refuse
+	// the response outright (CVE-2023-50868 family — Knot refuses > 8, PowerDNS
+	// caps records-per-record at 10; 16 leaves comfortable opt-out headroom).
+	// The per-response crypto budget already bounds the verify loop; this is the
+	// cheaper early reject before any hashing.
+	if len(nsec3WithOwners) > MaxNSEC3RecordsPerProof {
+		v.logger.Debug("NSEC3 denial proof carries too many records; refusing",
+			"count", len(nsec3WithOwners), "cap", MaxNSEC3RecordsPerProof)
+		return Indeterminate
 	}
 
 	// No RRSIG in authority means unsigned (insecure)
@@ -1584,6 +1655,13 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 			continue
 		}
 
+		if !cb.allow() {
+			// Per-response crypto budget exhausted — stop verifying the
+			// attacker-supplied authority RRSIGs (KeyTrap backstop). Leaving
+			// the proof unverified collapses to Indeterminate below.
+			sawIndeterminate = true
+			break
+		}
 		if err := VerifyRRSIG(rrset, rrsig, matchingKey); err != nil {
 			v.logger.Debug("authority RRSIG verification failed; trying next",
 				"key_tag", rrsig.KeyTag, "zone", signerZone, "error", err)

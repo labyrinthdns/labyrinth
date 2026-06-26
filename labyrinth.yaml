@@ -14,6 +14,12 @@ resolver:
   max_cname_depth: 10
   upstream_timeout: 2s
   upstream_retries: 3
+  # Global per-request backstops (NXNS / runaway-referral defense). max_queries_per_request
+  # caps total outbound queries across every CNAME hop, QNAME-min step, and NS-address
+  # sub-resolution; request_timeout is the wall-clock deadline for one client request.
+  # Both are floored to the default if set <= 0.
+  max_queries_per_request: 200
+  request_timeout: 20s
   qname_minimization: true
   prefer_ipv4: true
   dnssec_enabled: true

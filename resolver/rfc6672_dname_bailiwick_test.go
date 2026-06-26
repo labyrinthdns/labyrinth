@@ -11,18 +11,18 @@ import (
 // queried name (not the qname itself, and not an unrelated owner).
 // Two attacker shapes that the bailiwick check must reject:
 //
-//   1. **Sibling DNAME** — owner shares no suffix relationship with
-//      qname (e.g. owner=`attacker.org` while qname=`victim.com`).
-//      Accepting this would let an upstream that holds a delegation
-//      for `attacker.org` inject a redirect for any unrelated name.
+//  1. **Sibling DNAME** — owner shares no suffix relationship with
+//     qname (e.g. owner=`attacker.org` while qname=`victim.com`).
+//     Accepting this would let an upstream that holds a delegation
+//     for `attacker.org` inject a redirect for any unrelated name.
 //
-//   2. **Owner equal to qname** — qname IS the DNAME owner.
-//      RFC 6672 §3.2 forbids this: a DNAME does not synthesise an
-//      answer for its own owner name. The substitution math
-//      (`qname[:len(qname)-len(owner)-1]`) would produce a
-//      string starting with "." or an out-of-bounds slice — a
-//      pre-existing safety check (`HasSuffix(qname, "."+owner)`)
-//      requires the qname to be STRICTLY DEEPER than the owner.
+//  2. **Owner equal to qname** — qname IS the DNAME owner.
+//     RFC 6672 §3.2 forbids this: a DNAME does not synthesise an
+//     answer for its own owner name. The substitution math
+//     (`qname[:len(qname)-len(owner)-1]`) would produce a
+//     string starting with "." or an out-of-bounds slice — a
+//     pre-existing safety check (`HasSuffix(qname, "."+owner)`)
+//     requires the qname to be STRICTLY DEEPER than the owner.
 //
 // We also pin the affirmative cases (immediate child, deep descendant,
 // case-insensitive owner) to make sure the bailiwick check isn't so
@@ -39,11 +39,11 @@ func TestExtractDNAMETarget_OwnerMustBeStrictParent(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		dnameAt  string
-		qname    string
-		want     string
-		why      string
+		name    string
+		dnameAt string
+		qname   string
+		want    string
+		why     string
 	}{
 		{
 			name:    "immediate child — substitution applies",

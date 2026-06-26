@@ -25,6 +25,12 @@ type ResolverConfig struct {
 	MaxCNAMEDepth   int
 	UpstreamTimeout time.Duration
 	UpstreamRetries int
+	// MaxQueriesPerRequest caps total outbound queries per client request
+	// (NXNS / runaway-referral backstop). <= 0 means unlimited.
+	MaxQueriesPerRequest int
+	// RequestTimeout is the wall-clock deadline for one client request.
+	// <= 0 means no deadline.
+	RequestTimeout  time.Duration
 	QMinEnabled     bool
 	Caps0x20Enabled bool // DNS 0x20 case randomization (RFC 5452)
 	PreferIPv4      bool
@@ -93,13 +99,13 @@ type ResolveResult struct {
 
 // Resolver implements recursive DNS resolution.
 type Resolver struct {
-	cache           *cache.Cache
-	rootServers     []NameServer
-	config          ResolverConfig
-	metrics         *metrics.Metrics
-	logger          *slog.Logger
-	ready           atomic.Bool
-	inflight        *inflight
+	cache       *cache.Cache
+	rootServers []NameServer
+	config      ResolverConfig
+	metrics     *metrics.Metrics
+	logger      *slog.Logger
+	ready       atomic.Bool
+	inflight    *inflight
 	// dnssecValidator is set lazily by EnableDNSSEC from a startup
 	// goroutine that runs in parallel with the DNS server's request
 	// handlers. A plain *dnssec.Validator publish would be a data race
@@ -373,7 +379,7 @@ func (r *Resolver) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.M
 	}
 
 	result, err := r.resolveIterativeFromInner(
-		normalized, qtype, qclass, 0, newVisitedSet(),
+		normalized, qtype, qclass, 0, r.newRequestVisited(),
 		toNameServerList(r.rootServers), "",
 		true, // skipValidation: validator is calling us, prevent recursion
 		nil,  // DNSSEC chain fetches never carry client subnet
@@ -517,11 +523,11 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 		}
 	} else {
 		if clientECS != nil {
-			result, err = r.resolveIterativeECS(name, qtype, qclass, 0, newVisitedSet(), clientECS)
+			result, err = r.resolveIterativeECS(name, qtype, qclass, 0, r.newRequestVisited(), clientECS)
 		} else {
 			key := name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass))
 			result, err = r.inflight.do(key, func() (*ResolveResult, error) {
-				return r.resolveIterative(name, qtype, qclass, 0, newVisitedSet())
+				return r.resolveIterative(name, qtype, qclass, 0, r.newRequestVisited())
 			})
 		}
 	}
@@ -655,6 +661,18 @@ func (r *Resolver) resolveIterativeFromInner(
 			queryName, queryType = r.minimizeQName(name, qtype, currentZone)
 		}
 
+		// Charge this outbound query against the per-request budget — the
+		// global NXNS / runaway-referral backstop plus the wall-clock
+		// deadline. Shared across CNAME hops and NS-address sub-resolutions
+		// via the visitedSet's budget pointer.
+		if err := visited.budget.charge(); err != nil {
+			return &ResolveResult{
+				RCODE:         dns.RCodeServFail,
+				FailureReason: "query-budget-exceeded",
+				Error:         err,
+			}, nil
+		}
+
 		// Send upstream query
 		queryStart := time.Now()
 		response, err := r.queryUpstreamECS(nsIP, queryName, queryType, qclass, clientECS)
@@ -690,6 +708,13 @@ func (r *Resolver) resolveIterativeFromInner(
 		// (root NS records instead of root DNSKEY, breaking DNSSEC).
 		minimized := queryName != name || queryType != qtype
 		if r.config.QMinEnabled && minimized && rtype != responseReferral {
+			if err := visited.budget.charge(); err != nil {
+				return &ResolveResult{
+					RCODE:         dns.RCodeServFail,
+					FailureReason: "query-budget-exceeded",
+					Error:         err,
+				}, nil
+			}
 			response, err = r.queryUpstreamECS(nsIP, name, qtype, qclass, clientECS)
 			if err != nil {
 				r.logger.Debug("qmin fallback upstream error", "ns", nsIP, "error", err)
@@ -1052,7 +1077,7 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 				continue // second pass: skip out-of-bailiwick (already tried)
 			}
 
-			result, err := r.resolveNSAddr(ns.hostname, dns.TypeA)
+			result, err := r.resolveNSAddr(ns.hostname, dns.TypeA, visited.budget)
 			if err == nil && !nsHasCNAMERedirect(ns.hostname, result.Answers) {
 				for _, rr := range result.Answers {
 					if rr.Type == dns.TypeA {
@@ -1064,7 +1089,7 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 				}
 			}
 			// Fallback to AAAA (always try, even with PreferIPv4 — it's a last resort)
-			result, err = r.resolveNSAddr(ns.hostname, dns.TypeAAAA)
+			result, err = r.resolveNSAddr(ns.hostname, dns.TypeAAAA, visited.budget)
 			if err == nil && !nsHasCNAMERedirect(ns.hostname, result.Answers) {
 				for _, rr := range result.Answers {
 					if rr.Type == dns.TypeAAAA {
@@ -1108,16 +1133,80 @@ func nsHasCNAMERedirect(nsHostname string, answers []dns.ResourceRecord) bool {
 }
 
 // visitedSet tracks visited nameservers and CNAME targets for loop detection.
+// reqBudget is the per-client-request work budget, shared across the entire
+// resolution tree — every CNAME hop, QNAME-minimisation step, and nameserver-
+// address sub-resolution. It bounds the total outbound queries (the global
+// NXNS / runaway-referral backstop that MaxDepth, a per-iteration *depth*
+// limit, does not provide) and the wall-clock time. Resolution within one
+// request is sequential (NS targets and CNAME hops are chased one at a time),
+// and the budget pointer is never shared across goroutines — only across the
+// nested calls of a single request — so a plain counter needs no atomics.
+type reqBudget struct {
+	queries    int
+	maxQueries int       // <= 0 means unlimited (tests / internal helpers)
+	deadline   time.Time // zero means no deadline
+}
+
+var (
+	errQueryBudgetExceeded = errors.New("resolver: per-request query budget exceeded")
+	errRequestDeadline     = errors.New("resolver: per-request deadline exceeded")
+)
+
+// charge records one outbound query against the budget and reports whether the
+// request has exhausted its query allowance or wall-clock deadline. A nil
+// budget (or one with maxQueries <= 0 and no deadline) is unlimited.
+func (b *reqBudget) charge() error {
+	if b == nil {
+		return nil
+	}
+	if !b.deadline.IsZero() && time.Now().After(b.deadline) {
+		return errRequestDeadline
+	}
+	if b.maxQueries > 0 {
+		b.queries++
+		if b.queries > b.maxQueries {
+			return errQueryBudgetExceeded
+		}
+	}
+	return nil
+}
+
 type visitedSet struct {
-	ns    map[string]struct{}
-	cname map[string]struct{}
+	ns     map[string]struct{}
+	cname  map[string]struct{}
+	budget *reqBudget
 }
 
 func newVisitedSet() *visitedSet {
 	return &visitedSet{
-		ns:    make(map[string]struct{}, 32),
-		cname: make(map[string]struct{}, 10),
+		ns:     make(map[string]struct{}, 32),
+		cname:  make(map[string]struct{}, 10),
+		budget: &reqBudget{}, // unlimited; top-level entries attach a configured budget
 	}
+}
+
+// newVisitedSetWithBudget returns a fresh loop-detection set that shares an
+// existing request budget. Used to start a nameserver-address sub-resolution:
+// its loop-detection state must be independent (a different query subtree) but
+// its query/time budget must keep counting against the same client request.
+func newVisitedSetWithBudget(b *reqBudget) *visitedSet {
+	v := newVisitedSet()
+	if b != nil {
+		v.budget = b
+	}
+	return v
+}
+
+// newRequestVisited builds the per-request loop-detection + work-budget object
+// for a fresh client request, seeding the budget from config (the global
+// query-count backstop and the wall-clock deadline).
+func (r *Resolver) newRequestVisited() *visitedSet {
+	v := newVisitedSet()
+	v.budget.maxQueries = r.config.MaxQueriesPerRequest
+	if r.config.RequestTimeout > 0 {
+		v.budget.deadline = time.Now().Add(r.config.RequestTimeout)
+	}
+	return v
 }
 
 func (v *visitedSet) Has(key string) bool {
@@ -1194,9 +1283,12 @@ func parseIPv4Bytes(ipStr string) []byte {
 // coalescer. This prevents deadlock when the NS hostname resolution would
 // hit the same inflight key as the caller (e.g., ns1.example.tr while
 // already resolving something under example.tr).
-func (r *Resolver) resolveNSAddr(name string, qtype uint16) (*ResolveResult, error) {
+func (r *Resolver) resolveNSAddr(name string, qtype uint16, budget *reqBudget) (*ResolveResult, error) {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
-	return r.resolveIterative(name, qtype, dns.ClassIN, 0, newVisitedSet())
+	// Fresh loop-detection state (a distinct query subtree) but the SAME
+	// request budget, so NXNS-style NS-address fan-out counts against the
+	// originating client request's global query/time allowance.
+	return r.resolveIterative(name, qtype, dns.ClassIN, 0, newVisitedSetWithBudget(budget))
 }
 
 func (r *Resolver) dnsPort() string {

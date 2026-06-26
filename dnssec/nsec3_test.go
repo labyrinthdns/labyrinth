@@ -156,11 +156,11 @@ func TestCompareHashes(t *testing.T) {
 
 func TestCoversHashFull(t *testing.T) {
 	tests := []struct {
-		name      string
-		owner     []byte
-		next      []byte
-		hash      []byte
-		want      bool
+		name  string
+		owner []byte
+		next  []byte
+		hash  []byte
+		want  bool
 	}{
 		{
 			name:  "hash in normal range",

@@ -25,9 +25,9 @@ func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16, fbRea
 
 	event := metrics.FallbackEvent{
 		Timestamp:            time.Now(),
-		QueryName:           name,
-		QType:               qtype,
-		QClass:              qclass,
+		QueryName:            name,
+		QType:                qtype,
+		QClass:               qclass,
 		PrimaryFailureReason: fbReason,
 		ResolverAddr:         addr,
 	}

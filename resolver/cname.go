@@ -40,7 +40,7 @@ func extractDNAMETarget(msg *dns.Message, qname string) string {
 		target = strings.ToLower(target)
 		// Substitute: strip owner suffix from qname, append target
 		prefix := qname[:len(qname)-len(owner)-1] // "a.b" from "a.b.example.com"
-		return prefix + "." + target                // "a.b.target.com"
+		return prefix + "." + target              // "a.b.target.com"
 	}
 	return ""
 }

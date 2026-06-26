@@ -74,7 +74,7 @@ func (r *Resolver) resolveStubECS(name string, qtype uint16, qclass uint16, fz *
 			ipv4:     addr,
 		}
 	}
-	return r.resolveIterativeFromInner(name, qtype, qclass, 0, newVisitedSet(), stubNS, fz.Name, false, clientECS)
+	return r.resolveIterativeFromInner(name, qtype, qclass, 0, r.newRequestVisited(), stubNS, fz.Name, false, clientECS)
 }
 
 // queryForward sends a recursive (RD=1) query to the forward zone upstreams.

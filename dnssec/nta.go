@@ -39,17 +39,17 @@ var ErrNTAStoreFull = errors.New("NTA store is full")
 //
 // Safety design:
 //
-//  - NTAs are bounded by expiry. RFC 7646 §6 stresses that NTAs MUST
-//    NOT be open-ended; an entry past its expiry is treated as
-//    removed. The store enforces this on every Match call.
-//  - The expiry is operator-set (no implicit duration), so the
-//    operational team takes the explicit decision of how long to
-//    tolerate the broken zone.
-//  - Match uses strict suffix semantics: an NTA at `example.test`
-//    covers `example.test` itself and any descendant
-//    (`foo.example.test`, `bar.foo.example.test`), but NOT sibling
-//    zones like `other.test`. This matches the bailiwick rule used
-//    everywhere else in the validator.
+//   - NTAs are bounded by expiry. RFC 7646 §6 stresses that NTAs MUST
+//     NOT be open-ended; an entry past its expiry is treated as
+//     removed. The store enforces this on every Match call.
+//   - The expiry is operator-set (no implicit duration), so the
+//     operational team takes the explicit decision of how long to
+//     tolerate the broken zone.
+//   - Match uses strict suffix semantics: an NTA at `example.test`
+//     covers `example.test` itself and any descendant
+//     (`foo.example.test`, `bar.foo.example.test`), but NOT sibling
+//     zones like `other.test`. This matches the bailiwick rule used
+//     everywhere else in the validator.
 //
 // Match is read-side hot path (every DNSSEC-validated query passes
 // through it), so the store uses RWMutex with the read path under

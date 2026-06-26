@@ -512,7 +512,7 @@ func TestResolveNSAddrBypassesInflight(t *testing.T) {
 	r := testResolver(t, mock)
 
 	// Call resolveNSAddr directly — should succeed without going through inflight
-	result, err := r.resolveNSAddr("ns1.example.tr", dns.TypeA)
+	result, err := r.resolveNSAddr("ns1.example.tr", dns.TypeA, nil)
 	if err != nil {
 		t.Fatalf("resolveNSAddr error: %v", err)
 	}

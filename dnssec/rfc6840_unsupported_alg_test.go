@@ -1,8 +1,8 @@
 package dnssec
 
 import (
-	"log/slog"
 	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/labyrinthdns/labyrinth/dns"

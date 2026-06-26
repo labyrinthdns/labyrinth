@@ -16,16 +16,16 @@ import (
 func TestApplyYAMLServerFields(t *testing.T) {
 	cfg := defaultConfig()
 	values := map[string]string{
-		"server.max_udp_size":       "1232",
-		"server.tcp_timeout":        "5s",
+		"server.max_udp_size":        "1232",
+		"server.tcp_timeout":         "5s",
 		"server.max_tcp_connections": "512",
-		"server.graceful_shutdown":  "10s",
-		"server.tcp_pipeline_max":   "200",
-		"server.tcp_idle_timeout":   "30s",
-		"server.dot_enabled":        "true",
-		"server.dot_listen_addr":    ":8853",
-		"server.tls_cert_file":      "/etc/tls/cert.pem",
-		"server.tls_key_file":       "/etc/tls/key.pem",
+		"server.graceful_shutdown":   "10s",
+		"server.tcp_pipeline_max":    "200",
+		"server.tcp_idle_timeout":    "30s",
+		"server.dot_enabled":         "true",
+		"server.dot_listen_addr":     ":8853",
+		"server.tls_cert_file":       "/etc/tls/cert.pem",
+		"server.tls_key_file":        "/etc/tls/key.pem",
 	}
 	applyYAML(cfg, values)
 
@@ -175,11 +175,11 @@ func TestApplyYAMLCacheNegMaxTTL(t *testing.T) {
 func TestApplyYAMLSecurityFields(t *testing.T) {
 	cfg := defaultConfig()
 	values := map[string]string{
-		"security.private_address_filter": "true",
-		"security.dns_cookies":            "true",
-		"security.rrl.enabled":            "true",
+		"security.private_address_filter":   "true",
+		"security.dns_cookies":              "true",
+		"security.rrl.enabled":              "true",
 		"security.rrl.responses_per_second": "10",
-		"security.rrl.slip_ratio":         "3",
+		"security.rrl.slip_ratio":           "3",
 	}
 	applyYAML(cfg, values)
 
@@ -203,16 +203,16 @@ func TestApplyYAMLSecurityFields(t *testing.T) {
 func TestApplyYAMLWebExtraFields(t *testing.T) {
 	cfg := defaultConfig()
 	values := map[string]string{
-		"web.top_clients_limit":     "50",
-		"web.top_domains_limit":     "100",
-		"web.alert_error_threshold_pct": "3.5",
+		"web.top_clients_limit":          "50",
+		"web.top_domains_limit":          "100",
+		"web.alert_error_threshold_pct":  "3.5",
 		"web.alert_latency_threshold_ms": "180",
-		"web.auto_update":           "false",
-		"web.update_check_interval": "12h",
-		"web.doh_enabled":           "true",
-		"web.tls_enabled":           "true",
-		"web.tls_cert_file":         "/path/cert.pem",
-		"web.tls_key_file":          "/path/key.pem",
+		"web.auto_update":                "false",
+		"web.update_check_interval":      "12h",
+		"web.doh_enabled":                "true",
+		"web.tls_enabled":                "true",
+		"web.tls_cert_file":              "/path/cert.pem",
+		"web.tls_key_file":               "/path/key.pem",
 	}
 	applyYAML(cfg, values)
 
@@ -324,8 +324,8 @@ func TestParseACLZonesNoDot(t *testing.T) {
 
 func TestParseACLZonesNonPrefixKeysIgnored(t *testing.T) {
 	values := map[string]string{
-		"server.listen_addr":                      ":53",
-		"access_control.zones.example.com.allow":  "10.0.0.0/8",
+		"server.listen_addr":                     ":53",
+		"access_control.zones.example.com.allow": "10.0.0.0/8",
 	}
 	zones := parseACLZones(values)
 	if len(zones) != 1 {
@@ -414,9 +414,9 @@ func TestParseLocalZonesNoDot(t *testing.T) {
 
 func TestParseLocalZonesNonPrefixKeysIgnored(t *testing.T) {
 	values := map[string]string{
-		"server.listen_addr":                ":53",
-		"local_zones.example.local.type":    "transparent",
-		"local_zones.example.local.data":    "host. A 1.2.3.4",
+		"server.listen_addr":             ":53",
+		"local_zones.example.local.type": "transparent",
+		"local_zones.example.local.data": "host. A 1.2.3.4",
 	}
 	zones := parseLocalZones(values)
 	if len(zones) != 1 {
@@ -426,8 +426,8 @@ func TestParseLocalZonesNonPrefixKeysIgnored(t *testing.T) {
 
 func TestParseLocalZonesUnknownField(t *testing.T) {
 	values := map[string]string{
-		"local_zones.example.local.type":   "static",
-		"local_zones.example.local.bogus":  "something",
+		"local_zones.example.local.type":  "static",
+		"local_zones.example.local.bogus": "something",
 	}
 	zones := parseLocalZones(values)
 
@@ -540,8 +540,8 @@ func TestParseForwardZonesNoDot(t *testing.T) {
 
 func TestParseForwardZonesNonPrefixIgnored(t *testing.T) {
 	values := map[string]string{
-		"server.listen_addr":                  ":53",
-		"forward_zones.example.com.addrs":     "1.1.1.1",
+		"server.listen_addr":              ":53",
+		"forward_zones.example.com.addrs": "1.1.1.1",
 	}
 	zones := parseForwardZones(values)
 	if len(zones) != 1 {
@@ -628,8 +628,8 @@ func TestApplyYAMLACLZones(t *testing.T) {
 func TestApplyYAMLDenyACLZoneOnly(t *testing.T) {
 	cfg := defaultConfig()
 	values := map[string]string{
-		"access_control.deny":                        "0.0.0.0/0",
-		"access_control.zones.internal.corp.deny":    "192.168.0.0/16",
+		"access_control.deny":                     "0.0.0.0/0",
+		"access_control.zones.internal.corp.deny": "192.168.0.0/16",
 	}
 	applyYAML(cfg, values)
 

@@ -16,11 +16,12 @@ import (
 // growth at ~10k entries (real operator NTA lists are a handful).
 //
 // The pin fills the store to the cap, then asserts:
-//   (1) the (cap+1)th distinct Add returns ErrNTAStoreFull,
-//   (2) the store size did NOT grow past the cap,
-//   (3) re-adding an EXISTING zone at the cap continues to succeed
-//       (replacement is the documented "extend the window" path
-//        and must not be broken by the cap).
+//
+//	(1) the (cap+1)th distinct Add returns ErrNTAStoreFull,
+//	(2) the store size did NOT grow past the cap,
+//	(3) re-adding an EXISTING zone at the cap continues to succeed
+//	    (replacement is the documented "extend the window" path
+//	     and must not be broken by the cap).
 func TestNTAStore_AddCapEnforced(t *testing.T) {
 	store := NewNTAStore()
 	expiry := time.Now().Add(24 * time.Hour)

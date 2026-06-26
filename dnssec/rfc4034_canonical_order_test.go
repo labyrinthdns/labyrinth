@@ -19,11 +19,11 @@ import (
 //     hits or — worse — synthesise NXDOMAIN for names that DO exist.
 //
 // RFC 4034 §6.1 ordering rules:
-//   1. Compare labels right-to-left (TLD first).
-//   2. Each label compared as a byte string (lowercased, RFC 4343).
-//   3. Shorter prefix label sorts first when one is a prefix of the other.
-//   4. A name with fewer labels sorts before a name with more labels
-//      sharing the same suffix.
+//  1. Compare labels right-to-left (TLD first).
+//  2. Each label compared as a byte string (lowercased, RFC 4343).
+//  3. Shorter prefix label sorts first when one is a prefix of the other.
+//  4. A name with fewer labels sorts before a name with more labels
+//     sharing the same suffix.
 //
 // We pin a five-case matrix exercising each rule plus the equality
 // case and the cross-TLD case (rightmost label wins).

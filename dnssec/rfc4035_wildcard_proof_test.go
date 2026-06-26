@@ -17,10 +17,10 @@ import (
 //
 // We pin two cases:
 //
-//   1. Full proof: qname-cover + wildcard-cover NSEC pair → accepted.
-//   2. Naked NSEC: only the qname-cover NSEC, no wildcard proof → MUST
-//      be rejected (the validator returns false; the response decays
-//      to Bogus upstream).
+//  1. Full proof: qname-cover + wildcard-cover NSEC pair → accepted.
+//  2. Naked NSEC: only the qname-cover NSEC, no wildcard proof → MUST
+//     be rejected (the validator returns false; the response decays
+//     to Bogus upstream).
 //
 // The qname is chosen so its closest encloser is the zone apex; the
 // wildcard the proof must cover is `*.example.com`.

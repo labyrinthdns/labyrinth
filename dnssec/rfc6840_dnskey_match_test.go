@@ -21,11 +21,11 @@ import (
 //
 // We pin a four-case truth table:
 //
-//   1. Matching tag + matching algorithm → returns the key.
-//   2. Matching tag, DIFFERENT algorithm → "no DNSKEY" error.
-//   3. Matching algorithm, DIFFERENT tag → "no DNSKEY" error.
-//   4. Revoked DNSKEY (flag 0x0080 set, RFC 5011 §2) even with matching
-//      tag+algorithm → skipped, "no DNSKEY" error.
+//  1. Matching tag + matching algorithm → returns the key.
+//  2. Matching tag, DIFFERENT algorithm → "no DNSKEY" error.
+//  3. Matching algorithm, DIFFERENT tag → "no DNSKEY" error.
+//  4. Revoked DNSKEY (flag 0x0080 set, RFC 5011 §2) even with matching
+//     tag+algorithm → skipped, "no DNSKEY" error.
 //
 // All four behaviours must hold simultaneously for the validator to
 // be safe against the algorithm-substitution and revocation-flag

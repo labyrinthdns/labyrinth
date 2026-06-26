@@ -25,6 +25,14 @@ var (
 // Aligns with BIND 9.18+ and Unbound 1.16+ defaults.
 const MaxNSEC3Iterations = 100
 
+// MaxNSEC3RecordsPerProof bounds how many NSEC3 records a single denial proof
+// may carry. A legitimate NXDOMAIN/NODATA proof needs only a few (closest-
+// encloser + next-closer + wildcard, plus extras for opt-out spans); a flood of
+// hundreds is an NSEC3 DoS attempt (CVE-2023-50868 family). Knot refuses > 8,
+// PowerDNS caps at 10; 16 leaves comfortable opt-out headroom while still
+// rejecting abuse before any closest-encloser hashing runs.
+const MaxNSEC3RecordsPerProof = 16
+
 // nsec3Base32 is the extended hex base32 encoding used by NSEC3 (RFC 4648 §7),
 // without padding.
 var nsec3Base32 = base32.HexEncoding.WithPadding(base32.NoPadding)
