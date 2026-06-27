@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.30] - 2026-06-27
+
+### Hardened
+- **SAD-DNS PMTU side-channel mitigation: `IP_PMTUDISC_OMIT` on upstream UDP sockets (Linux).** Completes the SAD-DNS hardening tracked in v0.8.29. SAD-DNS (CVE-2020-25705) and its 2021 follow-up (CVE-2021-20322) defeat source-port randomisation by probing a kernel side channel — the global ICMP rate limit and the per-socket PMTU exception cache — to infer the resolver's random ephemeral source port, collapsing the spoofing entropy back toward the 16-bit TXID within the query window. The upstream UDP path already used a *connected* socket (4-tuple inbound filtering) on top of the full 0x20 / DNS-cookie / TXID / source-port-entropy / DNSSEC stack; this adds the remaining piece. Upstream UDP queries now dial through `dialUDP`, which sets `IP_MTU_DISCOVER = IP_PMTUDISC_OMIT` (and the IPv6 equivalent) on the socket so the kernel keeps no per-destination PMTU exception for the flow and ignores ICMP "fragmentation needed" for it (matching Unbound's IPv6-PMTU-for-UDP disable since 1.13.2 and PowerDNS's `IP_PMTUDISC_OMIT`). The socket option is **best-effort and platform-guarded**: implemented via a `net.Dialer.Control` callback in [resolver/udp_pmtu_linux.go](resolver/udp_pmtu_linux.go) (build-tagged `linux`), a no-op on Windows/macOS/BSD ([resolver/udp_pmtu_other.go](resolver/udp_pmtu_other.go)), and the callback always returns nil so a kernel lacking the option never fails a dial — resolution proceeds on the plain connected socket. Verified: native + linux + darwin cross-compile, resolver suite green, and live resolution (lightsail/github/cloudflare) unaffected through the new dial path. NOTE: the runtime side-channel-closing effect has only been verified by construction/cross-compile here; smoke-test on the Linux deployment target before relying on it.
+
 ## [0.8.29] - 2026-06-27
 
 ### Hardened
