@@ -324,7 +324,9 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 
 func (r *Resolver) queryUDP(nsIP string, query []byte) ([]byte, error) {
 	addr := net.JoinHostPort(nsIP, r.dnsPort())
-	conn, err := net.DialTimeout("udp", addr, r.config.UpstreamTimeout)
+	// Connected UDP socket with best-effort IP_PMTUDISC_OMIT (SAD-DNS
+	// hardening on Linux; plain connected socket elsewhere). See dialUDP.
+	conn, err := dialUDP(addr, r.config.UpstreamTimeout)
 	if err != nil {
 		return nil, err
 	}
