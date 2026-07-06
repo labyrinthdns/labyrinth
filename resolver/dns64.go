@@ -85,8 +85,9 @@ func (r *Resolver) dns64Synthesize(name string, qclass uint16, original *Resolve
 	}
 
 	return &ResolveResult{
-		Answers:   synthAnswers,
-		Authority: aResult.Authority,
-		RCODE:     dns.RCodeNoError,
+		Answers:     synthAnswers,
+		Authority:   aResult.Authority,
+		RCODE:       dns.RCodeNoError,
+		Synthesized: true,
 	}, nil
 }
