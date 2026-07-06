@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.31] - 2026-07-06
+
+### Fixed
+- **EDE code 29 (Synthesized) now emitted for DNS64 AAAA synthesis and aggressive NSEC/NSEC3 cache responses.** Downstream clients receive RFC 8914 §4.29 Extended DNS Error code when the answer was locally materialised from authenticated denial records rather than fetched directly from an authoritative server.
+- **Git clone + build failure fixed.** `web/ui/dist/` was empty so `//go:embed` failed at compile time. Added placeholder `index.html` and `favicon.svg` so the binary compiles on a fresh checkout without building the React frontend.
+
+### Added
+- **RFC Compliance Matrix** (`docs/rfc-compliance-matrix.md`). Maps 43+ RFCs to their implementation files and test coverage with per-section status indicators.
+
+### Changed
+- **Go dependencies updated.** golang.org/x/crypto v0.49.0→v0.53.0, golang.org/x/net v0.51.0→v0.56.0, golang.org/x/sys v0.42.0→v0.46.0, golang.org/x/text v0.35.0→v0.38.0, github.com/coder/websocket v1.8.12→v1.8.15.
+
+
 ## [0.8.30] - 2026-06-27
 
 ### Hardened
