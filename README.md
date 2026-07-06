@@ -412,7 +412,7 @@ rather than silently degrading the resolver.
 | 7858 | DNS over TLS (DoT) | Full |
 | 8484 | DNS over HTTPS (DoH) | Full |
 | 9210 §3.7 | TCP idle timeout safety bounds | Pinned |
-| 9250 | DNS over QUIC (DoQ) | Full |
+| 9250 | DNS over QUIC (DoQ) | Not yet implemented |
 
 ### Special-use names
 
@@ -427,6 +427,7 @@ rather than silently degrading the resolver.
 |-----|-------|----------|
 | 8914 §3 | EDE only when client carries EDNS | Pinned |
 | 8914 §4.17 / §4.18 | EDE 17 Filtered / EDE 18 Prohibited on REFUSED | Pinned |
+| 8914 §4.29 | EDE 29 Synthesized (DNS64 / aggressive NSEC/NSEC3) | Pinned |
 | 8767 §3.1 | Stale-while-refresh | Pinned |
 | 8659 | DNS CAA pass-through | Full |
 | 9520 | Resolution failure caching | Pinned |
