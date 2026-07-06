@@ -48,6 +48,14 @@ type Entry struct {
 	// clients).
 	ECSScope uint8
 
+	// Synthesized marks entries that the resolver itself constructed from
+	// cached DNSSEC proofs (NSEC/NSEC3 aggressive negative caching, RFC 8198)
+	// rather than being fetched from an authoritative server as-is. The server
+	// uses this flag to attach RFC 8914 §4.29 EDE code 29 ("Synthesized") so
+	// downstream clients know the answer was locally materialised from
+	// authenticated denial records, not a direct authoritative response.
+	Synthesized bool
+
 	// prefetched is set atomically to 1 the first time a prefetch is
 	// triggered for this entry, preventing duplicate background fetches.
 	prefetched atomic.Int32
@@ -86,6 +94,7 @@ func (e *Entry) WithDecayedTTL(remaining uint32) *Entry {
 		RCODE:        e.RCODE,
 		DNSSECStatus: e.DNSSECStatus,
 		ECSScope:     e.ECSScope,
+		Synthesized:  e.Synthesized,
 	}
 
 	copy(decayed.Records, e.Records)
