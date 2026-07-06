@@ -70,6 +70,13 @@ type ResolveResult struct {
 	// emitting the generic EDE 6. Empty string when no specific cause is
 	// recorded. See dnssec.FailureReason.
 	DNSSECReason string
+	// Synthesized marks a result that was locally constructed from cached
+	// DNSSEC proofs (DNS64 AAAA synthesis) rather than fetched from an
+	// authoritative server. The server uses this flag to attach RFC 8914
+	// §4.29 EDE code 29 ("Synthesized") so downstream clients know the
+	// answer was materialised locally, not an authoritative response.
+	Synthesized bool
+
 	// FailureReason carries a stable token classifying a NON-DNSSEC
 	// failure (RCODE=SERVFAIL paths that have nothing to do with crypto).
 	// Currently used to surface "no-reachable-authority" when every NS in

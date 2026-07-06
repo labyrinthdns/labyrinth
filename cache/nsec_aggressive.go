@@ -350,6 +350,7 @@ func (c *Cache) buildNSECSynthEntry(iv nsecInterval, now time.Time, negType Nega
 		SOA:          soa,
 		RCODE:        rcode,
 		DNSSECStatus: "secure",
+		Synthesized:  true,
 	}, true
 }
 
