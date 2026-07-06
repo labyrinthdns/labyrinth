@@ -45,3 +45,4 @@ coverage*.html
 .project/
 
 .dfmt/
+.wrongstack/

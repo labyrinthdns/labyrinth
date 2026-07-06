@@ -1334,6 +1334,14 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry,
 	// Add OPT if client sent one
 	if query.EDNS0 != nil {
 		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
+		// RFC 8914 §4.29 — when a cached entry was synthesised by the
+		// resolver itself (aggressive NSEC/NSEC3 negative caching, RFC 8198)
+		// rather than fetched directly from an authoritative, emit EDE 29
+		// so downstream clients know the answer was locally materialised
+		// from authenticated denial records.
+		if entry.Synthesized {
+			h.addEDEToResponse(resp, dns.EDECodeSynthesized, "aggressive-nsec-cache")
+		}
 	}
 
 	// H-5: pack into an owned slice so the caller doesn't read pooled memory.
@@ -1452,6 +1460,14 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
 		if privateStripped {
 			h.addEDEToResponse(resp, dns.EDECodeForgedAnswer, "rebind-protected")
+		}
+		// RFC 8914 §4.29 — when the answer was locally synthesised (DNS64
+		// AAAA synthesis, RFC 6147) rather than delivered intact from an
+		// authoritative server, emit EDE 29 so downstream clients know the
+		// record was constructed from an A record lookup, not a direct
+		// authoritative AAAA response.
+		if result.Synthesized {
+			h.addEDEToResponse(resp, dns.EDECodeSynthesized, "dns64-synthesis")
 		}
 	}
 
