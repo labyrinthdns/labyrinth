@@ -21,12 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/quic-go/quic-go/http3"
-	"github.com/coder/websocket"
 )
 
 // ---------------------------------------------------------------------------
@@ -527,6 +527,41 @@ func TestRequireAuth_InvalidToken(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d", w.Code)
+	}
+}
+
+func TestRequireAuth_RejectsTokenWithoutJTI(t *testing.T) {
+	srv, _ := testAdminServerWithAuth(t)
+	secret := *srv.jwtSecret.Load()
+	now := time.Now().Unix()
+	payload := jwtPayload{
+		Sub: "admin",
+		Iat: now,
+		Exp: now + 86400,
+		// Deliberately omit Jti: validateJWT must reject signed tokens without it.
+	}
+
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signingInput := jwtHeaderB64 + "." + payloadB64
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(signingInput))
+	sigB64 := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	token := signingInput + "." + sigB64
+
+	handler := srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler must not be reached for a token without jti")
+	})
+	req := httptest.NewRequest("GET", "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401 for signed token without jti, got %d", w.Code)
 	}
 }
 
