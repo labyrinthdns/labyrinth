@@ -4,6 +4,13 @@ This document captures the complete remaining work plan after audit
 milestone Y93 (release v0.6.41). The audit phase Y34→Y93 produced 61
 RFC compliance pins and 4 real bug fixes across 8 patch releases.
 
+> **Current status note (2026-07-08):** this roadmap predates several
+> v0.8.x hardening releases. Use
+> [`docs/rfc-gap-analysis-2026-07.md`](docs/rfc-gap-analysis-2026-07.md)
+> and [`docs/rfc-compliance-matrix.md`](docs/rfc-compliance-matrix.md)
+> as the current RFC-gap sources of truth until this roadmap is fully
+> reconciled.
+
 We now move from incremental pin-by-pin patches to **themed
 milestones**. Each milestone groups 15–30 commits into a single minor
 release. Backend milestones are paired with UI milestones to keep
