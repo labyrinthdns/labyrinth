@@ -967,7 +967,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			if result.DNSSECStatus == "bogus" {
 				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
 			}
-			r.cache.StoreNegative(name, qtype, qclass, cache.NegNXDomain, dns.RCodeNXDomain, response.Authority)
+			r.cache.StoreNegativeWithStatus(name, qtype, qclass, cache.NegNXDomain, dns.RCodeNXDomain, response.Authority, result.DNSSECStatus)
 			// RFC 8198 aggressive NSEC caching: when the denial is Secure
 			// the NSEC intervals in the authority section are themselves
 			// authenticated proof that every name in the gap is non-
@@ -1000,7 +1000,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			if result.DNSSECStatus == "bogus" {
 				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
 			}
-			r.cache.StoreNegative(name, qtype, qclass, cache.NegNoData, dns.RCodeNoError, response.Authority)
+			r.cache.StoreNegativeWithStatus(name, qtype, qclass, cache.NegNoData, dns.RCodeNoError, response.Authority, result.DNSSECStatus)
 			return result, nil
 
 		case responseServFail:

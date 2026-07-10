@@ -153,13 +153,14 @@ func canonicalRRSetWire(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord) []by
 		ownerForCanonical := canonicalWildcardOwner(rr.Name, rrsig.Labels)
 		buf = append(buf, canonicalNameWire(ownerForCanonical)...)
 
-		// RDATA in canonical form. For RR types listed in RFC 4034 §6.2 item 3
-		// (CNAME, NS, PTR, DNAME, MX, SOA, SRV, RRSIG, NSEC), any embedded
-		// domain names in RDATA must be lowercased before signing/verifying.
-		// Auth servers that emit uppercase in wire responses (or upstreams
-		// that don't normalize) would otherwise turn every CNAME hop into a
-		// false Bogus. ASCII lowercasing preserves byte length, so the
-		// signed RDLENGTH does not change.
+		// RDATA in canonical form. For the RR types listed in RFC 4034 §6.2
+		// item 3 as corrected by RFC 6840 §5.1 (CNAME, NS, PTR, DNAME, MX,
+		// SOA, SRV — but NOT RRSIG/NSEC), any embedded domain names in RDATA
+		// must be lowercased before signing/verifying. Auth servers that emit
+		// uppercase in wire responses (or upstreams that don't normalize)
+		// would otherwise turn every CNAME hop into a false Bogus. ASCII
+		// lowercasing preserves byte length, so the signed RDLENGTH does not
+		// change.
 		canonRData := canonicalRData(rr.RData, rrsig.TypeCovered)
 
 		// Type, class, original TTL (from RRSIG, not the RR), and RDATA length.
@@ -198,9 +199,11 @@ func canonicalRRSetWire(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord) []by
 }
 
 // canonicalRData returns the RDATA bytes a signer would have used as input
-// to the signature, applying RFC 4034 §6.2 item 3: domain names embedded in
-// the RDATA of certain RR types are lowercased. For types not in that list
-// the RDATA is returned unchanged.
+// to the signature, applying RFC 4034 §6.2 item 3 as corrected by RFC 6840
+// §5.1: domain names embedded in the RDATA of certain RR types are lowercased.
+// RRSIG and NSEC are explicitly excluded (RFC 6840 §5.1) — their RDATA names
+// are used in original case. For types not in the list the RDATA is returned
+// unchanged.
 //
 // The transformation only touches the bytes that constitute label payload —
 // label length octets, numeric fields, signatures, and bitmaps are left
@@ -249,24 +252,19 @@ func canonicalRData(rdata []byte, rrtype uint16) []byte {
 			return out
 		}
 		return out2
-	case dns.TypeRRSIG:
-		// 18 fixed bytes, then signer name, then signature. Lowercase signer.
-		if len(rdata) < 19 {
-			return rdata
-		}
-		out, ok := lowercaseWireName(rdata, 18)
-		if !ok {
-			return rdata
-		}
-		return out
-	case dns.TypeNSEC:
-		// Next domain name followed by type bitmaps.
-		out, ok := lowercaseWireName(rdata, 0)
-		if !ok {
-			return rdata
-		}
-		return out
 	}
+	// RFC 6840 §5.1 "Errors in Canonical Form Type Code List": RFC 4034 §6.2
+	// erroneously included RRSIG and NSEC among the types whose embedded RDATA
+	// names are downcased for canonical form. They MUST NOT be. The NSEC Next
+	// Domain Name is a copy of the next owner name and is used on the wire in
+	// its ORIGINAL case; downcasing it (e.g. turning a real
+	// "_DMARC.example.org." next-domain into "_dmarc.example.org.") corrupts
+	// the canonical form and makes the RRSIG over the NSEC fail to verify —
+	// a false Bogus for every signed NSEC zone whose chain contains a
+	// mixed-case owner name (the very common `_DMARC` TXT-policy label, mixed-
+	// case service labels, etc.). The RRSIG Signer Name is likewise left
+	// untouched (RRSIG RRsets are not themselves validated, but the rule is
+	// the same). Both fall through here and return their RDATA unchanged.
 	return rdata
 }
 

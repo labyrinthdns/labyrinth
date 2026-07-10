@@ -914,33 +914,29 @@ func TestHashForAlgorithm_RFC6605Pairings(t *testing.T) {
 	}
 }
 
-func TestCanonicalRData_RRSIGLowercasesSignerOnly(t *testing.T) {
-	// RRSIG RDATA: 18 fixed bytes + signer name + signature blob. Only the
-	// signer name is a domain name — the fixed header and signature must
-	// remain byte-identical, including any byte values overlapping ASCII letters.
+// TestCanonicalRData_RRSIGSignerNotDowncased pins RFC 6840 §5.1 "Errors in
+// Canonical Form Type Code List": RRSIG (and NSEC) were erroneously included in
+// the RFC 4034 §6.2 downcasing list. Names in RRSIG/NSEC RDATA MUST be left in
+// their original case. For RRSIG this is runtime-moot (an RRSIG RRset is never
+// itself covered by a signature), but keeping canonicalRData compliant avoids
+// re-introducing the downcasing pattern that broke NSEC denials with a
+// mixed-case Next Domain Name (see rfc5155/nsec _DMARC regression).
+func TestCanonicalRData_RRSIGSignerNotDowncased(t *testing.T) {
+	// RRSIG RDATA: 18 fixed bytes + signer name + signature blob. canonicalRData
+	// must return the RDATA byte-identical — no field, including the signer
+	// name, is downcased.
 	header := make([]byte, 18)
 	for i := range header {
-		header[i] = byte('A' + i%26) // letter values, MUST stay uppercase
+		header[i] = byte('A' + i%26)
 	}
 	signer := dns.BuildPlainName("Fedoraproject.ORG")
-	sig := []byte{'A', 'B', 'C', 'D', 'E', 'F'} // signature bytes — leave alone
+	sig := []byte{'A', 'B', 'C', 'D', 'E', 'F'}
 	rdata := append(append(append([]byte{}, header...), signer...), sig...)
 
 	got := canonicalRData(rdata, dns.TypeRRSIG)
 
-	// First 18 bytes untouched.
-	if !bytes.Equal(got[:18], header) {
-		t.Errorf("RRSIG fixed header was modified: got %v want %v", got[:18], header)
-	}
-	// Signer lowercased.
-	wantSigner := dns.BuildPlainName("fedoraproject.org")
-	if !bytes.Equal(got[18:18+len(wantSigner)], wantSigner) {
-		t.Errorf("RRSIG signer not lowercased: got %v want %v",
-			got[18:18+len(wantSigner)], wantSigner)
-	}
-	// Signature bytes untouched.
-	gotSig := got[18+len(wantSigner):]
-	if !bytes.Equal(gotSig, sig) {
-		t.Errorf("RRSIG signature bytes modified: got %v want %v", gotSig, sig)
+	if !bytes.Equal(got, rdata) {
+		t.Errorf("RRSIG RDATA was altered: RFC 6840 §5.1 requires it be used in "+
+			"original case (signer name not downcased)\n got %v\nwant %v", got, rdata)
 	}
 }

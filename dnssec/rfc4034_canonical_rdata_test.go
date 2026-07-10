@@ -69,11 +69,10 @@ func TestCanonicalRData_LowercasesEmbeddedNames(t *testing.T) {
 		}
 	})
 
-	t.Run("RRSIG — 18-byte fixed header preserved, signer lowercased", func(t *testing.T) {
+	t.Run("RRSIG — RDATA left in original case (RFC 6840 §5.1)", func(t *testing.T) {
+		// RFC 6840 §5.1 corrects RFC 4034 §6.2: RRSIG must NOT be downcased.
+		// canonicalRData returns the RDATA unchanged, signer name included.
 		fixedHeader := make([]byte, 18)
-		// Put non-zero bytes in the header to verify they're untouched
-		// (a regression that lowercased the whole RDATA would corrupt
-		// the signed binary fields).
 		for i := range fixedHeader {
 			fixedHeader[i] = 0x55
 		}
@@ -84,21 +83,20 @@ func TestCanonicalRData_LowercasesEmbeddedNames(t *testing.T) {
 
 		got := canonicalRData(rrsigRData, dns.TypeRRSIG)
 
-		// First 18 bytes must be untouched.
-		if !bytes.Equal(got[:18], fixedHeader) {
-			t.Errorf("RRSIG header corrupted by canonicalRData — must only touch the signer name field starting at offset 18")
+		if !bytes.Equal(got, rrsigRData) {
+			t.Errorf("RRSIG RDATA altered by canonicalRData — RFC 6840 §5.1 requires original case; got %x want %x", got, rrsigRData)
 		}
-		// Signer must be lowercased.
-		if !bytes.Equal(got[18:18+len(uppercaseName)], expectedLower) {
-			t.Errorf("RRSIG signer name not lowercased")
-		}
-		// Signature must be preserved.
-		if !bytes.Equal(got[18+len(uppercaseName):], signature) {
-			t.Errorf("RRSIG signature bytes after signer name corrupted")
-		}
-		// Total length must be preserved.
-		if len(got) != len(rrsigRData) {
-			t.Errorf("length changed: got %d, want %d", len(got), len(rrsigRData))
+	})
+
+	t.Run("NSEC — Next Domain Name left in original case (RFC 6840 §5.1)", func(t *testing.T) {
+		// The regression this guards: downcasing an NSEC Next Domain Name such
+		// as "_DMARC.example.org." corrupts the canonical form and makes the
+		// RRSIG over the NSEC fail to verify — a false Bogus for every signed
+		// NSEC zone whose chain contains a mixed-case owner name.
+		nsecRData := append(append([]byte{}, uppercaseName...), 0x00, 0x01, 0x40) // name + a type bitmap window
+		got := canonicalRData(nsecRData, dns.TypeNSEC)
+		if !bytes.Equal(got, nsecRData) {
+			t.Errorf("NSEC RDATA altered by canonicalRData — RFC 6840 §5.1 requires the Next Domain Name in original case; got %x want %x", got, nsecRData)
 		}
 	})
 

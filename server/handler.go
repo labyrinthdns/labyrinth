@@ -1123,9 +1123,12 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			// not forbid per-subnet negatives, but NXDOMAIN scoping at
 			// authoritative servers is rare and per-subnet negatives
 			// would inflate cache pressure on the common case.
-			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority)
+			// Preserve the validator's verdict so a cached NXDOMAIN keeps its
+			// AD bit on re-serve (RFC 4035); without the status a signed denial
+			// silently downgrades to AD=0 on the second hit.
+			h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority, result.DNSSECStatus)
 		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
-			h.cache.StoreNegative(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority)
+			h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority, result.DNSSECStatus)
 		} else if result.RCODE == dns.RCodeServFail {
 			// RFC 9520 §3 failure caching for the resolver-returned-SERVFAIL
 			// path (DNSSEC bogus, all NS unreachable, lame delegation, etc.).
