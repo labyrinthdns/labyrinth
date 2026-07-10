@@ -896,23 +896,32 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		if !ok && outboundECS != nil {
 			entry, ok = h.cache.GetWithECS(q.Name, q.Type, q.Class, outboundECS.CacheKey())
 		}
-		// A DNSKEY/DS cache entry carrying no DNSSEC status is a
-		// chain-validation artifact, not a client-validated answer:
-		// resolver.QueryDNSSEC — which the validator calls with validation
-		// skipped, to avoid recursing into itself — stores the DNSKEY/DS
-		// RRset it fetches for a trust-chain walk into this shared cache with
-		// an empty status (cache.Store → StoreWithStatus(..., "")). Serving
-		// that entry to a *direct* client DNSKEY/DS query would strip the AD
-		// bit even though the zone is signed and the records are valid.
-		// Force a full validating resolution for these meta-types so the
-		// client receives the correct Secure/Insecure verdict; the validated
-		// result is then re-cached WITH its status (StoreWithStatus below), so
-		// subsequent hits — client answers and internal chain walks alike —
-		// stay correct without re-resolving. Scoped tightly: only the empty
-		// status, only DNSKEY/DS, and only when a validator is active, so
-		// every normal cached answer is untouched.
+		// A DNSKEY / DS / NS cache entry carrying no DNSSEC status is a
+		// resolver-internal artifact, not a client-validated answer, and must
+		// not be served to a direct client query with the AD bit stripped:
+		//
+		//   - DNSKEY / DS: resolver.QueryDNSSEC — which the validator calls
+		//     with validation skipped, to avoid recursing into itself — stores
+		//     the RRset it fetches for a trust-chain walk into this shared
+		//     cache with an empty status (cache.Store → StoreWithStatus("")).
+		//   - NS: cacheDelegation stores the PARENT-side delegation NS from a
+		//     referral's authority section under (zone, NS) with an empty
+		//     status. Per RFC 2181 §5.4.1 that parent-side NS is less
+		//     trustworthy than the child zone's own authoritative apex NS
+		//     RRset, and — unlike the child's — it carries no RRSIG, so serving
+		//     it to a direct `NS <zone>` query yields AD=0 where every
+		//     mainstream validator returns AD=1.
+		//
+		// Force a full validating resolution for these meta-types so the client
+		// receives the correct Secure/Insecure verdict and (for NS) the signed
+		// apex RRset from the child; the validated result is re-cached WITH its
+		// status (StoreWithStatus below), so subsequent hits stay correct until
+		// the next delegation/chain refresh re-seeds an unstatused entry.
+		// Scoped tightly: only the empty status, only these meta-types, and
+		// only when a validator is active, so every normal cached answer is
+		// untouched.
 		if ok && entry.DNSSECStatus == "" &&
-			(q.Type == dns.TypeDNSKEY || q.Type == dns.TypeDS) &&
+			(q.Type == dns.TypeDNSKEY || q.Type == dns.TypeDS || q.Type == dns.TypeNS) &&
 			h.resolver.DNSSECValidator() != nil {
 			ok = false
 			entry = nil
