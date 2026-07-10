@@ -126,7 +126,8 @@ func buildSignedData(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord) []byte 
 // RRs are sorted by their RDATA in canonical order.
 func canonicalRRSetWire(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord) []byte {
 	type rrWire struct {
-		data []byte
+		data    []byte // full canonical RR wire form (owner+type+class+ttl+rdlen+rdata)
+		sortKey []byte // canonical RDATA only — the RFC 4034 §6.3 ordering key
 	}
 
 	wires := make([]rrWire, 0, len(rrset))
@@ -171,12 +172,22 @@ func canonicalRRSetWire(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord) []by
 
 		buf = append(buf, canonRData...)
 
-		wires = append(wires, rrWire{data: buf})
+		wires = append(wires, rrWire{data: buf, sortKey: canonRData})
 	}
 
-	// Sort RRs by their wire-format representation for canonical ordering.
+	// RFC 4034 §6.3 "Canonical RR Ordering within an RRset": RRs sharing owner
+	// name, class, and type are sorted "by treating the RDATA portion of the
+	// canonical form of each RR as a left-justified unsigned octet sequence in
+	// which the absence of an octet sorts before a zero octet." The sort key is
+	// therefore the canonical RDATA ALONE — not the full RR wire form. Owner,
+	// type, and class are constant across the RRset (harmless if included), but
+	// the 2-byte RDLENGTH is NOT part of RDATA: prefixing it makes every shorter
+	// RDATA sort before a longer one regardless of content, which reorders sets
+	// such as CAA or MX and yields a false Bogus. bytes.Compare already gives
+	// the "absence sorts before a zero octet" semantics (a prefix sorts before
+	// the longer sequence).
 	sort.Slice(wires, func(i, j int) bool {
-		return bytes.Compare(wires[i].data, wires[j].data) < 0
+		return bytes.Compare(wires[i].sortKey, wires[j].sortKey) < 0
 	})
 
 	var result []byte

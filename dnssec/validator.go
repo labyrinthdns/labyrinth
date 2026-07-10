@@ -1759,6 +1759,28 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 			"qname", qname)
 	}
 
+	// RFC 5155 §7.2.4 — a DS query answered with NODATA at a delegation is
+	// not a forgery but an authenticated "insecure delegation" signal. The
+	// generic NODATA proof above needs an NSEC3 that MATCHES the qname with
+	// the DS bit clear; an opt-out delegation (the norm under .com/.net) has
+	// no such record — the name sits inside an opt-out span — so that proof
+	// legitimately comes up inconclusive and we must not fall through to
+	// Bogus. Fall back to the dedicated DS-absence proof (matching NSEC3 with
+	// DS clear, OR an opt-out NSEC3 covering H(qname)); when it holds the
+	// correct verdict is Insecure — the same NOERROR / AD=0 that Unbound,
+	// BIND, and the public 1.1.1.1 / 8.8.8.8 validators return for
+	// `google.com DS`, NOT SERVFAIL. This runs only for TypeDS and only over
+	// the already-authenticated NSEC3 set, so it cannot manufacture a denial.
+	// It reuses exactly the proof the trust-chain walker trusts to declare an
+	// insecure delegation, so it introduces no new trust surface.
+	if qtype == dns.TypeDS && len(verifiedNSEC3s) > 0 {
+		if proven, dsErr := VerifyNSEC3DenialDSAbsent(qname, verifiedNSEC3s); dsErr == nil && proven {
+			v.logger.Debug("DS NODATA is an authenticated insecure delegation (NSEC3 opt-out / DS-clear)",
+				"qname", qname)
+			return Insecure
+		}
+	}
+
 	// RRSIG present but no verifiable NSEC/NSEC3 denial proof. A signed zone
 	// that returns a denial without proving it is forging — return Bogus.
 	// (Previous behavior treated SOA+RRSIG alone as Secure; that allows an
