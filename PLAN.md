@@ -40,17 +40,15 @@ Target endpoint: **v1.0.0** = production-ready signal.
 Close all remaining DNSSEC gaps surfaced during the Y34–Y93 audit but
 deferred as too large for a single pin.
 
-### M1.1 — Algorithm rollover (RFC 4035 §4.6)
+### M1.1 — Algorithm rollover (RFC 4035 §4.6) ✅
 
-- During a key rollover, a zone publishes RRSIGs covering the same
-  RRset under two different algorithms (the outgoing and the incoming).
-- Current validator picks the first matching DNSKEY/RRSIG pair. If
-  that pair fails for any reason (expired, missing key), validation
-  bogus'es even though another valid pair exists.
-- **Implementation**: extend `dnssec/validator.go` so RRSIG selection
-  iterates *all* candidates; success on any one yields secure.
-- **Tests**: pin a dual-algorithm zone (e.g. RSASHA256 + ECDSAP256SHA256)
-  with one stale RRSIG and one fresh — must validate.
+- **Status**: implemented and tested (since v0.6.42, extended in v0.7.11
+  with per-RRSIG verify cap).
+- `dnssec/validator.go` iterates *all* candidate RRSIGs; success on any
+  one yields Secure. A maxRRSIGVerifyAttempts cap bounds crypto work.
+- **Tests**: `dnssec/rfc4035_algorithm_rollover_test.go` pins four
+  corners — old-expired/new-valid, old-valid/new-expired, both-valid,
+  both-expired — with two algorithms (ED25519 + ECDSA-P256).
 
 ### M1.2 — CDS / CDNSKEY (RFC 7344 + RFC 8078)
 
