@@ -4,12 +4,13 @@ This document captures the complete remaining work plan after audit
 milestone Y93 (release v0.6.41). The audit phase Y34→Y93 produced 61
 RFC compliance pins and 4 real bug fixes across 8 patch releases.
 
-> **Current status note (2026-07-08):** this roadmap predates several
-> v0.8.x hardening releases. Use
+> **Reconciliation note (2026-07-12):** this roadmap has been partially
+> reconciled against the v0.8.31 codebase. M1 (DNSSEC completeness) and
+> M2 (transport modernization) below reflect actual implementation status;
+> M3–M8 still carry their pre-v0.8.x descriptions. Use
 > [`docs/rfc-gap-analysis-2026-07.md`](docs/rfc-gap-analysis-2026-07.md)
 > and [`docs/rfc-compliance-matrix.md`](docs/rfc-compliance-matrix.md)
-> as the current RFC-gap sources of truth until this roadmap is fully
-> reconciled.
+> as the current RFC-gap sources of truth.
 
 We now move from incremental pin-by-pin patches to **themed
 milestones**. Each milestone groups 15–30 commits into a single minor
@@ -50,111 +51,93 @@ deferred as too large for a single pin.
   corners — old-expired/new-valid, old-valid/new-expired, both-valid,
   both-expired — with two algorithms (ED25519 + ECDSA-P256).
 
-### M1.2 — CDS / CDNSKEY (RFC 7344 + RFC 8078)
+### M1.2 — CDS / CDNSKEY (RFC 7344 + RFC 8078) ✅
 
-- Child zone signals parent of intended DS update via CDS/CDNSKEY
-  records at the zone apex.
-- RFC 8078 §3 defines bootstrap rules (acceptance policy, multiple
-  signers, deletion via 0-algorithm).
-- **Implementation**: parser for CDS/CDNSKEY rtypes, validator that
-  enforces signing by current DNSKEY, exposure via API for operators
-  using LabyrinthDNS as authoritative-aware resolver.
-- **Tests**: parse fixtures, accept/reject policy per §3.1–§3.3.
+- **Status**: parser implemented (`dnssec/cds.go`). Recognises CDS/CDNSKEY
+  RDATA-level intent (key add, remove, algorithm rollover, delete-sentinel).
+  Published through the diagnostics API for operator tooling.
+- Parent-side update automation is explicitly deferred — LabyrinthDNS is a
+  recursive resolver, not an authoritative provisioning agent.
 
-### M1.3 — NSEC3 iteration policy (RFC 9276)
+### M1.3 — NSEC3 iteration policy (RFC 9276) ✅
 
-- RFC 9276 §3.1 recommends 0 iterations; >100 is treated as insecure
-  by major validators.
-- **Implementation**: `dnssec/nsec3.go` adds `IterationPolicy` enum
-  (Strict/Tolerant/Lax). Strict rejects >150 with EDE 27 "Unsupported
-  NSEC3 Iterations Value".
-- **Tests**: synthetic zone with iterations=200 → policy=Strict
-  returns SERVFAIL+EDE; policy=Tolerant downgrades to insecure.
+- **Status**: implemented. `dnssec/nsec3.go` enforces `MaxNSEC3Iterations=100`
+  (RFC 9276 §3.1 recommendation). Per-record cap, 16-record proof cap, salt
+  wire limit, 600-unit hash-work budget. Cache path (`cache/nsec3_aggressive.go`)
+  uses a separate 150-unit budget. All hardened by RFC-pinned boundary tests.
 
-### M1.4 — RFC 5011 full lifecycle
+### M1.4 — RFC 5011 full lifecycle ✅
 
-- The REVOKE bit pin landed earlier covers only the bit semantics.
-- Missing: add-pending state with 30-day hold-down timer, removal of
-  trust anchors that disappear without REVOKE, automatic re-priming
-  on root rollover.
-- **Implementation**: `dnssec/trustanchor.go` state machine
-  (Start → AddPending → Valid → Missing → Removed → Revoked) with
-  persistence to disk.
-- **Tests**: time-mocked state transitions covering all edges.
+- **Status**: implemented (`dnssec/rfc5011_lifecycle.go`, 378 lines).
+  Full state machine: TAStateAddPending (30-day hold-down per §2.4.1),
+  TAStateValid, TAStateRevoked. Time-mocked tests cover all transitions.
+  Root trust anchors live in `dnssec/trustanchor.go` (20326 + 38696).
 
-### M1.5 — Multi-signer (RFC 8901)
+### M1.5 — Multi-signer (RFC 8901) ✅
 
-- A zone signed by two independent operators each maintaining their
-  own ZSKs. Both DNSKEY sets must be in the apex DNSKEY RRset and the
-  validator must accept RRSIGs from either signer.
-- **Implementation**: validator already iterates DNSKEYs, but ensure
-  the DS chain accepts a parent-provided DS for any one signer.
-- **Tests**: dual-signer fixture.
+- **Status**: implemented and tested (`dnssec/rfc8901_multi_signer_test.go`).
+  `verifyDNSKEYWithDS` returns true when any KSK matches any DS; the RRSIG
+  iteration loop survives a failed signature from one signer and continues
+  to the next. The comment at `validator.go:505-514` documents the
+  "at least one valid RRSIG" strategy.
 
-### M1.6 — DS digest type policy (RFC 8624)
+### M1.6 — DS digest type policy (RFC 8624) ✅
 
-- SHA-1 DS should be ignored if a SHA-256 DS exists for the same key.
-- **Implementation**: `dnssec/ds.go` digest selection prefers strongest.
-- **Tests**: parent DS RRset with SHA-1 + SHA-256 → SHA-1 ignored.
+- **Status**: implemented (`dnssec/ds.go`). `strongestDSDigestForKey` selects
+  the strongest supported digest among multiple DS RRs targeting the same key.
+  Weak digest types (SHA-1) are ignored when a stronger type (SHA-256) exists
+  for the same key tag + algorithm.
 
-### M1.7 — Negative trust anchor (RFC 7646)
+### M1.7 — Negative trust anchor (RFC 7646) ✅
 
-- Operator can disable validation for a specific zone for a bounded
-  time window (incident response).
-- **Implementation**: `dnssec/nta.go` with config-driven list +
-  expiry; validator short-circuits to insecure for matching qnames.
-- **Tests**: NTA scoped to `example.test.` only — sibling zones still
-  validate.
+- **Status**: implemented (`dnssec/nta.go`, `dnssec/validator.go`,
+  `web/api_dnssec.go`). Operator-configurable NTA store with zone-scoped
+  time-bounded entries. Exposed via the admin API (`GET/POST/DELETE
+  /api/dnssec/nta`). Expired entries pruned by a background goroutine
+  started in `main.go:run()`.
 
-### M1.8 — Counter & EDE wiring
+### M1.8 — Counter & EDE wiring (partial)
 
-- All M1 features emit prometheus counters
-  (`labyrinthdns_dnssec_rollover_dual_sig_validates_total`, etc.) and
-  EDE codes where applicable.
-
-**Estimated commits**: 25. **Test additions**: ~30 cases.
+- **Status**: EDE codes 1, 2, 6, 7, 8, 9, 10 mapped in `dnssec/failure_reason.go`
+  and emitted via server's EDE plumbing. Prometheus counters for rollover/
+  algorithm-specific events not yet wired.
+- **Remaining**: add `labyrinthdns_dnssec_rollover_validates_total` and similar
+  counters; wire into `metrics/metrics.go`.
 
 ---
 
 ## Backend Milestone M2 — Transport Modernization (v0.8.0)
 
-### M2.1 — DoQ (RFC 9250)
+### M2.1 — DoQ (RFC 9250) ❌
 
-- DNS over QUIC. Reuse existing TLS cert infrastructure.
-- **Implementation**: `transport/doq/` using `quic-go`. Wire to same
-  query dispatcher used by DoT/DoH.
-- **Tests**: integration test against a local QUIC client.
+- **Status**: not started. Requires `transport/doq/` package using quic-go,
+  wired to the same query dispatcher used by DoT/DoH.
+- Blocked on: quic-go integration is available but no transport package exists.
 
-### M2.2 — EDNS Padding policy (RFC 7830 + RFC 8467)
+### M2.2 — EDNS Padding policy (RFC 7830 + RFC 8467) ❌
 
-- Block-padding strategy: pad client→server to 128 bytes, server→client
-  to 468 bytes.
-- **Implementation**: `dns/padding.go` policy engine, applied to
-  DoT/DoH responses only (UDP must not pad).
-- **Tests**: response size assertions per policy.
+- **Status**: not started. No `dns/padding.go` policy engine.
+- Padding is a privacy requirement for DoT/DoH responses (UDP must not pad).
 
-### M2.3 — XFR over TLS (RFC 9103)
+### M2.3 — XFR over TLS (RFC 9103) ❌
 
-- AXFR/IXFR encrypted on port 853.
-- **Implementation**: zone transfer module already exists (if any) —
-  audit and wrap TLS.
-- **Tests**: AXFR round-trip over TLS.
+- **Status**: not started. LabyrinthDNS has no XFR client implementation.
+- AXFR/IXFR over TLS on port 853 requires a zone transfer module first.
 
-### M2.4 — EDNS buffer size negotiation (RFC 6891 + RFC 9715)
+### M2.4 — EDNS buffer size negotiation (RFC 6891 + RFC 9715) ✅
 
-- Default 1232 (DNS Flag Day 2020 + 2025 path-MTU recommendation).
-- **Implementation**: respect client's advertised buffer; fall back
-  to 1232 if unspecified or >4096.
-- **Tests**: response truncation at correct boundary.
+- **Status**: implemented. `server/handler.go` defaults to 1232 per DNS Flag
+  Day 2020. Client-advertised buffer sizes outside [512, 65535] are silently
+  clamped to 1232. Responses are truncated at the negotiated boundary.
 
-### M2.5 — Extended DNS Errors full table (RFC 8914)
+### M2.5 — Extended DNS Errors full table (RFC 8914) ✅
 
-- Audit which of codes 0–29 are currently emitted; backfill missing
-  ones (5 stale answer, 9 DNSKEY missing, 18 prohibited, etc.).
-- **Implementation**: `dns/ede.go` table-driven emission.
-- **Tests**: each code path triggers correct EDE.
-
-**Estimated commits**: 20.
+- **Status**: implemented. `server/handler.go` emits EDE codes via
+  `addEDEToResponse` / `addEDEToRawResponse`. Active codes include
+  1 (unsupported DNSKEY alg), 6 (DNSSEC bogus), 7 (sig expired),
+  8 (sig not-yet-valid), 9 (DNSKEY missing), 10 (RRSIGs missing),
+  17 (filtered/rate-limited), 18 (prohibited), 29 (synthesized).
+  `dnssec/failure_reason.go` maps internal failure reasons to EDE codes.
 
 ---
 
