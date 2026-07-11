@@ -397,10 +397,24 @@ func (c *Cache) StoreWithECSStatus(
 	s.mu.Unlock()
 }
 
-// StoreNegative caches a negative DNS result (NXDOMAIN/NODATA).
-// NXDOMAIN applies to the entire name (RFC 2308 §3) so it is stored
-// with qtype=0 as a sentinel. NODATA is type-specific.
+// StoreNegative caches a negative DNS result (NXDOMAIN/NODATA) without a
+// recorded DNSSEC verdict. Prefer StoreNegativeWithStatus so a validated
+// (Secure) denial keeps its AD bit when served from cache.
 func (c *Cache) StoreNegative(name string, qtype uint16, class uint16, negType NegativeType, rcode uint8, authority []dns.ResourceRecord) {
+	c.StoreNegativeWithStatus(name, qtype, class, negType, rcode, authority, "")
+}
+
+// StoreNegativeWithStatus caches a negative DNS result together with the
+// validator's DNSSEC verdict ("secure"/"insecure"/"bogus"/""). Recording the
+// verdict is what lets a cached NXDOMAIN/NODATA be re-served with the AD bit
+// set (buildCacheResponse gates AD on entry.DNSSECStatus == "secure"). Without
+// it, every cached negative for a signed zone silently downgrades to AD=0 on
+// the second and subsequent hits — a discrepancy from every mainstream
+// validating resolver.
+//
+// NXDOMAIN applies to the entire name (RFC 2308 §3) so it is stored with
+// qtype=0 as a sentinel. NODATA is type-specific.
+func (c *Cache) StoreNegativeWithStatus(name string, qtype uint16, class uint16, negType NegativeType, rcode uint8, authority []dns.ResourceRecord, dnssecStatus string) {
 	// RFC 2308 §3 defense-in-depth: refuse to cache a negative response whose
 	// authority section carries an SOA but the SOA's owner does not cover the
 	// queried name. The resolver classifier already filters out-of-bailiwick
@@ -436,13 +450,14 @@ func (c *Cache) StoreNegative(name string, qtype uint16, class uint16, negType N
 	}
 
 	entry := &Entry{
-		Authority:  cloneRRs(authority),
-		InsertedAt: time.Now(),
-		OrigTTL:    ttl,
-		Negative:   true,
-		NegType:    negType,
-		SOA:        soa,
-		RCODE:      rcode,
+		Authority:    cloneRRs(authority),
+		InsertedAt:   time.Now(),
+		OrigTTL:      ttl,
+		Negative:     true,
+		NegType:      negType,
+		SOA:          soa,
+		RCODE:        rcode,
+		DNSSECStatus: dnssecStatus,
 	}
 
 	s := &c.shards[idx]
