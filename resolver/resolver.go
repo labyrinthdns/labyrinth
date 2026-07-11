@@ -750,6 +750,7 @@ func (r *Resolver) resolveIterativeFromInner(
 				UpstreamECS: extractResponseECS(response),
 			}
 			if v := r.dnssecValidator.Load(); v != nil && !skipValidation {
+				r.metrics.SetDNSSECRolloverValidates(v.RolloverValidates())
 				vr, reason := v.ValidateResponseWithReason(response, name, qtype)
 				switch vr {
 				case dnssec.Secure:

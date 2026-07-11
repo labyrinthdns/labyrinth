@@ -248,6 +248,13 @@ type Validator struct {
 	// ntaMatches is incremented every time an NTA hides a validation
 	// outcome. Surfaced via NTAMatches() for the observability layer.
 	ntaMatches atomic.Int64
+
+	// rolloverValidates counts successful validations where at least one
+	// prior RRSIG candidate was skipped (expired, not-yet-valid, algorithm
+	// mismatch, missing DNSKEY). An active zone algorithm rollover (RFC
+	// 4035 §4.6) produces this pattern: the old RRSIG fails but the new
+	// one succeeds. Surfaced via RolloverValidates().
+	rolloverValidates atomic.Int64
 }
 
 // NewValidator creates a new DNSSEC Validator that uses the given Querier to
@@ -304,6 +311,14 @@ func (v *Validator) GetOrCreateNTAStore() *NTAStore {
 // see whether an NTA is actually doing anything.
 func (v *Validator) NTAMatches() int64 {
 	return v.ntaMatches.Load()
+}
+
+// RolloverValidates returns the number of validated responses where the
+// first RRSIG candidate failed but a subsequent one succeeded — a pattern
+// characteristic of zone algorithm rollovers (RFC 4035 §4.6) or multi-signer
+// transitions (RFC 8901).
+func (v *Validator) RolloverValidates() int64 {
+	return v.rolloverValidates.Load()
 }
 
 // AllowSHA1 toggles acceptance of RSASHA1 RRSIGs and SHA1 DS digests.
@@ -715,6 +730,13 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 
 		result := v.validateTrustChain(signerZone, dnskeys, budget)
 		if result == Secure {
+			if sawBogus || sawIndeterminate {
+				// At least one prior RRSIG candidate failed before this
+				// one validated — likely an algorithm rollover (RFC 4035
+				// §4.6) or multi-signer transition (RFC 8901). Count
+				// these so operators can monitor rollover activity.
+				v.rolloverValidates.Add(1)
+			}
 			v.logger.Debug("DNSSEC validation successful",
 				"zone", signerZone, "key_tag", rrsig.KeyTag)
 		}

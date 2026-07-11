@@ -78,6 +78,12 @@ type Metrics struct {
 	dnssecSecure   atomic.Int64
 	dnssecInsecure atomic.Int64
 	dnssecBogus    atomic.Int64
+
+	// dnssecRolloverValidates is set by the resolver from the DNSSEC
+	// validator's rollover counter. It counts validations where at
+	// least one prior RRSIG candidate failed but a later one succeeded —
+	// characteristic of zone algorithm rollovers (RFC 4035 §4.6).
+	dnssecRolloverValidates atomic.Int64
 	blockedQueries    atomic.Int64
 	fallbackQueries   atomic.Int64
 	fallbackRecoveries atomic.Int64
@@ -174,6 +180,11 @@ func (m *Metrics) IncRateLimited()     { m.rateLimited.Add(1) }
 func (m *Metrics) IncDNSSECSecure()    { m.dnssecSecure.Add(1) }
 func (m *Metrics) IncDNSSECInsecure()  { m.dnssecInsecure.Add(1) }
 func (m *Metrics) IncDNSSECBogus()     { m.dnssecBogus.Add(1) }
+
+// SetDNSSECRolloverValidates sets the DNSSEC rollover validation counter
+// from the validator's cumulative count. Called periodically by the
+// resolver to expose zone algorithm rollover activity.
+func (m *Metrics) SetDNSSECRolloverValidates(n int64) { m.dnssecRolloverValidates.Store(n) }
 func (m *Metrics) IncBlockedQueries()     { m.blockedQueries.Add(1) }
 func (m *Metrics) IncFallbackQueries()    { m.fallbackQueries.Add(1) }
 func (m *Metrics) IncFallbackRecoveries() { m.fallbackRecoveries.Add(1) }
@@ -406,6 +417,7 @@ func (m *Metrics) WriteMetrics(w io.Writer) {
 	fmt.Fprintf(w, "labyrinth_dnssec_secure_total %d\n", m.dnssecSecure.Load())
 	fmt.Fprintf(w, "labyrinth_dnssec_insecure_total %d\n", m.dnssecInsecure.Load())
 	fmt.Fprintf(w, "labyrinth_dnssec_bogus_total %d\n", m.dnssecBogus.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_rollover_validates_total %d\n", m.dnssecRolloverValidates.Load())
 	fmt.Fprintf(w, "labyrinth_blocked_queries_total %d\n", m.blockedQueries.Load())
 	fmt.Fprintf(w, "labyrinth_fallback_queries_total %d\n", m.fallbackQueries.Load())
 	fmt.Fprintf(w, "labyrinth_fallback_recoveries_total %d\n", m.fallbackRecoveries.Load())
