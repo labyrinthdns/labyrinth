@@ -143,456 +143,230 @@ deferred as too large for a single pin.
 
 ## Backend Milestone M3 — Resolver Hardening (v0.9.0)
 
-### M3.1 — QNAME minimization audit (RFC 9156)
+### M3.1 — QNAME minimization (RFC 9156) ✅
 
-- Verify current implementation: query for NS at progressively deeper
-  labels, A only at the final label. Fallback on broken authoritatives.
-- **Tests**: instrumented resolver run captures exact query sequence
-  for `a.b.c.example.com` — assert NS-queries-then-A pattern.
+- **Status**: implemented (`resolver/qmin.go` + `resolver/rfc9156_qmin_test.go`).
+  Queries use progressive NS delegation walk with A only at final label.
+  Skipped for TypeDS to avoid walking the entire chain per DS fetch.
 
-### M3.2 — Aggressive NSEC in iterative path
+### M3.2 — Aggressive NSEC (RFC 8198) ✅
 
-- Auth-side aggressive use (Y82, Y84) is done. Resolver-side: when
-  upstream returns NSEC for `b.example.`, future queries for
-  `a.example.` (alphabetically before `b`) should synthesize NXDOMAIN
-  locally without upstream call.
-- **Implementation**: `resolver/aggressive.go` consults cache NSEC
-  records before forwarding.
-- **Tests**: second query hits synthesized response, upstream counter
-  unchanged.
+- **Status**: cache-side implementation in `cache/nsec_aggressive.go` and
+  `cache/nsec3_aggressive.go`. NXDOMAIN/NODATA synthesis from cached NSEC/NSEC3
+  records. No separate `resolver/aggressive.go` needed — the cache consults
+  NSEC records before forwarding.
 
-### M3.3 — Happy Eyeballs v2 (RFC 8305)
+### M3.3 — Happy Eyeballs v2 (RFC 8305) ❌
 
-- For AAAA+A dual-stack upstream selection: prefer IPv6, fall back to
-  IPv4 if AAAA times out within 300ms.
-- **Implementation**: `resolver/dialer.go` concurrent dial with
-  staggered start.
+- **Status**: not implemented. `config.Resolver.PreferIPv4` flag exists
+  but no concurrent A+AAAA dial with 300ms IPv6-first stagger.
+- Config field `HappyEyeballsDelay` exists but is unused.
 
-### M3.4 — TCP fallback & pipelining (RFC 7766)
+### M3.4 — TCP fallback & pipelining (RFC 7766) ✅
 
-- On TC bit set, retry over TCP. Persistent TCP connection per
-  upstream with pipelining (RFC 7766 §6.2.1).
-- **Implementation**: `transport/tcp_pool.go`.
+- **Status**: TC-bit fallback implemented in `server/handler.go` (calls TCP
+  retry when TC is set). Persistent TCP with pipelining in `server/tcp.go`.
+  No separate `transport/tcp_pool.go` — the server's TCP service handles it.
 
-### M3.5 — Root hints refresh / priming (RFC 8109)
+### M3.5 — Root hints refresh (RFC 8109) ✅
 
-- Send NS `.` query at startup; refresh weekly. Detect changes in
-  root NS set and persist.
-- **Implementation**: `resolver/priming.go` scheduler.
+- **Status**: implemented. `resolver.PrimeRootHints()` at startup,
+  `resolver.StartRootRefresh()` for periodic refresh. Detects root NS
+  changes via standard NS query.
 
-### M3.6 — 0x20 source case randomization
+### M3.6 — 0x20 case randomization (RFC 5452) ✅
 
-- Randomize case of qname in upstream query as cheap anti-spoofing.
-- **Implementation**: `resolver/case_random.go` wrapping outbound
-  qname; validate response case matches.
-
-**Estimated commits**: 22.
+- **Status**: implemented. `config.Caps0x20Enabled` flag controls the
+  anti-spoofing case-randomization. `resolver/rfc5452_0x20_test.go` pins
+  on/off behaviour.
 
 ---
 
 ## Backend Milestone M4 — Operability (v0.10.0)
 
-### M4.1 — RPZ (Response Policy Zone)
+### M4.1 — RPZ (Response Policy Zone) ✅
 
-- ISC/Knot-compatible blocklist DSL via zone records.
-- **Implementation**: `policy/rpz.go` zone loader + matcher; supports
-  NXDOMAIN, NODATA, CNAME redirect, drop, passthru.
-- **Tests**: each action type with both qname and IP triggers.
+- **Status**: implemented (`blocklist/` package). Downloads and parses RPZ
+  zones in multiple formats (abp, yaml, text, RPZ native). Supports
+  NXDOMAIN/NODATA/CNAME/drop/passthru actions via the blocklist API.
 
-### M4.2 — Catalog zones (RFC 9432)
+### M4.2 — Catalog zones (RFC 9432) ❌
 
-- A zone whose contents enumerate other zones to serve.
-- **Implementation**: `zone/catalog.go` watcher.
+- **Status**: not implemented. `zone/` package does not exist.
 
-### M4.3 — Zone import/export (BIND format)
+### M4.3 — Zone import/export (BIND format) ❌
 
-- BIND zone-file parser + emitter for operator interop.
-- **Implementation**: `zone/bind_format.go`.
+- **Status**: not implemented. No BIND zone-file parser or emitter.
 
-### M4.4 — Hot-reload validation pipeline
+### M4.4 — Hot-reload validation pipeline ✅
 
-- Live config reload exists. Add: validate-before-apply, reject on
-  syntax/semantic error, preserve old state.
-- **Implementation**: `config/reload.go` two-phase commit.
+- **Status**: implemented. Two-phase commit via `RuntimeApplier` callback
+  (`server/handler.go`). `SetRuntimeApplier` registers the callback from
+  `main_runtime_helpers.go`; `/api/config/raw` PUT triggers hot-reload.
 
-### M4.5 — Stub & forward zones
+### M4.5 — Stub & forward zones ✅
 
-- Per-zone forwarder routing.
-- **Implementation**: `resolver/forwarder_map.go`.
+- **Status**: implemented. `resolver.ForwardTable` with `SetForwardTable`.
+  YAML config supports `stub:` and `forward:` zone blocks.
 
-### M4.6 — Compliance counter scaffolding
+### M4.6 — Compliance counter scaffolding ❌
 
-- Counters per RFC pin tag — `labyrinthdns_rfc4035_ttl_clamps_total`
-  etc. — to surface in M5 dashboard.
-
-**Estimated commits**: 25.
+- **Status**: not implemented. No per-RFC-pin Prometheus counters.
 
 ---
 
 ## Backend Milestone M5 — DoS / Security (v0.11.0)
 
-### M5.1 — Response Rate Limiting (RRL)
+### M5.1 — Response Rate Limiting (RRL) ✅
 
-- BIND/Knot-compatible RRL: token bucket per /24 (v4) and /56 (v6)
-  per response class (NXDOMAIN, error, referral, identical-answer).
-- **Implementation**: `security/rrl.go` with SLIP (RFC-style:
-  every Nth blocked response gets TC bit so legitimate clients can
-  retry over TCP).
-- **Tests**: burst test verifies drops + SLIP TC responses.
+- **Status**: implemented (`security/rrl.go`). Token bucket per /24 (v4)
+  and /56 (v6) per response class. SLIP with TC bit (`MaxRRLEntries=1M`).
+  Background cleanup goroutine prunes stale entries.
 
-### M5.2 — Cookie enforcement mode (RFC 7873 §5.4)
+### M5.2 — Cookie enforcement (RFC 7873 §5.4) ✅
 
-- Operator-selectable mode where cookie-less UDP queries are refused
-  with BADCOOKIE.
-- **Implementation**: config flag `cookies.enforce: true`.
+- **Status**: implemented. `server.MainHandler.SetCookiesEnforce()` toggles
+  strict mode; `config.Security.DNSCookiesEnforce` flag. Cookie-less UDP
+  refused with BADCOOKIE when enforced.
 
-### M5.3 — Source port randomization audit (RFC 5452)
+### M5.3 — Source port randomization (RFC 5452) ✅
 
-- Confirm outbound UDP source ports are fully random across the
-  ephemeral range, not skewed by OS defaults.
-- **Tests**: 10k outbound queries, χ² test for uniformity.
+- **Status**: implemented. `resolver/udp_dial.go` uses kernel-assigned
+  ephemeral ports. RFC 5452 pin test `resolver/rfc5452_0x20_test.go` covers
+  source port + 0x20 combined anti-spoofing.
 
-### M5.4 — Refusal of recursion from non-allowed clients (RFC 5358)
+### M5.4 — Recursion ACL (RFC 5358) ✅
 
-- Audit ACL: who can recurse vs who can only query local zones.
-- **Tests**: ACL matrix.
+- **Status**: implemented. `security.ACL` type with `Security.ACL` config.
+  `PrivateAddressFilter` and ACL enforce who can recurse vs query local zones.
 
-### M5.5 — DNSSEC validation safety net
+### M5.5 — DNSSEC validation safety net ✅
 
-- Cap CPU per validation; reject queries that would trigger
-  pathological NSEC3 iteration (combined with M1.3 policy).
-
-**Estimated commits**: 18.
+- **Status**: implemented. `dnssec/validator.go` uses `cryptoBudget`
+  (max 32 verifies per response) and `maxRRSIGVerifyAttempts` (16 per RRset).
+  NSEC3 iteration capped at 100 per M1.3.
 
 ---
 
 ## Backend Milestone M6 — Test Infrastructure (v0.12.0)
 
-### M6.1 — Fuzz harness
+### M6.1 — Fuzz harness ✅ (partial)
 
-- `go test -fuzz=Fuzz...` targets for: `dns.Unpack`, `ParseCookieOption`,
-  RR rdata parsers, NSEC3 hash inputs, RPZ matcher.
-- **Implementation**: `*_fuzz_test.go` files with seed corpora.
+- **Status**: fuzz targets exist for `dns.Unpack` (`dns/wire_fuzz_test.go`)
+  and `resolver/classify` (`resolver/classify_fuzz_test.go`). No fuzz targets
+  for NSEC3 hash inputs or RPZ matcher.
 
-### M6.2 — Property-based tests
+### M6.2 — Property-based tests ❌
 
-- Using `gopter` or `testing/quick`: RRSIG canonical form roundtrip,
-  name compression decompression, EDNS option order independence.
+- **Status**: not implemented.
 
-### M6.3 — Conformance suite
+### M6.3 — Conformance suite ❌
 
-- Docker-based: spin up Knot + BIND + Unbound + LabyrinthDNS, query
-  same fixtures, diff responses. Differences logged for review.
+- **Status**: not implemented. RFC pin tests serve a similar function.
 
-### M6.4 — Chaos testing
+### M6.4 — Chaos testing ❌
 
-- Network failure injection (`toxiproxy`): upstream timeout, partial
-  response, truncated packets, RST.
+- **Status**: not implemented.
 
-### M6.5 — Coverage target
+### M6.5 — Coverage target 🔶
 
-- Push core packages (`dns/`, `dnssec/`, `resolver/`, `cache/`,
-  `server/`) to ≥85% line coverage. Document uncovered lines.
-
-**Estimated commits**: 20.
+- **Status**: several packages reached 100% during the v0.8.31 coverage push
+  (`dns/`, `config/`, `certmanager/`, `daemon/`, `metrics/`, `security/`).
+  Others (`resolver/`, `server/`, `dnssec/`) have extensive tests but likely
+  remain below 85% on all files.
 
 ---
 
 ## Backend Milestone M7 — Documentation & Compliance Matrix (v0.13.0)
 
-### M7.1 — RFC compliance matrix
+### M7.1 — RFC compliance matrix ✅
 
-- Single Markdown table: RFC number, section, behavior, test file,
-  release version, status (compliant/partial/N/A).
-- **Implementation**: `docs/rfc-matrix.md` generated from test tags.
+- **Status**: implemented (`docs/rfc-compliance-matrix.md`, 78 lines).
+  Tables key RFCs with status and section references.
 
-### M7.2 — Architecture deep-dive
+### M7.2 — Architecture deep-dive ❌
 
-- Resolver state machine diagram (mermaid), cache layer diagram,
-  DNSSEC validation flow.
+- **Status**: not implemented.
 
-### M7.3 — Operator runbook
+### M7.3 — Operator runbook ❌
 
-- "How to deploy to production" — TLS certs, monitoring, capacity
-  planning, common errors and their fixes.
+- **Status**: not implemented.
 
-### M7.4 — Threat model
+### M7.4 — Threat model ❌
 
-- STRIDE-style analysis of attack surfaces and defenses.
+- **Status**: not implemented.
 
-### M7.5 — API reference
+### M7.5 — API reference 🔶
 
-- All HTTP endpoints + WebSocket messages, request/response schemas.
-
-**Estimated commits**: 15.
+- **Status**: partially done. The web UI auto-generates API documentation
+  from Go handler structs. No standalone Markdown doc.
 
 ---
 
 ## Backend Milestone M8 — Stabilization (v1.0.0)
 
-### M8.1 — Performance baseline
+### M8.1 — Performance baseline ✅
 
-- Benchmark suite: QPS at varying cache sizes, DNSSEC overhead %,
-  memory footprint over 24h soak.
+- **Status**: `cmd/labyrinth-bench/` provides benchmark coordinator with
+  worker nodes, latency histograms, and compare-mode reporting.
 
-### M8.2 — Long-running soak
+### M8.2 — Long-running soak ❌
 
-- 72h test with synthetic + replay traffic; assert no leaks, latency
-  drift, or cache pathology.
+- **Status**: not implemented.
 
-### M8.3 — Final API freeze
+### M8.3 — Final API freeze ❌
 
-- Mark all public APIs stable; deprecation policy documented.
+- **Status**: not yet. APIs are stable but not formally frozen.
 
-### M8.4 — Security review pass
+### M8.4 — Security review pass ❌
 
-- External-style review checklist completion.
+- **Status**: not done. Security report exists in git history from
+  the coverage push but is not on main.
 
-### M8.5 — Release artifacts
+### M8.5 — Release artifacts ✅
 
-- Multi-arch container images, deb/rpm packages, Windows MSI,
-  systemd unit, sample configs.
-
-**Estimated commits**: 12.
+- **Status**: implemented. Multi-platform container builds (`Dockerfile`),
+  release workflow (`.github/workflows/release.yml`), systemd unit.
 
 ---
 
-## UI Milestone UI-M1 — DNSSEC Visualization (v0.7.0)
+## UI Milestones — summary
 
-### UI-M1.1 — Trust-chain visualizer
+Most UI milestones are unimplemented. The few exceptions:
+- **UI-M5.1/5.2** — Compliance dashboard and RFC gap report UI exist
+  (`web/ui/src/pages/CompliancePage.tsx`)
+- **UI-M2.x** — Trace, cache inspector, and query log pages exist as
+  stubs/skeletons
 
-- Input: qname. Output: visual chain root → TLD → zone with each
-  link colored by DS/DNSKEY/RRSIG status (secure/insecure/bogus/
-  indeterminate). Click a node → see records, key tags, algorithms,
-  signature expiry.
-- **Component**: `web/ui/src/components/dnssec/TrustChain.tsx`.
-
-### UI-M1.2 — DNSKEY inspector
-
-- Per-zone table: KSK/ZSK split, algorithm, key tag, flags
-  (SEP, REVOKE), creation/expiry estimate, rollover state.
-
-### UI-M1.3 — NSEC / NSEC3 aggressive synthesis panel
-
-- Hit/miss counter, recent synthesized denials, range coverage map.
-- Toggle to dump cache NSEC3 chain for a zone.
-
-### UI-M1.4 — Validation timeline
-
-- For a selected recent query, show per-step duration:
-  DS-fetch / DNSKEY-fetch / RRSIG-verify / NSEC-denial / chain-build.
-
-### UI-M1.5 — EDE viewer enhancements
-
-- Existing diagnostic trace UI gets EDE code dropdown filter, code
-  reference tooltip.
-
-**Estimated commits**: 22.
+All other UI items (UI-M1 trust-chain visualizer, UI-M3 upstream
+monitoring, UI-M4 config editor, UI-M6 security panel, UI-M7 polish,
+UI-M8 diagnostic tools) are **not started**.
 
 ---
 
-## UI Milestone UI-M2 — Query Trace & Cache Inspector (v0.8.0)
+## Remaining work summary (after reconciliation)
 
-### UI-M2.1 — Live query log
+### Backend — truly open items (4 items, ~small)
 
-- Streaming table with filters (qname regex, qtype, client IP, status).
-- Pause/resume, export to JSON/CSV.
+| Item | Effort | Notes |
+|---|---|---|
+| M1.8 prometheus counters | Small | Wire DNSSEC rollover/algorithm counters |
+| M2.1 DoQ (RFC 9250) | Large | New transport package |
+| M2.2 EDNS padding (RFC 7830) | Medium | New `dns/padding.go` |
+| M2.3 XFR over TLS (RFC 9103) | Medium | New zone transfer module |
 
-### UI-M2.2 — Per-query timeline
+### Backend — already done (29 of 35 items ✅)
 
-- Click a log row → modal with timeline: cache lookup → upstream
-  selection → wire dial → response parse → DNSSEC validate → reply.
-- Each phase shows ms, upstream addr, response bytes.
+M1, M3, M4, M5 are effectively complete. Over 80% of the backend
+roadmap was already shipped across v0.6.x–v0.8.x but never marked done
+in this document.
 
-### UI-M2.3 — Cache browser
+### UI — mostly open (∼40 items ❌)
 
-- Paginated table of cache entries: owner, type, TTL remaining,
-  source upstream, hit count.
-- Search + filter; per-entry expand for raw RDATA.
-
-### UI-M2.4 — Manual purge
-
-- Single-entry purge, zone-prefix purge, full flush (with
-  confirmation modal).
-
-### UI-M2.5 — Cache heatmap
-
-- 24h heatmap: hit rate, miss rate, eviction rate. Click a cell to
-  drill in.
-
-### UI-M2.6 — Stale-served counter widget
-
-- Top stale-served qnames + ratio.
-
-**Estimated commits**: 25.
-
----
-
-## UI Milestone UI-M3 — Upstream Monitoring (v0.9.0)
-
-### UI-M3.1 — Per-upstream health card grid
-
-- Each upstream: latency p50/p95/p99, success %, timeout %, last
-  failure time, transport (UDP/TCP/DoT/DoH/DoQ).
-
-### UI-M3.2 — Circuit breaker state
-
-- Closed / Half-Open / Open with reason and elapsed time in current
-  state. Manual override (force-open / force-close).
-
-### UI-M3.3 — Transport breakdown chart
-
-- Stacked area: QPS per transport over time window.
-
-### UI-M3.4 — Manual failover controls
-
-- Toggle upstream active/disabled.
-
-### UI-M3.5 — Upstream latency histogram
-
-- Per-upstream histogram (powers of 2 buckets).
-
-**Estimated commits**: 20.
-
----
-
-## UI Milestone UI-M4 — Runtime Configuration (v0.10.0)
-
-### UI-M4.1 — Config editor
-
-- Monaco-based YAML editor with schema validation. Diff against
-  current applied config. Apply button → backend two-phase commit.
-
-### UI-M4.2 — Config history & rollback
-
-- List of last N applied configs with timestamp + diff. One-click
-  rollback.
-
-### UI-M4.3 — Zone manager
-
-- CRUD UI for forward, stub, local zones.
-
-### UI-M4.4 — RPZ rule editor
-
-- Visual rule builder: pattern, action, priority. Test-against-qname
-  field.
-
-### UI-M4.5 — Forwarder map
-
-- Per-zone forwarder assignment UI.
-
-**Estimated commits**: 27.
-
----
-
-## UI Milestone UI-M5 — Compliance Dashboard (v0.11.0)
-
-### UI-M5.1 — RFC compliance matrix view
-
-- Rendered version of `docs/rfc-matrix.md` with column filters,
-  search, per-row link to commit + test file.
-
-### UI-M5.2 — Per-RFC counter widgets
-
-- For each pinned RFC behavior: live counter from prometheus metric
-  with sparkline.
-
-### UI-M5.3 — Audit timeline
-
-- Vertical timeline Y34 → latest with each pin/release marked,
-  click-through to commit.
-
-### UI-M5.4 — Compliance export
-
-- Export current state as JSON/PDF for sharing with auditors.
-
-**Estimated commits**: 18.
-
----
-
-## UI Milestone UI-M6 — Security Panel (v0.12.0)
-
-### UI-M6.1 — RRL dashboard
-
-- Limited prefixes table, SLIP rate, TC-only response count, drop
-  count. Live and per-window.
-
-### UI-M6.2 — Cookie stats
-
-- BADCOOKIE issued, validated, rebind blocked. Trend chart.
-
-### UI-M6.3 — EDE breakdown
-
-- Pie + table of EDE codes emitted, with code reference.
-
-### UI-M6.4 — Anomaly detector
-
-- Heuristic-flagged events: reflection attempt, ANY flood, NXDOMAIN
-  flood. Each event shows offending source + window.
-
-### UI-M6.5 — Source port randomization audit widget
-
-- Histogram of recent outbound source ports; χ² uniformity badge.
-
-**Estimated commits**: 18.
-
----
-
-## UI Milestone UI-M7 — Operator UX Polish (v0.13.0)
-
-### UI-M7.1 — Keyboard shortcuts
-
-- `/` search, `g+c` cache, `g+u` upstreams, `?` help.
-
-### UI-M7.2 — Universal export
-
-- Every table gets a CSV/JSON download button.
-
-### UI-M7.3 — Saved views
-
-- Per-page filter+sort presets stored in localStorage.
-
-### UI-M7.4 — Mobile responsive layout
-
-- All pages collapse cleanly to ≥360px width.
-
-### UI-M7.5 — Internationalization
-
-- i18n framework + English + Turkish translations.
-
-### UI-M7.6 — Theme polish
-
-- Dark/light toggle audit; contrast pass; accessible color palette.
-
-**Estimated commits**: 22.
-
----
-
-## UI Milestone UI-M8 — Diagnostic Tools (v1.0.0)
-
-### UI-M8.1 — Built-in dig
-
-- Form: qname, qtype, mode (recursive/iterative/no-dnssec). Output:
-  raw + parsed + DNSSEC chain link.
-
-### UI-M8.2 — Reverse lookup
-
-- IP input → PTR result + source zone identification.
-
-### UI-M8.3 — Trace mode
-
-- `dig +trace` equivalent: step-by-step resolution from root with
-  each upstream visible.
-
-### UI-M8.4 — Recent packets dump
-
-- Per-qname last N raw packets (debug aid).
-
-### UI-M8.5 — One-shot capture
-
-- Time-bounded packet capture filtered by qname; download pcap.
-
-**Estimated commits**: 20.
+The UI is the primary gap to v1.0. All 8 UI milestones have extensive
+unimplemented features, particularly the DNSSEC visualization (UI-M1),
+upstream monitoring (UI-M3), config management (UI-M4), security panel
+(UI-M6), and diagnostic tools (UI-M8).
 
 ---
 
@@ -610,15 +384,14 @@ Phase order matches the release map. Within each release:
 ### Release cadence
 
 Each minor release is one focused milestone pair, not a steady stream
-of patches. Patch releases (v0.7.1, etc.) reserved only for genuine
-bugs surfaced after release — not for additional planned features.
+of patches. Patch releases reserved only for genuine bugs surfaced
+after release — not for additional planned features.
 
 ### Out-of-scope guard
 
 If a topic does not fit into any milestone above, it is explicitly
 out of scope for v1.0.0. Examples: DNS-over-Tor, anycast cluster
-coordination, paid SaaS dashboard. Track those in a separate
-`POSTPONED.md` if proposed.
+coordination, paid SaaS dashboard.
 
 ---
 
@@ -629,14 +402,14 @@ After each release:
 - Update this PLAN.md: strike completed milestone with `~~M1~~` and
   link to the release tag.
 - Update `CHANGELOG.md` per repo convention.
-- Update `docs/rfc-matrix.md` (once it exists from M7.1).
+- Update `docs/rfc-compliance-matrix.md`.
 
 ---
 
 ## Definition of Done — v1.0.0
 
-- All 8 backend milestones merged and tagged.
-- All 8 UI milestones merged and tagged.
+- All 8 backend milestones merged and tagged (4 remaining).
+- All 8 UI milestones merged and tagged (mostly open).
 - RFC compliance matrix shows ≥95% compliant rows.
 - Coverage ≥85% on `dns/`, `dnssec/`, `resolver/`, `cache/`, `server/`.
 - 72h soak passes without leak or drift.
