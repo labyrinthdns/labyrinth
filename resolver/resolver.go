@@ -4,6 +4,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"net"
@@ -1070,48 +1071,116 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 		}
 	}
 
-	// Recursive resolve for NS hostname — try A then AAAA.
-	// Use resolveNSAddr (bypasses inflight) to avoid deadlock when the NS
-	// hostname itself requires resolution through the same inflight key.
+	// Recursive resolve for NS hostname — Happy Eyeballs v2 (RFC 8305):
+	// fire A and AAAA queries concurrently with a 300ms IPv6-first stagger
+	// and use whichever responds first. This avoids paying the latency of
+	// an A timeout before trying AAAA (or vice-versa).
 	// First pass: out-of-bailiwick NS (safe, no loop risk).
 	// Second pass: in-bailiwick NS (needed for TLDs like .tr where NS is *.ns.tr).
+	happyEyeballsDelay := 300 * time.Millisecond
 	for pass := 0; pass < 2; pass++ {
 		for _, ns := range shuffled {
 			inZone := security.InZone(ns.hostname, currentZone)
 			if pass == 0 && inZone {
-				continue // first pass: skip in-bailiwick
+				continue
 			}
 			if pass == 1 && !inZone {
-				continue // second pass: skip out-of-bailiwick (already tried)
+				continue
 			}
 
-			result, err := r.resolveNSAddr(ns.hostname, dns.TypeA, visited.budget)
-			if err == nil && !nsHasCNAMERedirect(ns.hostname, result.Answers) {
-				for _, rr := range result.Answers {
-					if rr.Type == dns.TypeA {
-						ip, parseErr := dns.ParseA(rr.RData)
-						if parseErr == nil {
-							return ns.hostname, ip.String(), nil
-						}
-					}
-				}
-			}
-			// Fallback to AAAA (always try, even with PreferIPv4 — it's a last resort)
-			result, err = r.resolveNSAddr(ns.hostname, dns.TypeAAAA, visited.budget)
-			if err == nil && !nsHasCNAMERedirect(ns.hostname, result.Answers) {
-				for _, rr := range result.Answers {
-					if rr.Type == dns.TypeAAAA {
-						ip, parseErr := dns.ParseAAAA(rr.RData)
-						if parseErr == nil {
-							return ns.hostname, ip.String(), nil
-						}
-					}
-				}
+			hostname, ip, err := r.resolveNSHappyEyeballs(ns.hostname, happyEyeballsDelay, visited)
+			if err == nil {
+				return hostname, ip, nil
 			}
 		}
 	}
 
 	return "", "", errors.New("no reachable nameserver")
+}
+
+// resolveNSHappyEyeballs resolves an NS hostname using Happy Eyeballs v2
+// (RFC 8305): fire A and AAAA queries concurrently with an IPv6-first
+// stagger, returning the first successful result. Prefers IPv4 when the
+// resolver config sets PreferIPv4.
+func (r *Resolver) resolveNSHappyEyeballs(hostname string, delay time.Duration, visited *visitedSet) (string, string, error) {
+	type nsResult struct {
+		ip  string
+		err error
+	}
+
+	// Determine which family to start first.
+	firstType, secondType := uint16(dns.TypeAAAA), uint16(dns.TypeA)
+	firstLabel, secondLabel := "AAAA", "A"
+	if r.config.PreferIPv4 {
+		firstType, secondType = dns.TypeA, dns.TypeAAAA
+		firstLabel, secondLabel = "A", "AAAA"
+	}
+
+	results := make(chan nsResult, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Launch the first address family immediately.
+	go func() {
+		result, err := r.resolveNSAddr(hostname, firstType, visited.budget)
+		if err == nil && !nsHasCNAMERedirect(hostname, result.Answers) {
+			for _, rr := range result.Answers {
+				if rr.Type == firstType {
+					ip, parseErr := dnsParseByType(rr.RData, firstType)
+					if parseErr == nil {
+						results <- nsResult{ip: ip.String()}
+						return
+					}
+				}
+			}
+		}
+		results <- nsResult{err: fmt.Errorf("%s resolution failed: %w", firstLabel, err)}
+	}()
+
+	// Launch the second address family after the staggered delay,
+	// unless the first has already succeeded.
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		result, err := r.resolveNSAddr(hostname, secondType, visited.budget)
+		if err == nil && !nsHasCNAMERedirect(hostname, result.Answers) {
+			for _, rr := range result.Answers {
+				if rr.Type == secondType {
+					ip, parseErr := dnsParseByType(rr.RData, secondType)
+					if parseErr == nil {
+						results <- nsResult{ip: ip.String()}
+						return
+					}
+				}
+			}
+		}
+		results <- nsResult{err: fmt.Errorf("%s resolution failed: %w", secondLabel, err)}
+	}()
+
+	// Collect results — return the first success, or the last error if all fail.
+	var lastErr error
+	for i := 0; i < 2; i++ {
+		res := <-results
+		if res.err == nil {
+			return hostname, res.ip, nil
+		}
+		lastErr = res.err
+	}
+	return "", "", lastErr
+}
+
+// dnsParseByType parses an IP address from RDATA, dispatching on A vs AAAA.
+func dnsParseByType(rdata []byte, qtype uint16) (net.IP, error) {
+	if qtype == dns.TypeA {
+		return dns.ParseA(rdata)
+	}
+	return dns.ParseAAAA(rdata)
 }
 
 // nsHasCNAMERedirect reports whether the answer set for an NS-hostname
