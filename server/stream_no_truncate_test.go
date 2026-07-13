@@ -85,7 +85,7 @@ func TestRRLSlip_StreamDeliversRealAnswer(t *testing.T) {
 	}
 	query := buildTestQuery("rrl-stream.example.com", dns.TypeA)
 	isTC := func(resp []byte) bool {
-		return resp != nil && len(resp) >= 4 && binary.BigEndian.Uint16(resp[2:4])>>9&1 == 1
+		return len(resp) >= 4 && binary.BigEndian.Uint16(resp[2:4])>>9&1 == 1
 	}
 
 	// UDP control: the same flood must produce at least one TC=1 slip.

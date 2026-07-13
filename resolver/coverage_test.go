@@ -199,8 +199,8 @@ func TestResolveIterativeNXDOMAINCache(t *testing.T) {
 	}
 	// Should be cached as negative
 	entry, ok := r.cache.Get("nxd.com", dns.TypeA, dns.ClassIN)
-	if ok && entry.Negative {
-		// good — negative cache hit
+	if !ok || !entry.Negative {
+		t.Log("expected negative cache entry after NXDOMAIN") // non-fatal diagnostic
 	}
 }
 
@@ -2268,7 +2268,7 @@ func TestResolveIterativeMaxDepthExceeded(t *testing.T) {
 
 		// Each referral delegates to a unique zone: depth1.com, depth2.com, etc.
 		// The NS hostname and glue IP stay the same (mock server).
-		zone := "depth" + string(rune('0'+count)) + ".com"
+		zone := "depth" + string('0'+count) + ".com"
 		nsRData := dns.BuildPlainName("ns.depth.com")
 		return &dns.Message{
 			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},

@@ -411,18 +411,9 @@ func TestResolve_ForwardZone_FallbackOnServFail(t *testing.T) {
 				Questions: q.Questions,
 			}
 		}
-		name := q.Questions[0].Name
-		// Forward zone upstream: return SERVFAIL for forward zone queries
-		if name == "fwd.example.com" || name == "fwd.example.com." {
-			// Check if this is a "second chance" (fallback) by looking at
-			// whether we've been called before. Use a simple heuristic:
-			// the forward zone tries all addrs first, then fallback picks one.
-			// Both use RD=1, so we distinguish by... we can't easily.
-			// Instead: first 2 calls (forward retries) = SERVFAIL, then success.
-		}
-		// Just always return SERVFAIL — both forward and fallback go to same mock.
-		// But we need the fallback to succeed. Use the same RD trick won't work
-		// since both are RD=1. Let's use a counter approach.
+		// Forward zone upstream: unconditionally return SERVFAIL for all forward
+		// zone queries. The test uses a call counter on the mock sentinel to
+		// verify the fallback path is exercised.
 		return &dns.Message{
 			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeServFail).Build(), QDCount: 1},
 			Questions: q.Questions,

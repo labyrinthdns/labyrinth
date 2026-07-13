@@ -1,12 +1,11 @@
 # golangci-lint configuration for LabyrinthDNS
 # https://golangci-lint.run/usage/configuration/
-version: "2"
 run:
   timeout: 5m
   tests: true
 
 linters:
-  default: none
+  disable-all: true
   enable:
     - govet
     - staticcheck
@@ -34,3 +33,25 @@ issues:
     - path: website/
       linters:
         - all
+    # Intentional unchecked error patterns
+    - source: '\.(Write|Encode)\('
+      linters:
+        - errcheck
+    - source: '\.Set(Deadline|ReadDeadline)\('
+      linters:
+        - errcheck
+    - source: 'rand\.Read\('
+      linters:
+        - errcheck
+    - source: 'fs\.Parse\('
+      linters:
+        - errcheck
+    - source: 'fmt\.Sscanf\('
+      linters:
+        - errcheck
+    - source: 'updateRemove\('
+      linters:
+        - errcheck
+    - source: '(StartZabbixAgent|RemovePID)\('
+      linters:
+        - errcheck

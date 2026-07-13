@@ -12,29 +12,29 @@ func FuzzClassifyResponse(f *testing.F) {
 		uint16(0x8180), // flags: QR=1, RD=1, RA=1, RCODE=0
 		uint8(1),       // answer count
 		uint8(0),       // authority count
-		uint16(dns.TypeA),
-		uint16(dns.TypeCNAME),
-		uint16(dns.TypeNS),
-		uint16(dns.TypeSOA),
+		dns.TypeA,
+		dns.TypeCNAME,
+		dns.TypeNS,
+		dns.TypeSOA,
 	)
 	// Seed: NXDOMAIN
 	f.Add(
 		uint16(0x8183), // RCODE=3
 		uint8(0),
 		uint8(1),
-		uint16(dns.TypeA),
+		dns.TypeA,
 		uint16(0),
 		uint16(0),
-		uint16(dns.TypeSOA),
+		dns.TypeSOA,
 	)
 	// Seed: referral (NS in authority, no SOA)
 	f.Add(
 		uint16(0x8100), // RCODE=0, no answers
 		uint8(0),
 		uint8(1),
-		uint16(dns.TypeA),
+		dns.TypeA,
 		uint16(0),
-		uint16(dns.TypeNS),
+		dns.TypeNS,
 		uint16(0),
 	)
 	// Seed: SERVFAIL
@@ -42,7 +42,7 @@ func FuzzClassifyResponse(f *testing.F) {
 		uint16(0x8182), // RCODE=2
 		uint8(0),
 		uint8(0),
-		uint16(dns.TypeA),
+		dns.TypeA,
 		uint16(0),
 		uint16(0),
 		uint16(0),

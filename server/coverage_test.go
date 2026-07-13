@@ -1480,5 +1480,5 @@ func TestBuildResponsePackError(t *testing.T) {
 // Compile guard
 // ---------------------------------------------------------------------------
 
-var _ = fmt.Sprintf("coverage tests loaded")
+var _ = "coverage tests loaded"
 var _ = strings.TrimSpace("")

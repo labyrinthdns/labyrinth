@@ -1060,7 +1060,7 @@ func parseStubZones(values map[string]string) []StubZoneConfig {
 	zones := parseZoneAddrs(values, "stub_zones.")
 	result := make([]StubZoneConfig, len(zones))
 	for i, z := range zones {
-		result[i] = StubZoneConfig{Name: z.Name, Addrs: z.Addrs}
+		result[i] = StubZoneConfig(z)
 	}
 	return result
 }

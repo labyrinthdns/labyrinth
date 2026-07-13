@@ -78,7 +78,7 @@ func TestRandomizeCase_CaseInsensitiveEqual(t *testing.T) {
 	name := "Example.Com"
 	for i := 0; i < 100; i++ {
 		result := randomizeCase(name)
-		if strings.ToLower(result) != strings.ToLower(name) {
+		if !strings.EqualFold(result, name) {
 			t.Errorf("randomizeCase broke the domain: %q → %q", name, result)
 		}
 	}

@@ -1097,7 +1097,7 @@ func TestHandleRRLSlipWithCookies(t *testing.T) {
 	var slipped bool
 	for i := 0; i < 20; i++ {
 		resp, _ := handler.Handle(query, addr)
-		if resp != nil && len(resp) >= 4 {
+		if len(resp) >= 4 {
 			flags := binary.BigEndian.Uint16(resp[2:4])
 			if flags>>9&1 == 1 { // TC bit
 				slipped = true

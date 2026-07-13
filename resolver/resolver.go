@@ -593,21 +593,6 @@ func (r *Resolver) resolveIterativeECS(
 	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "", false, clientECS)
 }
 
-// resolveIterativeFrom keeps the public-ish signature stable for callers like
-// the forward/stub paths and tests; it always runs DNSSEC validation on the
-// terminal answer.
-func (r *Resolver) resolveIterativeFrom(
-	name string,
-	qtype uint16,
-	qclass uint16,
-	cnameDepth int,
-	visited *visitedSet,
-	initialNS []nsEntry,
-	initialZone string,
-) (*ResolveResult, error) {
-	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, initialNS, initialZone, false, nil)
-}
-
 // resolveIterativeFromInner drives the iterative resolution loop. When
 // skipValidation is true the validator call on the terminal answer is bypassed
 // — used by QueryDNSSEC to fetch DNSKEY/DS records without recursing back into
@@ -1109,7 +1094,7 @@ func (r *Resolver) resolveNSHappyEyeballs(hostname string, delay time.Duration, 
 	}
 
 	// Determine which family to start first.
-	firstType, secondType := uint16(dns.TypeAAAA), uint16(dns.TypeA)
+	firstType, secondType := dns.TypeAAAA, dns.TypeA
 	firstLabel, secondLabel := "AAAA", "A"
 	if r.config.PreferIPv4 {
 		firstType, secondType = dns.TypeA, dns.TypeAAAA
