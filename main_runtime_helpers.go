@@ -260,6 +260,47 @@ func startDNSServers(
 		}
 	}
 
+	// Start DoQ server if enabled (RFC 9250). Shares TLS certs with DoT.
+	if cfg.Server.DoQEnabled {
+		switch {
+		case sharedTLSConfig != nil && len(sharedTLSConfig) > 0 && sharedTLSConfig[0] != nil:
+			doqServer, doqErr := server.NewDoQServerWithTLSConfig(
+				cfg.Server.DoQListenAddr,
+				handler,
+				sharedTLSConfig[0],
+				cfg.Server.TCPTimeout,
+				cfg.Server.MaxTCPConns,
+				logger,
+			)
+			if doqErr != nil {
+				logger.Error("failed to start DoQ server with auto-TLS", "error", doqErr)
+				return nil, doqErr
+			}
+			go func() { errCh <- doqServer.Serve(ctx) }()
+			logger.Info("DoQ server started (auto-TLS)", "addr", cfg.Server.DoQListenAddr)
+
+		case cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "":
+			doqServer, doqErr := server.NewDoQServer(
+				cfg.Server.DoQListenAddr,
+				handler,
+				cfg.Server.TLSCertFile,
+				cfg.Server.TLSKeyFile,
+				cfg.Server.TCPTimeout,
+				cfg.Server.MaxTCPConns,
+				logger,
+			)
+			if doqErr != nil {
+				logger.Error("failed to start DoQ server", "error", doqErr)
+				return nil, doqErr
+			}
+			go func() { errCh <- doqServer.Serve(ctx) }()
+			logger.Info("DoQ server started", "addr", cfg.Server.DoQListenAddr)
+
+		default:
+			logger.Warn("DoQ enabled but no TLS certificate available — set tls_cert_file/tls_key_file or enable web.auto_tls")
+		}
+	}
+
 	return errCh, nil
 }
 

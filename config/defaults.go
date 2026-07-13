@@ -16,6 +16,8 @@ func defaultConfig() *Config {
 			TCPIdleTimeout: 5 * time.Second,
 			DoTEnabled:     false,
 			DoTListenAddr:  ":853",
+			DoQEnabled:     false,
+			DoQListenAddr:  ":853",
 		},
 		Resolver: ResolverConfig{
 			MaxDepth:              30,

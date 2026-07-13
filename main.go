@@ -376,6 +376,9 @@ func run() int {
 		return 1
 	}
 
+	// DoH3 requires quic-go, which is also used by DoQ. Both share the
+	// same quic-go dependency already in go.mod.
+
 	// Setup SIGUSR1/SIGUSR2 handlers (Unix only, no-op on Windows)
 	setupUnixSignals(logger, c)
 

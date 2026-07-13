@@ -130,6 +130,8 @@ type ServerConfig struct {
 	TCPIdleTimeout time.Duration
 	DoTEnabled     bool
 	DoTListenAddr  string
+	DoQEnabled     bool
+	DoQListenAddr  string
 	TLSCertFile    string
 	TLSKeyFile     string
 }
@@ -375,6 +377,8 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setDuration(&cfg.Server.TCPIdleTimeout, "server.tcp_idle_timeout")
 	setBool(&cfg.Server.DoTEnabled, "server.dot_enabled")
 	setString(&cfg.Server.DoTListenAddr, "server.dot_listen_addr")
+	setBool(&cfg.Server.DoQEnabled, "server.doq_enabled")
+	setString(&cfg.Server.DoQListenAddr, "server.doq_listen_addr")
 	setString(&cfg.Server.TLSCertFile, "server.tls_cert_file")
 	setString(&cfg.Server.TLSKeyFile, "server.tls_key_file")
 
