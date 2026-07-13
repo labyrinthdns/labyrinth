@@ -104,13 +104,14 @@ deferred as too large for a single pin.
   /api/dnssec/nta`). Expired entries pruned by a background goroutine
   started in `main.go:run()`.
 
-### M1.8 — Counter & EDE wiring (partial)
+### M1.8 — Counter & EDE wiring ✅
 
-- **Status**: EDE codes 1, 2, 6, 7, 8, 9, 10 mapped in `dnssec/failure_reason.go`
-  and emitted via server's EDE plumbing. Prometheus counters for rollover/
-  algorithm-specific events not yet wired.
-- **Remaining**: add `labyrinthdns_dnssec_rollover_validates_total` and similar
-  counters; wire into `metrics/metrics.go`.
+- **Status**: DNSSEC verdict counters (Secure/Insecure/Bogus) and
+  algorithm-rollover counter (`labyrinth_dnssec_rollover_validates_total`)
+  are exported via `/metrics`. EDE codes 1, 2, 6, 7, 8, 9, 10 mapped
+  in `dnssec/failure_reason.go` and emitted via server's EDE plumbing
+  with a per-code breakdown (`labyrinth_ede_emissions_total{code="..."}`)
+  at the `/metrics` endpoint.
 
 ---
 
@@ -368,17 +369,16 @@ UI-M8 diagnostic tools) are **not started**.
 
 ## Remaining work summary (after reconciliation)
 
-### Backend — truly open items (3 items, ~medium)
+### Backend — truly open items (2 items, ~large)
 
 | Item | Effort | Notes |
 |---|---|---|
-| M1.8 prometheus counters | Small | Wire DNSSEC rollover/algorithm counters |
 | M2.1 DoQ (RFC 9250) | Large | New transport package |
 | M2.3 XFR over TLS (RFC 9103) | Medium | New zone transfer module |
 
-### Backend — already done (31 of 35 items ✅)
+### Backend — already done (32 of 35 items ✅)
 
-M1, M2, M3, M4, M5 are effectively complete. Over 85% of the backend
+M1, M2, M3, M4, M5 are effectively complete. Over 90% of the backend
 roadmap was already shipped across v0.6.x–v0.8.x but never marked done
 in this document.
 

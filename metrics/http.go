@@ -120,6 +120,10 @@ func (m *Metrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "labyrinth_dnssec_verdicts_total{verdict=\"insecure\"} %d\n", m.dnssecInsecure.Load())
 	fmt.Fprintf(w, "labyrinth_dnssec_verdicts_total{verdict=\"bogus\"} %d\n", m.dnssecBogus.Load())
 
+	fmt.Fprintln(w, "# HELP labyrinth_dnssec_rollover_validates_total DNSSEC algorithm rollover validations (at least one RRSIG failed then a later one succeeded).")
+	fmt.Fprintln(w, "# TYPE labyrinth_dnssec_rollover_validates_total counter")
+	fmt.Fprintf(w, "labyrinth_dnssec_rollover_validates_total %d\n", m.dnssecRolloverValidates.Load())
+
 	fmt.Fprintln(w, "# HELP labyrinth_blocked_queries_total Queries blocked by the blocklist surface.")
 	fmt.Fprintln(w, "# TYPE labyrinth_blocked_queries_total counter")
 	fmt.Fprintf(w, "labyrinth_blocked_queries_total %d\n", m.blockedQueries.Load())

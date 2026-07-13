@@ -55,6 +55,7 @@ func TestPrometheusExport_HasHelpAndTypeForEverySeries(t *testing.T) {
 		{"labyrinth_outbound_badcookie_retries_total", "counter"},
 		{"labyrinth_stale_while_refresh_total", "counter"},
 		{"labyrinth_dnssec_verdicts_total", "counter"},
+		{"labyrinth_dnssec_rollover_validates_total", "counter"},
 		{"labyrinth_blocked_queries_total", "counter"},
 		{"labyrinth_ede_emissions_total", "counter"},
 		{"labyrinth_uptime_seconds", "gauge"},

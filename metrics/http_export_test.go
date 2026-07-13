@@ -20,6 +20,7 @@ func TestPrometheusExport_IncludesEDEAndDNSSECVerdicts(t *testing.T) {
 	m.IncDNSSECSecure()
 	m.IncDNSSECInsecure()
 	m.IncDNSSECBogus()
+	m.SetDNSSECRolloverValidates(1)
 	m.IncBlockedQueries()
 	m.IncEDE(6)
 	m.IncEDE(17)
@@ -35,6 +36,7 @@ func TestPrometheusExport_IncludesEDEAndDNSSECVerdicts(t *testing.T) {
 		`labyrinth_dnssec_verdicts_total{verdict="secure"} 1`,
 		`labyrinth_dnssec_verdicts_total{verdict="insecure"} 1`,
 		`labyrinth_dnssec_verdicts_total{verdict="bogus"} 1`,
+		`labyrinth_dnssec_rollover_validates_total 1`,
 		`labyrinth_blocked_queries_total 1`,
 		`labyrinth_ede_emissions_total{code="6"} 1`,
 		`labyrinth_ede_emissions_total{code="17"} 1`,
