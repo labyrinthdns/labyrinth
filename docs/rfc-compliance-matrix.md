@@ -48,6 +48,7 @@ _Generated from test files and implementation audit — 2026-07-06_
 | RFC 8914 | Extended DNS Errors (EDE) | ✅ | Codes 0–29 defined, IANA-pinned, emitted for DNSSEC/DNS64/NSEC-cache/stale/reachability/etc. See all `rfc8914_*_test.go` files |
 | **Resolution** |
 | RFC 8109 | Priming Stub Resolvers (Root Hints) | ✅ | `resolver/rfc8109_root_priming_test.go` |
+| RFC 8305 | Happy Eyeballs v2 | ✅ | `resolver/resolver.go` `resolveNSHappyEyeballs`, `resolver/rfc8305_happy_eyeballs_test.go` |
 | RFC 9156 | DNS Query Name Minimisation (QNAME) | ✅ | `resolver/rfc9156_qmin_test.go` |
 | RFC 6672 | DNAME Redirection | ✅ | `resolver/rfc6672_dname_bailiwick_test.go`, `resolver/rfc6672_dname_synth_test.go` |
 | RFC 6147 | DNS64 — DNS Extensions for NAT64 | ✅ | `resolver/dns64.go`, `resolver/dns64_test.go` |
@@ -75,4 +76,3 @@ _Generated from test files and implementation audit — 2026-07-06_
 | RFC 9250 | DNS over QUIC (DoQ) | Planned for M2.1 |
 | RFC 9103 | Zone Transfer over TLS (XFR-over-TLS) | Planned for M2.3 |
 | RFC 9432 | Catalog Zones | Planned for M4.2 |
-| RFC 8305 | Happy Eyeballs v2 | Planned for M3.3 |
