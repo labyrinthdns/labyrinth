@@ -4,13 +4,21 @@ This document captures the complete remaining work plan after audit
 milestone Y93 (release v0.6.41). The audit phase Y34→Y93 produced 61
 RFC compliance pins and 4 real bug fixes across 8 patch releases.
 
-> **Reconciliation note (2026-07-12):** this roadmap has been partially
-> reconciled against the v0.8.31 codebase. M1 (DNSSEC completeness) and
-> M2 (transport modernization) below reflect actual implementation status;
-> M3–M8 still carry their pre-v0.8.x descriptions. Use
-> [`docs/rfc-gap-analysis-2026-07.md`](docs/rfc-gap-analysis-2026-07.md)
-> and [`docs/rfc-compliance-matrix.md`](docs/rfc-compliance-matrix.md)
-> as the current RFC-gap sources of truth.
+> **Reconciliation note (2026-07-13):** this roadmap has been fully
+> reconciled against the v0.8.31+ codebase and the deficiency remediation
+> pass that produced `docs/architecture-deep-dive.md` (M7.2) and
+> `docs/operator-runbook.md` (M7.3). The following items were previously
+> marked ❌ but are actually shipped:
+> - **M2.2 — EDNS padding (RFC 7830 + RFC 8467)**: `PadRawResponse`,
+>   `HasPaddingOption`, `BuildPaddingOption` in `dns/edns.go`;
+>   `applyTCPTransportPolicies` in `server/tcp_policies.go`; RFC-pinned
+>   tests in `dns/rfc7830_padding_test.go` and
+>   `server/rfc8467_padding_policy_test.go`.
+> - **M3.3 — Happy Eyeballs v2 (RFC 8305)**: `resolveNSHappyEyeballs`
+>   in `resolver/resolver.go` with 300 ms IPv6-first stagger.
+> - **M7.2 — Architecture deep-dive**: `docs/architecture-deep-dive.md`
+>   (487 lines).
+> - **M7.3 — Operator runbook**: `docs/operator-runbook.md` (729 lines).
 
 We now move from incremental pin-by-pin patches to **themed
 milestones**. Each milestone groups 15–30 commits into a single minor
@@ -114,10 +122,14 @@ deferred as too large for a single pin.
   wired to the same query dispatcher used by DoT/DoH.
 - Blocked on: quic-go integration is available but no transport package exists.
 
-### M2.2 — EDNS Padding policy (RFC 7830 + RFC 8467) ❌
+### M2.2 — EDNS Padding policy (RFC 7830 + RFC 8467) ✅
 
-- **Status**: not started. No `dns/padding.go` policy engine.
-- Padding is a privacy requirement for DoT/DoH responses (UDP must not pad).
+- **Status**: implemented.
+- `dns/edns.go` provides `PadRawResponse`, `HasPaddingOption`,
+  `BuildPaddingOption`. `server/tcp_policies.go` applies padding
+  on DoT/DoH streams via `applyTCPTransportPolicies`. The RFC 8467
+  §6 plaintext-prohibition hard rule is enforced — padding is NEVER
+  applied on unencrypted TCP/UDP even when the client signals it.
 
 ### M2.3 — XFR over TLS (RFC 9103) ❌
 
@@ -156,11 +168,14 @@ deferred as too large for a single pin.
   records. No separate `resolver/aggressive.go` needed — the cache consults
   NSEC records before forwarding.
 
-### M3.3 — Happy Eyeballs v2 (RFC 8305) ❌
+### M3.3 — Happy Eyeballs v2 (RFC 8305) ✅
 
-- **Status**: not implemented. `config.Resolver.PreferIPv4` flag exists
-  but no concurrent A+AAAA dial with 300ms IPv6-first stagger.
-- Config field `HappyEyeballsDelay` exists but is unused.
+- **Status**: implemented. `resolver/resolver.go` `resolveNSHappyEyeballs`
+  fires concurrent A and AAAA queries with a 300 ms IPv6-first stagger
+  (RFC 8305 §4). First-success short-circuit; both results are error-
+  checked so a single-family failure does not delay resolution of the
+  other family. Default 300 ms stagger is hardcoded per RFC guidance;
+  `TestResolve_HappyEyeballs` pins the concurrency and stagger timing.
 
 ### M3.4 — TCP fallback & pipelining (RFC 7766) ✅
 
@@ -284,13 +299,20 @@ deferred as too large for a single pin.
 - **Status**: implemented (`docs/rfc-compliance-matrix.md`, 78 lines).
   Tables key RFCs with status and section references.
 
-### M7.2 — Architecture deep-dive ❌
+### M7.2 — Architecture deep-dive ✅
 
-- **Status**: not implemented.
+- **Status**: implemented (`docs/architecture-deep-dive.md`, 487 lines).
+  Covers component architecture, goroutine model, query lifecycle,
+  DNSSEC validation pipeline, caching layer, config hot-reload,
+  startup sequence, and key design decisions.
 
-### M7.3 — Operator runbook ❌
+### M7.3 — Operator runbook ✅
 
-- **Status**: not implemented.
+- **Status**: implemented (`docs/operator-runbook.md`, 729 lines).
+  Covers installation, configuration reference, monitoring (Prometheus,
+  Zabbix, health checks), signals, performance tuning, troubleshooting
+  (8 symptom→diagnosis tables), upgrade procedures, backup/recovery,
+  and security hardening checklist.
 
 ### M7.4 — Threat model ❌
 
@@ -346,18 +368,17 @@ UI-M8 diagnostic tools) are **not started**.
 
 ## Remaining work summary (after reconciliation)
 
-### Backend — truly open items (4 items, ~small)
+### Backend — truly open items (3 items, ~medium)
 
 | Item | Effort | Notes |
 |---|---|---|
 | M1.8 prometheus counters | Small | Wire DNSSEC rollover/algorithm counters |
 | M2.1 DoQ (RFC 9250) | Large | New transport package |
-| M2.2 EDNS padding (RFC 7830) | Medium | New `dns/padding.go` |
 | M2.3 XFR over TLS (RFC 9103) | Medium | New zone transfer module |
 
-### Backend — already done (29 of 35 items ✅)
+### Backend — already done (31 of 35 items ✅)
 
-M1, M3, M4, M5 are effectively complete. Over 80% of the backend
+M1, M2, M3, M4, M5 are effectively complete. Over 85% of the backend
 roadmap was already shipped across v0.6.x–v0.8.x but never marked done
 in this document.
 
