@@ -117,11 +117,16 @@ deferred as too large for a single pin.
 
 ## Backend Milestone M2 — Transport Modernization (v0.8.0)
 
-### M2.1 — DoQ (RFC 9250) ❌
+### M2.1 — DoQ (RFC 9250) ✅
 
-- **Status**: not started. Requires `transport/doq/` package using quic-go,
-  wired to the same query dispatcher used by DoT/DoH.
-- Blocked on: quic-go integration is available but no transport package exists.
+- **Status**: implemented (`server/doq.go`, 214 lines). Uses quic-go
+  (v0.60.0, already a dependency for DoH3). Listens on port 853 with
+  ALPN token `"doq"` per RFC 9250 §4.2. DNS messages are length-
+  prefixed (RFC 1035 §4.2.2 wire format), one per stream. Concurrent
+  stream handling per §4.3. Shares TLS certificates with DoT via
+  existing `tls_cert_file` / `tls_key_file` config, including auto-TLS
+  support. Config: `server.doq_enabled` (bool, default false) and
+  `server.doq_listen_addr` (string, default `:853`).
 
 ### M2.2 — EDNS Padding policy (RFC 7830 + RFC 8467) ✅
 
@@ -373,18 +378,16 @@ UI-M8 diagnostic tools) are **not started**.
 
 ## Remaining work summary (after reconciliation)
 
-### Backend — truly open items (2 items, ~large)
+### Backend — truly open items (1 item, ~medium)
 
 | Item | Effort | Notes |
 |---|---|---|
-| M2.1 DoQ (RFC 9250) | Large | New transport package |
 | M2.3 XFR over TLS (RFC 9103) | Medium | New zone transfer module |
 
-### Backend — already done (33 of 35 items ✅)
+### Backend — already done (34 of 35 items ✅)
 
-M1, M2, M3, M4, M5 are effectively complete. Over 90% of the backend
-roadmap was already shipped across v0.6.x–v0.8.x but never marked done
-in this document.
+M1, M2, M3, M4, M5 are effectively complete. Over 97% of the backend
+roadmap is shipped.
 
 ### UI — mostly open (∼40 items ❌)
 

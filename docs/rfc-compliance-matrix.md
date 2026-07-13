@@ -12,6 +12,7 @@ _Generated from test files and implementation audit — 2026-07-06_
 | RFC 7766 | DNS over TCP — Implementation Recommendations | ✅ | `resolver/rfc7766_tcp_fallback_test.go`, `server/stream_no_truncate_test.go` |
 | RFC 7858 | DNS over TLS (DoT) | ✅ | `server/dot.go`, `server/dot_test.go` |
 | RFC 8484 | DNS Queries over HTTPS (DoH) | ✅ | `web/api_doh.go`, `web/api_doh_vary_test.go` |
+| RFC 9250 | DNS over QUIC (DoQ) | ✅ | `server/doq.go` |
 | RFC 9210 | DNS Transport over TCP — Operational Requirements | ✅ | `server/rfc9210_tcp_idle_test.go` |
 | **EDNS0** |
 | RFC 6891 | Extension Mechanisms for DNS (EDNS0) | ✅ | `server/rfc6891_extrcode_test.go`, `server/rfc6891_opt_owner_test.go`, `server/rfc6891_udp_buffer_size_test.go` |
@@ -73,6 +74,5 @@ _Generated from test files and implementation audit — 2026-07-06_
 | RFC | Title | Notes |
 |-----|-------|-------|
 | RFC 8945 | DNS Transaction Signatures (TSIG) | Not yet implemented |
-| RFC 9250 | DNS over QUIC (DoQ) | Planned for M2.1 |
 | RFC 9103 | Zone Transfer over TLS (XFR-over-TLS) | Planned for M2.3 |
 | RFC 9432 | Catalog Zones | Planned for M4.2 |
