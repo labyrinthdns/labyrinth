@@ -6,9 +6,9 @@ RFC compliance pins and 4 real bug fixes across 8 patch releases.
 
 > **Reconciliation note (2026-07-13):** this roadmap has been fully
 > reconciled against the v0.8.31+ codebase and the deficiency remediation
-> pass that produced `docs/architecture-deep-dive.md` (M7.2) and
-> `docs/operator-runbook.md` (M7.3). The following items were previously
-> marked ❌ but are actually shipped:
+> pass that produced `docs/architecture-deep-dive.md` (M7.2),
+> `docs/operator-runbook.md` (M7.3), and `docs/threat-model.md` (M7.4).
+> The following items were previously marked ❌ but are actually shipped:
 > - **M2.2 — EDNS padding (RFC 7830 + RFC 8467)**: `PadRawResponse`,
 >   `HasPaddingOption`, `BuildPaddingOption` in `dns/edns.go`;
 >   `applyTCPTransportPolicies` in `server/tcp_policies.go`; RFC-pinned
@@ -315,9 +315,13 @@ deferred as too large for a single pin.
   (8 symptom→diagnosis tables), upgrade procedures, backup/recovery,
   and security hardening checklist.
 
-### M7.4 — Threat model ❌
+### M7.4 — Threat model ✅
 
-- **Status**: not implemented.
+- **Status**: implemented (`docs/threat-model.md`, 244 lines).
+  STRIDE-based analysis covering 7 asset types, 4 trust boundaries,
+  6 threat agent profiles, 20 threat scenarios mapped to controls,
+  attack surface inventory, 31-control security controls summary,
+  7 residual risks with mitigations, and incident response procedures.
 
 ### M7.5 — API reference 🔶
 
@@ -376,7 +380,7 @@ UI-M8 diagnostic tools) are **not started**.
 | M2.1 DoQ (RFC 9250) | Large | New transport package |
 | M2.3 XFR over TLS (RFC 9103) | Medium | New zone transfer module |
 
-### Backend — already done (32 of 35 items ✅)
+### Backend — already done (33 of 35 items ✅)
 
 M1, M2, M3, M4, M5 are effectively complete. Over 90% of the backend
 roadmap was already shipped across v0.6.x–v0.8.x but never marked done
