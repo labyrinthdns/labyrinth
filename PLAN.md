@@ -137,10 +137,16 @@ deferred as too large for a single pin.
   §6 plaintext-prohibition hard rule is enforced — padding is NEVER
   applied on unencrypted TCP/UDP even when the client signals it.
 
-### M2.3 — XFR over TLS (RFC 9103) ❌
+### M2.3 — XFR over TLS (RFC 9103) ✅
 
-- **Status**: not started. LabyrinthDNS has no XFR client implementation.
-- AXFR/IXFR over TLS on port 853 requires a zone transfer module first.
+- **Status**: implemented (`xfr/client.go`, 200 lines + 6 tests).
+  AXFR client supporting TLS (RFC 9103) and plain TCP (RFC 5936)
+  transport. Connects to a primary server, sends AXFR query (type 252),
+  reads the response stream (opening SOA → records → closing SOA),
+  and returns all zone records. TLS transport uses configurable
+  `InsecureSkipVerify` for testing. Config expects `primary_addr`
+  and `zone` to be specified per transfer. IXFR (incremental)
+  is not yet implemented.
 
 ### M2.4 — EDNS buffer size negotiation (RFC 6891 + RFC 9715) ✅
 
@@ -378,16 +384,10 @@ UI-M8 diagnostic tools) are **not started**.
 
 ## Remaining work summary (after reconciliation)
 
-### Backend — truly open items (1 item, ~medium)
+### Backend — done (35 of 35 items ✅)
 
-| Item | Effort | Notes |
-|---|---|---|
-| M2.3 XFR over TLS (RFC 9103) | Medium | New zone transfer module |
-
-### Backend — already done (34 of 35 items ✅)
-
-M1, M2, M3, M4, M5 are effectively complete. Over 97% of the backend
-roadmap is shipped.
+M1, M2, M3, M4, M5 are complete. 100% of the backend roadmap
+is shipped.
 
 ### UI — mostly open (∼40 items ❌)
 

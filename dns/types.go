@@ -31,6 +31,10 @@ const (
 	TypeCDS     uint16 = 59
 	TypeCDNSKEY uint16 = 60
 
+	// Zone transfer types (RFC 5936 AXFR, RFC 1995 IXFR)
+	TypeAXFR uint16 = 252
+	TypeIXFR uint16 = 251
+
 	// Modern service-discovery types. We do not parse their RDATA into
 	// rich Go structs (the wire layer treats them as opaque, which is
 	// the right behaviour for a forwarding recursive resolver per RFC
