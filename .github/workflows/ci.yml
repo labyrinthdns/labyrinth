@@ -26,6 +26,28 @@ jobs:
       - name: golangci-lint
         run: golangci-lint run ./...
 
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: labyrinth:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — image starts and reports version
+        run: |
+          docker run --rm labyrinth:ci-test -version 2>&1 | grep -q "Labyrinth"
+
   test:
     runs-on: ubuntu-latest
     steps:
