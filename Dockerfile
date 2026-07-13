@@ -5,6 +5,11 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+
+# Build React frontend first so //go:embed web/ui/dist/* works
+RUN apk add --no-cache nodejs npm
+RUN cd web/ui && npm ci --silent && npm run build
+
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w \
   -X main.version=${VERSION} \
   -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) \

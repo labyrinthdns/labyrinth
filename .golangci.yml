@@ -1,0 +1,36 @@
+# golangci-lint configuration for LabyrinthDNS
+# https://golangci-lint.run/usage/configuration/
+version: "2"
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - gosimple
+    - unused
+    - ineffassign
+    - errcheck
+    - misspell
+    - unconvert
+  settings:
+    staticcheck:
+      checks: ["all"]
+    errcheck:
+      check-type-assertions: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - ineffassign
+    - path: web/ui/dist/
+      linters:
+        - all
+    - path: website/
+      linters:
+        - all

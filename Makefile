@@ -28,8 +28,10 @@ fuzz:
 	go test ./dns/ -fuzz=FuzzDecodeName -fuzztime=60s
 
 lint:
-	go vet ./...
-	@which staticcheck > /dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed, skipping"
+	@which golangci-lint > /dev/null 2>&1 && golangci-lint run ./... || ( \
+		go vet ./...; \
+		which staticcheck > /dev/null 2>&1 && staticcheck ./... || true \
+	)
 
 docker:
 	docker build -t labyrinth:$(VERSION) .
