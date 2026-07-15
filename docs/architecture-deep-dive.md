@@ -458,6 +458,69 @@ main() / run()
 
 ---
 
+## 6. Cluster Mode
+
+LabyrinthDNS has a **partially implemented** cluster mode that allows
+multiple resolver instances to coordinate through the admin API.
+What follows is the implemented subset vs the config-surface.
+
+### 6.1 Implemented
+
+**Cache flush fanout** (`web/api_cache.go:250`):
+When `cluster.actions.fanout_cache_flush` is `true` (default `false`),
+a `POST /api/cache/flush` on the local node fans out the flush request
+to every enabled peer listed in `cluster.peers`. Each peer receives a
+`POST {peer.api_base}/api/cache/flush` with an
+`X-Labyrinth-Cluster-Fanout: 1` header so the receiving peer
+recognises the request as a cluster fanout and skips its own fanout
+(prevents infinite loops). Peer authentication uses Bearer tokens
+from `peer.api_token`. The HTTP client has a 5-second timeout; each
+peer's response body is drained up to 64 KiB.
+
+**Peer configuration**: Peers are defined in the YAML config under
+`cluster.peers`, each with a name, `api_base` URL, optional
+`api_token` for Bearer auth, and `sync_fields` (declarative only —
+not enforced at runtime).
+
+**Config surface via API**: The `/api/config` endpoint exposes the
+full cluster configuration (enabled, role, node_id, actions, sync
+mode, peer list with redacted tokens). The config UI at `/config`
+shows the cluster section with editable fields.
+
+### 6.2 Config-only (not yet implemented)
+
+The following fields are parsed from YAML and surfaced via the API
+but have **no runtime behaviour wired to them**:
+
+| Config field | Status | Notes |
+|-------------|--------|-------|
+| `cluster.role` | ❌ Config only | Accepted values: `standalone`, `master`, `secondary` — no behaviour difference |
+| `cluster.shared_fields` | ❌ Config only | Intended to mark which config sections are common across peers |
+| `cluster.sync.mode` | ❌ Config only | Values: `off`, `manual_push`, `auto_push` — no sync engine exists |
+| `cluster.sync.push_on_save` | ❌ Config only | Intended to trigger push after config save |
+| `cluster.sync.pull_interval` | ❌ Config only | Periodic pull interval, no goroutine started |
+| `cluster.actions.fanout_blocklist_refresh` | ❌ Config only | Blocklist refresh does not yet fan out to peers |
+
+### 6.3 Known limitations
+
+- There is no cluster discovery, leader election, or consistency
+  protocol. Nodes are statically configured with peer URLs.
+- Config sync is one-directional (manual fanout of cache flush
+  only). There is no observed-state replication.
+- Peer health is not monitored — a dead peer silently fails its
+  fanout request (logged at WARN level).
+- `api_token` is stored in plaintext in the YAML config file.
+
+### 6.4 Roadmap status
+
+Cluster mode is **not on the v1.0.0 critical path** (PLAN.md
+§"Out-of-scope guard" explicitly excludes anycast cluster
+coordination from the v1.0 scope). The existing implementation
+provides the basic fanout building block; a full multi-node
+synchronisation layer is deferred.
+
+---
+
 ## 7. Key Design Decisions
 
 ### Why 256 cache shards?

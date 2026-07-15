@@ -428,7 +428,7 @@ The documentation is exceptional — each doc is dated, cross-referenced to PLAN
 4. **No CSP headers** — low risk for localhost deployment. ✅ Already implemented (`web/middleware.go:179–192`).
 5. **No dedicated accessibility audit** — basic semantic HTML but no ARIA or aXe checks.
 6. **Benchmark tool** (`cmd/labyrinth-bench/`) appears functional but is not covered in this review's deep-dive.
-7. **Cluster mode** is defined in config but its implementation status is unclear from the reviewed files.
+7. **Cluster mode** is defined in config but its implementation status is unclear from the reviewed files. ✅ Documented in `docs/architecture-deep-dive.md §6`.
 
 ---
 
