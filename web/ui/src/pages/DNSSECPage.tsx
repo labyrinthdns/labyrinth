@@ -80,8 +80,6 @@ function NTARow({ nta, onRemove }: { nta: DNSSECNTAEntry; onRemove: (zone: strin
 
 // ── Trust chain explorer ────────────────────────────────────────────
 
-type ChainLevel = NonNullable<ReturnType<typeof api.trustChain> extends Promise<infer T> ? T : never>['levels'][number]
-
 const ALGORITHM_LABELS: Record<number, string> = {
   5: 'RSA/SHA-1', 7: 'RSASHA1-NSEC3', 8: 'RSA/SHA-256',
   10: 'RSA/SHA-512', 13: 'ECDSA/P256', 14: 'ECDSA/P384',
