@@ -10,6 +10,8 @@ permissions:
   contents: read
 
 jobs:
+  # ── Fast fail lane ──────────────────────────────────────────────
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -25,6 +27,25 @@ jobs:
 
       - name: golangci-lint
         run: golangci-lint run ./...
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web/ui
+        run: npm ci
+
+      - name: TypeScript type check (tsc --noEmit -b)
+        working-directory: web/ui
+        run: npx tsc --noEmit -b
 
   docker-build:
     runs-on: ubuntu-latest
