@@ -227,14 +227,40 @@ All 16 tests pass. Existing fuzz tests are unaffected.
 
 ---
 
+### ~~P2-07 — Fix TypeScript build errors (Docker blocker)~~ ✅ Fixed
+
+**Source:** Post-audit production readiness verification  
+**Priority:** ~~P2~~ → Done  
+**Affected files:** `web/ui/src/pages/DNSSECPage.tsx`, `web/ui/src/test/jest-axe.d.ts` (new), `web/ui/src/test/vitest-augment.d.ts` (new)  
+
+**Problem:** The Docker build (`npm run build` → `tsc -b`) failed with 5 TypeScript errors:
+1. `ChainLevel` type alias declared but never used in `DNSSECPage.tsx` (caught by `noUnusedLocals`)
+2. Missing ambient module declaration for `jest-axe` (no `.d.ts` shipped upstream)
+3. `toHaveNoViolations` matcher not typed in vitest's assertion interface
+
+These errors existed in the prior commit that added the a11y tests (`1edb93f`) but went undetected because `vitest` transforms files independently with laxer type checking — `tsc -b` (which runs during Docker build) catches them.
+
+**Fix:**
+- Removed the unused `ChainLevel` type alias
+- Created `jest-axe.d.ts` with a proper ambient module declaration covering the `axe()` function, `JestAxeOptions`, and `toHaveNoViolations` matcher object
+- Created `vitest-augment.d.ts` to extend vitest's assertion interface
+
+**Verification:**
+- `tsc -b` now passes cleanly
+- Docker build succeeds (3-stage, ~120s)
+- All 86 UI tests pass (vitest run)
+- All Go tests pass
+
+---
+
 ## Summary by Priority
 
 | Priority | Count | Items |
 |----------|-------|-------|
 | **P0** (blocking) | 0 | — |
 | **P1** (before release) | 0 | — |
-| **P2** (quality) | 2 | a11y audit, cluster doc |
-| **P3** (nice-to-have) | 1 | soak harness |
+| **P2** (quality) | 0 | — |
+| **P3** (nice-to-have) | 0 | — |
 
 ---
 
