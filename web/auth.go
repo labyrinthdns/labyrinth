@@ -278,6 +278,19 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.loginLimiter.recordSuccess(clientIP)
 	}
 
+	// Set HttpOnly cookie for browser-based auth. The cookie is the
+	// primary auth mechanism; the JSON body token is kept for backward
+	// compatibility with programmatic clients.
+	http.SetCookie(w, &http.Cookie{
+		Name:     "labyrinth_token",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   86400, // 24h, matches JWT expiry
+	})
+
 	jsonResponse(w, http.StatusOK, map[string]string{
 		"token":    token,
 		"username": req.Username,
@@ -295,6 +308,50 @@ func (s *AdminServer) handleMe(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"username": username,
 	})
+}
+
+// handleLogout handles POST /api/auth/logout — revokes the current JWT and clears
+// the labyrinth_token cookie. Accepts authentication via cookie or Bearer header.
+func (s *AdminServer) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	// Extract token from cookie or Authorization header.
+	var tokenStr string
+	if c, err := r.Cookie("labyrinth_token"); err == nil {
+		tokenStr = c.Value
+	} else if auth := r.Header.Get("Authorization"); auth != "" {
+		if strings.HasPrefix(auth, "Bearer ") {
+			tokenStr = strings.TrimPrefix(auth, "Bearer ")
+		}
+	}
+
+	// Revoke the token by storing its jti in the revoked set.
+	if tokenStr != "" {
+		if parts := strings.Split(tokenStr, "."); len(parts) == 3 {
+			if payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+				var p jwtPayload
+				if json.Unmarshal(payloadJSON, &p) == nil && p.Jti != "" {
+					s.revokedTokens.Store(p.Jti, true)
+				}
+			}
+		}
+	}
+
+	// Clear the cookie regardless of whether we found a token.
+	http.SetCookie(w, &http.Cookie{
+		Name:     "labyrinth_token",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "logged_out"})
 }
 
 // handleChangePassword handles POST /api/auth/change-password — changes the admin password.

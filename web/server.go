@@ -594,6 +594,7 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	// JSON POST to /api/auth/login can't OOM the resolver before the
 	// JSON decoder gives up).
 	mux.HandleFunc("/api/auth/login", withBodyCap(s.handleLogin))
+	mux.HandleFunc("/api/auth/logout", withBodyCap(s.handleLogout))
 
 	// Setup routes (no auth required, body-capped — see above).
 	mux.HandleFunc("/api/setup/status", withBodyCap(s.handleSetupStatus))

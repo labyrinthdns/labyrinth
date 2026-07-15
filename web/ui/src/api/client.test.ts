@@ -25,7 +25,7 @@ describe('api/client', () => {
     expect(mod.getToken()).toBeNull()
   })
 
-  it('adds authorization header when token exists', async () => {
+  it('does not send Bearer header (auth uses HttpOnly cookie)', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ username: 'alice' }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -35,7 +35,7 @@ describe('api/client', () => {
 
     const [, options] = fetchMock.mock.calls[0] as [string, RequestInit]
     const headers = options.headers as Record<string, string>
-    expect(headers.Authorization).toBe('Bearer token-123')
+    expect(headers.Authorization).toBeUndefined()
   })
 
   it('caches version endpoint responses', async () => {

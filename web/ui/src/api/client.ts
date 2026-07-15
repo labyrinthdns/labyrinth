@@ -33,6 +33,9 @@ type CachedValue = {
 const responseCache = new Map<string, CachedValue>()
 const inflightCache = new Map<string, Promise<unknown>>()
 
+// TOKEN_KEY is retained for backward compatibility during the HttpOnly
+// cookie migration. New code relies on the labyrinth_token cookie set by
+// the server on login — the client no longer reads this key for auth.
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }
@@ -46,14 +49,13 @@ export function clearToken() {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((options.headers as Record<string, string>) || {}),
   }
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
+  // Auth is handled by the labyrinth_token HttpOnly cookie, which
+  // the browser sends automatically on same-origin requests. No
+  // manual Bearer header is needed.
 
   const hasExternalSignal = Boolean(options.signal)
   const controller = hasExternalSignal ? null : new AbortController()
@@ -131,6 +133,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
+
+  logout: () =>
+    request<{ status: string }>('/api/auth/logout', { method: 'POST' }),
 
   me: () => request<{ username: string }>('/api/auth/me'),
 

@@ -75,10 +75,18 @@ func (s *AdminServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		var token string
 
-		// Try Authorization: Bearer <token> header first
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			if strings.HasPrefix(auth, "Bearer ") {
-				token = strings.TrimPrefix(auth, "Bearer ")
+		// Try the labyrinth_token cookie first (HttpOnly, set on login).
+		// This is the primary auth mechanism for browser-based clients.
+		if c, err := r.Cookie("labyrinth_token"); err == nil && c.Value != "" {
+			token = c.Value
+		}
+
+		// Fall back to Authorization: Bearer <token> header
+		if token == "" {
+			if auth := r.Header.Get("Authorization"); auth != "" {
+				if strings.HasPrefix(auth, "Bearer ") {
+					token = strings.TrimPrefix(auth, "Bearer ")
+				}
 			}
 		}
 

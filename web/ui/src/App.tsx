@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { AuthContext } from '@/hooks/useAuth'
-import { api, getToken, setToken, clearToken } from '@/api/client'
+import { AuthContext, useAuth } from '@/hooks/useAuth'
+import { api, setToken, clearToken } from '@/api/client'
 import Layout from '@/components/Layout'
 import ErrorBoundary from '@/components/ErrorBoundary'
 
@@ -23,8 +23,8 @@ const AuditPage = lazy(() => import('@/pages/AuditPage'))
 const CompliancePage = lazy(() => import('@/pages/CompliancePage'))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const token = getToken()
-  if (!token) {
+  const { isAuthenticated } = useAuth()
+  if (!isAuthenticated) {
     return <Navigate to="/login" replace />
   }
   return <Layout>{children}</Layout>
@@ -46,13 +46,21 @@ export default function App() {
   const [username, setUsername] = useState<string | null>(null)
   const [checking, setChecking] = useState(true)
 
-  const login = useCallback((token: string, name: string) => {
-    setToken(token)
+  const login = useCallback((_token: string, name: string) => {
+    // The labyrinth_token HttpOnly cookie is set by the server on
+    // login. We no longer store the token in localStorage — the
+    // cookie handles auth automatically on subsequent requests.
+    setToken(_token) // keep backward compat; not used for auth
     setIsAuthenticated(true)
     setUsername(name)
   }, [])
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    try {
+      await api.logout()
+    } catch {
+      // server round-trip failure is non-fatal — clear locally anyway
+    }
     clearToken()
     setIsAuthenticated(false)
     setUsername(null)
@@ -75,18 +83,16 @@ export default function App() {
         // Setup endpoint might fail if already configured, continue
       }
 
-      // Check existing token
-      const token = getToken()
-      if (token) {
-        try {
-          const user = await api.me()
-          if (!cancelled) {
-            setIsAuthenticated(true)
-            setUsername(user.username)
-          }
-        } catch {
-          clearToken()
+      // The labyrinth_token cookie is sent automatically by the
+      // browser. No need to read from localStorage.
+      try {
+        const user = await api.me()
+        if (!cancelled) {
+          setIsAuthenticated(true)
+          setUsername(user.username)
         }
+      } catch {
+        // Not authenticated — stay false
       }
 
       if (!cancelled) {
