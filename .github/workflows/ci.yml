@@ -43,9 +43,9 @@ jobs:
         working-directory: web/ui
         run: npm ci
 
-      - name: TypeScript type check (tsc --noEmit -b)
+      - name: TypeScript type check (tsc -b)
         working-directory: web/ui
-        run: npx tsc --noEmit -b
+        run: npx tsc -b
 
   docker-build:
     runs-on: ubuntu-latest
