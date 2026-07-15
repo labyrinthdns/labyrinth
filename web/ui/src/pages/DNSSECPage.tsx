@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { ShieldCheck, ShieldOff, AlertTriangle, RefreshCw, Plus, Trash2 } from 'lucide-react'
+import { ShieldCheck, ShieldOff, AlertTriangle, RefreshCw, Plus, Trash2, ChevronDown, ChevronRight, Search } from 'lucide-react'
 import { api } from '@/api/client'
-import type { DNSSECStatusResponse, DNSSECNTAEntry } from '@/api/types'
+import type { DNSSECStatusResponse, DNSSECNTAEntry, TrustChainResponse } from '@/api/types'
 
 // DNSSEC operator dashboard.
 //
@@ -77,6 +77,219 @@ function NTARow({ nta, onRemove }: { nta: DNSSECNTAEntry; onRemove: (zone: strin
     </tr>
   )
 }
+
+// ── Trust chain explorer ────────────────────────────────────────────
+
+type ChainLevel = NonNullable<ReturnType<typeof api.trustChain> extends Promise<infer T> ? T : never>['levels'][number]
+
+const ALGORITHM_LABELS: Record<number, string> = {
+  5: 'RSA/SHA-1', 7: 'RSASHA1-NSEC3', 8: 'RSA/SHA-256',
+  10: 'RSA/SHA-512', 13: 'ECDSA/P256', 14: 'ECDSA/P384',
+  15: 'Ed25519', 16: 'Ed448',
+}
+
+const DIGEST_LABELS: Record<number, string> = {
+  1: 'SHA-1', 2: 'SHA-256', 3: 'GOST R 34.11-94', 4: 'SHA-384',
+}
+
+const STATUS_CONFIG: Record<string, { bg: string; text: string; label: string }> = {
+  secure:     { bg: 'bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400', label: 'Secure' },
+  insecure:   { bg: 'bg-slate-500/10', text: 'text-slate-600 dark:text-slate-400', label: 'Insecure' },
+  bogus:      { bg: 'bg-rose-500/10', text: 'text-rose-700 dark:text-rose-400', label: 'Bogus' },
+  unreachable: { bg: 'bg-amber-500/10', text: 'text-amber-700 dark:text-amber-400', label: 'Unreachable' },
+  unknown:    { bg: 'bg-slate-500/10', text: 'text-slate-600 dark:text-slate-400', label: 'Unknown' },
+}
+
+function algLabel(a: number): string {
+  return ALGORITHM_LABELS[a] || `Alg ${a}`
+}
+
+function TrustChainPanel() {
+  const [query, setQuery] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [chain, setChain] = useState<TrustChainResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+
+  async function handleSearch() {
+    const name = query.trim()
+    if (!name) return
+    setLoading(true)
+    setError(null)
+    setChain(null)
+    try {
+      const resp = await api.trustChain(name)
+      setChain(resp)
+      // Auto-expand all levels by default
+      setExpanded(new Set(resp.levels.map((_, i) => i)))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch trust chain')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function toggleLevel(idx: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }
+
+  return (
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg mb-6 overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-emerald-500" />
+          DNSSEC Trust Chain Explorer
+        </h2>
+        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+          View the DNSKEY/DS delegation chain for any domain. Traces the chain of trust from root to the queried zone.
+        </p>
+      </div>
+
+      {/* Search bar */}
+      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/30">
+        <form
+          onSubmit={(e) => { e.preventDefault(); handleSearch() }}
+          className="flex gap-2"
+        >
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="example.com"
+            className="flex-1 px-3 py-1.5 text-sm border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500"
+          />
+          <button
+            type="submit"
+            disabled={loading || !query.trim()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-md"
+          >
+            <Search className="h-4 w-4" />
+            {loading ? 'Tracing...' : 'Trace'}
+          </button>
+        </form>
+      </div>
+
+      {error && (
+        <div className="mx-4 mt-3 p-3 rounded-md bg-rose-500/10 border border-rose-500/30 text-rose-700 dark:text-rose-400 text-xs">
+          {error}
+        </div>
+      )}
+
+      {/* Chain visualization */}
+      {chain && chain.levels.length > 0 && (
+        <div className="px-4 py-3 space-y-1">
+          {chain.levels.map((level, idx) => (
+            <div key={level.zone}>
+              {/* Level header — always visible */}
+              <button
+                onClick={() => toggleLevel(idx)}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+              >
+                <div className={`w-2 h-2 rounded-full shrink-0 ${
+                  level.status === 'secure' ? 'bg-emerald-500' :
+                  level.status === 'bogus' ? 'bg-rose-500' :
+                  level.status === 'unreachable' ? 'bg-amber-500' :
+                  'bg-slate-400'
+                }`} />
+                <span className="text-sm font-mono text-slate-900 dark:text-white">{level.zone || '(root)'}</span>
+                <span className={`text-[11px] px-1.5 py-0.5 rounded-full ${STATUS_CONFIG[level.status]?.bg || ''} ${STATUS_CONFIG[level.status]?.text || ''}`}>
+                  {STATUS_CONFIG[level.status]?.label || level.status}
+                </span>
+                <span className="ml-auto text-slate-400">
+                  {expanded.has(idx) ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                </span>
+              </button>
+
+              {/* Expanded details */}
+              {expanded.has(idx) && (
+                <div className="ml-5 pl-3 border-l-2 border-slate-200 dark:border-slate-700 space-y-2 py-2">
+                  {level.error && (
+                    <div className="text-xs text-rose-600 dark:text-rose-400">{level.error}</div>
+                  )}
+
+                  {/* DNSKEY records */}
+                  {level.dnskey && level.dnskey.length > 0 && (
+                    <div>
+                      <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                        DNSKEY ({level.dnskey.length})
+                      </h4>
+                      <div className="space-y-1">
+                        {level.dnskey.map((k, ki) => (
+                          <div key={ki} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-mono bg-slate-50 dark:bg-slate-950 rounded px-2 py-1.5">
+                            <span className={`px-1 rounded text-[10px] font-medium ${
+                              k.flags === 257 ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300' :
+                              'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-800 dark:text-cyan-300'
+                            }`}>
+                              {k.flags === 257 ? 'KSK' : 'ZSK'}
+                            </span>
+                            <span className="text-slate-600 dark:text-slate-400">tag={k.key_tag}</span>
+                            <span className="text-slate-600 dark:text-slate-400">{algLabel(k.algorithm)}</span>
+                            <span className="text-slate-400 text-[10px] truncate max-w-[200px]" title={k.key_data}>
+                              key={k.key_data.slice(0, 32)}...
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* DS records */}
+                  {level.ds && level.ds.length > 0 && (
+                    <div>
+                      <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                        DS records ({level.ds.length})
+                      </h4>
+                      <div className="space-y-1">
+                        {level.ds.map((ds, di) => (
+                          <div key={di} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-mono bg-slate-50 dark:bg-slate-950 rounded px-2 py-1.5">
+                            <span className="text-slate-600 dark:text-slate-400">tag={ds.key_tag}</span>
+                            <span className="text-slate-600 dark:text-slate-400">{algLabel(ds.algorithm)}</span>
+                            <span className="text-slate-600 dark:text-slate-400">{DIGEST_LABELS[ds.digest_type] || `Digest ${ds.digest_type}`}</span>
+                            <span className="text-slate-400 text-[10px] truncate max-w-[200px]" title={ds.digest}>
+                              {ds.digest.slice(0, 32)}...
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No keys */}
+                  {(!level.dnskey || level.dnskey.length === 0) && !level.error && (
+                    <div className="text-xs text-slate-400 dark:text-slate-500 italic">
+                      No DNSSEC records at this level
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {chain && chain.levels.length === 0 && (
+        <div className="px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+          No delegation chain found for this domain.
+        </div>
+      )}
+
+      {/* No query yet */}
+      {!chain && !error && (
+        <div className="px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+          Enter a domain name above to trace its DNSSEC trust chain.
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── NTA management ──────────────────────────────────────────────────
 
 function AddNTAForm({ onAdded }: { onAdded: () => void }) {
   const [zone, setZone] = useState('')
@@ -270,6 +483,9 @@ export default function DNSSECPage() {
           </div>
         </div>
       )}
+
+      {/* Trust chain explorer */}
+      <TrustChainPanel />
 
       {/* NTA list */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">

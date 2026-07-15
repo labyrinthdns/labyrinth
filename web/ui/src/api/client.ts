@@ -20,6 +20,7 @@ import type {
   FallbackEventsResponse,
   DNSSECStatusResponse,
   SecurityStatusResponse,
+  TrustChainResponse,
 } from '@/api/types'
 
 const TOKEN_KEY = 'labyrinth_token'
@@ -216,6 +217,9 @@ export const api = {
   fallbackEvents: () => request<FallbackEventsResponse>('/api/fallback-events'),
 
   dnssec: () => request<DNSSECStatusResponse>('/api/dnssec'),
+
+  trustChain: (name: string) =>
+    request<TrustChainResponse>(`/api/dnssec/trustchain?name=${encodeURIComponent(name)}`),
 
   addNTA: (zone: string, durationHours: number, reason: string) =>
     request<{ status: string; zone: string; expires_at: string }>(

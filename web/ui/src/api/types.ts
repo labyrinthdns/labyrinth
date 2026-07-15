@@ -380,6 +380,31 @@ export interface TraceClientMsg {
   skip_dnssec?: boolean
 }
 
+export interface TrustChainLevel {
+  zone: string
+  status: 'secure' | 'insecure' | 'bogus' | 'unreachable' | 'unknown'
+  dnskey?: {
+    flags: number
+    protocol: number
+    algorithm: number
+    key_tag: number
+    zone_key: boolean
+    key_data: string
+  }[]
+  ds?: {
+    key_tag: number
+    algorithm: number
+    digest_type: number
+    digest: string
+  }[]
+  error?: string
+}
+
+export interface TrustChainResponse {
+  name: string
+  levels: TrustChainLevel[]
+}
+
 export interface DNSSECNTAEntry {
   zone: string
   expires_at: string
