@@ -56,32 +56,20 @@ The DashboardPage test uses hoisted mocks for 8 API endpoints, recharts componen
 
 ---
 
-### P1-03 — Migrate JWT from localStorage to HttpOnly Cookie
+### ~~P1-03 — Migrate JWT from localStorage to HttpOnly Cookie~~ ✅ Done
 
 **Source:** Audit finding M6 (M2 in the issue tracker)  
-**Priority:** P1 (before release)  
-**Affected files:** `web/server.go`, `web/auth.go`, `web/middleware.go`, `web/ui/src/api/client.ts`  
-**PLAN.md fit:** UI-M7 (Operator UX polish) / M8.3 (Final API freeze)  
-**Effort:** ~3–5 hours  
+**Priority:** ~~P1~~ → Done  
+**Effort:** Implemented (~2 hours)  
 
-**Problem:** JWT token stored in `localStorage` is accessible to any JavaScript running on the page. While the dashboard is single-operator and served from localhost, this is a well-known XSS-exfiltration vector that should be addressed before a v1.0 security-hardening signal.
-
-**Action:**
-
-**Backend changes** (`web/auth.go`):
-- On successful login (`POST /api/auth/login`), set the JWT as an `HttpOnly; Secure; SameSite=Strict` cookie in addition to (or instead of) returning it in the JSON body.
-- Add a `POST /api/auth/refresh` endpoint that issues a new JWT via cookie when the old one is still valid.
-
-**Frontend changes** (`web/ui/src/api/client.ts`):
-- Remove `localStorage.setItem/getItem` for the token.
-- When the cookie is set by the server on login, subsequent `fetch` calls will include it automatically.
-- Remove `Authorization: Bearer` header construction (the cookie handles auth).
-
-**Acceptance criteria:**
-- Login sets `Set-Cookie: labyrinth_token=<jwt>; HttpOnly; Secure; SameSite=Strict; Path=/`
-- All authenticated API calls succeed via cookie (no `Authorization` header needed)
-- Logout clears the cookie server-side
-- Existing login flow (JSON body return) is preserved for backward compatibility during the transition
+**Changes:**
+- `web/auth.go`: login handler sets `labyrinth_token` HttpOnly cookie (Secure if TLS, SameSite=Strict, 24h Max-Age). New `handleLogout` revokes the JWT jti and clears the cookie with MaxAge=-1.
+- `web/middleware.go`: `requireAuth` reads the cookie first, falls back to `Authorization: Bearer` header, then `?token=` query param.
+- `web/server.go`: registered `POST /api/auth/logout` route.
+- `web/ui/src/api/client.ts`: `request()` no longer sends Bearer header. Added `api.logout()`.
+- `web/ui/src/App.tsx`: `ProtectedRoute` uses `useAuth()`. Auth check calls `api.me()` unconditionally (cookie is auto-sent). Logout calls `api.logout()`.
+- `web/ui/src/api/client.test.ts`: updated Bearer header test.
+- All 75 tests pass (Go backend + TS frontend).
 
 ---
 
@@ -156,45 +144,23 @@ COPY --from=webui /src/web/ui/dist /src/web/ui/dist
 
 ---
 
-### P2-04 — Add Fuzz Harness for NSEC3 Hash and RPZ Matcher
+### ~~P2-04 — Add Fuzz Harness for NSEC3 Hash and RPZ Matcher~~ ✅ Done
 
-**Source:** PLAN.md M6.1 (partial — flagged as incomplete)  
-**Priority:** P2 (quality)  
-**Affected files:** `dnssec/` (new `fuzz_nsec3_test.go`), `blocklist/` (new `fuzz_matcher_test.go`)  
-**PLAN.md fit:** M6.1 (Fuzz harness — existing gap)  
-**Effort:** ~2 hours  
+**Source:** PLAN.md M6.1  
+**Priority:** ~~P2~~ → Done  
+**Effort:** Implemented (~1 hour)  
+**Files:** `dnssec/fuzz_nsec3_test.go` (56 lines), `blocklist/fuzz_matcher_test.go` (78 lines)  
 
-**Problem:** PLAN.md M6.1 explicitly notes: "No fuzz targets for NSEC3 hash inputs or RPZ matcher." These are both attacker-exposed surfaces.
+**Fuzz targets:**
 
-**Action:**
+| Target | Corpus | Execs/6s | Result |
+|--------|--------|----------|--------|
+| `FuzzComputeNSEC3Hash` | 7 seeds (name, algorithm, iterations, salt) | 341K | ✅ 0 failures |
+| `FuzzNSEC3HashToString` | 3 seeds (arbitrary hash bytes) | — | ✅ 0 failures |
+| `FuzzRPZParser` | 7 seeds (RPZ zone content) | 146K | ✅ 0 failures, 170 interesting |
+| `FuzzDomainMatcher` | 3 seeds (null-terminated domains) | 218K | ✅ 0 failures, 94 interesting |
 
-**NSEC3 fuzz target:**
-```go
-// dnssec/fuzz_nsec3_test.go
-func FuzzNSEC3Hash(f *testing.F) {
-    f.Fuzz(func(t *testing.T, data []byte, iterations int) {
-        if iterations < 0 || iterations > 100 { return }
-        hash := nsec3Hash(data, iterations, []byte(""), 1)
-        _ = hash
-    })
-}
-```
-
-**RPZ matcher fuzz target:**
-```go
-// blocklist/fuzz_matcher_test.go
-func FuzzRPZMatcher(f *testing.F) {
-    f.Fuzz(func(t *testing.T, data []byte) {
-        m := NewMatcher()
-        m.LoadPatterns(string(data))
-    })
-}
-```
-
-**Acceptance criteria:**
-- Both fuzz targets exist and compile
-- `go test -fuzz=FuzzNSEC3Hash -fuzztime=30s ./dnssec/` runs clean
-- `go test -fuzz=FuzzRPZMatcher -fuzztime=30s ./blocklist/` runs clean
+PLAN.md M6.1 gap filled. All existing tests pass.
 
 ---
 
@@ -221,39 +187,21 @@ func FuzzRPZMatcher(f *testing.F) {
 
 ---
 
-### P2-06 — Property-Based Tests for DNS Wire Parsing
+### ~~P2-06 — Property-Based Tests for DNS Wire Parsing~~ ✅ Done
 
-**Source:** PLAN.md M6.2 (property-based tests — not implemented)  
-**Priority:** P2 (quality)  
-**Affected file:** `dns/` (new `pbt_wire_test.go`)  
-**PLAN.md fit:** M6.2 (Property-based tests — existing gap)  
-**Effort:** ~3–4 hours  
+**Source:** PLAN.md M6.2  
+**Priority:** ~~P2~~ → Done  
+**Effort:** Implemented (~2 hours)  
+**File:** `dns/pbt_wire_test.go` (624 lines)  
 
-**Problem:** PLAN.md marks property-based tests as ❌ (not implemented). The DNS wire format parser is the most attack-exposed surface (fuzz tests exist, but property tests verify *round-trip invariants* that fuzzing alone misses).
+5 properties covering:
+1. Header bijection — `testing/quick` on all 6 uint16 fields (100 random values)
+2. Name bijection — 1000 random valid domain names
+3. All 14 RR types round-trip — A, AAAA, NS, CNAME, MX, SOA, TXT, SRV, PTR, DNAME, OPT, RRSIG, NSEC, plus multi-section and empty message
+4. Compression pointer stability across 3 Pack/Unpack iterations
+5. Buffer bounds — Pack correctly errors on undersized buffers
 
-**Action:**
-
-Add a `dns/pbt_wire_test.go` file using Go's `testing/quick` package (or a lightweight PBT helper) that tests:
-
-```go
-// Property: Unpack(Pack(msg)) == msg for all valid messages
-func Property_RoundTrip_RR(msg *dns.Message) bool {
-    wire, err := msg.Pack()
-    if err != nil { return false }
-    parsed, _, err := dns.Unpack(wire)
-    if err != nil { return false }
-    return reflect.DeepEqual(msg, parsed)
-}
-
-// Property: DecodeName(EncodeName(name)) == name
-// Property: Compression pointers never create cycles
-// Property: All OPT pseudo-RRs survive round-trip
-```
-
-**Acceptance criteria:**
-- At least 3 round-trip properties defined
-- `go test -run=Property ./dns/` passes on all 10,000+ generated inputs
-- Existing fuzz tests are not broken
+All 16 tests pass. Existing fuzz tests are unaffected.
 
 ---
 
@@ -284,9 +232,9 @@ func Property_RoundTrip_RR(msg *dns.Message) bool {
 | Priority | Count | Items |
 |----------|-------|-------|
 | **P0** (blocking) | 0 | — |
-| **P1** (before release) | 1 | JWT cookie migration |
-| **P2** (quality) | 6 | RRL eviction optimisation, a11y audit, Docker build, fuzz targets, cluster doc, property tests |
-| **P3** (nice-to-have) | 2 | WebSocket doc, soak harness |
+| **P1** (before release) | 0 | — |
+| **P2** (quality) | 2 | a11y audit, cluster doc |
+| **P3** (nice-to-have) | 1 | soak harness |
 
 ---
 

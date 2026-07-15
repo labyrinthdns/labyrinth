@@ -392,8 +392,8 @@ The documentation is exceptional — each doc is dated, cross-referenced to PLAN
 
 | # | Finding | File | Recommendation |
 |---|---------|------|---------------|
-| L1 | Docker builds npm inside Go image | `Dockerfile:11` | Split into a dedicated Node build stage |
-| L2 | No WebSocket close timeout documented | `web/timeseries_ws.go` | Document/configure idle disconnect for WS streams |
+| L1 | Docker builds npm inside Go image | `Dockerfile` | ✅ Fixed — separate webui (node:22-alpine) + build (golang:1.26-alpine) stages |
+| L2 | No WebSocket close timeout documented | `web/middleware.go:44-59` | ✅ Documented — lifecycle comment covers Accept, Read (4 KiB cap), Write (5s timeout), Ping (10s interval, ~20s silent-disconnect detection), Close (deferred StatusNormalClosure). No separate idle goroutine needed. |
 | L3 | Metrics endpoint is open | `web/server.go` | Should remain open (Prometheus pattern), but add docs note |
 | L4 | Integer overflow on uint16 in formatRFC8914 | — | No instance found; codebase is clean on bounds |
 

@@ -39,6 +39,24 @@ const MaxRequestBodyBytes = 1 << 20 // 1 MiB
 // server's per-conn read buffer. Pinning to 4 KiB makes the bound
 // explicit at every Accept site and keeps headroom for tagged messages
 // without permitting megabyte-scale floods.
+//
+// WebSocket lifecycle:
+//   - Accept: every handler calls websocket.Accept followed immediately
+//     by conn.SetReadLimit(MaxWebSocketMessageBytes).
+//   - Read: a goroutine reads JSON control messages. A message exceeding
+//     the 4 KiB read limit causes a protocol error that closes the conn.
+//   - Write: messages are pushed with a 5-second timeout per write
+//     (context.WithTimeout). A stalled client that does not drain its
+//     receive buffer will eventually cause the write to fail, which
+//     triggers conn.Close(StatusNormalClosure).
+//   - Ping: the push goroutine sends a WebSocket ping every 10 seconds.
+//     If the peer does not respond with a pong, the coder/websocket
+//     library's built-in timeout (PongTimeout, default ~10s) closes the
+//     connection.
+//   - Close: deferred conn.Close(StatusNormalClosure, reason) ensures
+//     the connection is torn down when the handler returns, even on
+//     panic. No separate idle-timeout goroutine is needed because the
+//     ping/pong cycle detects silent disconnects within ~20 seconds.
 const MaxWebSocketMessageBytes = 4 << 10 // 4 KiB
 
 // the OOM defence and MUST be applied to every POST/PUT/PATCH route
