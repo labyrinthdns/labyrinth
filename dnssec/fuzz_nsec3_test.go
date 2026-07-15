@@ -4,9 +4,6 @@ import (
 	"testing"
 )
 
-// seedNSEC3Query is a realistic NSEC3 hash input for fuzzing.
-var seedNSEC3Query = []byte("example.com")
-
 func FuzzComputeNSEC3Hash(f *testing.F) {
 	// Seed with realistic parameter combinations.
 	// Note: seed values must match the fuzz function parameter types:

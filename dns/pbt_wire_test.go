@@ -12,25 +12,6 @@ import (
 // Property 1: Header Pack/Unpack is bijective
 // ──────────────────────────────────────────────
 
-// headerProperty holds six random uint16 values that are packed as a Header
-// and then unpacked. The property passes if the unpacked result equals the
-// original, proving that Pack and Unpack are inverses on any possible Header
-// value (no field is silently truncated or modified).
-type headerProperty struct {
-	ID, Flags, QDCount, ANCount, NSCount, ARCount uint16
-}
-
-func (hp headerProperty) Generate(rand *rand.Rand) headerProperty {
-	return headerProperty{
-		ID:      uint16(rand.Uint32()),
-		Flags:   uint16(rand.Uint32()),
-		QDCount: uint16(rand.Uint32()),
-		ANCount: uint16(rand.Uint32()),
-		NSCount: uint16(rand.Uint32()),
-		ARCount: uint16(rand.Uint32()),
-	}
-}
-
 func TestProperty_HeaderPackUnpackRoundTrip(t *testing.T) {
 	f := func(id, flags, qd, an, ns, ar uint16) bool {
 		orig := Header{ID: id, Flags: flags, QDCount: qd, ANCount: an, NSCount: ns, ARCount: ar}

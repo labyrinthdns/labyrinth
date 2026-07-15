@@ -142,7 +142,7 @@ func (s *DoQServer) Serve(ctx context.Context) error {
 
 // handleConnection processes incoming streams on a single QUIC connection.
 func (s *DoQServer) handleConnection(ctx context.Context, conn *quic.Conn) {
-	defer conn.CloseWithError(0, "server shutdown")
+	_ = conn.CloseWithError(0, "server shutdown")
 	clientAddr := conn.RemoteAddr()
 
 	for i := 0; i < s.pipelineMax; i++ {
@@ -194,7 +194,7 @@ func (s *DoQServer) handleStream(stream *quic.Stream, clientAddr net.Addr) {
 	response = applyTCPTransportPolicies(nil, response, s.idleTimeout, true)
 
 	// Write 2-byte length prefix + response
-	stream.SetWriteDeadline(time.Now().Add(s.timeout))
+	_ = stream.SetWriteDeadline(time.Now().Add(s.timeout))
 	if err := binary.Write(stream, binary.BigEndian, uint16(len(response))); err != nil {
 		return
 	}

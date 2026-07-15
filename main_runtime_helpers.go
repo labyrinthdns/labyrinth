@@ -263,7 +263,7 @@ func startDNSServers(
 	// Start DoQ server if enabled (RFC 9250). Shares TLS certs with DoT.
 	if cfg.Server.DoQEnabled {
 		switch {
-		case sharedTLSConfig != nil && len(sharedTLSConfig) > 0 && sharedTLSConfig[0] != nil:
+		case len(sharedTLSConfig) > 0 && sharedTLSConfig[0] != nil:
 			doqServer, doqErr := server.NewDoQServerWithTLSConfig(
 				cfg.Server.DoQListenAddr,
 				handler,
