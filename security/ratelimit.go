@@ -1,6 +1,7 @@
 package security
 
 import (
+	"container/heap"
 	"context"
 	"sync"
 	"time"
@@ -25,13 +26,54 @@ import (
 // closes the memory growth, not the per-IP isolation.
 const MaxRateLimiterClients = 1_000_000
 
+// evictHeapEntry tracks an IP and its lastTime for the eviction min-heap.
+// container/heap maintains the index field for Fix operations.
+type evictHeapEntry struct {
+	ip       string
+	lastTime time.Time
+	index    int
+}
+
+// evictHeap implements heap.Interface as a min-heap ordered by lastTime.
+// Used alongside map[string]*tokenBucket so evictOldestLocked can find
+// the least-recently-used entry in O(log n) instead of O(n).
+type evictHeap []*evictHeapEntry
+
+func (h evictHeap) Len() int           { return len(h) }
+func (h evictHeap) Less(i, j int) bool { return h[i].lastTime.Before(h[j].lastTime) }
+func (h evictHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+func (h *evictHeap) Push(x interface{}) {
+	n := len(*h)
+	entry := x.(*evictHeapEntry)
+	entry.index = n
+	*h = append(*h, entry)
+}
+func (h *evictHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	entry := old[n-1]
+	old[n-1] = nil
+	entry.index = -1
+	*h = old[0 : n-1]
+	return entry
+}
+
 // RateLimiter implements per-IP token bucket rate limiting.
 type RateLimiter struct {
 	mu      sync.Mutex
 	clients map[string]*tokenBucket
-	rate    float64
-	burst   int
-	cleanup time.Duration
+	// evictHeap is a min-heap of (ip, lastTime) pairs for O(log n)
+	// eviction of the oldest entry when the client cap is reached.
+	// Lazy-initialised; entries may become stale when the cleanup tick
+	// removes map entries — evictOldestLocked skips stale heap entries.
+	evictHeap *evictHeap
+	rate      float64
+	burst     int
+	cleanup   time.Duration
 	// maxClients overrides MaxRateLimiterClients for tests. Zero
 	// means use the package-level cap; nonzero is a smaller test
 	// cap so the cap-enforced eviction can be exercised without
@@ -54,22 +96,28 @@ func NewRateLimiter(rate float64, burst int) *RateLimiter {
 	}
 }
 
-// evictOldestLocked drops the bucket with the oldest lastTime to make
-// room for a new insert. Caller holds rl.mu. O(n) over the map; only
-// runs on cache miss after the cap is reached.
+// evictOldestLocked drops the entry with the oldest lastTime using the
+// eviction min-heap (O(log n)). When the heap is empty (first call, or
+// after a cleanup-tick drained all entries) it rebuilds from the map.
+// Caller holds rl.mu.
 func (rl *RateLimiter) evictOldestLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for k, v := range rl.clients {
-		if first || v.lastTime.Before(oldestTime) {
-			oldestKey = k
-			oldestTime = v.lastTime
-			first = false
+	if rl.evictHeap == nil || rl.evictHeap.Len() == 0 {
+		// First eviction or heap exhausted: rebuild from map.
+		h := make(evictHeap, 0, len(rl.clients))
+		rl.evictHeap = &h
+		for ip, tb := range rl.clients {
+			heap.Push(rl.evictHeap, &evictHeapEntry{ip: ip, lastTime: tb.lastTime})
 		}
 	}
-	if oldestKey != "" {
-		delete(rl.clients, oldestKey)
+	for rl.evictHeap.Len() > 0 {
+		he := heap.Pop(rl.evictHeap).(*evictHeapEntry)
+		if _, exists := rl.clients[he.ip]; exists {
+			delete(rl.clients, he.ip)
+			return
+		}
+		// Stale entry (already evicted by cleanup tick). Skip and
+		// continue — the heap may have accumulated stale entries
+		// between cleanup cycles.
 	}
 }
 
@@ -94,6 +142,14 @@ func (rl *RateLimiter) Allow(clientIP string) bool {
 			tokens:   float64(rl.burst) - 1,
 			lastTime: now,
 		}
+		// Push to the eviction heap so future cap-evictions can find
+		// this entry in O(log n). Lazy-initialise if this is the
+		// very first client.
+		if rl.evictHeap == nil {
+			h := make(evictHeap, 0, cap)
+			rl.evictHeap = &h
+		}
+		heap.Push(rl.evictHeap, &evictHeapEntry{ip: clientIP, lastTime: now})
 		return true
 	}
 
@@ -129,6 +185,18 @@ func (rl *RateLimiter) StartCleanup(ctx context.Context) {
 				if tb.lastTime.Before(cutoff) {
 					delete(rl.clients, ip)
 				}
+			}
+			// Trim stale heap entries when they significantly
+			// outnumber live map entries. The heap accumulates
+			// stale entries (cleaned from the map but still in
+			// the heap) between cleanup cycles; rebuild keeps
+			// the heap size proportional to the map.
+			if rl.evictHeap != nil && rl.evictHeap.Len() > len(rl.clients)*2+1 {
+				h := make(evictHeap, 0, len(rl.clients))
+				for ip, tb := range rl.clients {
+					heap.Push(&h, &evictHeapEntry{ip: ip, lastTime: tb.lastTime})
+				}
+				rl.evictHeap = &h
 			}
 			rl.mu.Unlock()
 		}
