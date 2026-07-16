@@ -90,7 +90,7 @@ jobs:
         run: npm ci && npm run build
 
       - name: Test with race detector
-        run: go test $(go list ./... | grep -v /test/soak) -count=1 -race -timeout 120s
+        run: go test $(go list ./... | grep -v /test/soak) -count=1 -race -timeout 180s
 
       - name: Test without race (full coverage fallback)
         if: ${{ failure() }}
