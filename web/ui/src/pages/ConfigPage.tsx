@@ -13,12 +13,14 @@ type FormState = {
     listen: string; metrics: string; maxUDP: number; tcpTimeout: string; maxTCP: number
     maxUDPWorkers: number; graceful: string; tcpPipelineMax: number; tcpIdleTimeout: string
     dotEnabled: boolean; dotListenAddr: string; tlsCertFile: string; tlsKeyFile: string
+    maxTCPConnsPerClient: number; maxDoTConnsPerClient: number
   }
   resolver: {
     maxDepth: number; maxCnameDepth: number; upstreamTimeout: string; upstreamRetries: number
     qmin: boolean; preferIPv4: boolean; dnssec: boolean; hardenBelowNX: boolean
     rootHintsRefresh: string; ecsEnabled: boolean; ecsMaxPrefix: number; ecsMaxPrefixV6: number
     dns64Enabled: boolean; dns64Prefix: string; fallbackResolvers: string[]
+    maxNSNamesPerDelegation: number
   }
   cache: {
     maxEntries: number; minTTL: number; maxTTL: number; negMaxTTL: number
@@ -105,6 +107,8 @@ function mapForm(cfg: Record<string, unknown>, authHash: string): FormState {
       tcpIdleTimeout: str(server.tcp_idle_timeout, '10s'),
       dotEnabled: boo(server.dot_enabled), dotListenAddr: str(server.dot_listen_addr),
       tlsCertFile: str(server.tls_cert_file), tlsKeyFile: str(server.tls_key_file),
+      maxTCPConnsPerClient: num(server.max_tcp_conns_per_client, 16),
+      maxDoTConnsPerClient: num(server.max_dot_conns_per_client, 16),
     },
     resolver: {
       maxDepth: num(resolver.max_depth, 30), maxCnameDepth: num(resolver.max_cname_depth, 10),
@@ -115,6 +119,7 @@ function mapForm(cfg: Record<string, unknown>, authHash: string): FormState {
       ecsEnabled: boo(resolver.ecs_enabled), ecsMaxPrefix: num(resolver.ecs_max_prefix, 24), ecsMaxPrefixV6: num(resolver.ecs_max_prefix_v6, 56),
       dns64Enabled: boo(resolver.dns64_enabled), dns64Prefix: str(resolver.dns64_prefix),
       fallbackResolvers: arr(resolver.fallback_resolvers),
+      maxNSNamesPerDelegation: num(resolver.max_ns_names_per_delegation, 13),
     },
     cache: {
       maxEntries: num(cache.max_entries, 100000), minTTL: num(cache.min_ttl, 5),
@@ -190,6 +195,8 @@ function buildYAML(f: FormState): string {
   L.push(`  graceful_shutdown: ${y(f.server.graceful)}`)
   if (f.server.tcpPipelineMax) L.push(`  tcp_pipeline_max: ${f.server.tcpPipelineMax}`)
   L.push(`  tcp_idle_timeout: ${y(f.server.tcpIdleTimeout)}`)
+  if (f.server.maxTCPConnsPerClient !== 16) L.push(`  max_tcp_conns_per_client: ${f.server.maxTCPConnsPerClient}`)
+  if (f.server.maxDoTConnsPerClient !== 16) L.push(`  max_dot_conns_per_client: ${f.server.maxDoTConnsPerClient}`)
   L.push(`  dot_enabled: ${f.server.dotEnabled}`)
   if (f.server.dotEnabled || f.server.dotListenAddr) L.push(`  dot_listen_addr: ${y(f.server.dotListenAddr)}`)
   if (f.server.tlsCertFile) L.push(`  tls_cert_file: ${y(f.server.tlsCertFile)}`)
@@ -202,6 +209,7 @@ function buildYAML(f: FormState): string {
   L.push(`  max_cname_depth: ${f.resolver.maxCnameDepth}`)
   L.push(`  upstream_timeout: ${y(f.resolver.upstreamTimeout)}`)
   L.push(`  upstream_retries: ${f.resolver.upstreamRetries}`)
+  if (f.resolver.maxNSNamesPerDelegation !== 13) L.push(`  max_ns_names_per_delegation: ${f.resolver.maxNSNamesPerDelegation}`)
   L.push(`  qname_minimization: ${f.resolver.qmin}`)
   L.push(`  prefer_ipv4: ${f.resolver.preferIPv4}`)
   L.push(`  dnssec_enabled: ${f.resolver.dnssec}`)
