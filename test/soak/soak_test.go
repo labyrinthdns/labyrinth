@@ -4,13 +4,18 @@
 // usage, and response latency over time, failing if any metric degrades
 // beyond the configured threshold.
 //
-// Usage:
+// This test requires outbound network access to root DNS servers and runs
+// for several minutes by default. It is excluded from `make test` and CI
+// (`go test ./...`). Run it explicitly:
+//
+//	make soak
+//
+// Or directly:
 //
 //	go test ./test/soak/ -run TestSoak -timeout 24h -v
 //
 // Duration defaults to 5 minutes and can be overridden via the
 // LABYRINTH_SOAK_DURATION environment variable (e.g. "72h", "30m").
-// Requires outbound network access to root DNS servers.
 package soak
 
 import (

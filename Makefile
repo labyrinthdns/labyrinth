@@ -18,10 +18,13 @@ webui:
 	cd web/ui && npm ci --silent && npm run build
 
 test:
-	go test ./... -v -count=1 -timeout 120s
+	go test $(shell go list ./... | grep -v /test/soak) -v -count=1 -timeout 120s
+
+soak:
+	go test ./test/soak/ -run TestSoak -timeout 72h -v
 
 bench:
-	go test ./... -bench=. -benchmem -run='^$$' -timeout 120s
+	go test $(shell go list ./... | grep -v /test/soak) -bench=. -benchmem -run='^$' -timeout 120s
 
 fuzz:
 	go test ./dns/ -fuzz=FuzzUnpack -fuzztime=60s
