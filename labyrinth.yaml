@@ -7,6 +7,9 @@ server:
   max_udp_size: 4096
   tcp_timeout: 10s
   max_tcp_connections: 256
+  # Per-source-IP connection caps (slow-loris defence). 0 = unlimited.
+  # max_tcp_conns_per_client: 16
+  # max_dot_conns_per_client: 16
   graceful_shutdown: 5s
 
 resolver:
@@ -20,6 +23,8 @@ resolver:
   # Both are floored to the default if set <= 0.
   max_queries_per_request: 200
   request_timeout: 20s
+  # Caps NS hostnames per delegation (NXNS amplification defence). 0 = unlimited.
+  # max_ns_names_per_delegation: 13
   qname_minimization: true
   prefer_ipv4: true
   dnssec_enabled: true

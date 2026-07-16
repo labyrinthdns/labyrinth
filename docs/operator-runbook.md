@@ -105,6 +105,8 @@ server:
   max_udp_size: 1232            # EDNS0 UDP buffer (Flag Day 2020)
   tcp_timeout: 10s              # Per-request TCP read/write deadline
   max_tcp_connections: 256      # Max concurrent TCP connections
+  max_tcp_conns_per_client: 16  # Per-source TCP cap (slow-loris defence)
+  max_dot_conns_per_client: 16  # Per-source DoT cap (slow-loris defence)
   tcp_pipeline_max: 100         # Max pipelined queries per TCP conn
   tcp_idle_timeout: 5s          # TCP idle connection timeout
   max_udp_workers: 10000       # Max concurrent UDP query goroutines
@@ -121,6 +123,7 @@ resolver:
   upstream_retries: 3           # Retries per upstream
   max_queries_per_request: 200  # Total query budget per client request
   request_timeout: 20s          # Wall-clock deadline per request
+  max_ns_names_per_delegation: 13  # NS count cap per delegation (NXNS defence)
   qname_minimization: true      # RFC 9156
   caps_for_id: true             # RFC 5452 §9.2 0x20
   prefer_ipv4: true
@@ -682,6 +685,8 @@ server:
 - [ ] 0x20 case randomization enabled
 - [ ] Harden-below-NXDOMAIN enabled
 - [ ] Request budgets configured
+- [ ] Per-source TCP/DoT connection caps enabled (default 16)
+- [ ] Delegation NS-name limit enabled (default 13)
 - [ ] Cache prefetch enabled
 - [ ] Serve-stale enabled (optional)
 - [ ] Web dashboard behind TLS
