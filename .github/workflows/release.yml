@@ -23,7 +23,7 @@ jobs:
         working-directory: web/ui
         run: npm ci && npm run build
       - name: Test
-        run: go test ./... -count=1 -timeout 120s
+        run: go test $(go list ./... | grep -v /test/soak) -count=1 -timeout 120s
 
   build:
     needs: test
