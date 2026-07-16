@@ -227,6 +227,7 @@ func startDNSServers(
 				sharedCfg,
 				cfg.Server.TCPTimeout,
 				cfg.Server.MaxTCPConns,
+				cfg.Server.MaxDoTConnsPerClient,
 				logger,
 			)
 			if dotErr != nil {
@@ -244,6 +245,7 @@ func startDNSServers(
 				cfg.Server.TLSKeyFile,
 				cfg.Server.TCPTimeout,
 				cfg.Server.MaxTCPConns,
+				cfg.Server.MaxDoTConnsPerClient,
 				logger,
 			)
 			if dotErr != nil {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,10 @@ type TCPServer struct {
 	logger      *slog.Logger
 	pipelineMax int
 	idleTimeout time.Duration
+	// per-source connection cap
+	maxConnsPerClient int
+	clientConns       map[string]int
+	clientMu          sync.Mutex
 }
 
 // NewTCPServer creates a new TCP DNS server.
@@ -29,14 +34,16 @@ func NewTCPServer(addr string, handler Handler, timeout time.Duration, maxConns 
 	}
 
 	s := &TCPServer{
-		listener:    ln,
-		handler:     handler,
-		timeout:     timeout,
-		maxConns:    maxConns,
-		sem:         make(chan struct{}, maxConns),
-		logger:      logger,
-		pipelineMax: 100,
-		idleTimeout: 5 * time.Second,
+		listener:          ln,
+		handler:           handler,
+		timeout:           timeout,
+		maxConns:          maxConns,
+		maxConnsPerClient: 16, // default; overridden via WithMaxConnsPerClient
+		sem:               make(chan struct{}, maxConns),
+		logger:            logger,
+		pipelineMax:       100,
+		idleTimeout:       5 * time.Second,
+		clientConns:       make(map[string]int),
 	}
 
 	for _, opt := range opts {
@@ -44,6 +51,15 @@ func NewTCPServer(addr string, handler Handler, timeout time.Duration, maxConns 
 	}
 
 	return s, nil
+}
+
+// WithMaxConnsPerClient sets the per-source-IP connection cap for the TCP server.
+func WithMaxConnsPerClient(n int) TCPOption {
+	return func(s *TCPServer) {
+		if n > 0 {
+			s.maxConnsPerClient = n
+		}
+	}
 }
 
 // TCPOption configures optional TCPServer parameters.
@@ -93,12 +109,34 @@ func (s *TCPServer) Serve(ctx context.Context) error {
 			continue
 		}
 
+		// Per-source connection cap check.
+		clientIP := sourceIP(conn.RemoteAddr())
+		if s.maxConnsPerClient > 0 {
+			s.clientMu.Lock()
+			count := s.clientConns[clientIP]
+			if count >= s.maxConnsPerClient {
+				s.clientMu.Unlock()
+				conn.Close()
+				continue
+			}
+			s.clientConns[clientIP] = count + 1
+			s.clientMu.Unlock()
+		}
+
 		s.sem <- struct{}{}
-		go func(c net.Conn) {
+		go func(c net.Conn, ip string) {
 			defer func() { <-s.sem }()
-			defer c.Close()
 			s.handleTCP(c)
-		}(conn)
+			if s.maxConnsPerClient > 0 {
+				s.clientMu.Lock()
+				s.clientConns[ip]--
+				if s.clientConns[ip] <= 0 {
+					delete(s.clientConns, ip)
+				}
+				s.clientMu.Unlock()
+			}
+			c.Close()
+		}(conn, clientIP)
 	}
 }
 
@@ -157,4 +195,20 @@ func (s *TCPServer) handleTCP(conn net.Conn) {
 // Close closes the TCP server.
 func (s *TCPServer) Close() error {
 	return s.listener.Close()
+}
+
+// sourceIP extracts the source IP string from a remote address, stripping
+// the port. Used for per-client connection caps.
+func sourceIP(addr net.Addr) string {
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		return a.IP.String()
+	}
+	// Fallback: SplitHostPort for string-form addresses (e.g. from
+	// unix-domain sockets or custom transports).
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
 }

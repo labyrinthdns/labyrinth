@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -20,11 +21,15 @@ type DoTServer struct {
 	logger      *slog.Logger
 	pipelineMax int
 	idleTimeout time.Duration
+	// per-source connection cap
+	maxConnsPerClient int
+	clientConns       map[string]int
+	clientMu          sync.Mutex
 }
 
 // NewDoTServer creates a new DNS-over-TLS server.
 // It loads the TLS certificate/key pair and wraps a TCP listener with TLS.
-func NewDoTServer(addr string, handler Handler, certFile, keyFile string, timeout time.Duration, maxConns int, logger *slog.Logger) (*DoTServer, error) {
+func NewDoTServer(addr string, handler Handler, certFile, keyFile string, timeout time.Duration, maxConns int, maxConnsPerClient int, logger *slog.Logger) (*DoTServer, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, err
@@ -43,20 +48,22 @@ func NewDoTServer(addr string, handler Handler, certFile, keyFile string, timeou
 	tlsLn := tls.NewListener(ln, tlsCfg)
 
 	return &DoTServer{
-		listener:    tlsLn,
-		handler:     handler,
-		timeout:     timeout,
-		maxConns:    maxConns,
-		sem:         make(chan struct{}, maxConns),
-		logger:      logger,
-		pipelineMax: 100,
-		idleTimeout: 5 * time.Second,
+		listener:          tlsLn,
+		handler:           handler,
+		timeout:           timeout,
+		maxConns:          maxConns,
+		sem:               make(chan struct{}, maxConns),
+		logger:            logger,
+		pipelineMax:       100,
+		idleTimeout:       5 * time.Second,
+		maxConnsPerClient: maxConnsPerClient,
+		clientConns:       make(map[string]int),
 	}, nil
 }
 
 // NewDoTServerWithTLSConfig creates a DoT server using a pre-built tls.Config.
 // This is used when auto-TLS provides the certificate dynamically.
-func NewDoTServerWithTLSConfig(addr string, handler Handler, tlsCfg *tls.Config, timeout time.Duration, maxConns int, logger *slog.Logger) (*DoTServer, error) {
+func NewDoTServerWithTLSConfig(addr string, handler Handler, tlsCfg *tls.Config, timeout time.Duration, maxConns int, maxConnsPerClient int, logger *slog.Logger) (*DoTServer, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -65,29 +72,33 @@ func NewDoTServerWithTLSConfig(addr string, handler Handler, tlsCfg *tls.Config,
 	tlsLn := tls.NewListener(ln, tlsCfg)
 
 	return &DoTServer{
-		listener:    tlsLn,
-		handler:     handler,
-		timeout:     timeout,
-		maxConns:    maxConns,
-		sem:         make(chan struct{}, maxConns),
-		logger:      logger,
-		pipelineMax: 100,
-		idleTimeout: 5 * time.Second,
+		listener:          tlsLn,
+		handler:           handler,
+		timeout:           timeout,
+		maxConns:          maxConns,
+		sem:               make(chan struct{}, maxConns),
+		logger:            logger,
+		pipelineMax:       100,
+		idleTimeout:       5 * time.Second,
+		maxConnsPerClient: maxConnsPerClient,
+		clientConns:       make(map[string]int),
 	}, nil
 }
 
 // NewDoTServerWithListener creates a DoT server using an existing TLS listener.
 // This is primarily useful for testing.
-func NewDoTServerWithListener(ln net.Listener, handler Handler, timeout time.Duration, maxConns int, logger *slog.Logger) *DoTServer {
+func NewDoTServerWithListener(ln net.Listener, handler Handler, timeout time.Duration, maxConns int, maxConnsPerClient int, logger *slog.Logger) *DoTServer {
 	return &DoTServer{
-		listener:    ln,
-		handler:     handler,
-		timeout:     timeout,
-		maxConns:    maxConns,
-		sem:         make(chan struct{}, maxConns),
-		logger:      logger,
-		pipelineMax: 100,
-		idleTimeout: 5 * time.Second,
+		listener:          ln,
+		handler:           handler,
+		timeout:           timeout,
+		maxConns:          maxConns,
+		sem:               make(chan struct{}, maxConns),
+		logger:            logger,
+		pipelineMax:       100,
+		idleTimeout:       5 * time.Second,
+		maxConnsPerClient: maxConnsPerClient,
+		clientConns:       make(map[string]int),
 	}
 }
 
@@ -121,12 +132,34 @@ func (s *DoTServer) Serve(ctx context.Context) error {
 			continue
 		}
 
+		// Per-source connection cap check.
+		clientIP := sourceIP(conn.RemoteAddr())
+		if s.maxConnsPerClient > 0 {
+			s.clientMu.Lock()
+			count := s.clientConns[clientIP]
+			if count >= s.maxConnsPerClient {
+				s.clientMu.Unlock()
+				conn.Close()
+				continue
+			}
+			s.clientConns[clientIP] = count + 1
+			s.clientMu.Unlock()
+		}
+
 		s.sem <- struct{}{}
-		go func(c net.Conn) {
+		go func(c net.Conn, ip string) {
 			defer func() { <-s.sem }()
-			defer c.Close()
 			s.handleDoT(c)
-		}(conn)
+			if s.maxConnsPerClient > 0 {
+				s.clientMu.Lock()
+				s.clientConns[ip]--
+				if s.clientConns[ip] <= 0 {
+					delete(s.clientConns, ip)
+				}
+				s.clientMu.Unlock()
+			}
+			c.Close()
+		}(conn, clientIP)
 	}
 }
 

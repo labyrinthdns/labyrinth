@@ -76,3 +76,15 @@ _Generated from test files and implementation audit — 2026-07-06_
 |-----|-------|-------|
 | RFC 8945 | DNS Transaction Signatures (TSIG) | Not yet implemented |
 | RFC 9432 | Catalog Zones | Planned for M4.2 |
+
+## Hardening Budgets (implemented in v0.8.32+)
+
+These are not standalone RFCs but cross-RFC operational bounds that close CPU-exhaustion vectors:
+
+| Item | Cap | Scope | Implementation |
+|------|-----|-------|---------------|
+| Per-source TCP connection cap | 16 (configurable) | Per client IP | `server/tcp.go`, `server/dot.go` — `max_tcp_conns_per_client`, `max_dot_conns_per_client` |
+| Per-delegation NS name cap | 13 (configurable) | Per delegation | `resolver/delegation.go` — `max_ns_names_per_delegation` |
+| NSEC3 hash budget (on-wire) | 600 units | Per validation | `dnssec/nsec3.go`, `dnssec/validator.go` |
+| NSEC3 hash budget (cache aggressive) | 150 units | Per cache lookup | `cache/nsec3_aggressive.go` |
+| NSEC3 salt-length cap | 128 bytes | Per NSEC3 record | `dnssec/nsec3.go`, `cache/nsec3_aggressive.go` |

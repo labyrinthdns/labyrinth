@@ -855,7 +855,7 @@ func TestExtractDelegationNoNSName(t *testing.T) {
 				TTL: 3600, RDLength: 0, RData: nil},
 		},
 	}
-	delegation, zone := extractDelegation(msg)
+	delegation, zone := extractDelegation(msg, 0)
 	if zone != "example.com" {
 		t.Errorf("zone: expected 'example.com', got %q", zone)
 	}

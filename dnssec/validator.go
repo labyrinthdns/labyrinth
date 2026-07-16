@@ -453,6 +453,14 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	// answer RRset, the trust chain, and every denial proof in this validation.
 	budget := &cryptoBudget{max: maxCryptoVerifyPerResponse}
 
+	// Per-response NSEC3 hash budget: bounds SHA-1 hash computation cost from
+	// NSEC3 denial proofs (CVE-2023-50868). Separate from the cryptoBudget
+	// because hashing is a different (cheaper-per-unit) operation than signature
+	// verification; an attacker can trigger many hashes before hitting the
+	// signature-verify cap. 600 units at 100 iterations/record = 6 hashes;
+	// realistic proofs use 2-4 hashes at < 100 iterations.
+	nsec3Budget := &nsec3HashBudget{max: 600}
+
 	// RFC 7646 §1: a Negative Trust Anchor for the queried subtree
 	// suppresses validation. The operator installed it precisely
 	// because the zone's chain is broken; we honour that decision
@@ -474,7 +482,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	// Handle NXDOMAIN/NODATA: validate NSEC3 proofs in authority section
 	rcode := response.Header.RCODE()
 	if rcode == dns.RCodeNXDomain || (rcode == dns.RCodeNoError && len(response.Answers) == 0) {
-		verdict := v.validateDenialResponse(response, qname, qtype, budget)
+		verdict := v.validateDenialResponseN(response, qname, qtype, []*cryptoBudget{budget}, []*nsec3HashBudget{nsec3Budget})
 		push(ValidationStep{Stage: "denial", Outcome: verdictToOutcome(verdict), Detail: "NSEC/NSEC3 denial proof"})
 		reason := ReasonNone
 		if verdict == Bogus {
@@ -1507,7 +1515,17 @@ func isInBailiwick(qname, signer string) bool {
 // section: a signed-but-unverified denial response is treated as Bogus, not
 // Insecure, because the zone has clearly opted into DNSSEC.
 func (v *Validator) validateDenialResponse(response *dns.Message, qname string, qtype uint16, budget ...*cryptoBudget) ValidationResult {
+	return v.validateDenialResponseN(
+		response, qname, qtype, budget, nil,
+	)
+}
+
+// validateDenialResponseN is the internal implementation shared by
+// validateDenialResponse (no hash budget, for callers that don't need it)
+// and the full path (with nsec3 budget, from validateResponseImpl).
+func (v *Validator) validateDenialResponseN(response *dns.Message, qname string, qtype uint16, budget []*cryptoBudget, nsec3Budget []*nsec3HashBudget) ValidationResult {
 	cb := budgetFrom(budget)
+	nsec3B := nsec3HashBudgetFrom(nsec3Budget)
 	// Collect RRSIG and NSEC3 records from authority section. We retain the
 	// raw ResourceRecord for NSEC3 entries so that the NSEC3 owner-name hash
 	// (which lives in the RR's owner name, not the parsed RDATA) is
@@ -1742,7 +1760,7 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 	// pre-0.6.12 forgery vector (any one valid NSEC3 anywhere in the zone
 	// could be replayed to "prove" NXDOMAIN for unrelated names).
 	if len(verifiedNSEC3s) > 0 {
-		denied, err := VerifyNSEC3Denial5155(qname, qtype, response.Header.RCODE(), verifiedNSEC3s)
+		denied, err := VerifyNSEC3Denial5155(qname, qtype, response.Header.RCODE(), verifiedNSEC3s, nsec3B)
 		if err != nil {
 			v.logger.Debug("NSEC3 denial verification error",
 				"qname", qname, "error", err)
@@ -1796,7 +1814,7 @@ func (v *Validator) validateDenialResponse(response *dns.Message, qname string, 
 	// It reuses exactly the proof the trust-chain walker trusts to declare an
 	// insecure delegation, so it introduces no new trust surface.
 	if qtype == dns.TypeDS && len(verifiedNSEC3s) > 0 {
-		if proven, dsErr := VerifyNSEC3DenialDSAbsent(qname, verifiedNSEC3s); dsErr == nil && proven {
+		if proven, dsErr := VerifyNSEC3DenialDSAbsent(qname, verifiedNSEC3s, nsec3B); dsErr == nil && proven {
 			v.logger.Debug("DS NODATA is an authenticated insecure delegation (NSEC3 opt-out / DS-clear)",
 				"qname", qname)
 			return Insecure

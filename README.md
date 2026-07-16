@@ -23,7 +23,7 @@
 - **Recursive only** — Navigates root → TLD → authoritative, caches results
 - **DNSSEC validation** — Full signature verification (RSA-SHA1/256/512, ECDSA P-256/P-384, ED25519), trust chain from root KSK, Zone Key bit gating (RFC 4034 §2.1.1), MUST-NOT algorithm refusal (RFC 8624 §3.1), CD bit propagation in forward mode (RFC 6840 §5.9), aggressive NSEC/NSEC3 use (RFC 8198 §5.2/§5.4)
 - **DNS blocklist** — Pi-hole style domain blocking with hosts/domain/AdBlock Plus list formats
-- **Secure** — JWT auth, bcrypt passwords, bailiwick enforcement (RFC 5452 §3), rate limiting, ACL with EDE 17/18 signalling (RFC 8914)
+- **Hardened** — JWT auth, bcrypt passwords, bailiwick enforcement (RFC 5452 §3), rate limiting, ACL with EDE 17/18 signalling (RFC 8914); per-source TCP/DoT connection caps, per-delegation NS-name limit, NSEC3 hash budgets and salt-length ceiling close CPU-exhaustion vectors (CVE-2023-50387 / CVE-2023-50868)
 - **Observable** — Prometheus metrics, Zabbix agent, structured logging, WebSocket query stream, 8 new counters for v0.6.24 RFC compliance features
 - **Self-updating** — Automatic version check + one-click update from web dashboard (read-only installs require host-level update/redeploy)
 - **Fast** — Sharded cache, >22M cache reads/sec, <50µs cache hit latency, request coalescing

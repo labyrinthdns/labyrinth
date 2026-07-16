@@ -25,6 +25,14 @@ var (
 // Aligns with BIND 9.18+ and Unbound 1.16+ defaults.
 const MaxNSEC3Iterations = 100
 
+// MaxNSEC3SaltLength caps the salt byte length accepted in NSEC3 records.
+// RFC 9276 §3.1 recommends a salt length of 0 (no salt); longer salts add
+// hashing cost with no security benefit for a validating resolver. 128 bytes
+// (≤255 per the wire format field) is more permissive than any legitimate
+// deployment (even PowerDNS's 64-byte default is generous) and prevents an
+// attacker from inflating hash cost via an excessively long salt.
+const MaxNSEC3SaltLength = 128
+
 // MaxNSEC3RecordsPerProof bounds how many NSEC3 records a single denial proof
 // may carry. A legitimate NXDOMAIN/NODATA proof needs only a few (closest-
 // encloser + next-closer + wildcard, plus extras for opt-out spans); a flood of
@@ -33,6 +41,53 @@ const MaxNSEC3Iterations = 100
 // rejecting abuse before any closest-encloser hashing runs.
 const MaxNSEC3RecordsPerProof = 16
 
+// nsec3HashBudget is the per-query NSEC3 hash-computation budget (in SHA-1
+// hash units). Each ComputeNSEC3Hash call costs (iterations + 1) units.
+// PowerDNS uses 600 as max-nsec3-hash-computations-per-query. The budget
+// bounds CPU DoS via crafted NSEC3 responses (CVE-2023-50868) while leaving
+// comfortable room for legitimate multi-zone denials (which typically cost
+// well under 100 units even at 100 iterations). A nil/zero budget is unlimited.
+type nsec3HashBudget struct {
+	used int
+	max  int
+}
+
+func (b *nsec3HashBudget) charge(units int) bool {
+	if b == nil || b.max <= 0 {
+		return true
+	}
+	if b.used+units > b.max {
+		return false
+	}
+	b.used += units
+	return true
+}
+
+// nsec3HashUnitCost returns the hash unit cost for computing one NSEC3 hash
+// with the given iteration count: each call does 1 base hash + iterations
+// iterative hashes, each of which is a SHA-1 computation.
+func nsec3HashUnitCost(iterations uint16) int {
+	return int(iterations) + 1
+}
+
+// nsec3HashBudgetFrom unpacks a variadic NSEC3 hash budget, returning nil
+// (unlimited) when no budget was passed (tests / direct callers).
+func nsec3HashBudgetFrom(budgets []*nsec3HashBudget) *nsec3HashBudget {
+	if len(budgets) > 0 {
+		return budgets[0]
+	}
+	return nil
+}
+
+// nsec3AggressiveHashBudget is the hash budget used for aggressive NSEC3 cache
+// synthesis (RFC 8198 §5.3). It is intentionally smaller (150 units) than the
+// on-wire validation budget (600 units) because the cache path can be triggered
+// by many more queries than on-wire validation. 150 units covers the realistic
+// worst case (a 100-iteration zone needs 101 units per hash, so even a single
+// closest-encloser + next-closer = 2 hashes = 202 units would exceed it; the
+// cache path is expected to hit lower-iteration zones or fall back to upstream).
+const nsec3AggressiveHashBudget = 150
+
 // nsec3Base32 is the extended hex base32 encoding used by NSEC3 (RFC 4648 §7),
 // without padding.
 var nsec3Base32 = base32.HexEncoding.WithPadding(base32.NoPadding)
@@ -40,12 +95,20 @@ var nsec3Base32 = base32.HexEncoding.WithPadding(base32.NoPadding)
 // ComputeNSEC3Hash computes the NSEC3 hash for a domain name.
 // Algorithm 1 is SHA-1 (the only defined algorithm per RFC 5155).
 // The result is the raw hash bytes (not base32-encoded).
-func ComputeNSEC3Hash(name string, algorithm uint8, iterations uint16, salt []byte) ([]byte, error) {
+// A variadic nsec3HashBudget may be passed to bound total hash work; when
+// absent (nil), no budget check is performed (tests / direct callers).
+func ComputeNSEC3Hash(name string, algorithm uint8, iterations uint16, salt []byte, budgets ...*nsec3HashBudget) ([]byte, error) {
 	if algorithm != 1 {
 		return nil, errUnsupportedHashAlg
 	}
 	if iterations > MaxNSEC3Iterations {
 		return nil, errTooManyIterations
+	}
+	if len(salt) > MaxNSEC3SaltLength {
+		return nil, fmt.Errorf("dnssec: NSEC3 salt length %d exceeds max %d", len(salt), MaxNSEC3SaltLength)
+	}
+	if budget := nsec3HashBudgetFrom(budgets); !budget.charge(nsec3HashUnitCost(iterations)) {
+		return nil, fmt.Errorf("dnssec: NSEC3 hash budget exhausted (%d/%d units)", budget.used, budget.max)
 	}
 
 	// Normalize: lowercase and ensure trailing dot for wire format encoding
@@ -422,7 +485,7 @@ func ancestorsOf(name string) []string {
 // can fake NXDOMAIN for any name whose true closest-encloser differs from
 // what the attacker claims — exactly the proof-substitution attack RFC 5155
 // is designed to prevent.
-func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NSEC3RecordWithOwner) (bool, error) {
+func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NSEC3RecordWithOwner, nsec3Budgets ...*nsec3HashBudget) (bool, error) {
 	if len(records) == 0 {
 		return false, errNoNSEC3Records
 	}
@@ -434,14 +497,18 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 		if records[i].Iterations > MaxNSEC3Iterations {
 			return false, errTooManyIterations
 		}
+		if len(records[i].Salt) > MaxNSEC3SaltLength {
+			return false, fmt.Errorf("dnssec: NSEC3 salt length %d exceeds max %d", len(records[i].Salt), MaxNSEC3SaltLength)
+		}
 	}
+	nsec3Budget := nsec3HashBudgetFrom(nsec3Budgets)
 	rec := &records[0]
 	qname = canonicalQName(qname)
 
 	// Direct NODATA — NSEC3 at H(qname) with qtype absent. This is the
 	// simplest case and applies only when RCODE=NOERROR.
 	if rcode == dns.RCodeNoError {
-		qnameHash, err := ComputeNSEC3Hash(qname, rec.HashAlgorithm, rec.Iterations, rec.Salt)
+		qnameHash, err := ComputeNSEC3Hash(qname, rec.HashAlgorithm, rec.Iterations, rec.Salt, nsec3Budget)
 		if err != nil {
 			return false, fmt.Errorf("computing NSEC3 hash for qname: %w", err)
 		}
@@ -555,7 +622,7 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 // that gets `true` from this function may safely treat the delegation as
 // Insecure; `false` means the denial of DS is unproven and the response
 // must NOT downgrade a previously-Secure chain to Insecure.
-func VerifyNSEC3DenialDSAbsent(childZone string, records []NSEC3RecordWithOwner) (bool, error) {
+func VerifyNSEC3DenialDSAbsent(childZone string, records []NSEC3RecordWithOwner, nsec3Budgets ...*nsec3HashBudget) (bool, error) {
 	if len(records) == 0 {
 		return false, errNoNSEC3Records
 	}
@@ -563,7 +630,11 @@ func VerifyNSEC3DenialDSAbsent(childZone string, records []NSEC3RecordWithOwner)
 		if records[i].Iterations > MaxNSEC3Iterations {
 			return false, errTooManyIterations
 		}
+		if len(records[i].Salt) > MaxNSEC3SaltLength {
+			return false, fmt.Errorf("dnssec: NSEC3 salt length %d exceeds max %d", len(records[i].Salt), MaxNSEC3SaltLength)
+		}
 	}
+	nsec3Budget := nsec3HashBudgetFrom(nsec3Budgets)
 	rec := &records[0]
 	childZone = canonicalQName(childZone)
 
@@ -571,7 +642,7 @@ func VerifyNSEC3DenialDSAbsent(childZone string, records []NSEC3RecordWithOwner)
 	// presence here — the parent zone signs the delegation point and may
 	// or may not list NS in the parent-side NSEC3 bitmap, depending on
 	// the signer. The critical bit is DS absence.
-	childHash, err := ComputeNSEC3Hash(childZone+".", rec.HashAlgorithm, rec.Iterations, rec.Salt)
+	childHash, err := ComputeNSEC3Hash(childZone+".", rec.HashAlgorithm, rec.Iterations, rec.Salt, nsec3Budget)
 	if err != nil {
 		return false, fmt.Errorf("computing NSEC3 hash for child zone: %w", err)
 	}

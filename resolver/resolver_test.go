@@ -199,7 +199,7 @@ func TestExtractDelegation(t *testing.T) {
 		},
 	}
 
-	delegation, zone := extractDelegation(msg)
+	delegation, zone := extractDelegation(msg, 0)
 	if zone != "example.com" {
 		t.Errorf("zone: expected 'example.com', got %q", zone)
 	}
@@ -238,7 +238,7 @@ func TestExtractDelegationGlueless(t *testing.T) {
 		Additional: []dns.ResourceRecord{}, // no glue
 	}
 
-	delegation, zone := extractDelegation(msg)
+	delegation, zone := extractDelegation(msg, 0)
 	if zone != "example.com" {
 		t.Errorf("zone: expected 'example.com', got %q", zone)
 	}
@@ -265,7 +265,7 @@ func TestExtractDelegationSkipsOPT(t *testing.T) {
 		},
 	}
 
-	delegation, _ := extractDelegation(msg)
+	delegation, _ := extractDelegation(msg, 0)
 	if len(delegation) != 1 {
 		t.Fatalf("expected 1 NS, got %d", len(delegation))
 	}

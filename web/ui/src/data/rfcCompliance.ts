@@ -153,6 +153,9 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
 
   // Blocking
   { rfc: 'RFC 8659', title: 'DNS Certification Authority Authorization (CAA)', summary: 'CAA records resolved and returned verbatim — not enforced (operator concern).', category: 'core' },
+  { rfc: 'RFC 1034', section: '§4.2', title: 'Per-Delegation NS-Name Limit', summary: 'Max 13 NS names per delegation — bounds NXNS amplification (CVE-2020-8616) beyond the global query budget.', category: 'core', since: 'v0.8.32' },
+  { rfc: 'RFC 7766', section: '§6', title: 'Per-Source TCP/DoT Connection Cap', summary: 'Max 16 concurrent TCP/DoT connections per client IP — slow-loris defence beyond the global connection pool.', category: 'transport-security', since: 'v0.8.32' },
+  { rfc: 'RFC 9276', section: '§3.3', title: 'NSEC3 Hash Budget and Salt-Length Cap', summary: 'On-wire 600-unit hash budget, aggressive-cache 150-unit budget, 128-byte salt ceiling. Closes CVE-2023-50868 hash-DoS vector beyond per-record iteration cap.', category: 'dnssec', since: 'v0.8.32' },
 ]
 
 export const CATEGORY_LABELS: Record<ComplianceCategory, string> = {

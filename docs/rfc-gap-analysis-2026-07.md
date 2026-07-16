@@ -1,6 +1,13 @@
 # LabyrinthDNS — RFC Gap Analysis Follow-up
 
-_Date: 2026-07-08 · Scope: RFC/compliance docs, roadmap, changelog, and targeted implementation paths._
+_Date: 2026-07-08 · Last updated: 2026-07-16 · Scope: RFC/compliance docs, roadmap, changelog, and targeted implementation paths._
+
+> **Update 2026-07-16**: The following items from the P1/P2 hardening list were implemented in v0.8.32:
+> - Per-source TCP/DoT connection caps (P2 #7)
+> - Per-delegation NS-name cap (P2 #6)
+> - NSEC3 hash budget and salt-length cap (P1 #3)
+>
+> Outstanding gaps remain: fetches-per-zone/server caps (P2 #10) and TSIG (RFC 8945). See `docs/rfc-compliance-matrix.md` for the full hardening budget table.
 
 This follow-up reconciles the current codebase with:
 

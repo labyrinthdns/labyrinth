@@ -55,6 +55,10 @@ type ResolverConfig struct {
 	// to avoid IP fragmentation, which closes the off-path fragment-
 	// injection cache-poisoning vector. 0 means "use the safe default".
 	UpstreamUDPBufferSize int
+	// MaxNSNamesPerDelegation caps how many NS hostnames the resolver will
+	// accept from a single delegation response. Default 13 matches BIND's
+	// effective cap; 0 or negative means unlimited.
+	MaxNSNamesPerDelegation int
 }
 
 // ResolveResult holds the outcome of a recursive resolution.
@@ -906,7 +910,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			return result, nil
 
 		case responseReferral:
-			newNS, zone := extractDelegation(response)
+			newNS, zone := extractDelegation(response, r.config.MaxNSNamesPerDelegation)
 			if len(newNS) == 0 {
 				return &ResolveResult{RCODE: dns.RCodeServFail}, nil
 			}

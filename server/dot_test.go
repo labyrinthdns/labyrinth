@@ -77,7 +77,7 @@ func startTestDoTServer(t *testing.T, handler Handler) (*DoTServer, string, *tls
 	tlsLn := tls.NewListener(ln, serverTLSCfg)
 
 	logger := discardLogger()
-	srv := NewDoTServerWithListener(tlsLn, handler, 5*time.Second, 10, logger)
+	srv := NewDoTServerWithListener(tlsLn, handler, 5*time.Second, 10, 16, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go srv.Serve(ctx)
@@ -238,7 +238,7 @@ func TestDoTServeCancelWithoutConnections(t *testing.T) {
 	}
 
 	tlsLn := tls.NewListener(ln, serverTLSCfg)
-	srv := NewDoTServerWithListener(tlsLn, &EchoHandler{}, 5*time.Second, 10, discardLogger())
+	srv := NewDoTServerWithListener(tlsLn, &EchoHandler{}, 5*time.Second, 10, 16, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

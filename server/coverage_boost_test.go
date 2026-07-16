@@ -1398,7 +1398,7 @@ func TestDoTServeShutdown(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, logger)
+	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, 16, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -1424,7 +1424,7 @@ func TestDoTServeAcceptError(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, logger)
+	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, 16, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1452,7 +1452,7 @@ func TestDoTServeAcceptTimeoutContinue(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, logger)
+	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, 16, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1482,7 +1482,7 @@ func TestDoTServerClose(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, logger)
+	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, 16, logger)
 
 	err = srv.Close()
 	if err != nil {
@@ -1563,7 +1563,7 @@ func TestTCPHandleWriteResponseError(t *testing.T) {
 
 func TestNewDoTServer_InvalidCert(t *testing.T) {
 	_, err := NewDoTServer(":0", &EchoHandler{}, "nonexistent-cert.pem", "nonexistent-key.pem",
-		5*time.Second, 10, discardLogger())
+		5*time.Second, 10, 16, discardLogger())
 	if err == nil {
 		t.Error("expected error for invalid cert/key files")
 	}
@@ -1870,7 +1870,7 @@ func TestDoTServeCtxDoneSelectBranch(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, logger)
+	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, 16, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -2051,7 +2051,7 @@ func TestNewDoTServer_ListenError(t *testing.T) {
 	certFile, keyFile := writeTempCertKey(t)
 	// Valid cert/key but invalid address triggers Listen error (lines 38-41)
 	_, err := NewDoTServer("invalid-addr-no-port", &EchoHandler{}, certFile, keyFile,
-		5*time.Second, 10, discardLogger())
+		5*time.Second, 10, 16, discardLogger())
 	if err == nil {
 		t.Error("expected error for invalid listen address")
 	}
@@ -2061,7 +2061,7 @@ func TestNewDoTServer_Success(t *testing.T) {
 	certFile, keyFile := writeTempCertKey(t)
 	// Valid cert/key and valid address → success (lines 33-54)
 	srv, err := NewDoTServer("127.0.0.1:0", &EchoHandler{}, certFile, keyFile,
-		5*time.Second, 10, discardLogger())
+		5*time.Second, 10, 16, discardLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2428,7 +2428,7 @@ func TestDoTHandleWriteErrors_SlowHandler(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, logger)
+	srv := NewDoTServerWithListener(ln, handler, 5*time.Second, 10, 16, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -409,7 +409,7 @@ func TestExtractDelegationAAAAGlue(t *testing.T) {
 		}},
 	}
 
-	delegation, zone := extractDelegation(msg)
+	delegation, zone := extractDelegation(msg, 0)
 	if zone != "example.com" {
 		t.Errorf("zone: %q", zone)
 	}
@@ -1412,7 +1412,7 @@ func TestExtractDelegationBadGlue(t *testing.T) {
 		},
 	}
 
-	delegation, _ := extractDelegation(msg)
+	delegation, _ := extractDelegation(msg, 0)
 	if len(delegation) != 1 {
 		t.Fatalf("expected 1 NS, got %d", len(delegation))
 	}
@@ -1943,7 +1943,7 @@ func TestExtractDelegationSkipsNonNSAuthority(t *testing.T) {
 		}},
 	}
 
-	delegation, zone := extractDelegation(msg)
+	delegation, zone := extractDelegation(msg, 0)
 	if zone != "example.com" {
 		t.Errorf("zone: expected 'example.com', got %q", zone)
 	}
@@ -1971,7 +1971,7 @@ func TestExtractDelegationAdditionalNotMatchingNS(t *testing.T) {
 		},
 	}
 
-	delegation, _ := extractDelegation(msg)
+	delegation, _ := extractDelegation(msg, 0)
 	if len(delegation) != 1 {
 		t.Fatalf("expected 1 NS, got %d", len(delegation))
 	}

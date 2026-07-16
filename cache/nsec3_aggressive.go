@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/base32"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 var (
 	errUnsupportedNSEC3Alg = errors.New("cache: unsupported NSEC3 hash algorithm")
 	errTooManyNSEC3Iters   = errors.New("cache: NSEC3 iterations exceed RFC 9276 ceiling")
+	errNSEC3SaltTooLong    = errors.New("cache: NSEC3 salt length exceeds max")
 )
 
 // nsec3Base32 is the NSEC3 base32hex (RFC 4648 §7) decoder without padding,
@@ -224,6 +226,13 @@ func (c *Cache) LookupNSEC3CoversTyped(qname string, qtype uint16, qclass uint16
 	return c.lookupNSEC3(qname, qtype, qclass)
 }
 
+// aggressiveNSEC3HashBudget is the per-lookup hash budget for aggressive NSEC3
+// cache synthesis. It is intentionally smaller (150 units) than the on-wire
+// validation budget (600 units) because the cache path can be triggered by many
+// more queries than on-wire validation. When the budget is exhausted, the
+// lookup falls through to upstream rather than synthesising from cache.
+const aggressiveNSEC3HashBudget = 150
+
 func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, bool) {
 	if c.nsec3Idx == nil {
 		return nil, false
@@ -235,6 +244,10 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 
 	now := time.Now()
 	name := q
+	// Budget tracks SHA-1 hash work; each computeNSEC3HashForCache call costs
+	// (iterations + 1) hash units. Once exhausted, the loop abandons the lookup
+	// and falls through to upstream — the response path still works normally.
+	budgetRemaining := aggressiveNSEC3HashBudget
 	for name != "" {
 		c.nsec3Idx.mu.RLock()
 		intervals := c.nsec3Idx.byZone[name]
@@ -244,6 +257,12 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 			for _, iv := range intervals {
 				if !iv.expiresAt.After(now) {
 					continue
+				}
+				// Deduct hash cost from aggressive cache budget.
+				cost := int(iv.iterations) + 1
+				budgetRemaining -= cost
+				if budgetRemaining < 0 {
+					return nil, false
 				}
 				qHash, err := computeNSEC3HashForCache(q, iv.hashAlg, iv.iterations, iv.salt)
 				if err != nil {
@@ -279,6 +298,11 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 		for _, iv := range intervals {
 			if !iv.expiresAt.After(now) {
 				continue
+			}
+			cost := int(iv.iterations) + 1
+			budgetRemaining -= cost
+			if budgetRemaining < 0 {
+				return nil, false
 			}
 			qHash, err := computeNSEC3HashForCache(q, iv.hashAlg, iv.iterations, iv.salt)
 			if err != nil {
@@ -407,6 +431,10 @@ func computeNSEC3HashForCache(name string, algorithm uint8, iterations uint16, s
 	const maxIters = 100 // RFC 9276 §3.2 — match dnssec.MaxNSEC3Iterations
 	if iterations > maxIters {
 		return nil, errTooManyNSEC3Iters
+	}
+	const maxSaltLen = 128 // match dnssec.MaxNSEC3SaltLength
+	if len(salt) > maxSaltLen {
+		return nil, fmt.Errorf("cache: NSEC3 salt length %d exceeds max %d", len(salt), maxSaltLen)
 	}
 	name = strings.ToLower(name)
 	if !strings.HasSuffix(name, ".") {

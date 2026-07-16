@@ -134,6 +134,15 @@ type ServerConfig struct {
 	DoQListenAddr  string
 	TLSCertFile    string
 	TLSKeyFile     string
+	// MaxTCPConnsPerClient caps concurrent TCP connections from a single
+	// source IP. Default 16 prevents slow-loris style single-source
+	// exhaustion of the global MaxTCPConns pool while leaving headroom
+	// for legitimate pipelining (RFC 7766). 0 or negative means unlimited
+	// (same as the global cap).
+	MaxTCPConnsPerClient int
+	// MaxDoTConnsPerClient is the per-source-IP cap for DoT connections.
+	// Same default and semantics as MaxTCPConnsPerClient.
+	MaxDoTConnsPerClient int
 }
 
 // ResolverConfig holds resolver settings.
@@ -175,6 +184,13 @@ type ResolverConfig struct {
 	DNS64Prefix                string
 	FallbackResolvers          []string
 	UpstreamUDPBufferSize      int
+	// MaxNSNamesPerDelegation caps how many NS hostnames the resolver will
+	// accept from a single delegation response. A legitimate delegation
+	// carries 2–13 NS names (RFC 1034 recommends at least 2); an attacker
+	// can publish dozens or hundreds to amplify resolution work (NXNS
+	// class, CVE-2020-8616). Default 13 matches BIND's effective cap;
+	// 0 or negative means unlimited.
+	MaxNSNamesPerDelegation int
 }
 
 // CacheConfig holds cache settings.
@@ -381,6 +397,8 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setString(&cfg.Server.DoQListenAddr, "server.doq_listen_addr")
 	setString(&cfg.Server.TLSCertFile, "server.tls_cert_file")
 	setString(&cfg.Server.TLSKeyFile, "server.tls_key_file")
+	setInt(&cfg.Server.MaxTCPConnsPerClient, "server.max_tcp_conns_per_client", "server.max_tcp_connections_per_client")
+	setInt(&cfg.Server.MaxDoTConnsPerClient, "server.max_dot_conns_per_client", "server.max_dot_connections_per_client")
 
 	// Resolver
 	setInt(&cfg.Resolver.MaxDepth, "resolver.max_depth")
@@ -407,6 +425,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setString(&cfg.Resolver.DNS64Prefix, "resolver.dns64_prefix")
 	setCSV(&cfg.Resolver.FallbackResolvers, "resolver.fallback_resolvers")
 	setInt(&cfg.Resolver.UpstreamUDPBufferSize, "resolver.upstream_udp_buffer_size")
+	setInt(&cfg.Resolver.MaxNSNamesPerDelegation, "resolver.max_ns_names_per_delegation")
 
 	// Cache
 	setInt(&cfg.Cache.MaxEntries, "cache.max_entries")
@@ -635,6 +654,19 @@ const (
 	// a 24 h value lets a single slow-loris connection pin a worker.
 	// 60s matches the upstream timeout cap.
 	clampMaxTCPTimeout = 60 * time.Second
+	// server.max_tcp_conns_per_client and server.max_dot_conns_per_client:
+	// per-source connection caps. A value of 100k would let a single source
+	// consume the entire global connection pool; 256 is already twice the
+	// default per-client cap (16) squared and well above any legitimate
+	// use (even aggressive TCP-pipelining clients rarely hold more than
+	// a handful of concurrent TCP connections to one resolver).
+	clampMaxTCPConnsPerClient = 256
+	clampMaxDoTConnsPerClient = 256
+	// resolver.max_ns_names_per_delegation: caps NS name count in a single
+	// delegation. A value of 1000 would let an attacker amplify resolution
+	// work; 64 is well above the legitimate 2-13 and matches a generous
+	// worst-case bound.
+	clampMaxNSNamesPerDelegation = 64
 )
 
 // clampConfigBounds enforces sane upper bounds on integer fields.
@@ -667,6 +699,15 @@ func clampConfigBounds(cfg *Config) {
 	}
 	if cfg.Server.MaxTCPConns > clampMaxTCPConns {
 		cfg.Server.MaxTCPConns = clampMaxTCPConns
+	}
+	if cfg.Server.MaxTCPConnsPerClient > clampMaxTCPConnsPerClient {
+		cfg.Server.MaxTCPConnsPerClient = clampMaxTCPConnsPerClient
+	}
+	if cfg.Server.MaxDoTConnsPerClient > clampMaxDoTConnsPerClient {
+		cfg.Server.MaxDoTConnsPerClient = clampMaxDoTConnsPerClient
+	}
+	if cfg.Resolver.MaxNSNamesPerDelegation > clampMaxNSNamesPerDelegation {
+		cfg.Resolver.MaxNSNamesPerDelegation = clampMaxNSNamesPerDelegation
 	}
 	if cfg.Resolver.UpstreamRetries > clampMaxUpstreamRetries {
 		cfg.Resolver.UpstreamRetries = clampMaxUpstreamRetries
@@ -756,6 +797,9 @@ func clampConfigBounds(cfg *Config) {
 	// planting a negative value triggers it. Fall back to the default.
 	if cfg.Resolver.MaxQueriesPerRequest <= 0 {
 		cfg.Resolver.MaxQueriesPerRequest = defaultMaxQueriesPerRequest
+	}
+	if cfg.Resolver.MaxNSNamesPerDelegation <= 0 {
+		cfg.Resolver.MaxNSNamesPerDelegation = defaultMaxNSNamesPerDelegation
 	}
 
 	// Per-request deadline floor. `RequestTimeout` becomes a
@@ -854,8 +898,9 @@ const (
 	defaultUpstreamTimeout       = 2 * time.Second
 	defaultTCPTimeout            = 10 * time.Second
 	defaultRRLResponsesPerSecond = 5.0
-	defaultMaxQueriesPerRequest  = 200
-	defaultRequestTimeout        = 20 * time.Second
+	defaultMaxQueriesPerRequest   = 200
+	defaultRequestTimeout         = 20 * time.Second
+	defaultMaxNSNamesPerDelegation = 13
 )
 
 func validate(cfg *Config) error {

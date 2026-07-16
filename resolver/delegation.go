@@ -16,7 +16,7 @@ type DelegationNS struct {
 	IPv6TTL  uint32
 }
 
-func extractDelegation(msg *dns.Message) ([]DelegationNS, string) {
+func extractDelegation(msg *dns.Message, maxNames int) ([]DelegationNS, string) {
 	var zone string
 	nsMap := make(map[string]*DelegationNS)
 
@@ -33,6 +33,15 @@ func extractDelegation(msg *dns.Message) ([]DelegationNS, string) {
 			continue
 		}
 		nsName = strings.ToLower(nsName)
+
+		// Apply per-delegation NS name cap. If maxNames > 0 and we already
+		// collected that many distinct NS hostnames, skip the rest — an
+		// attacker publishing dozens or hundreds of NS names in one referral
+		// cannot fan the resolver's resolution work (NXNS class) beyond the
+		// pre-configured budget.
+		if maxNames > 0 && len(nsMap) >= maxNames {
+			continue
+		}
 
 		if _, exists := nsMap[nsName]; !exists {
 			nsMap[nsName] = &DelegationNS{Hostname: nsName}
