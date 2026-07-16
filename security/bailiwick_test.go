@@ -407,9 +407,11 @@ func TestRateLimiterRefillAllowsAfterWait(t *testing.T) {
 	// Cover the refill path in Allow: exhaust tokens, wait, then verify refill works
 	rl := NewRateLimiter(100, 2) // rate=100 tokens/sec, burst=2
 
-	// Exhaust all tokens
-	rl.Allow("5.5.5.5") // tokens = burst-1 = 1
-	rl.Allow("5.5.5.5") // tokens = 0 (refill is negligible)
+	// Exhaust tokens. Use extra burns to guard against the clock ticking
+	// between calls (at 100 tokens/s, 10ms adds 1 token).
+	for range 10 {
+		rl.Allow("5.5.5.5")
+	}
 	if rl.Allow("5.5.5.5") {
 		t.Error("should be denied after exhausting tokens")
 	}
