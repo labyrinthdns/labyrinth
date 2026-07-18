@@ -535,7 +535,7 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 		if ancestor == "" {
 			ancestorWithDot = "."
 		}
-		h, err := ComputeNSEC3Hash(ancestorWithDot, rec.HashAlgorithm, rec.Iterations, rec.Salt)
+		h, err := ComputeNSEC3Hash(ancestorWithDot, rec.HashAlgorithm, rec.Iterations, rec.Salt, nsec3Budget)
 		if err != nil {
 			return false, fmt.Errorf("computing NSEC3 hash for ancestor %q: %w", ancestor, err)
 		}
@@ -558,7 +558,7 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 	} else {
 		ncWithDot = nc + "."
 	}
-	ncHash, err := ComputeNSEC3Hash(ncWithDot, rec.HashAlgorithm, rec.Iterations, rec.Salt)
+	ncHash, err := ComputeNSEC3Hash(ncWithDot, rec.HashAlgorithm, rec.Iterations, rec.Salt, nsec3Budget)
 	if err != nil {
 		return false, fmt.Errorf("computing NSEC3 hash for next-closer %q: %w", nc, err)
 	}
@@ -579,7 +579,7 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 	if ce != "" {
 		wcCanonical = "*." + ce
 	}
-	wcHash, err := ComputeNSEC3Hash(wcCanonical+".", rec.HashAlgorithm, rec.Iterations, rec.Salt)
+	wcHash, err := ComputeNSEC3Hash(wcCanonical+".", rec.HashAlgorithm, rec.Iterations, rec.Salt, nsec3Budget)
 	if err != nil {
 		return false, fmt.Errorf("computing NSEC3 hash for wildcard %q: %w", wcCanonical, err)
 	}
