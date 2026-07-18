@@ -306,25 +306,10 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Replace current executable
-	// On Windows, rename running exe to .old first since overwrite is blocked
-	if runtime.GOOS == "windows" {
-		oldPath := exePath + ".old"
-		updateRemove(oldPath) // clean up previous .old if exists
-		if err := updateRename(exePath, oldPath); err != nil {
-			updateRemove(tmpPath)
-			if isReadOnlyFS(err) {
-				jsonResponse(w, http.StatusConflict, map[string]string{
-					"error": updateReadOnlyHint(exePath),
-				})
-				return
-			}
-			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to move current executable: %v", err)})
-			return
-		}
-	}
-
-	if err := updateRename(tmpPath, exePath); err != nil {
+	// Replace current executable. Windows cannot overwrite the running image,
+	// so replacement is a two-stage rename. If stage two fails, restore the
+	// known-good .old binary before returning instead of leaving exePath absent.
+	if err := replaceExecutable(tmpPath, exePath, runtime.GOOS == "windows"); err != nil {
 		updateRemove(tmpPath)
 		if isReadOnlyFS(err) {
 			jsonResponse(w, http.StatusConflict, map[string]string{
@@ -356,6 +341,25 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 			s.logger.Error("restart failed", "error", err)
 		}
 	}()
+}
+
+func replaceExecutable(tmpPath, exePath string, requiresBackup bool) error {
+	if !requiresBackup {
+		return updateRename(tmpPath, exePath)
+	}
+
+	oldPath := exePath + ".old"
+	_ = updateRemove(oldPath)
+	if err := updateRename(exePath, oldPath); err != nil {
+		return fmt.Errorf("move current executable to backup: %w", err)
+	}
+	if err := updateRename(tmpPath, exePath); err != nil {
+		if rollbackErr := updateRename(oldPath, exePath); rollbackErr != nil {
+			return fmt.Errorf("install replacement: %w; rollback backup: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("install replacement (original restored): %w", err)
+	}
+	return nil
 }
 
 // checkForUpdate fetches the latest release from GitHub and compares with the current version.

@@ -15,23 +15,87 @@ import (
 	"github.com/labyrinthdns/labyrinth/resolver"
 )
 
-// Diagnostic traces are NOT globally serialised. An earlier version used a
-// package-scope sync.Mutex to allow at most one concurrent trace, but on
-// Cancel-then-Trace the old goroutine's deferred Unlock could lag behind the
-// resolver's upstream timeout by 1–2 s. During that window the new WS could
-// already be open and its TryLock() returned "another trace is already
-// running" — making cancellation feel broken from the UI side.
-//
-// Instead, each WebSocket runs its own trace under its own context; the UI
-// only opens one socket at a time, the JWT requireAuth gate caps abuse, and
-// the resolver already handles concurrent queries safely (the production
-// path serves arbitrary concurrent clients).
+// MaxConcurrentDiagnosticTraces bounds the process work created by diagnostic
+// WebSockets. Production DNS traffic remains independent; only the explicitly
+// requested, event-heavy diagnostic traces consume these slots.
+const MaxConcurrentDiagnosticTraces = 8
+
+type diagnosticTraceLimiter struct {
+	slots chan struct{}
+}
+
+func newDiagnosticTraceLimiter(limit int) *diagnosticTraceLimiter {
+	if limit < 1 {
+		limit = 1
+	}
+	return &diagnosticTraceLimiter{slots: make(chan struct{}, limit)}
+}
+
+func (l *diagnosticTraceLimiter) tryAcquire() bool {
+	select {
+	case l.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *diagnosticTraceLimiter) release() {
+	<-l.slots
+}
+
+var globalDiagnosticTraceLimiter = newDiagnosticTraceLimiter(MaxConcurrentDiagnosticTraces)
+
+type diagnosticTraceRun struct {
+	generation uint64
+	cancel     context.CancelFunc
+	done       chan struct{}
+}
+
+type diagnosticTraceSession struct {
+	mu             sync.Mutex
+	nextGeneration uint64
+	current        *diagnosticTraceRun
+}
+
+func (s *diagnosticTraceSession) start(cancel context.CancelFunc) *diagnosticTraceRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextGeneration++
+	run := &diagnosticTraceRun{generation: s.nextGeneration, cancel: cancel, done: make(chan struct{})}
+	s.current = run
+	return run
+}
+
+func (s *diagnosticTraceSession) cancelAndWait() {
+	s.mu.Lock()
+	run := s.current
+	if run != nil {
+		run.cancel()
+	}
+	s.mu.Unlock()
+	if run != nil {
+		<-run.done
+	}
+}
+
+func (s *diagnosticTraceSession) finish(run *diagnosticTraceRun) {
+	// Publish completion before clearing current. A concurrent cancelAndWait
+	// either observes this closed channel or sees nil after all cleanup is done;
+	// there is no window where it mistakes a still-cleaning run for no run.
+	close(run.done)
+	s.mu.Lock()
+	if s.current != nil && s.current.generation == run.generation {
+		s.current = nil
+	}
+	s.mu.Unlock()
+}
 
 // traceClientMsg is what the UI may send to the WS to start / abort a trace.
 type traceClientMsg struct {
-	Action      string `json:"action"`        // "start" or "cancel"
+	Action      string `json:"action"` // "start" or "cancel"
 	Name        string `json:"name"`
-	Type        string `json:"type"`          // "A", "AAAA", "MX", ...
+	Type        string `json:"type"` // "A", "AAAA", "MX", ...
 	BypassCache bool   `json:"bypass_cache"`
 	SkipDNSSEC  bool   `json:"skip_dnssec"`
 }
@@ -39,21 +103,21 @@ type traceClientMsg struct {
 // traceServerMsg wraps each event sent to the UI. `kind` differentiates
 // progress events from terminal payloads so the UI can render appropriately.
 type traceServerMsg struct {
-	Kind   string                 `json:"kind"`   // "event", "result", "error", "busy"
-	Event  *resolver.TraceEvent   `json:"event,omitempty"`
-	Result *traceResultPayload    `json:"result,omitempty"`
-	Error  string                 `json:"error,omitempty"`
+	Kind   string               `json:"kind"` // "event", "result", "error", "busy"
+	Event  *resolver.TraceEvent `json:"event,omitempty"`
+	Result *traceResultPayload  `json:"result,omitempty"`
+	Error  string               `json:"error,omitempty"`
 }
 
 type traceResultPayload struct {
-	Name         string       `json:"name"`
-	Type         string       `json:"type"`
-	RCode        string       `json:"rcode"`
-	DNSSECStatus string       `json:"dnssec_status,omitempty"`
-	Answers      []traceRR    `json:"answers,omitempty"`
-	Authority    []traceRR    `json:"authority,omitempty"`
-	ElapsedMs    int64        `json:"elapsed_ms"`
-	Error        string       `json:"error,omitempty"`
+	Name         string    `json:"name"`
+	Type         string    `json:"type"`
+	RCode        string    `json:"rcode"`
+	DNSSECStatus string    `json:"dnssec_status,omitempty"`
+	Answers      []traceRR `json:"answers,omitempty"`
+	Authority    []traceRR `json:"authority,omitempty"`
+	ElapsedMs    int64     `json:"elapsed_ms"`
+	Error        string    `json:"error,omitempty"`
 }
 
 type traceRR struct {
@@ -173,8 +237,9 @@ func formatRR(rr dns.ResourceRecord) traceRR {
 // handleDiagnosticsTrace serves the diagnostic trace WebSocket.
 //
 // Protocol:
-//   client → server: {action:"start"|"cancel", name, type, bypass_cache, skip_dnssec}
-//   server → client: {kind:"event"|"result"|"error"|"busy", ...}
+//
+//	client → server: {action:"start"|"cancel", name, type, bypass_cache, skip_dnssec}
+//	server → client: {kind:"event"|"result"|"error"|"busy", ...}
 //
 // Cancelling closes the trace cleanly without tearing down the socket — the
 // UI can issue another "start" message immediately. The trace runs on a
@@ -192,12 +257,8 @@ func (s *AdminServer) handleDiagnosticsTrace(w http.ResponseWriter, r *http.Requ
 	defer conn.Close(websocket.StatusNormalClosure, "closing")
 
 	rootCtx := r.Context()
-
-	var (
-		mu          sync.Mutex
-		traceCancel context.CancelFunc
-		traceDone   chan struct{} // closed when the trace goroutine exits
-	)
+	limiter := globalDiagnosticTraceLimiter
+	session := &diagnosticTraceSession{}
 	writeMu := &sync.Mutex{}
 
 	writeMsg := func(m traceServerMsg) {
@@ -206,28 +267,10 @@ func (s *AdminServer) handleDiagnosticsTrace(w http.ResponseWriter, r *http.Requ
 		writeTraceMsg(rootCtx, conn, m)
 	}
 
-	cancelCurrent := func() {
-		mu.Lock()
-		c := traceCancel
-		mu.Unlock()
-		if c != nil {
-			c()
-		}
-	}
-
-	// On WS shutdown (client close, network drop, request cancellation): cancel
-	// any in-flight trace AND wait for its goroutine to release traceMu before
-	// returning. Without this wait the global lock leaked on every disconnect
-	// mid-trace and the next session got a permanent "busy" response.
-	defer func() {
-		cancelCurrent()
-		mu.Lock()
-		done := traceDone
-		mu.Unlock()
-		if done != nil {
-			<-done
-		}
-	}()
+	// Joining the canceled generation is what enforces one resolver trace per
+	// WebSocket. A fixed grace period would permit overlap when an upstream is
+	// slow to observe cancellation and would let an old defer clear new state.
+	defer session.cancelAndWait()
 
 	for {
 		_, raw, readErr := conn.Read(rootCtx)
@@ -242,7 +285,7 @@ func (s *AdminServer) handleDiagnosticsTrace(w http.ResponseWriter, r *http.Requ
 
 		switch msg.Action {
 		case "cancel":
-			cancelCurrent()
+			session.cancelAndWait()
 			continue
 
 		case "start":
@@ -260,53 +303,30 @@ func (s *AdminServer) handleDiagnosticsTrace(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 
-			// Cancel any in-flight trace on this same socket before starting
-			// a new one. The UI normally cancels first, but if the user
-			// double-clicks Trace or the previous run is still wrapping up,
-			// we don't want two trace goroutines fighting over the same
-			// writeMu on the same connection.
-			cancelCurrent()
-			mu.Lock()
-			prevDone := traceDone
-			mu.Unlock()
-			if prevDone != nil {
-				// Don't block the read loop forever — the orphan goroutine
-				// might still be waiting on a slow upstream. 50 ms is enough
-				// for the common ctx-cancel path; if it's still alive after
-				// that we just start the new trace anyway.
-				select {
-				case <-prevDone:
-				case <-time.After(50 * time.Millisecond):
-				}
+			// Cancel and join the previous generation before acquiring a global
+			// slot for the replacement. This preserves the per-WS single-flight
+			// invariant even if the resolver needs time to unwind cancellation.
+			session.cancelAndWait()
+			if !limiter.tryAcquire() {
+				writeMsg(traceServerMsg{Kind: "busy", Error: "too many diagnostic traces are running"})
+				continue
 			}
 
 			traceCtx, cancel := context.WithTimeout(rootCtx, 60*time.Second)
-			done := make(chan struct{})
-
-			mu.Lock()
-			traceCancel = cancel
-			traceDone = done
-			mu.Unlock()
+			run := session.start(cancel)
 
 			name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(msg.Name), "."))
 			startMsg := msg
 			startType := qtype
 
-			// Run the trace off the read loop so we can process "cancel"
-			// while it runs. The deferred chain signals traceDone even on
-			// panic / ctx-cancel so the handler's shutdown defer can join.
+			// Run the trace off the read loop so a cancel frame can interrupt it.
+			// Only this generation may clear itself, and every acquired global
+			// slot is released by the same defer.
 			go func() {
 				defer func() {
 					cancel()
-					mu.Lock()
-					if traceCancel != nil {
-						traceCancel = nil
-					}
-					if traceDone == done {
-						traceDone = nil
-					}
-					mu.Unlock()
-					close(done)
+					limiter.release()
+					session.finish(run)
 				}()
 				runTraceLocked(traceCtx, conn, writeMu, s.resolver, name, startType, startMsg)
 			}()
@@ -365,31 +385,31 @@ func runTraceLocked(
 			write(traceServerMsg{Kind: "event", Event: &localEv})
 
 		case res := <-resCh:
-			// Drain remaining events if any survive close.
-			for ev := range events {
-				localEv := ev
-				write(traceServerMsg{Kind: "event", Event: &localEv})
+			// Drain remaining events if any survive close. If the close was
+			// already observed above, events is nil and ranging it would block
+			// forever, leaking the session and its global limiter slot.
+			if events != nil {
+				for ev := range events {
+					localEv := ev
+					write(traceServerMsg{Kind: "event", Event: &localEv})
+				}
 			}
 			payload := buildResultPayload(name, qtype, res.result, res.err, time.Since(start).Milliseconds())
 			write(traceServerMsg{Kind: "result", Result: &payload})
 			return
 
 		case <-ctx.Done():
-			// Resolver goroutine will notice ctx.Done(), stop emitting events
-			// (the tracer's select drops events when ctx is cancelled), and
-			// post a final result to resCh. Wait for it so we send a clean
-			// terminal message and don't leak the goroutine.
-			select {
-			case res := <-resCh:
-				payload := buildResultPayload(name, qtype, res.result, res.err, time.Since(start).Milliseconds())
-				if payload.Error == "" {
-					payload.Error = "cancelled"
-				}
-				write(traceServerMsg{Kind: "result", Result: &payload})
-			case <-time.After(2 * time.Second):
-				// Resolver didn't return in time — best-effort terminal write.
-				write(traceServerMsg{Kind: "error", Error: "trace cancelled (resolver did not finish in 2s)"})
+			// Join the resolver call instead of abandoning it after a grace
+			// period. Releasing the session/global slot before Trace returns would
+			// make the limit cosmetic and allow a replacement generation to overlap
+			// the canceled one. Resolver I/O is context-bound, so cancellation
+			// drives this receive to completion.
+			res := <-resCh
+			payload := buildResultPayload(name, qtype, res.result, res.err, time.Since(start).Milliseconds())
+			if payload.Error == "" {
+				payload.Error = "cancelled"
 			}
+			write(traceServerMsg{Kind: "result", Result: &payload})
 			return
 		}
 	}

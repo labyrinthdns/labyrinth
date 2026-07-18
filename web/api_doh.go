@@ -45,9 +45,12 @@ func (s *AdminServer) handleDoH(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		if _, ok := err.(*dohUnsupportedMediaType); ok {
+		switch err.(type) {
+		case *dohUnsupportedMediaType:
 			http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
-		} else {
+		case *dohRequestTooLarge:
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		default:
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 		return
@@ -98,9 +101,11 @@ func (s *AdminServer) handleDoH(w http.ResponseWriter, r *http.Request) {
 	w.Write(response)
 }
 
+const dohMaxPostBodyBytes = 65536
+
 // dohMaxGetParamBytes caps the base64url-encoded "dns" GET parameter
-// length. The POST path is already capped at 65536 raw bytes via
-// LimitReader; without a matching cap on the GET path an attacker can
+// length. The POST path is capped at 65536 raw bytes; without a matching cap
+// on the GET path an attacker can
 // POST-equivalent abuse through ?dns=… with a megabytes-long encoded
 // payload that the base64 decoder would happily expand to ~75% of
 // that size in RAM before the DNS parser even runs. A 65536-byte cap
@@ -132,11 +137,23 @@ func (s *AdminServer) dohDecodePost(r *http.Request) ([]byte, error) {
 	if ct != "application/dns-message" {
 		return nil, &dohUnsupportedMediaType{contentType: ct}
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 65536))
+	if r.ContentLength > dohMaxPostBodyBytes {
+		return nil, &dohRequestTooLarge{}
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, dohMaxPostBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
+	if len(body) > dohMaxPostBodyBytes {
+		return nil, &dohRequestTooLarge{}
+	}
 	return body, nil
+}
+
+type dohRequestTooLarge struct{}
+
+func (*dohRequestTooLarge) Error() string {
+	return fmt.Sprintf("dns message exceeds %d-byte cap", dohMaxPostBodyBytes)
 }
 
 // dohUnsupportedMediaType is an error type for wrong Content-Type on POST.

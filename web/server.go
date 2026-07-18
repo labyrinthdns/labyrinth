@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
 	"github.com/labyrinthdns/labyrinth/server"
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -38,9 +41,9 @@ type clientQueryEntry struct {
 
 // AdminServer provides the admin dashboard HTTP backend.
 type AdminServer struct {
-	cache                 *cache.Cache
-	metrics               *metrics.Metrics
-	resolver              *resolver.Resolver
+	cache    *cache.Cache
+	metrics  *metrics.Metrics
+	resolver *resolver.Resolver
 	// config is published via atomic.Pointer so the ~60 HTTP handler
 	// read sites that touch `s.Config().*` see a complete config
 	// snapshot even while /api/config/raw PUT or
@@ -69,19 +72,19 @@ type AdminServer struct {
 	// configFileMu extension on the reader side; this release retires
 	// that extension in favour of the proper atomic publication, so the
 	// reader no longer pays the lock cost.
-	config                atomic.Pointer[config.Config]
-	configPath            string
-	queryLog              *QueryLog
-	timeSeries            *TimeSeriesAggregator
-	logger                *slog.Logger
+	config     atomic.Pointer[config.Config]
+	configPath string
+	queryLog   *QueryLog
+	timeSeries *TimeSeriesAggregator
+	logger     *slog.Logger
 	// jwtSecret is rotated by handleChangePassword on a successful
 	// change. The read side (validateJWT, called on every authenticated
 	// HTTP request via requireAuth) accesses the secret without holding
 	// configFileMu, so a plain []byte assignment from the rotation path
 	// would be a data race on the slice header. atomic.Pointer publishes
 	// the new []byte atomically; readers always see a complete header.
-	jwtSecret         atomic.Pointer[[]byte]
-	revokedTokens     sync.Map // maps revoked jti string → bool; cleared on secret rotation
+	jwtSecret     atomic.Pointer[[]byte]
+	revokedTokens sync.Map // maps revoked jti string → bool; cleared on secret rotation
 	// setupDone is set true when the bootstrap config exists (either
 	// seeded from disk at NewAdminServer time, or after a successful
 	// /api/setup/complete). atomic so concurrent setup requests race
@@ -114,9 +117,9 @@ type AdminServer struct {
 	// Windows rename of the running exe → .old, and race two restart()s.
 	// The gate serialises the handler; the loser sees 409 immediately.
 	updateApplyRunning atomic.Bool
-	nextID                atomic.Uint64
-	topClients            *TopTracker
-	topDomains            *TopTracker
+	nextID             atomic.Uint64
+	topClients         *TopTracker
+	topDomains         *TopTracker
 	// clientQueryNum tracks a monotonic per-client query counter so
 	// the dashboard can show "this is the N-th query from 10.0.0.5".
 	// Populated lazily on every distinct client IP by RecordQuery.
@@ -134,15 +137,15 @@ type AdminServer struct {
 	// MaxClientQueryNumEntries entries. Zero means use the package
 	// constant; production paths never set this.
 	clientQueryNumCapOverride int
-	updateCache           *UpdateInfo
-	updateCheckedAt       time.Time
-	updateMu              sync.RWMutex
-	blocklist             *blocklist.Manager
-	dohEnabled            bool
-	dohHandler            server.Handler
-	certMgr               *certmanager.Manager
-	loginLimiter          *loginLimiter
-	runtimeApplier        func(*config.Config)
+	updateCache               *UpdateInfo
+	updateCheckedAt           time.Time
+	updateMu                  sync.RWMutex
+	blocklist                 *blocklist.Manager
+	dohEnabled                bool
+	dohHandler                server.Handler
+	certMgr                   *certmanager.Manager
+	loginLimiter              *loginLimiter
+	runtimeApplier            func(*config.Config)
 }
 
 // NewAdminServer creates a new AdminServer. The bl parameter is optional and
@@ -268,18 +271,18 @@ func (s *AdminServer) Start(ctx context.Context) error {
 	tlsActive := func() bool {
 		return autoTLS || (s.config.Load().Web.TLSEnabled && s.config.Load().Web.TLSCertFile != "" && s.config.Load().Web.TLSKeyFile != "")
 	}
-	// H-3: emit security response headers globally.
-	baseHandler := securityHeaders(tlsActive)(mux)
+	// H-3: emit security response headers globally. Reject cross-origin
+	// cookie-authenticated mutations before they reach any route handler.
+	// HTTP/3 early data is disabled in newHTTP3Server below.
+	appHandler := s.rejectCrossOriginCookieMutations(mux)
+	baseHandler := securityHeaders(tlsActive)(appHandler)
 
 	if s.config.Load().Web.DoH3Enabled {
 		if !autoTLS && (!s.config.Load().Web.TLSEnabled || s.config.Load().Web.TLSCertFile == "" || s.config.Load().Web.TLSKeyFile == "") {
 			return fmt.Errorf("web.doh3_enabled=true requires TLS (auto_tls or tls_cert_file/tls_key_file)")
 		}
 
-		h3Server = &http3.Server{
-			Addr:    addr,
-			Handler: securityHeaders(tlsActive)(mux),
-		}
+		h3Server = newHTTP3Server(addr, securityHeaders(tlsActive)(appHandler))
 		if autoTLS {
 			h3Server.TLSConfig = s.certMgr.TLSConfig()
 		}
@@ -413,6 +416,65 @@ func (s *AdminServer) Start(ctx context.Context) error {
 	case err := <-errCh:
 		return fmt.Errorf("admin server error: %w", err)
 	}
+}
+
+func newHTTP3Server(addr string, handler http.Handler) *http3.Server {
+	return &http3.Server{
+		Addr:    addr,
+		Handler: handler,
+		// TLS 1.3 early data can be replayed by the network. The admin API has
+		// many state-changing POST/PUT/DELETE endpoints, so fail closed at the
+		// QUIC transport rather than relying on every handler to remember 425.
+		QUICConfig: &quic.Config{Allow0RTT: false},
+	}
+}
+
+// rejectCrossOriginCookieMutations blocks CSRF against state-changing admin
+// endpoints. Bearer-only API clients are exempt because the browser cannot
+// attach their Authorization header ambiently; requests authenticated by the
+// labyrinth_token cookie must prove that their Origin is this exact origin.
+func (s *AdminServer) rejectCrossOriginCookieMutations(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || isSafeHTTPMethod(r.Method) ||
+			s.config.Load().Web.Auth.Username == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if _, err := r.Cookie(authCookieName); err != nil {
+			// No ambient credential: Bearer-authenticated API clients and
+			// unauthenticated routes are not susceptible to cookie CSRF.
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		origin, err := url.Parse(r.Header.Get("Origin"))
+		if err != nil || origin.Scheme == "" || origin.Host == "" ||
+			!strings.EqualFold(origin.Scheme, requestScheme(r)) || !strings.EqualFold(origin.Host, r.Host) ||
+			strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
+			jsonResponse(w, http.StatusForbidden, map[string]string{"error": "cross-origin cookie-authenticated mutation rejected"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isSafeHTTPMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if r.URL.Scheme != "" {
+		return r.URL.Scheme
+	}
+	return "http"
 }
 
 func withQUICHeaders(next http.Handler, h3 *http3.Server, logger *slog.Logger) http.Handler {
