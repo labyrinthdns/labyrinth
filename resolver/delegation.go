@@ -16,47 +16,74 @@ type DelegationNS struct {
 	IPv6TTL  uint32
 }
 
+// extractDelegation retains the package helper used by older callers that do
+// not have the upstream QNAME. Production resolution uses
+// extractDelegationForQName so owner selection is bound to the actual query.
 func extractDelegation(msg *dns.Message, maxNames int) ([]DelegationNS, string) {
-	var zone string
-	nsMap := make(map[string]*DelegationNS)
+	return extractDelegationForQName(msg, "", maxNames)
+}
 
-	// Collect NS hostnames from Authority section.
-	// Since RDATA is decompressed during Unpack, we can parse directly from rr.RData.
+func extractDelegationForQName(msg *dns.Message, qname string, maxNames int) ([]DelegationNS, string) {
+	qname = canonicalDNSName(qname)
+
+	// A referral may contain multiple NS owners. Only one can be the next
+	// delegation point: the closest (longest) ancestor of the name that was
+	// actually queried upstream. Mixing owners lets a sibling RRset replace the
+	// intended delegation, and also lets its Additional records become glue.
+	zone := ""
+	foundZone := false
 	for _, rr := range msg.Authority {
 		if rr.Type != dns.TypeNS {
 			continue
 		}
-		zone = strings.ToLower(rr.Name)
+		owner := canonicalDNSName(rr.Name)
+		if qname != "" && !nameAtOrBelow(qname, owner) {
+			continue
+		}
+		if !foundZone || (qname != "" && len(owner) > len(zone)) {
+			zone = owner
+			foundZone = true
+		}
+	}
+	if !foundZone {
+		return nil, ""
+	}
+
+	nsMap := make(map[string]*DelegationNS)
+	// Collect only the NS RRset at the selected delegation owner. Since RDATA
+	// is decompressed during Unpack, it can be parsed directly.
+	for _, rr := range msg.Authority {
+		if rr.Type != dns.TypeNS || canonicalDNSName(rr.Name) != zone {
+			continue
+		}
 
 		nsName, err := dns.ParseNS(rr.RData, 0)
 		if err != nil || nsName == "" {
 			continue
 		}
-		nsName = strings.ToLower(nsName)
+		nsName = canonicalDNSName(nsName)
 
-		// Apply per-delegation NS name cap. If maxNames > 0 and we already
-		// collected that many distinct NS hostnames, skip the rest — an
-		// attacker publishing dozens or hundreds of NS names in one referral
-		// cannot fan the resolver's resolution work (NXNS class) beyond the
-		// pre-configured budget.
-		if maxNames > 0 && len(nsMap) >= maxNames {
-			continue
-		}
-
+		// Apply the cap to distinct names in this RRset only. An unrelated
+		// owner cannot consume the budget before the real delegation is read.
 		if _, exists := nsMap[nsName]; !exists {
+			if maxNames > 0 && len(nsMap) >= maxNames {
+				continue
+			}
 			nsMap[nsName] = &DelegationNS{Hostname: nsName}
 		}
 	}
 
-	// Collect glue records from Additional
+	// Glue is usable only for an NS name at or below the selected delegation
+	// owner. Out-of-bailiwick NS names remain valid delegation targets, but
+	// their addresses must be resolved through their own authority chain.
 	for _, rr := range msg.Additional {
-		if rr.Type == dns.TypeOPT {
+		if rr.Type == dns.TypeOPT || rr.Class != dns.ClassIN {
 			continue
 		}
 
-		rrName := strings.ToLower(rr.Name)
+		rrName := canonicalDNSName(rr.Name)
 		ns, exists := nsMap[rrName]
-		if !exists {
+		if !exists || !nameAtOrBelow(rrName, zone) {
 			continue
 		}
 
@@ -82,6 +109,19 @@ func extractDelegation(msg *dns.Message, maxNames int) ([]DelegationNS, string) 
 	}
 
 	return result, zone
+}
+
+func canonicalDNSName(name string) string {
+	return strings.ToLower(strings.TrimRight(name, "."))
+}
+
+// nameAtOrBelow performs a label-boundary-aware ancestor check. The empty
+// canonical name represents the root and therefore covers every name.
+func nameAtOrBelow(name, zone string) bool {
+	if zone == "" {
+		return true
+	}
+	return name == zone || strings.HasSuffix(name, "."+zone)
 }
 
 // validateReferralNS checks whether NS hostnames are plausibly related to

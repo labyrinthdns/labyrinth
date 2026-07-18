@@ -2739,14 +2739,12 @@ func startRDNSMockDNS(t *testing.T) *mockDNSServer {
 				}
 			}
 
-			// QMIN NS queries or full-name queries: return referral
-			// Count labels to decide delegation level
-			labels := strings.Split(qname, ".")
+			// QMIN NS queries or full-name queries: return referral.
 			// e.g. "46.in-addr.arpa" = 3 labels → referral from in-addr.arpa
 			// e.g. "20.46.in-addr.arpa" = 4 labels → referral from 46.in-addr.arpa
 			// Final answer for 5+ labels that match the PTR name
-			nsZone := strings.Join(labels[1:], ".") // parent zone
-			nsRData := dns.BuildPlainName("ns." + nsZone)
+			nsName := "ns." + qname
+			nsRData := dns.BuildPlainName(nsName)
 			return &dns.Message{
 				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
 				Questions: q.Questions,
@@ -2755,7 +2753,7 @@ func startRDNSMockDNS(t *testing.T) *mockDNSServer {
 					TTL: 86400, RDLength: uint16(len(nsRData)), RData: nsRData,
 				}},
 				Additional: []dns.ResourceRecord{{
-					Name: "ns." + nsZone, Type: dns.TypeA, Class: dns.ClassIN,
+					Name: nsName, Type: dns.TypeA, Class: dns.ClassIN,
 					TTL: 86400, RDLength: 4, RData: []byte{127, 0, 0, 1},
 				}},
 			}

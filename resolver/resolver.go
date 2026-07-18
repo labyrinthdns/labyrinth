@@ -10,6 +10,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -704,6 +705,7 @@ func (r *Resolver) resolveIterativeFromInner(
 		// rewritten type would carry the wrong RRset back to the caller
 		// (root NS records instead of root DNSKEY, breaking DNSSEC).
 		minimized := queryName != name || queryType != qtype
+		referralQName := queryName
 		if r.config.QMinEnabled && minimized && rtype != responseReferral {
 			if err := visited.budget.charge(); err != nil {
 				return &ResolveResult{
@@ -724,6 +726,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			}
 			security.SanitizeBailiwick(response, currentZone)
 			rtype = classifyResponse(response, name, qtype)
+			referralQName = name
 		}
 
 		switch rtype {
@@ -910,7 +913,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			return result, nil
 
 		case responseReferral:
-			newNS, zone := extractDelegation(response, r.config.MaxNSNamesPerDelegation)
+			newNS, zone := extractDelegationForQName(response, referralQName, r.config.MaxNSNamesPerDelegation)
 			if len(newNS) == 0 {
 				return &ResolveResult{RCODE: dns.RCodeServFail}, nil
 			}
@@ -958,7 +961,14 @@ func (r *Resolver) resolveIterativeFromInner(
 			if result.DNSSECStatus == "bogus" {
 				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
 			}
-			r.cache.StoreNegativeWithStatus(name, qtype, qclass, cache.NegNXDomain, dns.RCodeNXDomain, response.Authority, result.DNSSECStatus)
+			// RFC 7871 §7.3: a negative learned while an ECS option is in
+			// flight is not safely portable to the global (name,type,class)
+			// cache. The cache has no scoped-negative API, so use the minimal
+			// safe behaviour and leave it uncached rather than letting one
+			// subnet's NXDOMAIN deny service to every client.
+			if clientECS == nil {
+				r.cache.StoreNegativeWithStatus(name, qtype, qclass, cache.NegNXDomain, dns.RCodeNXDomain, response.Authority, result.DNSSECStatus)
+			}
 			// RFC 8198 aggressive NSEC caching: when the denial is Secure
 			// the NSEC intervals in the authority section are themselves
 			// authenticated proof that every name in the gap is non-
@@ -966,7 +976,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			// covered by the same gap can be answered from cache, dropping
 			// the upstream auth-server load for popular signed zones (.com,
 			// .org, ccTLDs).
-			if result.DNSSECStatus == "secure" {
+			if clientECS == nil && result.DNSSECStatus == "secure" {
 				zone := nsecZoneFromAuthority(response.Authority)
 				negTTL := minNegativeTTL(response.Authority)
 				if zone != "" && negTTL > 0 {
@@ -991,7 +1001,9 @@ func (r *Resolver) resolveIterativeFromInner(
 			if result.DNSSECStatus == "bogus" {
 				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
 			}
-			r.cache.StoreNegativeWithStatus(name, qtype, qclass, cache.NegNoData, dns.RCodeNoError, response.Authority, result.DNSSECStatus)
+			if clientECS == nil {
+				r.cache.StoreNegativeWithStatus(name, qtype, qclass, cache.NegNoData, dns.RCodeNoError, response.Authority, result.DNSSECStatus)
+			}
 			return result, nil
 
 		case responseServFail:
@@ -1107,59 +1119,72 @@ func (r *Resolver) resolveNSHappyEyeballs(hostname string, delay time.Duration, 
 
 	results := make(chan nsResult, 2)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var workers sync.WaitGroup
+	defer func() {
+		// resolveNSAddr is not context-aware, so cancellation can prevent the
+		// delayed branch from starting but cannot interrupt a branch already
+		// in DNS I/O. Join both workers before returning: otherwise loser work
+		// keeps mutating the shared request budget and cache after its request
+		// has logically completed.
+		cancel()
+		workers.Wait()
+	}()
 
-	// Launch the first address family immediately.
-	go func() {
-		result, err := r.resolveNSAddr(hostname, firstType, visited.budget)
-		if err == nil && !nsHasCNAMERedirect(hostname, result.Answers) {
+	resolveFamily := func(qtype uint16, label string) nsResult {
+		result, err := r.resolveNSAddr(hostname, qtype, visited.budget)
+		if err == nil && result != nil && !nsHasCNAMERedirect(hostname, result.Answers) {
 			for _, rr := range result.Answers {
-				if rr.Type == firstType {
-					ip, parseErr := dnsParseByType(rr.RData, firstType)
+				if rr.Type == qtype {
+					ip, parseErr := dnsParseByType(rr.RData, qtype)
 					if parseErr == nil {
-						results <- nsResult{ip: ip.String()}
-						return
+						return nsResult{ip: ip.String()}
 					}
 				}
 			}
 		}
-		results <- nsResult{err: fmt.Errorf("%s resolution failed: %w", firstLabel, err)}
+		if err == nil {
+			err = errors.New("no usable address record")
+		}
+		return nsResult{err: fmt.Errorf("%s resolution failed: %w", label, err)}
+	}
+
+	// Launch the first address family immediately.
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		results <- resolveFamily(firstType, firstLabel)
 	}()
 
-	// Launch the second address family after the staggered delay,
-	// unless the first has already succeeded.
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
+	// Launch the second address family after the staggered delay, unless the
+	// first has already succeeded and canceled it.
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
 		}
-		result, err := r.resolveNSAddr(hostname, secondType, visited.budget)
-		if err == nil && !nsHasCNAMERedirect(hostname, result.Answers) {
-			for _, rr := range result.Answers {
-				if rr.Type == secondType {
-					ip, parseErr := dnsParseByType(rr.RData, secondType)
-					if parseErr == nil {
-						results <- nsResult{ip: ip.String()}
-						return
-					}
-				}
-			}
-		}
-		results <- nsResult{err: fmt.Errorf("%s resolution failed: %w", secondLabel, err)}
+		results <- resolveFamily(secondType, secondLabel)
 	}()
 
-	// Collect results — return the first success, or the last error if all fail.
+	// Collect results — return the first success, or the last error if both
+	// families completed unsuccessfully. The deferred join handles any loser.
 	var lastErr error
-	for i := 0; i < 2; i++ {
-		res := <-results
-		if res.err == nil {
-			return hostname, res.ip, nil
+	for completed := 0; completed < 2; {
+		select {
+		case res := <-results:
+			completed++
+			if res.err == nil {
+				cancel()
+				return hostname, res.ip, nil
+			}
+			lastErr = res.err
+		case <-ctx.Done():
+			return "", "", lastErr
 		}
-		lastErr = res.err
 	}
 	return "", "", lastErr
 }
@@ -1203,12 +1228,11 @@ func nsHasCNAMERedirect(nsHostname string, answers []dns.ResourceRecord) bool {
 // resolution tree — every CNAME hop, QNAME-minimisation step, and nameserver-
 // address sub-resolution. It bounds the total outbound queries (the global
 // NXNS / runaway-referral backstop that MaxDepth, a per-iteration *depth*
-// limit, does not provide) and the wall-clock time. Resolution within one
-// request is sequential (NS targets and CNAME hops are chased one at a time),
-// and the budget pointer is never shared across goroutines — only across the
-// nested calls of a single request — so a plain counter needs no atomics.
+// limit, does not provide) and the wall-clock time. Happy Eyeballs resolves
+// A and AAAA in parallel, so its sub-resolutions charge this shared budget
+// concurrently; the counter must therefore be atomic.
 type reqBudget struct {
-	queries    int
+	queries    atomic.Int64
 	maxQueries int       // <= 0 means unlimited (tests / internal helpers)
 	deadline   time.Time // zero means no deadline
 }
@@ -1228,11 +1252,8 @@ func (b *reqBudget) charge() error {
 	if !b.deadline.IsZero() && time.Now().After(b.deadline) {
 		return errRequestDeadline
 	}
-	if b.maxQueries > 0 {
-		b.queries++
-		if b.queries > b.maxQueries {
-			return errQueryBudgetExceeded
-		}
+	if b.maxQueries > 0 && b.queries.Add(1) > int64(b.maxQueries) {
+		return errQueryBudgetExceeded
 	}
 	return nil
 }
