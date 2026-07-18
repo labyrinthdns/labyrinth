@@ -34,7 +34,7 @@
 # One-line install (Linux/macOS, as root)
 curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash
 
-# Then open the dashboard to complete setup:
+# Then open the dashboard from the installed host to complete setup:
 # http://127.0.0.1:9153
 ```
 
@@ -62,17 +62,20 @@ cd labyrinth
 cd web/ui && npm ci && npm run build && cd ../..
 go build -ldflags="-s -w" -o labyrinth .
 
-# Docker (GHCR)
+# Docker (GHCR) — DNS ports only by default
 docker pull ghcr.io/labyrinthdns/labyrinth:latest
-docker run -p 53:53/udp -p 53:53/tcp -p 9153:9153 ghcr.io/labyrinthdns/labyrinth:latest
+docker run -p 53:53/udp -p 53:53/tcp \
+  -v "$PWD/labyrinth.yaml:/etc/labyrinth/labyrinth.yaml:ro" \
+  ghcr.io/labyrinthdns/labyrinth:latest \
+  -config /etc/labyrinth/labyrinth.yaml
 
 # Docker Compose
-docker-compose up -d
+docker compose up -d
 ```
 
 ## Web Dashboard
 
-Labyrinth includes a built-in web dashboard accessible at `http://127.0.0.1:9153`.
+Labyrinth includes a built-in web dashboard bound to `http://127.0.0.1:9153` by default. Container examples intentionally do not publish this admin port. For remote or container access, configure non-empty `web.auth` credentials first, set `web.addr` explicitly (for example `0.0.0.0:9153`), then publish port `9153`—preferably on a trusted host interface or behind an authenticated TLS reverse proxy.
 
 ### Setup Wizard
 
@@ -100,6 +103,7 @@ On first run (no config file), the dashboard shows an interactive setup wizard:
 ### Authentication
 
 - JWT-based (HMAC-SHA256, 24h tokens)
+- Browsers use a same-origin `HttpOnly`, `SameSite=Strict` session cookie; Bearer tokens remain available for programmatic clients
 - Passwords stored as bcrypt hashes
 - Generate a password hash: `labyrinth hash <password>`
 
@@ -198,7 +202,7 @@ Commands:
   check               Validate config file and exit
   version             Print version info
   hash <password>     Generate bcrypt password hash
-  daemon start|stop|status   Manage background daemon
+  daemon start|stop|status   Manage background daemon (put flags before command)
 
 Flags:
   -listen    string   Listen address (default ":53")
@@ -212,6 +216,8 @@ Flags:
   -version           Print version and exit
 ```
 
+For example, start the daemon with a non-default config using `labyrinth -config /etc/labyrinth/labyrinth.yaml daemon start`; Go's flag parser stops at the command, so flags placed after `daemon` are not applied.
+
 ### Environment Variables
 
 ```
@@ -224,8 +230,8 @@ LABYRINTH_RESOLVER_MAX_DEPTH=30
 
 ## REST API
 
-Most `/api/*` endpoints require JWT authentication via `Authorization: Bearer <token>`.
-Public endpoints include auth/setup/system health/version, `/metrics`, and `/dns-query` (when enabled).
+Most `/api/*` endpoints require JWT authentication. Browsers use the `labyrinth_token` HttpOnly cookie set by login; programmatic clients may use `Authorization: Bearer <token>`.
+Public web-mode endpoints include auth/setup/system health/version and `/dns-query` when enabled. Prometheus `/metrics` is served on `server.metrics_addr` only when `web.enabled: false`.
 
 | Method | Path | Description |
 |--------|------|-------------|

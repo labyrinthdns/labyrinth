@@ -2,15 +2,22 @@
 # All values shown are defaults. Uncomment and modify as needed.
 
 server:
-  listen_addr: "0.0.0.0:53"
+  listen_addr: ":53"
   metrics_addr: "127.0.0.1:9153"
-  max_udp_size: 4096
+  max_udp_size: 1232
   tcp_timeout: 10s
   max_tcp_connections: 256
+  max_udp_workers: 10000
+  tcp_pipeline_max: 100
+  tcp_idle_timeout: 5s
   # Per-source-IP connection caps (slow-loris defence). 0 = unlimited.
-  # max_tcp_conns_per_client: 16
-  # max_dot_conns_per_client: 16
+  max_tcp_conns_per_client: 16
+  max_dot_conns_per_client: 16
   graceful_shutdown: 5s
+  dot_enabled: false
+  dot_listen_addr: ":853"
+  doq_enabled: false
+  doq_listen_addr: ":853"
 
 resolver:
   max_depth: 30
@@ -24,10 +31,20 @@ resolver:
   max_queries_per_request: 200
   request_timeout: 20s
   # Caps NS hostnames per delegation (NXNS amplification defence). 0 = unlimited.
-  # max_ns_names_per_delegation: 13
+  max_ns_names_per_delegation: 13
   qname_minimization: true
+  caps_for_id: true
   prefer_ipv4: true
   dnssec_enabled: true
+  dnssec_allow_sha1: false
+  harden_below_nxdomain: true
+  root_hints_refresh: 12h
+  ecs_enabled: false
+  ecs_max_prefix: 24
+  ecs_max_prefix_v6: 56
+  dns64_enabled: false
+  dns64_prefix: "64:ff9b::/96"
+  upstream_udp_buffer_size: 1232
 
 cache:
   max_entries: 100000
@@ -37,6 +54,8 @@ cache:
   sweep_interval: 60s
   serve_stale: false
   serve_stale_ttl: 30
+  stale_max_age: 86400
+  prefetch: true
   # Comma-separated list of client IPs/CIDRs that bypass the cache (always resolve fresh)
   # no_cache_clients: 192.168.1.100, 10.0.0.0/24
 
@@ -45,10 +64,12 @@ security:
   # (DNS-rebinding protection). Default: false — many internal zones legitimately
   # resolve to private IPs. Set to true if this resolver only serves public names.
   private_address_filter: false
+  dns_cookies: false
+  dns_cookies_enforce: false
   rate_limit:
-    enabled: false
-    rate: 5000
-    burst: 10000
+    enabled: true
+    rate: 50
+    burst: 100
   rrl:
     enabled: true
     responses_per_second: 5
@@ -69,6 +90,9 @@ web:
   doh3_enabled: false
   # Serve dashboard/API over HTTPS directly
   tls_enabled: false
+  auto_tls: false
+  auto_tls_cache_dir: "certs"
+  auto_tls_staging: false
   # tls_cert_file: "/etc/labyrinth/certs/web.crt"
   # tls_key_file: "/etc/labyrinth/certs/web.key"
   query_log_buffer: 1000
@@ -81,11 +105,19 @@ web:
   auto_update: true
   update_check_interval: 24h
   auth:
-    username: "admin"
-    password_hash: "$2a$10$nS.tf.v7HRdqyChSmP9nBeJKXESl/J2bn8OnCEHCe5UYugbygOCjO"
+    username: ""
+    password_hash: ""
+
+daemon:
+  enabled: false
+  pid_file: "/var/run/labyrinth.pid"
+
+zabbix:
+  enabled: false
+  addr: ""
 
 blocklist:
-  enabled: true
+  enabled: false
   # Pipe-separated URL|format pairs
   # lists: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|hosts"
   refresh_interval: 24h
@@ -96,7 +128,7 @@ blocklist:
 cluster:
   enabled: false
   role: standalone  # standalone, master, secondary
-  node_id: dns-1
+  node_id: node-1
   # Comma-separated top-level keys/paths considered common
   # shared_fields: access_control, blocklist, security.rate_limit
   actions:
@@ -114,5 +146,5 @@ cluster:
   #     sync_fields: access_control, blocklist
 
 access_control:
-  allow: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  allow:
   deny:

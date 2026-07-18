@@ -55,11 +55,14 @@ sudo ./labyrinth -config /etc/labyrinth/labyrinth.yaml
 
 ### Docker
 
+The runtime default `web.addr: "127.0.0.1:9153"` is container-local, and the safe default below publishes only DNS. Before publishing the dashboard, set non-empty `web.auth` credentials and `web.addr: "0.0.0.0:9153"` in the mounted config; then add a host binding such as `-p 127.0.0.1:9153:9153` or place it behind an authenticated TLS reverse proxy.
+
 ```bash
 docker pull ghcr.io/labyrinthdns/labyrinth:latest
-docker run -p 53:53/udp -p 53:53/tcp -p 9153:9153 \
+docker run -p 53:53/udp -p 53:53/tcp \
   -v ./labyrinth.yaml:/etc/labyrinth/labyrinth.yaml:ro \
-  ghcr.io/labyrinthdns/labyrinth:latest
+  ghcr.io/labyrinthdns/labyrinth:latest \
+  -config /etc/labyrinth/labyrinth.yaml
 ```
 
 ### Docker Compose
@@ -185,7 +188,7 @@ web:
   auto_update: true
   update_check_interval: 24h
   auth:
-    username: "admin"
+    username: ""                # Set during setup or configure explicitly
     password_hash: ""           # Generate with: labyrinth hash <password>
 
 access_control:
@@ -216,7 +219,7 @@ daemon:
 cluster:
   enabled: false
   role: standalone              # standalone, master, secondary
-  node_id: dns-1
+  node_id: node-1
 ```
 
 ### Generate a Password Hash
@@ -228,7 +231,7 @@ labyrinth hash MySecurePassword123
 ### Validate Config
 
 ```bash
-labyrinth check -config /etc/labyrinth/labyrinth.yaml
+labyrinth -config /etc/labyrinth/labyrinth.yaml check
 ```
 
 ---
@@ -263,13 +266,13 @@ journalctl -u labyrinth -f
 # Start
 labyrinth -config /etc/labyrinth/labyrinth.yaml
 
-# Daemon mode
-labyrinth -daemon -config /etc/labyrinth/labyrinth.yaml
+# Daemon mode (legacy flag form)
+labyrinth -config /etc/labyrinth/labyrinth.yaml -daemon
 
-# Daemon subcommands
-labyrinth daemon start
-labyrinth daemon stop
-labyrinth daemon status
+# Daemon subcommands; flags must come before the command
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon start
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon stop
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon status
 ```
 
 ### Docker
@@ -284,9 +287,11 @@ docker compose logs -f
 
 ## 4. Monitoring
 
+Protected API examples below assume browser cookie authentication. For shell automation, first obtain a JWT from `POST /api/auth/login` and add `-H "Authorization: Bearer $TOKEN"` to protected `/api/*` calls.
+
 ### Web Dashboard
 
-Open `http://127.0.0.1:9153` in a browser.
+Open `http://127.0.0.1:9153` in a browser on the resolver host. The dashboard is loopback-only by default; configure `web.addr` and authentication before enabling remote access.
 
 | Page | What to watch |
 |------|--------------|
@@ -297,7 +302,9 @@ Open `http://127.0.0.1:9153` in a browser.
 
 ### Prometheus Metrics
 
-Endpoint: `http://127.0.0.1:9153/metrics`
+The standalone Prometheus endpoint is served on `server.metrics_addr` only when `web.enabled: false`. With the default web dashboard enabled, use the authenticated `/api/stats` endpoints for dashboard/API monitoring instead.
+
+Standalone endpoint: `http://127.0.0.1:9153/metrics`
 
 **Key metrics:**
 
@@ -341,7 +348,7 @@ curl http://127.0.0.1:9153/api/system/health
 # Readiness check
 curl http://127.0.0.1:9153/api/system/version
 
-# Prometheus metrics
+# Prometheus metrics (standalone metrics mode: web.enabled=false)
 curl http://127.0.0.1:9153/metrics
 ```
 
@@ -702,10 +709,10 @@ server:
 ```bash
 # Quick status
 systemctl status labyrinth
-labyrinth daemon status
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon status
 
 # Validate config
-labyrinth check -config /etc/labyrinth/labyrinth.yaml
+labyrinth -config /etc/labyrinth/labyrinth.yaml check
 
 # Generate password hash
 labyrinth hash "NewPassword123"
