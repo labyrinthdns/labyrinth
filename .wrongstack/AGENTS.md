@@ -19,9 +19,10 @@ need before they touch this codebase.
 
 ## Commands
 
-- **Build:** `go build ./...`
-- **Test:** `go test ./...`
+- **Build:** `make build`
+- **Test:** `make test` (or `make test-race`)
 - **Lint:** `make lint`
+- **Go package scope:** use Makefile targets; the explicit first-party allowlist prevents Go tooling from discovering fixtures under frontend `node_modules`.
 - **Run locally:** `go run .`
 
 ## Architecture notes
