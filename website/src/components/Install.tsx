@@ -20,8 +20,9 @@ const tabs = [
   --name labyrinth \\
   -p 53:53/udp \\
   -p 53:53/tcp \\
-  -p 9153:9153 \\
-  ghcr.io/labyrinthdns/labyrinth:latest`,
+  -v "$PWD/labyrinth.yaml:/etc/labyrinth/labyrinth.yaml:ro" \\
+  ghcr.io/labyrinthdns/labyrinth:latest \\
+  -config /etc/labyrinth/labyrinth.yaml`,
   },
   {
     id: 'source',
@@ -29,8 +30,9 @@ const tabs = [
     icon: Code,
     code: `git clone https://github.com/labyrinthdns/labyrinth.git
 cd labyrinth
-go build -o labyrinth ./cmd/labyrinth
-./labyrinth --config config.yaml`,
+cd web/ui && npm ci && npm run build && cd ../..
+go build -o labyrinth .
+./labyrinth -config labyrinth.yaml`,
   },
 ] as const
 

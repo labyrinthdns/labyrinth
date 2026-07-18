@@ -29,9 +29,8 @@ export default function DashboardSetup({ dark }: Props) {
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`web:
-  enabled: true           # set to false to disable entirely
-  address: "0.0.0.0"      # listen address (use 127.0.0.1 for local-only)
-  port: 9153              # HTTP port`}</code></pre>
+  enabled: true
+  addr: "127.0.0.1:9153"  # default; use 0.0.0.0:9153 only for remote access`}</code></pre>
 
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
@@ -65,15 +64,18 @@ export default function DashboardSetup({ dark }: Props) {
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Generate a password hash
-labyrinth hash --password "your-secure-password"
+labyrinth hash "your-secure-password"
 # $2a$10$K7L/FqkZx...
 
-# The hash is stored in the resolver's data directory
-# Default: /var/lib/labyrinth/auth.json`}</code></pre>
+# Store the hash in labyrinth.yaml
+web:
+  auth:
+    username: "admin"
+    password_hash: "$2a$10$K7L/FqkZx..."`}</code></pre>
 
       <p className={p}>
-        You can reset the admin account by deleting the <code className={ic}>auth.json</code> file and restarting
-        Labyrinth. The setup wizard will appear again on next dashboard access.
+        Credentials live under <code className={ic}>web.auth</code> in <code className={ic}>labyrinth.yaml</code>.
+        Update that configuration (or rerun first-time setup before an account exists) to change the administrator.
       </p>
 
       <h2 className={h2}>Accessing the Dashboard</h2>

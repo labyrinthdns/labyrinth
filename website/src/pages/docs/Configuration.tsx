@@ -68,6 +68,8 @@ export default function Configuration({ dark }: Props) {
           { keyName: 'tcp_timeout', type: 'duration', defaultValue: '"10s"', description: 'Timeout for TCP/DoT query handling.' },
           { keyName: 'max_tcp_connections', type: 'int', defaultValue: '256', description: 'Maximum concurrent TCP/DoT connections.' },
           { keyName: 'max_udp_workers', type: 'int', defaultValue: '10000', description: 'Maximum UDP worker concurrency.' },
+          { keyName: 'max_tcp_conns_per_client', type: 'int', defaultValue: '16', description: 'Per-source TCP connection cap.' },
+          { keyName: 'max_dot_conns_per_client', type: 'int', defaultValue: '16', description: 'Per-source DoT connection cap.' },
           { keyName: 'dot_enabled', type: 'bool', defaultValue: 'false', description: 'Enable DNS-over-TLS listener.' },
           { keyName: 'dot_listen_addr', type: 'string', defaultValue: '":853"', description: 'DoT bind address.' },
           { keyName: 'tls_cert_file', type: 'string', defaultValue: '""', description: 'TLS cert file for DoT.' },
@@ -83,8 +85,11 @@ export default function Configuration({ dark }: Props) {
           { keyName: 'max_cname_depth', type: 'int', defaultValue: '10', description: 'Maximum CNAME/DNAME chaining depth.' },
           { keyName: 'upstream_timeout', type: 'duration', defaultValue: '"2s"', description: 'Per-upstream timeout.' },
           { keyName: 'upstream_retries', type: 'int', defaultValue: '3', description: 'Retry count per upstream query.' },
+          { keyName: 'max_queries_per_request', type: 'int', defaultValue: '200', description: 'Total outbound query budget per client request.' },
+          { keyName: 'request_timeout', type: 'duration', defaultValue: '"20s"', description: 'Wall-clock deadline per client request.' },
+          { keyName: 'max_ns_names_per_delegation', type: 'int', defaultValue: '13', description: 'Delegation NS-name cap.' },
           { keyName: 'qname_minimization', type: 'bool', defaultValue: 'true', description: 'Enable RFC 9156 QNAME minimization.' },
-          { keyName: 'caps_for_id', type: 'bool', defaultValue: 'false', description: 'Enable RFC 5452 0x20 case randomization for anti-spoofing.' },
+          { keyName: 'caps_for_id', type: 'bool', defaultValue: 'true', description: 'Enable RFC 5452 0x20 case randomization for anti-spoofing.' },
           { keyName: 'prefer_ipv4', type: 'bool', defaultValue: 'true', description: 'Prefer IPv4 addresses for upstream contact.' },
           { keyName: 'dnssec_enabled', type: 'bool', defaultValue: 'true', description: 'Enable DNSSEC validation chain.' },
           { keyName: 'harden_below_nxdomain', type: 'bool', defaultValue: 'true', description: 'Enable RFC 8020-style harden-below-NXDOMAIN cache behavior.' },
@@ -104,6 +109,7 @@ export default function Configuration({ dark }: Props) {
           { keyName: 'negative_max_ttl', type: 'uint32', defaultValue: '3600', description: 'Maximum TTL for negative answers.' },
           { keyName: 'serve_stale', type: 'bool', defaultValue: 'false', description: 'Enable stale-answer serving.' },
           { keyName: 'serve_stale_ttl', type: 'uint32', defaultValue: '30', description: 'TTL value assigned to stale replies.' },
+          { keyName: 'stale_max_age', type: 'uint32', defaultValue: '86400', description: 'Maximum age of stale entries eligible for serving.' },
           { keyName: 'prefetch', type: 'bool', defaultValue: 'true', description: 'Enable background prefetch near expiry.' },
           { keyName: 'no_cache_clients', type: 'csv', defaultValue: '""', description: 'Client IPs/CIDRs that bypass cache.' },
         ]}
@@ -135,11 +141,34 @@ export default function Configuration({ dark }: Props) {
           { keyName: 'tls_enabled', type: 'bool', defaultValue: 'false', description: 'Serve web API/dashboard over HTTPS directly.' },
           { keyName: 'tls_cert_file', type: 'string', defaultValue: '""', description: 'TLS cert file for web HTTPS.' },
           { keyName: 'tls_key_file', type: 'string', defaultValue: '""', description: 'TLS key file for web HTTPS.' },
+          { keyName: 'auto_tls', type: 'bool', defaultValue: 'false', description: 'Enable automatic TLS certificate management.' },
+          { keyName: 'auto_tls_cache_dir', type: 'string', defaultValue: '"certs"', description: 'Automatic TLS certificate cache directory.' },
           { keyName: 'auth.username', type: 'string', defaultValue: '""', description: 'Admin username.' },
           { keyName: 'auth.password_hash', type: 'string', defaultValue: '""', description: 'bcrypt password hash.' },
           { keyName: 'query_log_buffer', type: 'int', defaultValue: '1000', description: 'In-memory query log buffer size.' },
-          { keyName: 'top_clients_limit', type: 'int', defaultValue: '20', description: 'Top clients leaderboard size.' },
-          { keyName: 'top_domains_limit', type: 'int', defaultValue: '20', description: 'Top domains leaderboard size.' },
+          { keyName: 'top_clients_limit', type: 'int', defaultValue: '2000', description: 'Top clients leaderboard size.' },
+          { keyName: 'top_domains_limit', type: 'int', defaultValue: '2000', description: 'Top domains leaderboard size.' },
+          { keyName: 'alert_error_threshold_pct', type: 'float64', defaultValue: '5', description: 'Dashboard error-rate alert threshold.' },
+          { keyName: 'alert_latency_threshold_ms', type: 'int', defaultValue: '250', description: 'Dashboard latency alert threshold.' },
+          { keyName: 'auto_update', type: 'bool', defaultValue: 'true', description: 'Enable periodic release checks.' },
+          { keyName: 'update_check_interval', type: 'duration', defaultValue: '"24h"', description: 'Release check interval.' },
+        ]}
+      />
+
+      <h2 className={h2}>daemon, zabbix, blocklist, and cluster</h2>
+      <SectionTable
+        dark={dark}
+        rows={[
+          { keyName: 'daemon.enabled', type: 'bool', defaultValue: 'false', description: 'Enable daemon mode from configuration.' },
+          { keyName: 'daemon.pid_file', type: 'string', defaultValue: '"/var/run/labyrinth.pid"', description: 'Daemon PID file.' },
+          { keyName: 'zabbix.enabled', type: 'bool', defaultValue: 'false', description: 'Enable the native Zabbix agent.' },
+          { keyName: 'zabbix.addr', type: 'string', defaultValue: '""', description: 'Native Zabbix agent bind address.' },
+          { keyName: 'blocklist.enabled', type: 'bool', defaultValue: 'false', description: 'Enable DNS blocklisting.' },
+          { keyName: 'blocklist.refresh_interval', type: 'duration', defaultValue: '"24h"', description: 'Blocklist refresh interval.' },
+          { keyName: 'blocklist.blocking_mode', type: 'string', defaultValue: '"nxdomain"', description: 'Blocking response mode.' },
+          { keyName: 'cluster.enabled', type: 'bool', defaultValue: 'false', description: 'Enable multi-node coordination.' },
+          { keyName: 'cluster.role', type: 'string', defaultValue: '"standalone"', description: 'Cluster role.' },
+          { keyName: 'cluster.node_id', type: 'string', defaultValue: '"node-1"', description: 'Local cluster node identifier.' },
         ]}
       />
 

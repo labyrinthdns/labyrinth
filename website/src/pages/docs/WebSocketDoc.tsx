@@ -20,23 +20,22 @@ export default function WebSocketDoc({ dark }: Props) {
       </p>
 
       <h2 className={h2}>Connection URL</h2>
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`ws://localhost:9153/api/queries/stream?token=<JWT_TOKEN>
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`ws://localhost:9153/api/queries/stream
 
 # With TLS:
-wss://dns.example.com/api/queries/stream?token=<JWT_TOKEN>`}</code></pre>
+wss://dns.example.com/api/queries/stream`}</code></pre>
 
       <p className={p}>
-        Authentication is required when admin auth is enabled. You can pass JWT via
-        query parameter (<code className={ic}>?token=...</code>) or
-        <code className={ic}> Authorization: Bearer ... </code>.
+        The dashboard connects on the same origin, so the browser automatically sends the HttpOnly
+        <code className={ic}> labyrinth_token </code> cookie. Non-browser clients can use an
+        {' '}<code className={ic}>Authorization: Bearer ...</code> header; the <code className={ic}>?token=...</code>
+        fallback is accepted only during a WebSocket upgrade and should be avoided because URLs are logged.
       </p>
 
-      <h2 className={h2}>Quick Test</h2>
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`TOKEN=$(curl -s -X POST http://localhost:9153/api/auth/login \\
-  -H "Content-Type: application/json" \\
-  -d '{"username":"admin","password":"your-password"}' | jq -r '.token')
-
-wscat -c "ws://localhost:9153/api/queries/stream?token=$TOKEN"`}</code></pre>
+      <h2 className={h2}>Browser Example</h2>
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`// Run after logging in on the dashboard origin.
+const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const socket = new WebSocket(\`${'${scheme}'}//${'${window.location.host}'}/api/queries/stream\`)`}</code></pre>
 
       <h2 className={h2}>Message Format</h2>
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`{

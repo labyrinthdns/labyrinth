@@ -67,7 +67,7 @@ export default function Security({ dark }: Props) {
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
           <strong className="text-gold-500">Compatibility:</strong> Some authoritative nameservers normalize
           query names to lowercase. If you encounter resolution failures with <code className={ic}>caps_for_id</code> enabled,
-          the affected servers do not support 0x20. The feature is opt-in (default: off) for this reason.
+          the affected servers may not preserve 0x20 case. The feature is enabled by default and can be disabled for compatibility.
         </p>
       </div>
 
@@ -125,8 +125,8 @@ export default function Security({ dark }: Props) {
         <li><strong>ED25519</strong> &mdash; next-generation algorithm with smaller signatures and faster verification</li>
       </ul>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`dnssec:
-  enabled: true    # enabled by default`}</code></pre>
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`resolver:
+  dnssec_enabled: true    # enabled by default`}</code></pre>
 
       <p className={p}>
         When a DNSSEC-signed domain fails validation, Labyrinth returns SERVFAIL to the client, preventing
@@ -152,7 +152,7 @@ export default function Security({ dark }: Props) {
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`security:
   rate_limit:
     enabled: true
-    requests_per_second: 100    # sustained rate
+    rate: 100    # sustained rate
     burst: 200                  # initial burst allowance`}</code></pre>
 
       <p className={p}>
@@ -171,7 +171,7 @@ export default function Security({ dark }: Props) {
   rrl:
     enabled: true
     responses_per_second: 5     # max identical responses/sec
-    window: "15s"               # sliding window duration`}</code></pre>
+    slip_ratio: 2               # send one truncated response per two limits`}</code></pre>
 
       <p className={p}>
         When the limit is exceeded, Labyrinth sets the TC (truncation) bit instead of dropping the response,
@@ -194,7 +194,6 @@ export default function Security({ dark }: Props) {
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`access_control:
-  enabled: true
   deny:
     - "0.0.0.0/0"            # deny all by default
   allow:
@@ -228,21 +227,20 @@ export default function Security({ dark }: Props) {
       </ul>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Recommended production security config
-dnssec:
-  enabled: true
+resolver:
+  dnssec_enabled: true
 
 security:
   rate_limit:
     enabled: true
-    requests_per_second: 200
+    rate: 200
     burst: 500
   rrl:
     enabled: true
     responses_per_second: 5
-    window: "15s"
+    slip_ratio: 2
 
 access_control:
-  enabled: true
   allow:
     - "10.0.0.0/8"
     - "172.16.0.0/12"

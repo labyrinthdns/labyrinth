@@ -26,8 +26,7 @@ export default function ZabbixDoc({ dark }: Props) {
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`zabbix:
   enabled: true
-  address: "0.0.0.0"    # listen address
-  port: 10050           # standard Zabbix agent port`}</code></pre>
+  addr: "0.0.0.0:10050"  # standard Zabbix agent port`}</code></pre>
 
       <p className={p}>
         When enabled, Labyrinth listens on TCP port 10050 (or configured port) and responds to Zabbix

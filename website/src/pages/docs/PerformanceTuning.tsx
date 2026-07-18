@@ -120,24 +120,24 @@ sudo systemctl restart labyrinth`}</code></pre>
 numactl --hardware
 
 # Pin to NUMA node 0
-numactl --cpunodebind=0 --membind=0 labyrinth --config config.yaml
+numactl --cpunodebind=0 --membind=0 labyrinth -config labyrinth.yaml
 
 # Or in systemd:
 [Service]
-ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 /usr/local/bin/labyrinth --config /etc/labyrinth/config.yaml`}</code></pre>
+ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 /usr/local/bin/labyrinth -config /etc/labyrinth/labyrinth.yaml`}</code></pre>
 
       <h2 className={h2}>Go Runtime Tuning</h2>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Set max CPUs (defaults to all available)
-GOMAXPROCS=16 labyrinth --config config.yaml
+GOMAXPROCS=16 labyrinth -config labyrinth.yaml
 
 # Tune GC target percentage (default 100)
 # Lower = more frequent GC, lower memory, slightly more CPU
 # Higher = less frequent GC, higher memory, slightly less CPU
-GOGC=200 labyrinth --config config.yaml
+GOGC=200 labyrinth -config labyrinth.yaml
 
 # For low-latency workloads, consider memory limit
-GOMEMLIMIT=4GiB labyrinth --config config.yaml`}</code></pre>
+GOMEMLIMIT=4GiB labyrinth -config labyrinth.yaml`}</code></pre>
 
       <h2 className={h2}>Benchmarking Methodology</h2>
 

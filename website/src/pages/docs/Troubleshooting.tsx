@@ -83,7 +83,7 @@ sudo setcap cap_net_bind_service=+ep /usr/local/bin/labyrinth
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 # Option 3: Run as root (not recommended)
-sudo labyrinth --config config.yaml`}</code></pre>
+sudo labyrinth -config labyrinth.yaml`}</code></pre>
 
       <h2 className={h2}>High Latency on First Queries</h2>
 
@@ -145,7 +145,7 @@ curl -v http://localhost:9153/api/system/health
 # Should return {"status":"ok"}
 
 # 2. Check if web is enabled in config
-grep -A3 "web:" /etc/labyrinth/config.yaml
+grep -A3 "web:" /etc/labyrinth/labyrinth.yaml
 
 # 3. Check listen address
 # If address is "127.0.0.1", you can only access from localhost
@@ -207,7 +207,7 @@ cache:
   max_entries: 50000
 
 # 2. Set Go memory limit
-GOMEMLIMIT=2GiB labyrinth --config config.yaml
+GOMEMLIMIT=2GiB labyrinth -config labyrinth.yaml
 
 # 3. Force a GC cycle (debug only)
 kill -USR1 $(cat /var/run/labyrinth.pid)
@@ -223,7 +223,7 @@ kill -USR1 $(cat /var/run/labyrinth.pid)
         <li>Enable debug logging: <code className={ic}>logging.level: "debug"</code> and SIGHUP to reload</li>
         <li>Dump statistics: <code className={ic}>kill -USR1 $(pgrep labyrinth)</code></li>
         <li>Check the <a href="https://github.com/labyrinthdns/labyrinth/issues" target="_blank" rel="noopener noreferrer" className="text-gold-500 hover:underline">GitHub Issues</a> page</li>
-        <li>Include version (<code className={ic}>labyrinth --version</code>), OS, and relevant logs when reporting issues</li>
+        <li>Include version (<code className={ic}>labyrinth -version</code>), OS, and relevant logs when reporting issues</li>
       </ul>
     </div>
   )

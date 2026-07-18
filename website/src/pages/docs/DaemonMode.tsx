@@ -21,15 +21,16 @@ export default function DaemonMode({ dark }: Props) {
 
       <h2 className={h2}>Starting as a Daemon</h2>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Start Labyrinth in daemon mode (forks to background)
-labyrinth --config /etc/labyrinth/config.yaml --daemon
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Start Labyrinth in daemon mode (flags must precede the command)
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon start
 
-# Output:
-# Labyrinth daemon started (PID 12345)
-# PID file: /var/run/labyrinth.pid`}</code></pre>
+# Equivalent legacy flag form:
+labyrinth -config /etc/labyrinth/labyrinth.yaml -daemon
+
+# Output: Labyrinth daemon started (PID 12345)`}</code></pre>
 
       <p className={p}>
-        The <code className={ic}>--daemon</code> flag causes Labyrinth to:
+        The <code className={ic}>daemon start</code> command (or <code className={ic}>-daemon</code> flag) causes Labyrinth to:
       </p>
 
       <ul className={ul}>
@@ -42,22 +43,19 @@ labyrinth --config /etc/labyrinth/config.yaml --daemon
       <h2 className={h2}>Daemon Commands</h2>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Start the daemon
-labyrinth --daemon --config /etc/labyrinth/config.yaml
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon start
 
-# Check if the daemon is running
-labyrinth --daemon status
-# Output: Labyrinth is running (PID 12345)
-# -- or --
-# Output: Labyrinth is not running
+# Check whether it is running
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon status
+# Output: running (PID 12345)
 
-# Stop the daemon gracefully (sends SIGTERM)
-labyrinth --daemon stop
-# Output: Labyrinth daemon stopped (PID 12345)
+# Stop gracefully (sends SIGTERM)
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon stop
+# Output: Sent SIGTERM to PID 12345
 
-# Restart the daemon (stop + start)
-labyrinth --daemon restart --config /etc/labyrinth/config.yaml
-# Output: Labyrinth daemon stopped (PID 12345)
-# Output: Labyrinth daemon started (PID 12346)`}</code></pre>
+# Restart by issuing the two supported commands
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon stop
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon start`}</code></pre>
 
       <h2 className={h2}>PID File</h2>
 
@@ -66,11 +64,11 @@ labyrinth --daemon restart --config /etc/labyrinth/config.yaml
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`daemon:
-  pid_file: "/var/run/labyrinth.pid"    # default
-  work_dir: "/var/lib/labyrinth"        # working directory`}</code></pre>
+  enabled: false
+  pid_file: "/var/run/labyrinth.pid"    # default`}</code></pre>
 
       <p className={p}>
-        If a PID file already exists and the process is running, <code className={ic}>--daemon</code> will refuse
+        If a PID file already exists and the process is running, <code className={ic}>-daemon</code> will refuse
         to start and print an error. Remove the stale PID file manually if the previous instance crashed
         without cleanup:
       </p>
@@ -86,7 +84,7 @@ ps -p 12345
 rm /var/run/labyrinth.pid
 
 # Now start normally
-labyrinth --daemon --config /etc/labyrinth/config.yaml`}</code></pre>
+labyrinth -config /etc/labyrinth/labyrinth.yaml daemon start`}</code></pre>
 
       <h2 className={h2}>systemd vs Daemon Mode</h2>
 
@@ -131,7 +129,7 @@ labyrinth --daemon --config /etc/labyrinth/config.yaml`}</code></pre>
       <h2 className={h2}>Running in Foreground</h2>
 
       <p className={p}>
-        Without <code className={ic}>--daemon</code>, Labyrinth runs in the foreground. This is useful for:
+        Without <code className={ic}>-daemon</code>, Labyrinth runs in the foreground. This is useful for:
       </p>
 
       <ul className={ul}>
@@ -142,10 +140,10 @@ labyrinth --daemon --config /etc/labyrinth/config.yaml`}</code></pre>
       </ul>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Foreground (Ctrl+C to stop)
-labyrinth --config config.yaml
+labyrinth -config labyrinth.yaml
 
 # Foreground with debug logging
-labyrinth --config config.yaml --log-level debug`}</code></pre>
+labyrinth -config labyrinth.yaml --log-level debug`}</code></pre>
     </div>
   )
 }

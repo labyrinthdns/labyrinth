@@ -45,13 +45,14 @@ export default function APIReference({ dark }: Props) {
 
       <p className={p}>
         The web API is served on the same address as the dashboard (default <code className={ic}>127.0.0.1:9153</code>).
-        Most <code className={ic}>/api/*</code> routes require <code className={ic}>Authorization: Bearer &lt;jwt&gt;</code>.
+        Browsers authenticate with the same-origin HttpOnly <code className={ic}>labyrinth_token</code> cookie;
+        programmatic clients may send <code className={ic}>Authorization: Bearer &lt;jwt&gt;</code>.
       </p>
 
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
           When web mode is enabled, use <code className={ic}>/api/system/health</code> for liveness.
-          The legacy <code className={ic}>/health</code> and <code className={ic}>/ready</code> endpoints are only available in standalone metrics mode.
+          The legacy <code className={ic}>/health</code>, <code className={ic}>/ready</code>, and <code className={ic}>/metrics</code> endpoints are available only on <code className={ic}>server.metrics_addr</code> when <code className={ic}>web.enabled</code> is false.
         </p>
       </div>
 
@@ -61,7 +62,6 @@ export default function APIReference({ dark }: Props) {
       <Endpoint dark={dark} method="POST" path="/api/setup/complete" auth="public" description="Complete first-time setup." />
       <Endpoint dark={dark} method="GET" path="/api/system/health" auth="public" description="Health endpoint in web mode." />
       <Endpoint dark={dark} method="GET" path="/api/system/version" auth="public" description="Build/runtime version info." />
-      <Endpoint dark={dark} method="GET" path="/metrics" auth="public" description="Prometheus metrics output." />
       <Endpoint dark={dark} method="GET/POST" path="/dns-query" auth="public" description="DoH endpoint (RFC 8484), available only when web.doh_enabled=true." />
 
       <h2 className={h2}>Authenticated Endpoints</h2>

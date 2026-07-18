@@ -22,30 +22,32 @@ export default function Installation({ dark }: Props) {
 
       <p className={p}>
         The fastest way to get started on Linux or macOS. The script auto-detects your OS and architecture,
-        downloads the latest release binary, and installs it to <code className={ic}>/usr/local/bin</code>.
+        installs the binary at <code className={ic}>/opt/labyrinth/bin/labyrinth</code>, and creates a
+        {' '}<code className={ic}>/usr/local/bin/labyrinth</code> symlink.
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash`}</code></pre>
 
       <p className={p}>
-        The install script supports the following environment variables:
+        Use installer flags to select a release or skip systemd setup:
       </p>
 
       <ul className={ul}>
-        <li><code className={ic}>INSTALL_DIR</code> &mdash; custom install directory (default: <code className={ic}>/usr/local/bin</code>)</li>
-        <li><code className={ic}>VERSION</code> &mdash; specific version to install (default: latest)</li>
+        <li><code className={ic}>--version TAG</code> &mdash; install a specific release (default: latest)</li>
+        <li><code className={ic}>--no-service</code> &mdash; install binaries without creating a systemd service</li>
       </ul>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Install a specific version to a custom directory
-VERSION=0.5.1 INSTALL_DIR=/opt/labyrinth/bin \\
-  curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash`}</code></pre>
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Install a specific version
+curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | \\
+  bash -s -- --version v0.8.31`}</code></pre>
 
       <h2 className={h2}>Build from Source</h2>
 
       <h3 className={h3}>Prerequisites</h3>
 
       <ul className={ul}>
-        <li>Go 1.23 or later</li>
+        <li>Go 1.26.5 or later</li>
+        <li>Node.js 22 or later and npm</li>
         <li>Git</li>
         <li>Make (optional, for convenience targets)</li>
       </ul>
@@ -56,14 +58,18 @@ VERSION=0.5.1 INSTALL_DIR=/opt/labyrinth/bin \\
 git clone https://github.com/labyrinthdns/labyrinth.git
 cd labyrinth
 
-# Build the main binary
-go build -o labyrinth ./cmd/labyrinth
+# Build the embedded dashboard, then the main binary
+cd web/ui
+npm ci
+npm run build
+cd ../..
+go build -o labyrinth .
 
 # Build the benchmark tool (optional)
 go build -o labyrinth-bench ./cmd/labyrinth-bench
 
 # Verify the build
-./labyrinth --version`}</code></pre>
+./labyrinth -version`}</code></pre>
 
       <div className={info}>
         <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
@@ -72,12 +78,12 @@ go build -o labyrinth-bench ./cmd/labyrinth-bench
         </p>
       </div>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`CGO_ENABLED=0 go build -ldflags="-s -w" -o labyrinth ./cmd/labyrinth`}</code></pre>
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`CGO_ENABLED=0 go build -ldflags="-s -w" -o labyrinth .`}</code></pre>
 
       <h2 className={h2}>Docker</h2>
 
       <p className={p}>
-        Official images are published to GitHub Container Registry (GHCR) for every release.
+        Official images are published to GitHub Container Registry (GHCR) for every release. The safe default publishes only DNS; the admin dashboard remains container-local until you configure authentication and explicitly publish it.
       </p>
 
       <h3 className={h3}>Quick Run</h3>
@@ -86,13 +92,13 @@ go build -o labyrinth-bench ./cmd/labyrinth-bench
   --name labyrinth \\
   -p 53:53/udp \\
   -p 53:53/tcp \\
-  -p 9153:9153 \\
-  ghcr.io/labyrinthdns/labyrinth:latest`}</code></pre>
+  -v "$PWD/labyrinth.yaml:/etc/labyrinth/labyrinth.yaml:ro" \\
+  ghcr.io/labyrinthdns/labyrinth:latest \\
+  -config /etc/labyrinth/labyrinth.yaml`}</code></pre>
 
       <h3 className={h3}>Docker Compose</h3>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`version: "3.8"
-services:
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`services:
   labyrinth:
     image: ghcr.io/labyrinthdns/labyrinth:latest
     container_name: labyrinth
@@ -100,26 +106,30 @@ services:
     ports:
       - "53:53/udp"
       - "53:53/tcp"
-      - "9153:9153"
+      # After setting web.auth and web.addr in labyrinth.yaml:
+      # - "127.0.0.1:9153:9153"
     volumes:
-      - ./config.yaml:/etc/labyrinth/config.yaml:ro
+      - ./labyrinth.yaml:/etc/labyrinth/labyrinth.yaml:ro
       - labyrinth-data:/var/lib/labyrinth
-    command: ["--config", "/etc/labyrinth/config.yaml"]
+    command: ["-config", "/etc/labyrinth/labyrinth.yaml"]
 
 volumes:
   labyrinth-data:`}</code></pre>
 
-      <h3 className={h3}>Custom Configuration with Docker</h3>
+      <h3 className={h3}>Publishing the Authenticated Dashboard</h3>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Mount a custom config file
-docker run -d \\
+      <p className={p}>
+        First set non-empty <code className={ic}>web.auth</code> credentials and <code className={ic}>web.addr: "0.0.0.0:9153"</code> in the mounted configuration. Then publish the admin port on a trusted host interface or behind an authenticated TLS reverse proxy:
+      </p>
+
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`docker run -d \\
   --name labyrinth \\
   -p 53:53/udp \\
   -p 53:53/tcp \\
-  -p 9153:9153 \\
-  -v /path/to/config.yaml:/etc/labyrinth/config.yaml:ro \\
+  -p 127.0.0.1:9153:9153 \\
+  -v /path/to/labyrinth.yaml:/etc/labyrinth/labyrinth.yaml:ro \\
   ghcr.io/labyrinthdns/labyrinth:latest \\
-  --config /etc/labyrinth/config.yaml`}</code></pre>
+  -config /etc/labyrinth/labyrinth.yaml`}</code></pre>
 
       <h2 className={h2}>Manual Binary Download</h2>
 
@@ -157,7 +167,7 @@ sudo chown labyrinth:labyrinth /var/lib/labyrinth
 
 # Copy binary and config
 sudo cp labyrinth /usr/local/bin/
-sudo cp config.yaml /etc/labyrinth/
+sudo cp labyrinth.yaml /etc/labyrinth/
 
 # Create the systemd unit file
 sudo tee /etc/systemd/system/labyrinth.service > /dev/null << 'EOF'
@@ -170,7 +180,7 @@ Wants=network-online.target
 Type=simple
 User=labyrinth
 Group=labyrinth
-ExecStart=/usr/local/bin/labyrinth --config /etc/labyrinth/config.yaml
+ExecStart=/usr/local/bin/labyrinth -config /etc/labyrinth/labyrinth.yaml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
@@ -204,10 +214,10 @@ sudo systemctl status labyrinth`}</code></pre>
       <h2 className={h2}>Verify Installation</h2>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Check the version
-labyrinth --version
+labyrinth -version
 
 # Test a quick resolve
-labyrinth --config config.yaml &
+labyrinth -config labyrinth.yaml &
 dig @127.0.0.1 example.com A
 
 # Access the dashboard

@@ -47,8 +47,8 @@ Step 3: Query authoritative server (e.g., ns1.example.com)
 
       <p className={p}>
         Resolution starts with root hints &mdash; the IP addresses of the 13 DNS root server clusters (a.root-servers.net
-        through m.root-servers.net). Labyrinth includes these addresses at compile time, so no external root hints
-        file is needed. You can override them with the <code className={ic}>resolver.root_hints_file</code> config key.
+        through m.root-servers.net). Labyrinth includes these addresses at compile time and refreshes them on the
+        configured <code className={ic}>resolver.root_hints_refresh</code> interval, so no external hints file is needed.
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Built-in root hints (partial)
@@ -99,7 +99,7 @@ Step 3: edge.cdn-provider.com → A → 203.0.113.42
 Response to client includes the full CNAME chain + final A record.`}</code></pre>
 
       <p className={p}>
-        The maximum CNAME chain length is configurable via <code className={ic}>resolver.max_cname_chain</code> (default: 16).
+        The maximum CNAME chain length is configurable via <code className={ic}>resolver.max_cname_depth</code> (default: 10).
         Labyrinth aborts resolution and returns SERVFAIL if the chain exceeds this limit, preventing infinite loops.
       </p>
 
@@ -160,7 +160,8 @@ Without coalescing: 3 upstream queries
 With coalescing:    1 upstream query`}</code></pre>
 
       <p className={p}>
-        Request coalescing is enabled by default and can be toggled with <code className={ic}>resolver.enable_request_coalescing</code>.
+        Request coalescing is always enabled; there is no configuration switch because it is part of the resolver's
+        upstream load-shedding behavior.
       </p>
     </div>
   )

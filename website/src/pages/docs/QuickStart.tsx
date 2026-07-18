@@ -24,8 +24,8 @@ export default function QuickStart({ dark }: Props) {
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.sh | bash`}</code></pre>
 
       <p className={p}>
-        This downloads the latest release binary and installs it to <code className={ic}>/usr/local/bin/labyrinth</code>.
-        See <Link to="/docs/installation" className="text-gold-500 hover:underline">Installation</Link> for
+        This installs the release at <code className={ic}>/opt/labyrinth/bin/labyrinth</code> and creates a
+        {' '}<code className={ic}>/usr/local/bin/labyrinth</code> symlink. See <Link to="/docs/installation" className="text-gold-500 hover:underline">Installation</Link> for
         alternative methods (Docker, from source, etc.).
       </p>
 
@@ -49,12 +49,15 @@ cache:
 
 web:
   enabled: true
-  addr: "0.0.0.0:9153"`}</code></pre>
+  addr: "127.0.0.1:9153"`}</code></pre>
 
       <h2 className={h2}>Step 3: Start Labyrinth</h2>
 
-      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Start in the foreground (use --daemon for background mode)
-sudo labyrinth --config labyrinth.yaml`}</code></pre>
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Start in the foreground
+sudo labyrinth -config labyrinth.yaml
+
+# Or fork to the background
+sudo labyrinth -config labyrinth.yaml daemon start`}</code></pre>
 
       <p className={p}>
         You should see output like:

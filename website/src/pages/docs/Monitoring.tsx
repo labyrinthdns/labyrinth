@@ -25,8 +25,7 @@ export default function Monitoring({ dark }: Props) {
       <h2 className={h2}>Prometheus Metrics</h2>
 
       <p className={p}>
-        Metrics are exposed at <code className={ic}>GET /metrics</code> on the web dashboard port (default: 9153).
-        No authentication is required for the metrics endpoint.
+        The unauthenticated <code className={ic}>GET /metrics</code> endpoint is served on <code className={ic}>server.metrics_addr</code> only when <code className={ic}>web.enabled</code> is false. With the dashboard enabled, use the authenticated <code className={ic}>/api/stats</code> endpoints instead.
       </p>
 
       <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Prometheus scrape config
