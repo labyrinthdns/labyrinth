@@ -28,10 +28,11 @@ func TestRRL_CapEvictsOldestEntry(t *testing.T) {
 			qname:        "example.test.",
 			responseType: "NOERROR",
 		}
-		rrl.entries[key] = &rrlEntry{
-			tokens:   5,
-			lastTime: baseTime.Add(time.Duration(i) * time.Minute),
-		}
+		rrl.addEntryLocked(key, &rrlEntry{
+			tokens:    5,
+			lastTime:  baseTime.Add(time.Duration(i) * time.Minute),
+			heapIndex: -1,
+		})
 	}
 
 	if got := len(rrl.entries); got != testCap {
@@ -57,6 +58,37 @@ func TestRRL_CapEvictsOldestEntry(t *testing.T) {
 	}
 	if _, stillThere := rrl.entries[oldestKey]; stillThere {
 		t.Error("evictOldestLocked did not remove the entry with the oldest lastTime")
+	}
+	if got := len(rrl.evictionHeap); got != len(rrl.entries) {
+		t.Fatalf("heap/map size mismatch after eviction: heap=%d map=%d", got, len(rrl.entries))
+	}
+}
+
+func TestRRL_EvictionHeapRefreshesExistingEntry(t *testing.T) {
+	rrl := NewRRL(10, 2, 24, 56)
+	oldKey := rrlKey{prefix: "10.0.0.0", qname: "old.example", responseType: "NOERROR"}
+	otherKey := rrlKey{prefix: "10.0.1.0", qname: "other.example", responseType: "NOERROR"}
+	base := time.Now().Add(-time.Hour)
+
+	rrl.mu.Lock()
+	rrl.addEntryLocked(oldKey, &rrlEntry{tokens: 5, lastTime: base, heapIndex: -1})
+	rrl.addEntryLocked(otherKey, &rrlEntry{tokens: 5, lastTime: base.Add(time.Minute), heapIndex: -1})
+	rrl.mu.Unlock()
+
+	// The request normalizes 10.0.0.42 to the seeded /24 key and refreshes it.
+	if action := rrl.AllowResponse("10.0.0.42", "old.example", "NOERROR"); action != RRLAllow {
+		t.Fatalf("refresh action = %v, want allow", action)
+	}
+
+	rrl.mu.Lock()
+	rrl.evictOldestLocked()
+	rrl.mu.Unlock()
+
+	if _, ok := rrl.entries[otherKey]; ok {
+		t.Error("heap evicted refreshed entry instead of the now-oldest entry")
+	}
+	if _, ok := rrl.entries[oldKey]; !ok {
+		t.Error("refreshed entry was evicted; heap.Fix did not update LRU order")
 	}
 }
 

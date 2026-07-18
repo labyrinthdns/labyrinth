@@ -130,14 +130,16 @@ func TestRRLStartCleanup(t *testing.T) {
 
 	// Add a stale entry with lastTime far in the past (well beyond cleanup interval)
 	rrl.mu.Lock()
-	rrl.entries[rrlKey{
+	key := rrlKey{
 		prefix:       "stale",
 		qname:        "test.com",
 		responseType: "NOERROR",
-	}] = &rrlEntry{
-		tokens:   5,
-		lastTime: time.Now().Add(-10 * time.Minute),
 	}
+	rrl.addEntryLocked(key, &rrlEntry{
+		tokens:    5,
+		lastTime:  time.Now().Add(-10 * time.Minute),
+		heapIndex: -1,
+	})
 	rrl.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())

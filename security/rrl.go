@@ -1,6 +1,7 @@
 package security
 
 import (
+	"container/heap"
 	"net"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ const (
 type RRL struct {
 	mu                 sync.Mutex
 	entries            map[rrlKey]*rrlEntry
+	evictionHeap       rrlEntryHeap
 	responsesPerSecond float64
 	slipRatio          int
 	ipv4Prefix         int
@@ -59,9 +61,41 @@ type rrlKey struct {
 }
 
 type rrlEntry struct {
+	key       rrlKey
 	tokens    float64
 	lastTime  time.Time
 	slipCount int
+	heapIndex int
+}
+
+// rrlEntryHeap keeps the least-recently-used RRL entry at index zero. Entries
+// carry their heap index so every request can refresh its position in O(log n)
+// and a cap-triggered eviction never scans the attacker-controlled map while
+// holding r.mu.
+type rrlEntryHeap []*rrlEntry
+
+func (h rrlEntryHeap) Len() int           { return len(h) }
+func (h rrlEntryHeap) Less(i, j int) bool { return h[i].lastTime.Before(h[j].lastTime) }
+func (h rrlEntryHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+
+func (h *rrlEntryHeap) Push(value any) {
+	entry := value.(*rrlEntry)
+	entry.heapIndex = len(*h)
+	*h = append(*h, entry)
+}
+
+func (h *rrlEntryHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	entry := old[last]
+	old[last] = nil
+	entry.heapIndex = -1
+	*h = old[:last]
+	return entry
 }
 
 // NewRRL creates a new Response Rate Limiter.
@@ -94,10 +128,13 @@ func (r *RRL) AllowResponse(sourceIP string, qname string, responseType string) 
 		if len(r.entries) >= MaxRRLEntries {
 			r.evictOldestLocked()
 		}
-		r.entries[key] = &rrlEntry{
-			tokens:   r.responsesPerSecond - 1,
-			lastTime: now,
+		entry = &rrlEntry{
+			key:       key,
+			tokens:    r.responsesPerSecond - 1,
+			lastTime:  now,
+			heapIndex: -1,
 		}
+		r.addEntryLocked(key, entry)
 		return RRLAllow
 	}
 
@@ -107,6 +144,7 @@ func (r *RRL) AllowResponse(sourceIP string, qname string, responseType string) 
 		entry.tokens = r.responsesPerSecond
 	}
 	entry.lastTime = now
+	heap.Fix(&r.evictionHeap, entry.heapIndex)
 
 	if entry.tokens >= 1 {
 		entry.tokens--
@@ -150,24 +188,20 @@ func normalizeRRLKeyPart(value string, maxLen int, lower bool) string {
 	return value
 }
 
-// evictOldestLocked drops the entry with the oldest `lastTime` to free
-// a slot when the cap is hit. Caller holds r.mu. Single-pass O(n) scan
-// — cap fires rarely in practice (cleanup ticker prunes idle entries
-// every 5 minutes), so this is acceptable.
+func (r *RRL) addEntryLocked(key rrlKey, entry *rrlEntry) {
+	entry.key = key
+	r.entries[key] = entry
+	heap.Push(&r.evictionHeap, entry)
+}
+
+// evictOldestLocked drops the entry with the oldest lastTime in O(log n).
+// Caller holds r.mu.
 func (r *RRL) evictOldestLocked() {
-	var oldestKey rrlKey
-	var oldestTime time.Time
-	first := true
-	for k, e := range r.entries {
-		if first || e.lastTime.Before(oldestTime) {
-			oldestKey = k
-			oldestTime = e.lastTime
-			first = false
-		}
+	if len(r.evictionHeap) == 0 {
+		return
 	}
-	if !first {
-		delete(r.entries, oldestKey)
-	}
+	oldest := heap.Pop(&r.evictionHeap).(*rrlEntry)
+	delete(r.entries, oldest.key)
 }
 
 // StartCleanup removes stale RRL entries periodically.
@@ -186,10 +220,9 @@ func (r *RRL) StartCleanup(ctx interface{ Done() <-chan struct{} }) {
 		case <-ticker.C:
 			r.mu.Lock()
 			cutoff := time.Now().Add(-interval)
-			for key, entry := range r.entries {
-				if entry.lastTime.Before(cutoff) {
-					delete(r.entries, key)
-				}
+			for len(r.evictionHeap) > 0 && r.evictionHeap[0].lastTime.Before(cutoff) {
+				stale := heap.Pop(&r.evictionHeap).(*rrlEntry)
+				delete(r.entries, stale.key)
 			}
 			r.mu.Unlock()
 		}
