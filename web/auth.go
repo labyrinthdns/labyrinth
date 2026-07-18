@@ -55,6 +55,26 @@ type jwtHeader struct {
 	Typ string `json:"typ"`
 }
 
+const (
+	authCookieName   = "labyrinth_token"
+	authCookieMaxAge = 24 * 60 * 60
+)
+
+// authCookie returns the shared security attributes used when setting or
+// clearing the browser session cookie. maxAge must be authCookieMaxAge for a
+// live session or -1 to delete it.
+func authCookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     authCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   maxAge,
+	}
+}
+
 // generateJWT creates a JWT token with a 24-hour expiry using HMAC-SHA256.
 // It generates a unique jti for each token to support revocation.
 func generateJWT(username string, secret []byte) (string, error) {
@@ -66,7 +86,7 @@ func generateJWT(username string, secret []byte) (string, error) {
 	payload := jwtPayload{
 		Sub: username,
 		Iat: now,
-		Exp: now + 86400, // 24 hours
+		Exp: now + int64(authCookieMaxAge), // 24 hours
 		Jti: base64.RawURLEncoding.EncodeToString(jtiBytes),
 	}
 
@@ -87,30 +107,42 @@ func generateJWT(username string, secret []byte) (string, error) {
 }
 
 // validateJWT verifies a JWT token and returns the username (sub) claim.
-// The header is parsed and the algorithm must be exactly "HS256"; "none"
-// and any other algorithm (including unknown asymmetric ones) are rejected.
-// It also checks that the token's jti is not in the revokedTokens blocklist.
 func validateJWT(tokenStr string, secret []byte, revokedTokens *sync.Map) (string, error) {
+	payload, err := validateJWTPayload(tokenStr, secret, revokedTokens)
+	if err != nil {
+		return "", err
+	}
+	return payload.Sub, nil
+}
+
+// validateJWTPayload returns claims only after authenticating and validating the
+// complete token. Callers must not decode security-sensitive claims directly
+// from an unverified JWT payload.
+//
+// The header algorithm must be exactly "HS256"; "none" and any other
+// algorithm (including unknown asymmetric ones) are rejected. The token's jti
+// must also not be in the revokedTokens blocklist.
+func validateJWTPayload(tokenStr string, secret []byte, revokedTokens *sync.Map) (jwtPayload, error) {
 	parts := strings.SplitN(tokenStr, ".", 3)
 	if len(parts) != 3 {
-		return "", errors.New("invalid token format")
+		return jwtPayload{}, errors.New("invalid token format")
 	}
 
 	// Pin the alg header before doing any cryptographic work. This blocks
 	// the classic alg=none / alg-confusion family of attacks.
 	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", errors.New("invalid header encoding")
+		return jwtPayload{}, errors.New("invalid header encoding")
 	}
 	var hdr jwtHeader
 	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
-		return "", errors.New("invalid header JSON")
+		return jwtPayload{}, errors.New("invalid header JSON")
 	}
 	if hdr.Alg != "HS256" {
-		return "", errors.New("unsupported algorithm")
+		return jwtPayload{}, errors.New("unsupported algorithm")
 	}
 	if hdr.Typ != "" && hdr.Typ != "JWT" {
-		return "", errors.New("unsupported token type")
+		return jwtPayload{}, errors.New("unsupported token type")
 	}
 
 	signingInput := parts[0] + "." + parts[1]
@@ -122,46 +154,46 @@ func validateJWT(tokenStr string, secret []byte, revokedTokens *sync.Map) (strin
 
 	actualSig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return "", errors.New("invalid signature encoding")
+		return jwtPayload{}, errors.New("invalid signature encoding")
 	}
 
 	if !hmac.Equal(expectedSig, actualSig) {
-		return "", errors.New("invalid signature")
+		return jwtPayload{}, errors.New("invalid signature")
 	}
 
 	// Decode payload
 	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", errors.New("invalid payload encoding")
+		return jwtPayload{}, errors.New("invalid payload encoding")
 	}
 
 	var payload jwtPayload
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return "", fmt.Errorf("invalid payload: %w", err)
+		return jwtPayload{}, fmt.Errorf("invalid payload: %w", err)
 	}
 
 	// Check expiration
 	if time.Now().Unix() > payload.Exp {
-		return "", errors.New("token expired")
+		return jwtPayload{}, errors.New("token expired")
 	}
 
 	if payload.Sub == "" {
-		return "", errors.New("missing subject claim")
+		return jwtPayload{}, errors.New("missing subject claim")
 	}
 
 	// Reject tokens without a jti — prevents empty-string bypass of revocation.
 	if payload.Jti == "" {
-		return "", errors.New("missing jti claim")
+		return jwtPayload{}, errors.New("missing jti claim")
 	}
 
 	// Check revocation blocklist (tokens issued before a password change)
 	if revokedTokens != nil {
 		if _, revoked := revokedTokens.Load(payload.Jti); revoked {
-			return "", errors.New("token has been revoked")
+			return jwtPayload{}, errors.New("token has been revoked")
 		}
 	}
 
-	return payload.Sub, nil
+	return payload, nil
 }
 
 // MinPasswordLength is the minimum required password length.
@@ -281,15 +313,7 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Set HttpOnly cookie for browser-based auth. The cookie is the
 	// primary auth mechanism; the JSON body token is kept for backward
 	// compatibility with programmatic clients.
-	http.SetCookie(w, &http.Cookie{
-		Name:     "labyrinth_token",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400, // 24h, matches JWT expiry
-	})
+	http.SetCookie(w, authCookie(r, token, authCookieMaxAge))
 
 	jsonResponse(w, http.StatusOK, map[string]string{
 		"token":    token,
@@ -320,7 +344,7 @@ func (s *AdminServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	// Extract token from cookie or Authorization header.
 	var tokenStr string
-	if c, err := r.Cookie("labyrinth_token"); err == nil {
+	if c, err := r.Cookie(authCookieName); err == nil {
 		tokenStr = c.Value
 	} else if auth := r.Header.Get("Authorization"); auth != "" {
 		if strings.HasPrefix(auth, "Bearer ") {
@@ -328,28 +352,17 @@ func (s *AdminServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Revoke the token by storing its jti in the revoked set.
+	// A jti is attacker-controlled until the JWT signature and registered
+	// claims have been validated. Invalid, expired, or already-revoked tokens
+	// are intentionally ignored here; logout still clears the browser cookie.
 	if tokenStr != "" {
-		if parts := strings.Split(tokenStr, "."); len(parts) == 3 {
-			if payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
-				var p jwtPayload
-				if json.Unmarshal(payloadJSON, &p) == nil && p.Jti != "" {
-					s.revokedTokens.Store(p.Jti, true)
-				}
-			}
+		if payload, err := validateJWTPayload(tokenStr, *s.jwtSecret.Load(), &s.revokedTokens); err == nil {
+			s.revokedTokens.Store(payload.Jti, true)
 		}
 	}
 
-	// Clear the cookie regardless of whether we found a token.
-	http.SetCookie(w, &http.Cookie{
-		Name:     "labyrinth_token",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-	})
+	// Clear the cookie regardless of whether we found a valid token.
+	http.SetCookie(w, authCookie(r, "", -1))
 
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "logged_out"})
 }
@@ -384,8 +397,10 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	s.configFileMu.Lock()
 	defer s.configFileMu.Unlock()
 
-	// Verify current password
-	if !checkPassword(req.CurrentPassword, s.config.Load().Web.Auth.PasswordHash) {
+	// Verify current password against one coherent configuration snapshot. The
+	// same snapshot supplies the replacement token subject below.
+	curCfg := s.config.Load()
+	if !checkPassword(req.CurrentPassword, curCfg.Web.Auth.PasswordHash) {
 		jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
 		return
 	}
@@ -404,13 +419,21 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Rotate JWT secret to invalidate all outstanding tokens (M-1 fix).
-	// Clear revocation blocklist — the new secret supersedes it.
+	// Mint the replacement token before publishing any state so an entropy
+	// failure cannot leave the browser logged out after a successful change.
+	// Clear revocation blocklist after publication — the new secret supersedes it.
 	newSecret := make([]byte, 32)
 	if _, err := rand.Read(newSecret); err != nil {
 		// crypto/rand failure is fatal — abort the entire password change
 		// rather than leave an inconsistent state where the password is
 		// rotated but existing JWTs remain valid.
 		s.logger.Error("failed to rotate JWT secret during password change", "error", err)
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to rotate session secret; password not changed"})
+		return
+	}
+	replacementToken, err := generateJWT(curCfg.Web.Auth.Username, newSecret)
+	if err != nil {
+		s.logger.Error("failed to mint replacement JWT during password change", "error", err)
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to rotate session secret; password not changed"})
 		return
 	}
@@ -421,16 +444,20 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	})
 
 	// Update config in memory — only after secret rotation succeeded.
-	// Copy-on-write: load the current config, shallow-copy the struct,
+	// Copy-on-write: shallow-copy the coherent snapshot used for verification,
 	// mutate the copy's PasswordHash field, atomically publish the copy.
 	// Shallow copy is correct because PasswordHash is a Go string (value-
 	// type header) and the other fields (slices, maps inside Web.Dashboard)
 	// are either untouched here or already-shared safely with readers
 	// that loaded the previous snapshot.
-	curCfg := s.config.Load()
 	newCfg := *curCfg
 	newCfg.Web.Auth.PasswordHash = newHash
 	s.config.Store(&newCfg)
+
+	// The old browser cookie was signed with the superseded secret. Replace it
+	// on every successful in-memory password change, including a partial result
+	// where only persistence to disk fails.
+	http.SetCookie(w, authCookie(r, replacementToken, authCookieMaxAge))
 
 	// Update YAML config file on disk
 	if err := updatePasswordInConfigAtPath(s.configFilePath(), newHash); err != nil {
