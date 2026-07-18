@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import { AuthContext, useAuth } from '@/hooks/useAuth'
-import { api, setToken, clearToken } from '@/api/client'
+import { api } from '@/api/client'
 import Layout from '@/components/Layout'
 import ErrorBoundary from '@/components/ErrorBoundary'
 
@@ -30,6 +30,20 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <Layout>{children}</Layout>
 }
 
+function SetupRoute({ setupRequired }: { setupRequired: boolean }) {
+  if (!setupRequired) {
+    return <Navigate to="/login" replace />
+  }
+  return <Outlet />
+}
+
+function InstalledRoute({ setupRequired }: { setupRequired: boolean }) {
+  if (setupRequired) {
+    return <Navigate to="/setup" replace />
+  }
+  return <Outlet />
+}
+
 function RouteFallback() {
   return (
     <div className="flex items-center justify-center min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -44,13 +58,10 @@ function RouteFallback() {
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [username, setUsername] = useState<string | null>(null)
+  const [setupRequired, setSetupRequired] = useState(false)
   const [checking, setChecking] = useState(true)
 
-  const login = useCallback((_token: string, name: string) => {
-    // The labyrinth_token HttpOnly cookie is set by the server on
-    // login. We no longer store the token in localStorage — the
-    // cookie handles auth automatically on subsequent requests.
-    setToken(_token) // keep backward compat; not used for auth
+  const login = useCallback((name: string) => {
     setIsAuthenticated(true)
     setUsername(name)
   }, [])
@@ -61,7 +72,6 @@ export default function App() {
     } catch {
       // server round-trip failure is non-fatal — clear locally anyway
     }
-    clearToken()
     setIsAuthenticated(false)
     setUsername(null)
   }, [])
@@ -75,6 +85,7 @@ export default function App() {
         const status = await api.setupStatus()
         if (status.setup_required) {
           if (!cancelled) {
+            setSetupRequired(true)
             setChecking(false)
           }
           return
@@ -123,9 +134,12 @@ export default function App() {
       <BrowserRouter>
         <Suspense fallback={<RouteFallback />}>
           <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/setup" element={<SetupWizard />} />
-            <Route path="/guide" element={<GuidePage />} />
+            <Route element={<SetupRoute setupRequired={setupRequired} />}>
+              <Route path="/setup" element={<SetupWizard onComplete={() => setSetupRequired(false)} />} />
+            </Route>
+            <Route element={<InstalledRoute setupRequired={setupRequired} />}>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/guide" element={<GuidePage />} />
             <Route
               path="/"
               element={
@@ -230,7 +244,8 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
-            <Route path="*" element={<Navigate to="/" replace />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Route>
           </Routes>
         </Suspense>
       </BrowserRouter>

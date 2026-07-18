@@ -383,8 +383,24 @@ export default function DashboardPage() {
         setProfile(profileRes.value)
       }
 
-      setUpdatedAt(new Date())
-      setError('')
+      const results = [statsRes, clientsRes, domainsRes, profileRes]
+      const criticalResults = [statsRes, profileRes]
+      const failed = results.filter((result) => result.status === 'rejected')
+      const criticalSucceeded = criticalResults.some((result) => result.status === 'fulfilled')
+      if (criticalSucceeded) {
+        setUpdatedAt(new Date())
+      }
+      if (failed.length > 0) {
+        const details = failed
+          .map((result) => result.status === 'rejected' && result.reason instanceof Error ? result.reason.message : '')
+          .filter(Boolean)
+        const summary = !criticalSucceeded
+          ? 'Dashboard refresh failed'
+          : `Dashboard refresh incomplete (${failed.length} of ${results.length} requests failed)`
+        setError(details.length > 0 ? `${summary}: ${details.join('; ')}` : summary)
+      } else {
+        setError('')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch stats')
     } finally {

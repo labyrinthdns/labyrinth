@@ -20,7 +20,7 @@ export default function LoginPage() {
 
     try {
       const res = await api.login(username, password)
-      login(res.token, username)
+      login(res.username || username)
       navigate('/', { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')

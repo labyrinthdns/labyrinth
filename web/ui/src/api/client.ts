@@ -23,7 +23,6 @@ import type {
   TrustChainResponse,
 } from '@/api/types'
 
-const TOKEN_KEY = 'labyrinth_token'
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000
 
 type CachedValue = {
@@ -33,21 +32,6 @@ type CachedValue = {
 
 const responseCache = new Map<string, CachedValue>()
 const inflightCache = new Map<string, Promise<unknown>>()
-
-// TOKEN_KEY is retained for backward compatibility during the HttpOnly
-// cookie migration. New code relies on the labyrinth_token cookie set by
-// the server on login — the client no longer reads this key for auth.
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
-}
-
-export function setToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token)
-}
-
-export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY)
-}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
@@ -81,8 +65,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   if (resp.status === 401) {
-    clearToken()
-    window.location.href = '/login'
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.assign('/login')
+    }
     throw new Error('Unauthorized')
   }
 
@@ -143,21 +128,21 @@ export const api = {
   stats: () => request<StatsResponse>('/api/stats'),
 
   timeseries: (window = '5m') =>
-    request<TimeSeriesResponse>(`/api/stats/timeseries?window=${window}`),
+    request<TimeSeriesResponse>(`/api/stats/timeseries?window=${encodeURIComponent(window)}`),
 
   recentQueries: (limit = 50) =>
-    request<{ entries: QueryEntry[]; count: number }>(`/api/queries/recent?limit=${limit}`),
+    request<{ entries: QueryEntry[]; count: number }>(`/api/queries/recent?limit=${encodeURIComponent(String(limit))}`),
 
   cacheStats: () => request<CacheStats>('/api/cache/stats'),
 
   cacheLookup: (name: string, type: string) =>
-    request<Record<string, unknown>>(`/api/cache/lookup?name=${name}&type=${type}`),
+    request<Record<string, unknown>>(`/api/cache/lookup?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`),
 
   cacheFlush: () =>
     request<{ status: string }>('/api/cache/flush', { method: 'POST' }),
 
   cacheDelete: (name: string, type: string) =>
-    request<{ status: string }>(`/api/cache/entry?name=${name}&type=${type}`, { method: 'DELETE' }),
+    request<{ status: string }>(`/api/cache/entry?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`, { method: 'DELETE' }),
 
   config: () => request<Record<string, unknown>>('/api/config'),
   configRaw: () => request<ConfigRawResponse>('/api/config/raw'),
@@ -212,7 +197,7 @@ export const api = {
   },
 
   cacheNegative: (limit = 100) =>
-    request<{ entries: NegativeCacheEntry[] }>(`/api/cache/negative?limit=${limit}`),
+    request<{ entries: NegativeCacheEntry[] }>(`/api/cache/negative?limit=${encodeURIComponent(String(limit))}`),
 
   fallbackEvents: () => request<FallbackEventsResponse>('/api/fallback-events'),
 
@@ -262,7 +247,7 @@ export const api = {
   blocklistRefresh: () => request<{ status: string }>('/api/blocklist/refresh', { method: 'POST' }),
   blocklistBlock: (domain: string) => request<{ status: string }>('/api/blocklist/block', { method: 'POST', body: JSON.stringify({ domain }) }),
   blocklistUnblock: (domain: string) => request<{ status: string }>('/api/blocklist/unblock', { method: 'POST', body: JSON.stringify({ domain }) }),
-  blocklistCheck: (domain: string) => request<{ domain: string; blocked: boolean }>(`/api/blocklist/check?domain=${domain}`),
+  blocklistCheck: (domain: string) => request<{ domain: string; blocked: boolean }>(`/api/blocklist/check?domain=${encodeURIComponent(domain)}`),
   blocklistDomains: () => request<BlocklistDomainsResponse>('/api/blocklist/domains'),
 
   tlsStatus: () => request<TLSStatusResponse>('/api/system/tls'),
@@ -270,30 +255,26 @@ export const api = {
   dnsGuide: () => request<DNSGuideResponse>('/api/dns-guide'),
 }
 
+function sameOriginWebSocketUrl(path: string): URL {
+  const url = new URL(path, window.location.origin)
+  url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url
+}
+
 export function createQueryWebSocket(): WebSocket {
-  const token = getToken()
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = `${protocol}//${window.location.host}/api/queries/stream${token ? `?token=${token}` : ''}`
-  return new WebSocket(url)
+  return new WebSocket(sameOriginWebSocketUrl('/api/queries/stream'))
 }
 
 export function createTimeSeriesWebSocket(mode: string, tsWindow: string, interval: string): WebSocket {
-  const token = getToken()
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const params = new URLSearchParams()
-  if (token) params.set('token', token)
-  params.set('mode', mode)
+  const url = sameOriginWebSocketUrl('/api/stats/timeseries/ws')
+  url.searchParams.set('mode', mode)
   if (mode === 'history') {
-    params.set('window', tsWindow)
-    params.set('interval', interval)
+    url.searchParams.set('window', tsWindow)
+    url.searchParams.set('interval', interval)
   }
-  const url = `${protocol}//${window.location.host}/api/stats/timeseries/ws?${params.toString()}`
   return new WebSocket(url)
 }
 
 export function createDiagnosticsTraceSocket(): WebSocket {
-  const token = getToken()
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = `${protocol}//${window.location.host}/api/diagnostics/trace${token ? `?token=${token}` : ''}`
-  return new WebSocket(url)
+  return new WebSocket(sameOriginWebSocketUrl('/api/diagnostics/trace'))
 }

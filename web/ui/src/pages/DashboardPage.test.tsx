@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { AuthContext } from '@/hooks/useAuth'
 
 // ---- hoisted mocks ----
@@ -23,9 +23,6 @@ vi.mock('@/api/client', () => ({
     security: (...args: unknown[]) => mockSecurity(...args),
     config: (...args: unknown[]) => mockConfig(...args),
   },
-  getToken: () => 'test-token',
-  setToken: vi.fn(),
-  clearToken: vi.fn(),
 }))
 
 // WebSocket hooks — return empty data so the dashboard doesn't crash
@@ -95,14 +92,24 @@ function makeStats(overrides = {}) {
   }
 }
 
-function renderDashboard() {
-  return render(
+async function renderDashboard() {
+  const view = render(
     <AuthContext.Provider
       value={{ isAuthenticated: true, username: 'admin', login: vi.fn(), logout: vi.fn() }}
     >
       <DashboardPage />
     </AuthContext.Provider>,
   )
+  await waitFor(() => {
+    expect(mockStats).toHaveBeenCalled()
+    expect(mockProfile).toHaveBeenCalled()
+    expect(mockTopClients).toHaveBeenCalled()
+    expect(mockTopDomains).toHaveBeenCalled()
+    expect(mockVersion).toHaveBeenCalled()
+    expect(mockCheckUpdate).toHaveBeenCalled()
+    expect(mockConfig).toHaveBeenCalled()
+  })
+  return view
 }
 
 describe('DashboardPage', () => {
@@ -201,30 +208,30 @@ describe('DashboardPage', () => {
     })
   })
 
-  it('renders without crashing', () => {
-    renderDashboard()
+  it('renders without crashing', async () => {
+    await renderDashboard()
     // The page title / brand should be present
     expect(screen.getByText(/dashboard/i)).toBeInTheDocument()
   })
 
   it('renders a time-series chart area', async () => {
-    renderDashboard()
+    await renderDashboard()
     expect(await screen.findByTestId('composed-chart')).toBeInTheDocument()
   })
 
   it('renders a pie chart for query-type breakdown', async () => {
-    renderDashboard()
+    await renderDashboard()
     expect(await screen.findByTestId('pie-chart')).toBeInTheDocument()
   })
 
   it('renders top clients and top domains tables', async () => {
-    renderDashboard()
+    await renderDashboard()
     expect(await screen.findByText(/top clients/i)).toBeInTheDocument()
     expect(await screen.findByText(/top domains/i)).toBeInTheDocument()
   })
 
   it('fetches stats, profile, top-clients, and top-domains on mount', async () => {
-    renderDashboard()
+    await renderDashboard()
     await waitFor(() => {
       expect(mockStats).toHaveBeenCalledTimes(1)
     })
@@ -234,18 +241,37 @@ describe('DashboardPage', () => {
   })
 
   it('fetches version and update info on mount', async () => {
-    renderDashboard()
+    await renderDashboard()
     await waitFor(() => {
       expect(mockVersion).toHaveBeenCalled()
     })
     expect(mockCheckUpdate).toHaveBeenCalled()
   })
 
+  it('shows partial refresh failures', async () => {
+    mockStats.mockRejectedValueOnce(new Error('stats unavailable'))
+
+    await renderDashboard()
+
+    expect(screen.getByText(/Dashboard refresh incomplete.*stats unavailable/i)).toBeInTheDocument()
+  })
+
+  it('does not advance the success timestamp when every critical fetch fails', async () => {
+    mockStats.mockRejectedValueOnce(new Error('stats unavailable'))
+    mockProfile.mockRejectedValueOnce(new Error('profile unavailable'))
+
+    await renderDashboard()
+    fireEvent.click(screen.getByTitle('Toggle dashboard controls'))
+
+    expect(screen.getByText(/Dashboard refresh failed/i)).toBeInTheDocument()
+    expect(screen.getByText('Updated -')).toBeInTheDocument()
+  })
+
   it('does not make API calls for top data when auto-refresh is off', async () => {
     // We can't easily toggle autoRefresh in this test model,
     // but we can verify the fetch happens with autoRefresh on (default).
     // This smoke test confirms the effect fires at least once.
-    renderDashboard()
+    await renderDashboard()
     await waitFor(() => {
       expect(mockTopClients).toHaveBeenCalled()
     })

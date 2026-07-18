@@ -24,9 +24,6 @@ vi.mock('@/api/client', () => ({
   api: {
     login: (...args: unknown[]) => mockLogin(...args),
   },
-  getToken: () => null,
-  setToken: vi.fn(),
-  clearToken: vi.fn(),
 }))
 
 // Mock useNavigate so we can assert navigation happened.
@@ -68,6 +65,20 @@ describe('LoginPage', () => {
     })
   })
 
+  it('keeps a 401 on the page and shows an inline error', async () => {
+    mockLogin.mockRejectedValue(new Error('Unauthorized'))
+    const user = userEvent.setup()
+    renderLoginPage()
+
+    await user.type(screen.getByLabelText('Username'), 'admin')
+    await user.type(screen.getByLabelText('Password'), 'wrongpass')
+    await user.click(screen.getByRole('button', { name: /sign in/i }))
+
+    expect(await screen.findByText('Unauthorized')).toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Username')).toHaveValue('admin')
+  })
+
   it('shows a generic error when login returns a non-Error', async () => {
     mockLogin.mockRejectedValue('string error')
     const user = userEvent.setup()
@@ -84,7 +95,7 @@ describe('LoginPage', () => {
 
   it('calls login on the auth context and navigates to / on success', async () => {
     const loginFn = vi.fn()
-    mockLogin.mockResolvedValue({ token: 'jwt-abc', username: 'admin' })
+    mockLogin.mockResolvedValue({ username: 'admin' })
     const user = userEvent.setup()
     renderLoginPage(loginFn)
 
@@ -93,8 +104,7 @@ describe('LoginPage', () => {
     await user.click(screen.getByRole('button', { name: /sign in/i }))
 
     await waitFor(() => {
-      // loginFn is the AuthContext.login — called with (token, username)
-      expect(loginFn).toHaveBeenCalledWith('jwt-abc', 'admin')
+      expect(loginFn).toHaveBeenCalledWith('admin')
     })
     expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true })
   })
@@ -131,7 +141,7 @@ describe('LoginPage', () => {
     // First login fails
     mockLogin.mockRejectedValueOnce(new Error('First error'))
     // Second login succeeds
-    mockLogin.mockResolvedValueOnce({ token: 't2', username: 'admin' })
+    mockLogin.mockResolvedValueOnce({ username: 'admin' })
 
     const loginFn = vi.fn()
     const user = userEvent.setup()

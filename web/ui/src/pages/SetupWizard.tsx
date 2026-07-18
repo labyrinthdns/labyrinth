@@ -6,7 +6,7 @@ import type { SetupStatus } from '@/api/types'
 
 const TOTAL_STEPS = 5
 
-export default function SetupWizard() {
+export default function SetupWizard({ onComplete }: { onComplete?: () => void }) {
   const navigate = useNavigate()
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -65,6 +65,7 @@ export default function SetupWizard() {
         web_addr: metricsAddr,
         max_cache_size: cacheMaxEntries,
       })
+      onComplete?.()
       navigate('/login', { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Setup failed')
