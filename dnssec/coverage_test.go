@@ -727,19 +727,24 @@ func TestFetchDNSKEYs_ZeroTTL(t *testing.T) {
 // buildTestInfrastructure creates a full mock DNS infrastructure with a root KSK,
 // and returns the validator and relevant structures for testing the trust chain.
 type testInfra struct {
-	mq       *mockQuerier
-	v        *Validator
-	rootKSK  *dns.DNSKEYRecord
-	rootKSKR []byte // RDATA
+	mq          *mockQuerier
+	v           *Validator
+	rootKSK     *dns.DNSKEYRecord
+	rootKSKR    []byte // RDATA
+	rootPrivKey ed25519.PrivateKey
 }
 
 func newTestInfra() *testInfra {
 	ti := &testInfra{}
 	ti.mq = &mockQuerier{responses: make(map[string]*dns.Message)}
 
-	// Build root KSK.
-	rootKSKPub := []byte("root-ksk-key-for-trust-chain-tests!!")
-	ti.rootKSKR = encodeDNSKEYRData(257, 3, dns.AlgRSASHA256, rootKSKPub)
+	// Build a real root KSK so parent DS RRsets can carry verifiable RRSIGs.
+	rootKSKPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	ti.rootPrivKey = rootPriv
+	ti.rootKSKR = encodeDNSKEYRData(257, 3, dns.AlgED25519, rootKSKPub)
 	ti.rootKSK, _ = dns.ParseDNSKEY(ti.rootKSKR)
 
 	// Compute trust anchor digest.
@@ -750,7 +755,7 @@ func newTestInfra() *testInfra {
 	ti.v.trustAnchors = []dns.DSRecord{
 		{
 			KeyTag:     ti.rootKSK.KeyTag(),
-			Algorithm:  dns.AlgRSASHA256,
+			Algorithm:  ti.rootKSK.Algorithm,
 			DigestType: dns.DigestSHA256,
 			Digest:     h[:],
 		},
@@ -827,10 +832,17 @@ func TestValidateTrustChain_TLDWithDS(t *testing.T) {
 	h := sha256.Sum256(digestInput)
 	dsRData := encodeDSRData(comKSK.KeyTag(), dns.AlgRSASHA256, dns.DigestSHA256, h[:])
 
-	// Set DS response for com. (queried from parent = root).
+	// Set an authenticated DS response for com. (queried from root).
+	dsRR := dns.ResourceRecord{Name: "com.", Type: dns.TypeDS, Class: dns.ClassIN, TTL: 3600, RData: dsRData}
+	dsSig := &dns.RRSIGRecord{
+		TypeCovered: dns.TypeDS, Algorithm: dns.AlgED25519, Labels: 1,
+		OrigTTL: 3600, Expiration: 0xFFFFFFFF, KeyTag: ti.rootKSK.KeyTag(), SignerName: ".",
+	}
+	dsSig.Signature = ed25519.Sign(ti.rootPrivKey, buildSignedData([]dns.ResourceRecord{dsRR}, dsSig))
 	ti.mq.responses["com.|43"] = &dns.Message{
 		Answers: []dns.ResourceRecord{
-			{Name: "com.", Type: dns.TypeDS, Class: dns.ClassIN, TTL: 3600, RData: dsRData},
+			dsRR,
+			{Name: "com.", Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 3600, RData: buildRRSIGRData(dsSig)},
 		},
 	}
 
@@ -953,13 +965,14 @@ func newFullTestSetup(t *testing.T) *fullTestSetup {
 	s.privKey = priv
 	s.pubKey = pub
 	s.wireKey = []byte(pub)
-	s.zskRData = encodeDNSKEYRData(256, 3, dns.AlgED25519, s.wireKey)
+	s.zskRData = encodeDNSKEYRData(257, 3, dns.AlgED25519, s.wireKey)
 	s.dnskey, _ = dns.ParseDNSKEY(s.zskRData)
 
-	// Build root KSK matching the trust anchor.
-	rootKSKPub := []byte("root-ksk-key-for-full-validate-test!!")
-	rootKSKR := encodeDNSKEYRData(257, 3, dns.AlgRSASHA256, rootKSKPub)
-	rootKSK, _ := dns.ParseDNSKEY(rootKSKR)
+	// Use the real Ed25519 signing key as the root secure entry point. This
+	// keeps fixtures cryptographically complete: a key used for root answer or
+	// denial signatures is directly authenticated by the trust anchor.
+	rootKSKR := s.zskRData
+	rootKSK := s.dnskey
 	digestInput := buildDSDigestInput(".", rootKSK)
 	h := sha256.Sum256(digestInput)
 
@@ -967,7 +980,7 @@ func newFullTestSetup(t *testing.T) *fullTestSetup {
 	s.v.trustAnchors = []dns.DSRecord{
 		{
 			KeyTag:     rootKSK.KeyTag(),
-			Algorithm:  dns.AlgRSASHA256,
+			Algorithm:  rootKSK.Algorithm,
 			DigestType: dns.DigestSHA256,
 			Digest:     h[:],
 		},
@@ -1337,25 +1350,25 @@ func TestValidateResponse_ValidParsedRRSIGAppended(t *testing.T) {
 func TestValidateResponse_FullTrustChainSecure(t *testing.T) {
 	s := newFullTestSetup(t)
 
-	// Build KSK for "com." zone.
-	comKSKPub := []byte("com-ksk-public-key-data-for-full-chain!")
-	comKSKR := encodeDNSKEYRData(257, 3, dns.AlgRSASHA256, comKSKPub)
+	// Build a real com KSK from the fixture's signing material so its child
+	// DS RRset can be authenticated cryptographically.
+	comKSKR := encodeDNSKEYRData(257, 3, dns.AlgED25519, s.wireKey)
 	comKSK, _ := dns.ParseDNSKEY(comKSKR)
 
 	// DS for com. at root.
 	comDSInput := buildDSDigestInput("com.", comKSK)
 	comDSHash := sha256.Sum256(comDSInput)
-	comDSRData := encodeDSRData(comKSK.KeyTag(), dns.AlgRSASHA256, dns.DigestSHA256, comDSHash[:])
+	comDSRData := encodeDSRData(comKSK.KeyTag(), comKSK.Algorithm, dns.DigestSHA256, comDSHash[:])
 
-	// Build KSK for "example.com." zone.
-	exKSKPub := []byte("example-com-ksk-public-key-data!!")
-	exKSKR := encodeDNSKEYRData(257, 3, dns.AlgRSASHA256, exKSKPub)
+	// Build the example.com KSK from the same cryptographic material as the
+	// signing ZSK. The SEP flag changes the key tag but not the public key.
+	exKSKR := encodeDNSKEYRData(257, 3, dns.AlgED25519, s.wireKey)
 	exKSK, _ := dns.ParseDNSKEY(exKSKR)
 
 	// DS for example.com. at com.
 	exDSInput := buildDSDigestInput("example.com.", exKSK)
 	exDSHash := sha256.Sum256(exDSInput)
-	exDSRData := encodeDSRData(exKSK.KeyTag(), dns.AlgRSASHA256, dns.DigestSHA256, exDSHash[:])
+	exDSRData := encodeDSRData(exKSK.KeyTag(), exKSK.Algorithm, dns.DigestSHA256, exDSHash[:])
 
 	// Set up mock responses.
 	rootKSKR := s.mq.responses[".|48"].Answers[0].RData
@@ -1369,20 +1382,52 @@ func TestValidateResponse_FullTrustChainSecure(t *testing.T) {
 			{Name: "com.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: comKSKR},
 		},
 	}
+	comDSRR := dns.ResourceRecord{Name: "com.", Type: dns.TypeDS, Class: dns.ClassIN, TTL: 3600, RData: comDSRData}
+	rootKSK, _ := dns.ParseDNSKEY(rootKSKR)
+	comDSSig := &dns.RRSIGRecord{
+		TypeCovered: dns.TypeDS, Algorithm: dns.AlgED25519, Labels: 1,
+		OrigTTL: 3600, Expiration: 0xFFFFFFFF, KeyTag: rootKSK.KeyTag(), SignerName: ".",
+	}
+	comDSSig.Signature = ed25519.Sign(s.privKey, buildSignedData([]dns.ResourceRecord{comDSRR}, comDSSig))
 	s.mq.responses["com.|43"] = &dns.Message{
 		Answers: []dns.ResourceRecord{
-			{Name: "com.", Type: dns.TypeDS, Class: dns.ClassIN, TTL: 3600, RData: comDSRData},
+			comDSRR,
+			{Name: "com.", Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 3600, RData: buildRRSIGRData(comDSSig)},
 		},
 	}
+	exDNSKEYs := []dns.ResourceRecord{
+		{Name: "example.com.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: exKSKR},
+		{Name: "example.com.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: s.zskRData},
+	}
+	exDNSKEYSig := &dns.RRSIGRecord{
+		TypeCovered: dns.TypeDNSKEY,
+		Algorithm:   dns.AlgED25519,
+		Labels:      2,
+		OrigTTL:     3600,
+		Expiration:  0xFFFFFFFF,
+		KeyTag:      exKSK.KeyTag(),
+		SignerName:  "example.com.",
+	}
+	exDNSKEYSig.Signature = ed25519.Sign(s.privKey, buildSignedData(exDNSKEYs, exDNSKEYSig))
 	s.mq.responses["example.com.|48"] = &dns.Message{
-		Answers: []dns.ResourceRecord{
-			{Name: "example.com.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: exKSKR},
-			{Name: "example.com.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: s.zskRData},
-		},
+		Answers: append(exDNSKEYs, dns.ResourceRecord{
+			Name: "example.com.", Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 3600,
+			RData: buildRRSIGRData(exDNSKEYSig),
+		}),
 	}
+	// In this legacy end-to-end fixture the intermediate com KSK is not backed
+	// by private material, so keep example.com's DS directly authenticated by
+	// the same root signing key used for the fixture's parent data.
+	exDSRR := dns.ResourceRecord{Name: "example.com.", Type: dns.TypeDS, Class: dns.ClassIN, TTL: 3600, RData: exDSRData}
+	exDSSig := &dns.RRSIGRecord{
+		TypeCovered: dns.TypeDS, Algorithm: dns.AlgED25519, Labels: 2,
+		OrigTTL: 3600, Expiration: 0xFFFFFFFF, KeyTag: comKSK.KeyTag(), SignerName: "com.",
+	}
+	exDSSig.Signature = ed25519.Sign(s.privKey, buildSignedData([]dns.ResourceRecord{exDSRR}, exDSSig))
 	s.mq.responses["example.com.|43"] = &dns.Message{
 		Answers: []dns.ResourceRecord{
-			{Name: "example.com.", Type: dns.TypeDS, Class: dns.ClassIN, TTL: 3600, RData: exDSRData},
+			exDSRR,
+			{Name: "example.com.", Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 3600, RData: buildRRSIGRData(exDSSig)},
 		},
 	}
 

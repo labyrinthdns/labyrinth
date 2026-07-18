@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -140,9 +141,10 @@ type Querier interface {
 
 // dnskeyCache holds cached DNSKEY records for a zone.
 type dnskeyCache struct {
-	keys      []dns.ResourceRecord
-	fetchedAt time.Time
-	ttl       time.Duration
+	keys       []dns.ResourceRecord
+	signatures []dns.ResourceRecord
+	fetchedAt  time.Time
+	ttl        time.Duration
 }
 
 // MaxDNSKEYCacheEntries caps the validator's keyCache to bound the
@@ -186,9 +188,13 @@ func (v *Validator) evictOldestDNSKEYLocked() {
 // goroutine to arrive does the work; the rest wait on `done` and then read
 // the shared result.
 type inflightFetch struct {
-	done chan struct{}
-	keys []dns.ResourceRecord
-	dss  []*dns.DSRecord
+	done       chan struct{}
+	keys       []dns.ResourceRecord
+	signatures []dns.ResourceRecord
+	dss        []*dns.DSRecord
+	// dsAnswer carries the full answer section so positive DS RRsets can be
+	// authenticated with the parent's already-trusted keys.
+	dsAnswer []dns.ResourceRecord
 	// denialAuth carries the authority section of an empty-DS response so
 	// the caller can authenticate the parent's denial of DS per
 	// RFC 4035 §5.2 / RFC 5155 §10.4. Without authenticated denial, an
@@ -513,7 +519,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 				push(ValidationStep{Stage: "parse-rrsig", Outcome: "skipped", Detail: err.Error()})
 				continue
 			}
-			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name})
+			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name, class: rr.Class})
 		} else {
 			answerRRs = append(answerRRs, rr)
 		}
@@ -564,6 +570,24 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	// unbounded CPU by stuffing the answer with garbage signatures.
 	verifyAttempts := 0
 
+	type rrsetKey struct {
+		owner string
+		typ   uint16
+		class uint16
+	}
+	relevantRRsets := make(map[rrsetKey]bool)
+	for _, rr := range answerRRs {
+		// RRSIG pseudo-RRs were removed above; every remaining answer RRset is
+		// data the caller may consume and therefore must be authenticated.
+		relevantRRsets[rrsetKey{
+			owner: strings.ToLower(strings.TrimSuffix(rr.Name, ".")),
+			typ:   rr.Type,
+			class: rr.Class,
+		}] = false
+	}
+	validatedChains := make(map[string]ValidationResult)
+	validatedRRsetCount := 0
+
 	for _, rs := range rrsigs {
 		rrsig := rs.rrsig
 		// Algorithm policy: skip RRSIGs we refuse to validate (e.g. RSASHA1)
@@ -607,7 +631,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		// covered RRset shares the RRSIG's owner name. Owner-blind filtering
 		// would mix in same-type records from other owners and produce a
 		// false Bogus.
-		rrset := filterRRSetByOwner(answerRRs, rrsig.TypeCovered, rs.owner)
+		rrset := filterRRSetByOwnerAndClass(answerRRs, rrsig.TypeCovered, rs.owner, rs.class)
 		if len(rrset) == 0 {
 			v.logger.Debug("no RRs matching RRSIG type covered",
 				"type_covered", rrsig.TypeCovered,
@@ -668,8 +692,9 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			continue
 		}
 
-		// Fetch DNSKEY for the signer zone.
-		dnskeys, err := v.fetchDNSKEYs(signerZone)
+		// Fetch the complete DNSKEY RRset and its signatures. The answer's
+		// signing key is not trusted merely because it appeared beside a KSK.
+		dnskeys, dnskeySignatures, err := v.fetchDNSKEYRRSet(signerZone)
 		if err != nil {
 			v.logger.Debug("failed to fetch DNSKEYs; trying next",
 				"zone", signerZone, "error", err)
@@ -683,7 +708,8 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			continue
 		}
 
-		// Find the matching DNSKEY by key tag.
+		// Locate the candidate first so an invalid answer signature remains a
+		// hard Bogus result even when the key's chain is temporarily incomplete.
 		matchingKey, err := findMatchingDNSKEY(dnskeys, rrsig.KeyTag, rrsig.Algorithm)
 		if err != nil {
 			v.logger.Debug("no matching DNSKEY found; trying next",
@@ -726,41 +752,54 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			continue
 		}
 
-		// Signature validated. Walk the trust chain. All RRSIGs for a single
-		// RRset have signers in one zone — the chain result is the same for
-		// any of them, so the first signature that survives this point
-		// determines the verdict.
+		// The cryptographic check succeeded, but the RRset is not authentic
+		// until this exact signing DNSKEY is chained to a trust anchor (either
+		// directly or through an authenticated complete DNSKEY RRset).
+		chainKey := fmt.Sprintf("%s|%d|%d", signerZone, matchingKey.KeyTag(), matchingKey.Algorithm)
+		result, checked := validatedChains[chainKey]
+		if !checked {
+			result = v.validateTrustChainForKey(signerZone, dnskeys, dnskeySignatures, matchingKey, budget)
+			validatedChains[chainKey] = result
+		}
+		if result != Secure {
+			step := baseStep
+			step.Stage = "trust-chain"
+			step.Outcome = verdictToOutcome(result)
+			step.Detail = fmt.Sprintf("trust chain from %s to root: %s", signerZone, result)
+			push(step)
+			if result == Bogus {
+				sawBogus = true
+				setBogusReason(ReasonOther)
+			} else {
+				sawIndeterminate = true
+				setIndetReason(ReasonDNSKEYMissing)
+			}
+			continue
+		}
+
 		verifyStep := baseStep
 		verifyStep.Stage = "verify-ok"
 		verifyStep.Outcome = "ok"
 		verifyStep.Detail = "RRSIG cryptographic verification succeeded"
 		push(verifyStep)
 
-		result := v.validateTrustChain(signerZone, dnskeys, budget)
-		if result == Secure {
+		key := rrsetKey{
+			owner: strings.ToLower(strings.TrimSuffix(rs.owner, ".")),
+			typ:   rrsig.TypeCovered,
+			class: rs.class,
+		}
+		if authenticated, relevant := relevantRRsets[key]; relevant && !authenticated {
+			relevantRRsets[key] = true
+			validatedRRsetCount++
 			if sawBogus || sawIndeterminate {
-				// At least one prior RRSIG candidate failed before this
-				// one validated — likely an algorithm rollover (RFC 4035
-				// §4.6) or multi-signer transition (RFC 8901). Count
-				// these so operators can monitor rollover activity.
 				v.rolloverValidates.Add(1)
 			}
-			v.logger.Debug("DNSSEC validation successful",
-				"zone", signerZone, "key_tag", rrsig.KeyTag)
+			v.logger.Debug("DNSSEC RRset validation successful",
+				"zone", signerZone, "owner", rs.owner, "type", rrsig.TypeCovered)
 		}
-		chainStep := baseStep
-		chainStep.Stage = "trust-chain"
-		chainStep.Outcome = verdictToOutcome(result)
-		chainStep.Detail = fmt.Sprintf("trust chain from %s to root: %s", signerZone, result)
-		push(chainStep)
-		// Trust chain may have ruled Bogus (e.g. revoked KSK, DS-DNSKEY
-		// mismatch). Surface that as a generic Bogus reason since we don't
-		// have a more specific tag from here.
-		chainReason := ReasonNone
-		if result == Bogus {
-			chainReason = ReasonOther
+		if validatedRRsetCount == len(relevantRRsets) {
+			return Secure, steps, ReasonNone
 		}
-		return result, steps, chainReason
 	}
 
 	// All RRSIGs were skipped because they used weak (rejected) algorithms.
@@ -804,6 +843,21 @@ func verdictToOutcome(v ValidationResult) string {
 // validateTrustChain validates the DNSKEY trust chain from the given zone
 // back to the root trust anchors.
 func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord, budget ...*cryptoBudget) ValidationResult {
+	return v.validateTrustChainWithSignatures(zone, dnskeys, nil, budget...)
+}
+
+// validateTrustChainWithSignatures validates each DNSKEY RRset before exposing
+// any of its sibling keys to answer or denial verification. A matching DS (or
+// trust anchor) authenticates one key; that key must then authenticate the
+// complete DNSKEY RRset via RRSIG(DNSKEY).
+func (v *Validator) validateTrustChainWithSignatures(zone string, dnskeys, dnskeySignatures []dns.ResourceRecord, budget ...*cryptoBudget) ValidationResult {
+	return v.validateTrustChainForKey(zone, dnskeys, dnskeySignatures, nil, budget...)
+}
+
+// validateTrustChainForKey additionally requires targetKey to be among the
+// final zone's authenticated keys. Direct DS/anchor matches remain usable even
+// when a DNSKEY RRset signature is absent, but unauthenticated siblings do not.
+func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatures []dns.ResourceRecord, targetKey *dns.DNSKEYRecord, budget ...*cryptoBudget) ValidationResult {
 	cb := budgetFrom(budget)
 	// Build the chain of zones from root to the signer zone.
 	chain := buildZoneChain(zone)
@@ -827,7 +881,7 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 	var parentKeys []dns.ResourceRecord
 
 	for i, chainZone := range chain {
-		zoneKeys, err := v.fetchDNSKEYs(chainZone)
+		zoneKeys, zoneSignatures, err := v.fetchDNSKEYRRSet(chainZone)
 		if err != nil {
 			v.logger.Debug("failed to fetch DNSKEYs for chain zone",
 				"zone", chainZone,
@@ -835,16 +889,18 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 			return Indeterminate
 		}
 
+		var trustedKeys []dns.ResourceRecord
 		if i == 0 {
-			// Root zone: verify DNSKEY against trust anchors.
-			if !v.verifyAgainstTrustAnchors(chainZone, zoneKeys) {
+			// Root zone: select the DNSKEYs that match configured trust anchors.
+			trustedKeys = v.dnskeysMatchingTrustAnchors(chainZone, zoneKeys)
+			if len(trustedKeys) == 0 {
 				v.logger.Debug("root DNSKEY does not match trust anchors")
 				return Bogus
 			}
 		} else {
 			// Non-root zone: fetch DS from parent and verify.
 			parentZone := chain[i-1]
-			dsRecords, denialAuth, err := v.fetchDS(chainZone, parentZone)
+			dsRecords, dsAnswer, denialAuth, err := v.fetchDSRRSet(chainZone, parentZone)
 			if err != nil {
 				v.logger.Debug("failed to fetch DS records",
 					"zone", chainZone,
@@ -869,6 +925,16 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 				return Insecure
 			}
 
+			// A positive DS RRset is data from the parent zone. Authenticate the
+			// complete RRset with the already-trusted parent keys before allowing
+			// any DS record to elevate a child DNSKEY.
+			dsRRset := filterRRSetByOwner(dsAnswer, dns.TypeDS, chainZone)
+			if !v.verifyRRSetWithKeys(dsRRset, filterRRSet(dsAnswer, dns.TypeRRSIG), parentKeys, parentZone, dns.TypeDS, cb) {
+				v.logger.Debug("positive DS RRset lacks parent authentication",
+					"zone", chainZone, "parent", parentZone)
+				return Bogus
+			}
+
 			// If every published DS uses a digest type we reject (e.g. SHA1),
 			// treat the chain as insecure rather than bogus: the parent has
 			// authorized the child but only with primitives we don't trust.
@@ -885,16 +951,34 @@ func (v *Validator) validateTrustChain(zone string, dnskeys []dns.ResourceRecord
 				return Insecure
 			}
 
-			if !v.verifyDNSKEYWithDS(zoneKeys, dsRecords, chainZone) {
+			trustedKeys = v.dnskeysMatchingDS(zoneKeys, dsRecords, chainZone)
+			if len(trustedKeys) == 0 {
 				v.logger.Debug("DNSKEY does not match DS",
 					"zone", chainZone)
 				return Bogus
 			}
 		}
-		// Carry this iteration's verified DNSKEY rrset forward as the
-		// parent keys for the next chain element; needed by the
-		// empty-DS denial verification on the next hop.
-		parentKeys = zoneKeys
+
+		// The DS/anchor authenticates only trustedKeys. A valid RRSIG(DNSKEY)
+		// made by one of them authenticates every sibling in the complete set.
+		authenticatedKeys := trustedKeys
+		if len(zoneSignatures) > 0 {
+			if !v.verifyRRSetWithKeys(zoneKeys, zoneSignatures, trustedKeys, chainZone, dns.TypeDNSKEY, cb) {
+				v.logger.Debug("DNSKEY RRset RRSIG did not validate",
+					"zone", chainZone)
+				return Bogus
+			}
+			authenticatedKeys = zoneKeys
+		}
+		if i == len(chain)-1 && targetKey != nil && !containsDNSKEY(authenticatedKeys, targetKey) {
+			v.logger.Debug("answer signing key is not authenticated by DNSKEY RRset",
+				"zone", chainZone, "key_tag", targetKey.KeyTag())
+			return Bogus
+		}
+
+		// Carry only authenticated keys forward. This prevents an injected
+		// sibling from signing a denial proof at the next delegation hop.
+		parentKeys = authenticatedKeys
 	}
 
 	return Secure
@@ -941,7 +1025,7 @@ func (v *Validator) verifyDSDenial(childZone, parentZone string, parentKeys []dn
 			if err != nil {
 				continue
 			}
-			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name})
+			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name, class: rr.Class})
 		case dns.TypeNSEC:
 			parsed, err := dns.ParseNSEC(rr.RData, 0)
 			if err != nil {
@@ -1000,7 +1084,7 @@ func (v *Validator) verifyDSDenial(childZone, parentZone string, parentKeys []dn
 		if signer != parent {
 			continue
 		}
-		rrset := filterRRSetByOwner(authority, rrsig.TypeCovered, rs.owner)
+		rrset := filterRRSetByOwnerAndClass(authority, rrsig.TypeCovered, rs.owner, rs.class)
 		if len(rrset) == 0 {
 			continue
 		}
@@ -1083,31 +1167,23 @@ func (v *Validator) verifyDSDenial(childZone, parentZone string, parentKeys []dn
 }
 
 // verifyAgainstTrustAnchors checks if any DNSKEY for the root zone matches
-// one of the configured trust anchors. Trust-anchor DS records using digest
-// types we reject by policy (e.g. SHA1) are skipped. RFC 4509 §3: when the
-// trust-anchor set carries multiple digest types for the same key tag +
-// algorithm, only the strongest supported digest is consulted — otherwise
-// a SHA-1 collision could let an attacker chain to a key the operator
-// would never have accepted under the stronger SHA-256 anchor.
+// one of the configured trust anchors.
 func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.ResourceRecord) bool {
-	// Materialise pointers once so the strongest-digest helper can scan
-	// the same list. The variable scope is intentionally short to limit
-	// the allocation footprint to this verify pass.
+	return len(v.dnskeysMatchingTrustAnchors(zone, dnskeys)) > 0
+}
+
+// dnskeysMatchingTrustAnchors returns only the DNSKEY records directly
+// authenticated by configured trust anchors. Keeping this subset is what lets
+// the caller authenticate the complete DNSKEY RRset before trusting siblings.
+func (v *Validator) dnskeysMatchingTrustAnchors(zone string, dnskeys []dns.ResourceRecord) []dns.ResourceRecord {
 	anchorPtrs := make([]*dns.DSRecord, 0, len(v.trustAnchors))
 	for i := range v.trustAnchors {
 		anchorPtrs = append(anchorPtrs, &v.trustAnchors[i])
 	}
+	var matches []dns.ResourceRecord
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
-		if err != nil {
-			continue
-		}
-		if !dnskey.IsKSK() {
-			continue
-		}
-		// RFC 5011 §3: a revoked DNSKEY MUST NOT match a trust anchor.
-		// The operator has explicitly disowned this key.
-		if dnskey.IsRevoked() {
+		if err != nil || !dnskey.IsKSK() || dnskey.IsRevoked() {
 			continue
 		}
 		strongest := strongestDSDigestForKey(anchorPtrs, dnskey.KeyTag(), dnskey.Algorithm, v)
@@ -1120,11 +1196,12 @@ func (v *Validator) verifyAgainstTrustAnchors(zone string, dnskeys []dns.Resourc
 				continue
 			}
 			if VerifyDS(dnskey, &anchor, zone) {
-				return true
+				matches = append(matches, rr)
+				break
 			}
 		}
 	}
-	return false
+	return matches
 }
 
 // strongestDSDigestForKey returns the most-trusted supported DS digest
@@ -1163,6 +1240,14 @@ func strongestDSDigestForKey(dsRecords []*dns.DSRecord, keyTag uint16, algorithm
 // can craft a key matching the SHA-1 DS even though a SHA-256 DS exists.
 // strongestDSDigestForKey computes the per-(keytag,algorithm) ceiling.
 func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord, ownerName string) bool {
+	return len(v.dnskeysMatchingDS(dnskeys, dsRecords, ownerName)) > 0
+}
+
+// dnskeysMatchingDS returns the exact DNSKEY records authenticated by the
+// parent's DS RRset. Other keys in the fetched DNSKEY RRset are not trusted
+// until an RRSIG(DNSKEY) made by one of these records verifies the full set.
+func (v *Validator) dnskeysMatchingDS(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord, ownerName string) []dns.ResourceRecord {
+	var matches []dns.ResourceRecord
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
 		if err != nil {
@@ -1192,11 +1277,12 @@ func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords [
 				continue
 			}
 			if VerifyDS(dnskey, ds, ownerName) {
-				return true
+				matches = append(matches, rr)
+				break
 			}
 		}
 	}
-	return false
+	return matches
 }
 
 // negativeDNSKEYCacheTTL bounds how long an empty DNSKEY fetch result stays
@@ -1215,12 +1301,22 @@ func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords [
 const negativeDNSKEYCacheTTL = 60 * time.Second
 
 // fetchDNSKEYs retrieves (possibly cached) DNSKEY records for a zone.
+func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
+	keys, _, err := v.fetchDNSKEYRRSet(zone)
+	return keys, err
+}
+
+// fetchDNSKEYRRSet retrieves the complete DNSKEY RRset together with the
+// RRSIGs that cover it. Keeping the signatures beside the cached keys is
+// essential: a DS authenticates only the matching DNSKEY, not arbitrary
+// sibling keys returned in the same packet. The sibling keys become usable
+// only after a matching, already-trusted key authenticates the complete set.
 //
 // Concurrent callers for the same zone share one inflight upstream query
 // instead of stampeding the auth server. The first goroutine to arrive
 // becomes the leader and performs the fetch; followers wait on the leader's
 // done channel and read its result.
-func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
+func (v *Validator) fetchDNSKEYRRSet(zone string) ([]dns.ResourceRecord, []dns.ResourceRecord, error) {
 	normalized := normalizeName(zone)
 
 	// Check cache.
@@ -1229,7 +1325,7 @@ func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
 	v.mu.RUnlock()
 
 	if ok && time.Since(cached.fetchedAt) < cached.ttl {
-		return cached.keys, nil
+		return cached.keys, cached.signatures, nil
 	}
 
 	// Singleflight: if another goroutine is already fetching, wait for it.
@@ -1237,7 +1333,7 @@ func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
 	if inf, ok := v.inflightDNSKEY[normalized]; ok {
 		v.inflightMu.Unlock()
 		<-inf.done
-		return inf.keys, inf.err
+		return inf.keys, inf.signatures, inf.err
 	}
 	inf := &inflightFetch{done: make(chan struct{})}
 	v.inflightDNSKEY[normalized] = inf
@@ -1259,14 +1355,15 @@ func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
 	v.mu.RUnlock()
 	if ok && time.Since(cached.fetchedAt) < cached.ttl {
 		inf.keys = cached.keys
-		return cached.keys, nil
+		inf.signatures = cached.signatures
+		return cached.keys, cached.signatures, nil
 	}
 
 	// Fetch from querier.
 	resp, err := v.querier.QueryDNSSEC(normalized, dns.TypeDNSKEY, dns.ClassIN)
 	if err != nil {
 		inf.err = fmt.Errorf("DNSKEY query for %s: %w", normalized, err)
-		return nil, inf.err
+		return nil, nil, inf.err
 	}
 
 	// Refuse to cache transient upstream failures. A short-lived SERVFAIL
@@ -1275,16 +1372,23 @@ func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
 	rcode := resp.Header.RCODE()
 	if rcode == dns.RCodeServFail || rcode == dns.RCodeRefused {
 		inf.err = fmt.Errorf("DNSKEY query for %s returned rcode %d", normalized, rcode)
-		return nil, inf.err
+		return nil, nil, inf.err
 	}
 
 	var keys []dns.ResourceRecord
+	var signatures []dns.ResourceRecord
 	var minTTL uint32 = 3600 // default TTL if no records
 	for _, rr := range resp.Answers {
-		if rr.Type == dns.TypeDNSKEY {
+		switch rr.Type {
+		case dns.TypeDNSKEY:
 			keys = append(keys, rr)
 			if rr.TTL > 0 && rr.TTL < minTTL {
 				minTTL = rr.TTL
+			}
+		case dns.TypeRRSIG:
+			parsed, err := dns.ParseRRSIG(rr.RData, 0)
+			if err == nil && parsed.TypeCovered == dns.TypeDNSKEY {
+				signatures = append(signatures, rr)
 			}
 		}
 	}
@@ -1303,14 +1407,16 @@ func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
 		v.evictOldestDNSKEYLocked()
 	}
 	v.keyCache[normalized] = &dnskeyCache{
-		keys:      keys,
-		fetchedAt: time.Now(),
-		ttl:       ttl,
+		keys:       keys,
+		signatures: signatures,
+		fetchedAt:  time.Now(),
+		ttl:        ttl,
 	}
 	v.mu.Unlock()
 
 	inf.keys = keys
-	return keys, nil
+	inf.signatures = signatures
+	return keys, signatures, nil
 }
 
 // fetchDS retrieves DS records for a zone from its parent zone.
@@ -1324,6 +1430,11 @@ func (v *Validator) fetchDNSKEYs(zone string) ([]dns.ResourceRecord, error) {
 // Concurrent callers for the same zone share an inflight upstream query, the
 // same way fetchDNSKEYs does.
 func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, []dns.ResourceRecord, error) {
+	dsRecords, _, denialAuth, err := v.fetchDSRRSet(zone, parentZone)
+	return dsRecords, denialAuth, err
+}
+
+func (v *Validator) fetchDSRRSet(zone, parentZone string) ([]*dns.DSRecord, []dns.ResourceRecord, []dns.ResourceRecord, error) {
 	normalized := normalizeName(zone)
 
 	// Singleflight coordination.
@@ -1331,7 +1442,7 @@ func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, []dns.Res
 	if inf, ok := v.inflightDS[normalized]; ok {
 		v.inflightMu.Unlock()
 		<-inf.done
-		return inf.dss, inf.denialAuth, inf.err
+		return inf.dss, inf.dsAnswer, inf.denialAuth, inf.err
 	}
 	inf := &inflightFetch{done: make(chan struct{})}
 	v.inflightDS[normalized] = inf
@@ -1347,13 +1458,13 @@ func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, []dns.Res
 	resp, err := v.querier.QueryDNSSEC(normalized, dns.TypeDS, dns.ClassIN)
 	if err != nil {
 		inf.err = fmt.Errorf("DS query for %s: %w", normalized, err)
-		return nil, nil, inf.err
+		return nil, nil, nil, inf.err
 	}
 
 	rcode := resp.Header.RCODE()
 	if rcode == dns.RCodeServFail || rcode == dns.RCodeRefused {
 		inf.err = fmt.Errorf("DS query for %s returned rcode %d", normalized, rcode)
-		return nil, nil, inf.err
+		return nil, nil, nil, inf.err
 	}
 
 	var dsRecords []*dns.DSRecord
@@ -1368,12 +1479,13 @@ func (v *Validator) fetchDS(zone, parentZone string) ([]*dns.DSRecord, []dns.Res
 	}
 
 	inf.dss = dsRecords
+	inf.dsAnswer = resp.Answers
 	// Surface the authority section so the caller can authenticate the
 	// denial of DS when no DS records were returned. Cloning into a fresh
 	// slice would also work, but inflightFetch outlives this call only
 	// for the singleflight followers, and they receive read-only access.
 	inf.denialAuth = resp.Authority
-	return dsRecords, resp.Authority, nil
+	return dsRecords, resp.Answers, resp.Authority, nil
 }
 
 // findMatchingDNSKEY finds a DNSKEY record matching the given key tag and
@@ -1404,6 +1516,63 @@ func findMatchingDNSKEY(dnskeys []dns.ResourceRecord, keyTag uint16, algorithm u
 type rrsigWithOwner struct {
 	rrsig *dns.RRSIGRecord
 	owner string
+	class uint16
+}
+
+func containsDNSKEY(rrs []dns.ResourceRecord, want *dns.DNSKEYRecord) bool {
+	if want == nil {
+		return false
+	}
+	for _, rr := range rrs {
+		key, err := dns.ParseDNSKEY(rr.RData)
+		if err != nil || key.Algorithm != want.Algorithm || !bytes.Equal(key.PublicKey, want.PublicKey) {
+			continue
+		}
+		// The SEP bit is advisory for signature verification. Treat otherwise
+		// identical KSK/ZSK encodings as the same cryptographic key.
+		if key.Flags&^uint16(1) == want.Flags&^uint16(1) && key.Protocol == want.Protocol {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyRRSetWithKeys reports whether at least one in-policy, in-time RRSIG
+// over the requested RRset verifies with one of the already-authenticated
+// keys. It deliberately accepts raw RRSIG resource records so it can be used
+// for both fetched DNSKEY RRsets and response sections.
+func (v *Validator) verifyRRSetWithKeys(rrset, signatureRRs, trustedKeys []dns.ResourceRecord, signerZone string, rrtype uint16, budget *cryptoBudget) bool {
+	if len(rrset) == 0 || len(signatureRRs) == 0 || len(trustedKeys) == 0 {
+		return false
+	}
+	zone := normalizeName(signerZone)
+	now := time.Now().Unix()
+	skew := int64(rrsigClockSkew / time.Second)
+	attempts := 0
+	for _, rr := range signatureRRs {
+		rrsig, err := dns.ParseRRSIG(rr.RData, 0)
+		if err != nil || rrsig.TypeCovered != rrtype || normalizeName(rrsig.SignerName) != zone {
+			continue
+		}
+		if v.isWeakRRSIGAlg(rrsig.Algorithm) || v.isUnsupportedRRSIGAlg(rrsig.Algorithm) {
+			continue
+		}
+		if now+skew < int64(rrsig.Inception) || now > int64(rrsig.Expiration)+skew {
+			continue
+		}
+		key, err := findMatchingDNSKEY(trustedKeys, rrsig.KeyTag, rrsig.Algorithm)
+		if err != nil {
+			continue
+		}
+		if attempts >= maxRRSIGVerifyAttempts || !budget.allow() {
+			return false
+		}
+		attempts++
+		if VerifyRRSIG(rrset, rrsig, key) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // filterRRSet returns only the ResourceRecords matching the given type.
@@ -1433,12 +1602,19 @@ func filterRRSet(rrs []dns.ResourceRecord, rrtype uint16) []dns.ResourceRecord {
 // same type, which is exactly the multi-owner ambiguity the strict mode
 // exists to prevent.
 func filterRRSetByOwner(rrs []dns.ResourceRecord, rrtype uint16, owner string) []dns.ResourceRecord {
+	return filterRRSetByOwnerAndClass(rrs, rrtype, owner, 0)
+}
+
+// filterRRSetByOwnerAndClass additionally preserves DNS class as part of the
+// RRset identity. A zero class is the compatibility wildcard used by older
+// direct callers of filterRRSetByOwner.
+func filterRRSetByOwnerAndClass(rrs []dns.ResourceRecord, rrtype uint16, owner string, class uint16) []dns.ResourceRecord {
 	ownerLower := strings.ToLower(strings.TrimSuffix(owner, "."))
 	var exact []dns.ResourceRecord
 	var allOfType []dns.ResourceRecord
 	uniqueOwners := make(map[string]struct{})
 	for _, rr := range rrs {
-		if rr.Type != rrtype {
+		if rr.Type != rrtype || (class != 0 && rr.Class != class) {
 			continue
 		}
 		rrNameLower := strings.ToLower(strings.TrimSuffix(rr.Name, "."))
@@ -1550,7 +1726,7 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 				v.logger.Debug("failed to parse authority RRSIG", "error", err)
 				continue
 			}
-			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name})
+			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name, class: rr.Class})
 		case dns.TypeNSEC3:
 			parsed, err := dns.ParseNSEC3(rr.RData)
 			if err != nil {
@@ -1616,6 +1792,7 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 		typ   uint16
 	}
 	authenticRRsets := make(map[ownerTypeKey]bool)
+	validatedChains := make(map[string]ValidationResult)
 	makeKey := func(owner string, t uint16) ownerTypeKey {
 		return ownerTypeKey{
 			owner: strings.ToLower(strings.TrimSuffix(owner, ".")),
@@ -1649,9 +1826,9 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 		}
 		usableRRSIGs++
 
-		// Owner-aware filter — one NSEC3 RRSIG covers exactly one owner's
-		// NSEC3 RRset, never the union of every NSEC3 in the response.
-		rrset := filterRRSetByOwner(response.Authority, rrsig.TypeCovered, rs.owner)
+		// Owner/class-aware filter — one NSEC3 RRSIG covers exactly one RRset,
+		// never the union of every NSEC3 in the response.
+		rrset := filterRRSetByOwnerAndClass(response.Authority, rrsig.TypeCovered, rs.owner, rs.class)
 		if len(rrset) == 0 {
 			continue
 		}
@@ -1679,7 +1856,7 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 			continue
 		}
 
-		dnskeys, err := v.fetchDNSKEYs(signerZone)
+		dnskeys, dnskeySignatures, err := v.fetchDNSKEYRRSet(signerZone)
 		if err != nil {
 			v.logger.Debug("failed to fetch DNSKEYs for denial validation; trying next",
 				"zone", signerZone, "error", err)
@@ -1706,6 +1883,22 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 			v.logger.Debug("authority RRSIG verification failed; trying next",
 				"key_tag", rrsig.KeyTag, "zone", signerZone, "error", err)
 			sawBogus = true
+			continue
+		}
+		chainKey := fmt.Sprintf("%s|%d|%d", signerZone, matchingKey.KeyTag(), matchingKey.Algorithm)
+		chainResult, checked := validatedChains[chainKey]
+		if !checked {
+			chainResult = v.validateTrustChainForKey(signerZone, dnskeys, dnskeySignatures, matchingKey, cb)
+			validatedChains[chainKey] = chainResult
+		}
+		if chainResult != Secure {
+			v.logger.Debug("denial proof signing key has no secure trust chain",
+				"zone", signerZone, "result", chainResult)
+			if chainResult == Bogus {
+				sawBogus = true
+			} else {
+				sawIndeterminate = true
+			}
 			continue
 		}
 		// Mark every (record_owner, type) pair in the verified rrset as

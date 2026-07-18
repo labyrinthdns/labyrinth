@@ -95,6 +95,7 @@ func TestValidateResponse_AlgorithmRollover_DualSig(t *testing.T) {
 			}
 			ecdsaWireKey := encodeECDSAWireKey(&ecdsaPriv.PublicKey, 32)
 			ecdsaZSKRData := encodeDNSKEYRData(256, 3, dns.AlgECDSAP256, ecdsaWireKey)
+			ecdsaKSKRData := encodeDNSKEYRData(257, 3, dns.AlgECDSAP256, ecdsaWireKey)
 			ecdsaZSK, err := dns.ParseDNSKEY(ecdsaZSKRData)
 			if err != nil {
 				t.Fatalf("parse ECDSA DNSKEY: %v", err)
@@ -104,12 +105,26 @@ func TestValidateResponse_AlgorithmRollover_DualSig(t *testing.T) {
 			// the root KSK. This is the wire-realistic "two-algorithm
 			// rollover" shape.
 			rootKSKR := s.mq.responses[".|48"].Answers[0].RData
+			rootDNSKEYs := []dns.ResourceRecord{
+				{Name: ".", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: rootKSKR},
+				{Name: ".", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: s.zskRData},
+				{Name: ".", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: ecdsaKSKRData},
+				{Name: ".", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: ecdsaZSKRData},
+			}
+			rootKSK, err := dns.ParseDNSKEY(rootKSKR)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rootDNSKEYSig := &dns.RRSIGRecord{
+				TypeCovered: dns.TypeDNSKEY, Algorithm: dns.AlgED25519, Labels: 0,
+				OrigTTL: 3600, Expiration: 0xFFFFFFFF, KeyTag: rootKSK.KeyTag(), SignerName: ".",
+			}
+			rootDNSKEYSig.Signature = ed25519.Sign(s.privKey, buildSignedData(rootDNSKEYs, rootDNSKEYSig))
 			s.mq.responses[".|48"] = &dns.Message{
-				Answers: []dns.ResourceRecord{
-					{Name: ".", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: rootKSKR},
-					{Name: ".", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: s.zskRData},
-					{Name: ".", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: ecdsaZSKRData},
-				},
+				Answers: append(rootDNSKEYs, dns.ResourceRecord{
+					Name: ".", Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 3600,
+					RData: buildRRSIGRData(rootDNSKEYSig),
+				}),
 			}
 
 			// Build the RRset under root.
