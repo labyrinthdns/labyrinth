@@ -34,8 +34,10 @@ RUN apk add --no-cache ca-certificates && \
 COPY --from=build /labyrinth /usr/local/bin/labyrinth
 USER labyrinth
 EXPOSE 53/udp 53/tcp 9153/tcp
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://localhost:9153/metrics || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://127.0.0.1:9153/api/system/health || exit 1
 ENTRYPOINT ["labyrinth"]
+# Keep the compiled loopback-only dashboard default. Operators must configure
+# authentication before explicitly binding and publishing the admin port.
 LABEL org.opencontainers.image.source="https://github.com/labyrinthdns/labyrinth"
 LABEL org.opencontainers.image.description="Pure Go Recursive DNS Resolver"
 LABEL org.opencontainers.image.licenses="MIT"
