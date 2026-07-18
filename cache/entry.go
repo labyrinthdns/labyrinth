@@ -56,9 +56,13 @@ type Entry struct {
 	// authenticated denial records, not a direct authoritative response.
 	Synthesized bool
 
-	// prefetched is set atomically to 1 the first time a prefetch is
+	// prefetched is set atomically to 1 the first time a proactive prefetch is
 	// triggered for this entry, preventing duplicate background fetches.
 	prefetched atomic.Int32
+	// staleRefreshing is an in-flight gate for RFC 8767 stale refreshes. Unlike
+	// prefetched, it is cleared when the callback returns so a failed refresh
+	// may be retried by a later stale serve.
+	staleRefreshing atomic.Bool
 }
 
 // tryPrefetch atomically marks this entry as prefetched. Returns true only

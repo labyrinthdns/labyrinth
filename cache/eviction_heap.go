@@ -13,6 +13,11 @@ type evictionItem struct {
 
 type evictionQueue []evictionItem
 
+// evictionMetadataFactor bounds lazy heap metadata relative to live entries.
+// Stores intentionally append rather than search O(n) for an old key, but a
+// hot key overwritten indefinitely must not grow the heap without bound.
+const evictionMetadataFactor = 2
+
 func (q evictionQueue) Len() int { return len(q) }
 
 func (q evictionQueue) Less(i, j int) bool { return q[i].expiresAt.Before(q[j].expiresAt) }
@@ -43,6 +48,35 @@ func (s *shard) pushEvictionEntry(key cacheKey, entry *Entry) {
 		entry:     entry,
 		expiresAt: entry.InsertedAt.Add(time.Duration(entry.OrigTTL) * time.Second),
 	})
+	s.maybeCompactEvictionQueueLocked()
+}
+
+// maybeCompactEvictionQueueLocked rebuilds the heap from live map entries once
+// lazy metadata exceeds a small multiple of live state. This keeps overwrite
+// and delete-heavy workloads O(live entries) in memory while preserving cheap
+// O(log n) normal stores.
+func (s *shard) maybeCompactEvictionQueueLocked() {
+	// Allow a small absolute cushion so normal inserts do not rebuild on
+	// every other store when a shard contains only one or two entries. Empty
+	// shards need no metadata at all, so release it eagerly after deletion.
+	maxMetadata := len(s.entries)*evictionMetadataFactor + 16
+	if len(s.entries) > 0 && len(s.evictQ) <= maxMetadata {
+		return
+	}
+	if len(s.entries) == 0 && len(s.evictQ) == 0 {
+		return
+	}
+
+	q := make(evictionQueue, 0, len(s.entries))
+	for key, entry := range s.entries {
+		q = append(q, evictionItem{
+			key:       key,
+			entry:     entry,
+			expiresAt: entry.InsertedAt.Add(time.Duration(entry.OrigTTL) * time.Second),
+		})
+	}
+	s.evictQ = q
+	heap.Init(&s.evictQ)
 }
 
 func (s *shard) nextEvictionKeyLocked() (cacheKey, bool) {
