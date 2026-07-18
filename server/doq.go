@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -122,17 +124,32 @@ func newDoQServer(addr string, handler Handler, tlsCfg *tls.Config, timeout time
 
 // Serve starts the DoQ server loop.
 func (s *DoQServer) Serve(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = s.listener.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
 	for {
 		conn, err := s.listener.Accept(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, quic.ErrServerClosed) {
 				return nil
 			}
 			s.logger.Error("doq accept error", "error", err)
 			continue
 		}
 
-		s.sem <- struct{}{}
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			_ = conn.CloseWithError(0, "server shutdown")
+			return nil
+		}
 		go func(c *quic.Conn) {
 			defer func() { <-s.sem }()
 			s.handleConnection(ctx, c)
@@ -142,23 +159,46 @@ func (s *DoQServer) Serve(ctx context.Context) error {
 
 // handleConnection processes incoming streams on a single QUIC connection.
 func (s *DoQServer) handleConnection(ctx context.Context, conn *quic.Conn) {
-	_ = conn.CloseWithError(0, "server shutdown")
-	clientAddr := conn.RemoteAddr()
+	clientAddr := doqAddr{Addr: conn.RemoteAddr()}
+	connCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.CloseWithError(0, "server shutdown")
+		case <-conn.Context().Done():
+		case <-connCtx.Done():
+		}
+	}()
 
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		_ = conn.CloseWithError(0, "server shutdown")
+		workers.Wait()
+	}()
 	for i := 0; i < s.pipelineMax; i++ {
-		stream, err := conn.AcceptStream(ctx)
+		stream, err := conn.AcceptStream(connCtx)
 		if err != nil {
 			return // EOF or error = done
 		}
 
 		// Handle each stream concurrently so one slow query does not
 		// block subsequent queries on the same connection (RFC 9250 §4.3).
+		workers.Add(1)
 		go func(str *quic.Stream) {
+			defer workers.Done()
 			defer str.Close()
 			s.handleStream(str, clientAddr)
 		}(stream)
 	}
 }
+
+// doqAddr preserves the peer's address while reporting the application
+// transport. QUIC runs over UDP, but DNS-over-QUIC has stateful stream
+// semantics for truncation, RRL, and strict-cookie decisions.
+type doqAddr struct{ net.Addr }
+
+func (doqAddr) Network() string { return "doq" }
 
 // handleStream processes a single DNS query on a QUIC stream.
 // The DNS message is length-prefixed (2-byte big-endian length, then message),
@@ -189,9 +229,9 @@ func (s *DoQServer) handleStream(stream *quic.Stream, clientAddr net.Addr) {
 		return
 	}
 
-	// Apply transport policies: padding on encrypted transport, keepalive
-	// Use nil query since we don't have the raw query anymore for keepalive detection.
-	response = applyTCPTransportPolicies(nil, response, s.idleTimeout, true)
+	// Apply stateful encrypted-transport policies based on the query's EDNS
+	// options. Passing the raw query is required for padding opt-in detection.
+	response = applyTCPTransportPolicies(query, response, s.idleTimeout, true)
 
 	// Write 2-byte length prefix + response
 	_ = stream.SetWriteDeadline(time.Now().Add(s.timeout))

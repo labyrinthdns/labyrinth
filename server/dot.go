@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -125,7 +126,7 @@ func (s *DoTServer) Serve(ctx context.Context) error {
 
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 			s.logger.Error("dot accept error", "error", err)
@@ -146,18 +147,17 @@ func (s *DoTServer) Serve(ctx context.Context) error {
 			s.clientMu.Unlock()
 		}
 
-		s.sem <- struct{}{}
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			s.releaseClientConn(clientIP)
+			_ = conn.Close()
+			return nil
+		}
 		go func(c net.Conn, ip string) {
 			defer func() { <-s.sem }()
+			defer s.releaseClientConn(ip)
 			s.handleDoT(c)
-			if s.maxConnsPerClient > 0 {
-				s.clientMu.Lock()
-				s.clientConns[ip]--
-				if s.clientConns[ip] <= 0 {
-					delete(s.clientConns, ip)
-				}
-				s.clientMu.Unlock()
-			}
 			c.Close()
 		}(conn, clientIP)
 	}
@@ -165,6 +165,18 @@ func (s *DoTServer) Serve(ctx context.Context) error {
 
 // handleDoT processes DNS queries on a single TLS connection.
 // It uses the same length-prefixed DNS message framing as TCP (RFC 1035 / RFC 7858).
+func (s *DoTServer) releaseClientConn(ip string) {
+	if s.maxConnsPerClient <= 0 {
+		return
+	}
+	s.clientMu.Lock()
+	s.clientConns[ip]--
+	if s.clientConns[ip] <= 0 {
+		delete(s.clientConns, ip)
+	}
+	s.clientMu.Unlock()
+}
+
 func (s *DoTServer) handleDoT(conn net.Conn) {
 	// Set initial deadline for the first query
 	conn.SetDeadline(time.Now().Add(s.timeout))

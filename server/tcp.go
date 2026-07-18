@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -85,10 +86,20 @@ func WithIdleTimeout(d time.Duration) TCPOption {
 
 // Serve starts the TCP server loop.
 func (s *TCPServer) Serve(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = s.listener.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
 	for {
 		select {
 		case <-ctx.Done():
-			return s.listener.Close()
+			return nil
 		default:
 		}
 
@@ -99,7 +110,7 @@ func (s *TCPServer) Serve(ctx context.Context) error {
 
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -123,21 +134,32 @@ func (s *TCPServer) Serve(ctx context.Context) error {
 			s.clientMu.Unlock()
 		}
 
-		s.sem <- struct{}{}
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			s.releaseClientConn(clientIP)
+			_ = conn.Close()
+			return nil
+		}
 		go func(c net.Conn, ip string) {
 			defer func() { <-s.sem }()
+			defer s.releaseClientConn(ip)
 			s.handleTCP(c)
-			if s.maxConnsPerClient > 0 {
-				s.clientMu.Lock()
-				s.clientConns[ip]--
-				if s.clientConns[ip] <= 0 {
-					delete(s.clientConns, ip)
-				}
-				s.clientMu.Unlock()
-			}
 			c.Close()
 		}(conn, clientIP)
 	}
+}
+
+func (s *TCPServer) releaseClientConn(ip string) {
+	if s.maxConnsPerClient <= 0 {
+		return
+	}
+	s.clientMu.Lock()
+	s.clientConns[ip]--
+	if s.clientConns[ip] <= 0 {
+		delete(s.clientConns, ip)
+	}
+	s.clientMu.Unlock()
 }
 
 func (s *TCPServer) handleTCP(conn net.Conn) {

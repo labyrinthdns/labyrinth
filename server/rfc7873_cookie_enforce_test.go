@@ -11,18 +11,17 @@ import (
 // buildPlainQuery constructs a wire-format DNS query for example.com A,
 // optionally carrying an EDNS OPT pseudo-RR with a client COOKIE
 // option. Returns the raw bytes ready to feed to handler.Handle.
-func buildPlainQuery(t *testing.T, withClientCookie bool) []byte {
+func buildPlainQuery(t *testing.T, cookieData []byte) []byte {
 	t.Helper()
 	q := &dns.Message{
 		Header:    dns.Header{ID: 0x4321, Flags: 0x0100, QDCount: 1, ARCount: 1},
 		Questions: []dns.Question{{Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN}},
 	}
-	if withClientCookie {
+	if cookieData != nil {
 		q.Additional = []dns.ResourceRecord{dns.BuildOPTWithOptions(1232, false, []dns.EDNSOption{
-			{Code: dns.EDNSOptionCodeCookie, Data: []byte{0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8}},
+			{Code: dns.EDNSOptionCodeCookie, Data: cookieData},
 		})}
 	} else {
-		// Plain EDNS OPT, no COOKIE option.
 		q.Additional = []dns.ResourceRecord{dns.BuildOPT(1232, false)}
 	}
 	raw, err := dns.Pack(q, make([]byte, 512))
@@ -49,12 +48,12 @@ func rcodeOf(t *testing.T, raw []byte) uint8 {
 // TestCookiesEnforce_UDPOnly_TruthTable pins the RFC 7873 §5.4 strict
 // mode gate. The four-corner truth table:
 //
-//   enforce=false, any transport, no cookie  → answered (default behaviour)
-//   enforce=true,  UDP,            no cookie → BADCOOKIE (the whole point)
-//   enforce=true,  UDP,            cookie    → answered (client proved itself)
-//   enforce=true,  TCP,            no cookie → answered (TCP already passes
-//                                              source-validation; forcing
-//                                              another round-trip is overhead)
+//	enforce=false, any transport, no cookie  → answered (default behaviour)
+//	enforce=true,  UDP,            no cookie → BADCOOKIE (the whole point)
+//	enforce=true,  UDP,            cookie    → answered (client proved itself)
+//	enforce=true,  TCP,            no cookie → answered (TCP already passes
+//	                                           source-validation; forcing
+//	                                           another round-trip is overhead)
 //
 // The 3rd and 4th rows are the critical "no false positives" cells. A
 // regression that gated on transport=UDP only without checking the
@@ -62,47 +61,58 @@ func rcodeOf(t *testing.T, raw []byte) uint8 {
 // a regression that gated regardless of transport would punish every
 // TCP/DoT/DoH client with a useless BADCOOKIE bounce.
 func TestCookiesEnforce_UDPOnly_TruthTable(t *testing.T) {
+	clientCookie := []byte{0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8}
 	cases := []struct {
-		name        string
-		enforce     bool
-		transport   string
-		withCookie  bool
-		wantRCode   uint8 // RCode low nibble; BADCOOKIE = 7 (extended)
-		wantOK      bool  // true if response should NOT be BADCOOKIE
-		why         string
+		name       string
+		enforce    bool
+		transport  string
+		cookieKind string
+		wantRCode  uint8 // RCode low nibble; BADCOOKIE = 7 (extended)
+		wantOK     bool  // true if response should NOT be BADCOOKIE
+		why        string
 	}{
 		{
-			name:       "enforce off, UDP, no cookie — answered (default)",
-			enforce:    false,
-			transport:  "udp",
-			withCookie: false,
-			wantOK:     true,
-			why:        "default config must not break clients that don't speak cookies",
+			name:      "enforce off, UDP, no cookie — answered (default)",
+			transport: "udp",
+			wantOK:    true,
+			why:       "default config must not break clients that don't speak cookies",
 		},
 		{
-			name:       "enforce on, UDP, no cookie — BADCOOKIE",
+			name:      "enforce on, UDP, no cookie — BADCOOKIE",
+			enforce:   true,
+			transport: "udp",
+			wantRCode: dns.RCodeBadCookie & 0x0F,
+			why:       "the entire point of §5.4 strict mode — spoofed source cannot get answers",
+		},
+		{
+			name:       "enforce on, UDP, client-only cookie — BADCOOKIE",
 			enforce:    true,
 			transport:  "udp",
-			withCookie: false,
+			cookieKind: "client",
 			wantRCode:  dns.RCodeBadCookie & 0x0F,
-			wantOK:     false,
-			why:        "the entire point of §5.4 strict mode — spoofed source cannot get answers",
+			why:        "arbitrary client-cookie bytes do not prove return-routability",
 		},
 		{
-			name:       "enforce on, UDP, with cookie — answered",
+			name:       "enforce on, UDP, valid cookie pair — answered",
 			enforce:    true,
 			transport:  "udp",
-			withCookie: true,
+			cookieKind: "pair",
 			wantOK:     true,
-			why:        "client proved itself with a cookie; gate must let it through",
+			why:        "a validated server-cookie pair proves return-routability",
 		},
 		{
-			name:       "enforce on, TCP, no cookie — answered",
-			enforce:    true,
-			transport:  "tcp",
-			withCookie: false,
-			wantOK:     true,
-			why:        "TCP handshake already provides source validation; gate must be UDP-only",
+			name:      "enforce on, TCP, no cookie — answered",
+			enforce:   true,
+			transport: "tcp",
+			wantOK:    true,
+			why:       "TCP handshake already provides source validation; gate must be UDP-only",
+		},
+		{
+			name:      "enforce on, DoQ, no cookie — answered",
+			enforce:   true,
+			transport: "doq",
+			wantOK:    true,
+			why:       "DoQ is a stateful QUIC stream despite its UDP substrate",
 		},
 	}
 
@@ -115,8 +125,15 @@ func TestCookiesEnforce_UDPOnly_TruthTable(t *testing.T) {
 			h.EnableCookiesWithSecret(make([]byte, 16))
 			h.SetCookiesEnforce(c.enforce)
 
-			query := buildPlainQuery(t, c.withCookie)
 			addr := &mockAddr{network: c.transport, addr: "192.0.2.10:1234"}
+			var cookieData []byte
+			switch c.cookieKind {
+			case "client":
+				cookieData = clientCookie
+			case "pair":
+				cookieData = append(append([]byte(nil), clientCookie...), h.generateServerCookie(clientCookie, "192.0.2.10")...)
+			}
+			query := buildPlainQuery(t, cookieData)
 
 			resp, err := h.Handle(query, addr)
 			if err != nil {
@@ -157,6 +174,7 @@ func TestIsUDPAddr_NetworkStringPrefixes(t *testing.T) {
 		{"tcp", false},
 		{"tcp4", false},
 		{"tcp6", false},
+		{"doq", false},
 		{"unix", false},
 		{"", false},
 	}

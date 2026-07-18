@@ -16,12 +16,12 @@ func buildMinimalQuery(id uint16) []byte {
 	// Question: \x07example\x03com\x00 (13 bytes) + QTYPE(2) + QCLASS(2) = 17 bytes
 	// Total: 29 bytes
 	buf := make([]byte, 29)
-	binary.BigEndian.PutUint16(buf[0:2], id)       // ID
-	binary.BigEndian.PutUint16(buf[2:4], 0x0100)    // Flags: RD=1
-	binary.BigEndian.PutUint16(buf[4:6], 1)          // QDCOUNT=1
-	binary.BigEndian.PutUint16(buf[6:8], 0)          // ANCOUNT=0
-	binary.BigEndian.PutUint16(buf[8:10], 0)         // NSCOUNT=0
-	binary.BigEndian.PutUint16(buf[10:12], 0)        // ARCOUNT=0
+	binary.BigEndian.PutUint16(buf[0:2], id)     // ID
+	binary.BigEndian.PutUint16(buf[2:4], 0x0100) // Flags: RD=1
+	binary.BigEndian.PutUint16(buf[4:6], 1)      // QDCOUNT=1
+	binary.BigEndian.PutUint16(buf[6:8], 0)      // ANCOUNT=0
+	binary.BigEndian.PutUint16(buf[8:10], 0)     // NSCOUNT=0
+	binary.BigEndian.PutUint16(buf[10:12], 0)    // ARCOUNT=0
 	// QNAME: \x07example\x03com\x00
 	copy(buf[12:], []byte{7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0})
 	binary.BigEndian.PutUint16(buf[25:27], 1) // QTYPE=A
@@ -200,6 +200,62 @@ func TestTCPPipelineIdleTimeout(t *testing.T) {
 	err = binary.Read(conn, binary.BigEndian, &length)
 	if err == nil {
 		t.Error("expected error after idle timeout, but read succeeded")
+	}
+}
+
+func TestTCPServeCancellationWhileSemaphoreFull(t *testing.T) {
+	srv, err := NewTCPServer("127.0.0.1:0", &EchoHandler{}, time.Second, 1, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	// Occupy the sole worker slot before Serve accepts a connection. The
+	// admission path must still observe cancellation instead of blocking on
+	// the semaphore forever.
+	srv.sem <- struct{}{}
+	defer func() { <-srv.sem }()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+
+	conn, err := net.DialTimeout("tcp", srv.listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		srv.clientMu.Lock()
+		accepted := len(srv.clientConns) != 0
+		srv.clientMu.Unlock()
+		if accepted {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve remained blocked on a full semaphore after cancellation")
+	}
+}
+
+func TestTCPMaxConnsPerClientOption(t *testing.T) {
+	srv, err := NewTCPServer("127.0.0.1:0", &EchoHandler{}, time.Second, 4, discardLogger(),
+		WithMaxConnsPerClient(3),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if srv.maxConnsPerClient != 3 {
+		t.Fatalf("maxConnsPerClient = %d, want 3", srv.maxConnsPerClient)
 	}
 }
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"time"
@@ -36,6 +37,16 @@ func NewUDPServer(addr string, handler Handler, maxWorkers int, logger *slog.Log
 
 // Serve starts the UDP server loop.
 func (s *UDPServer) Serve(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = s.conn.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
 	readBuf := pool.GetBuffer()
 	defer pool.PutBuffer(readBuf)
 	buf := *readBuf
@@ -43,7 +54,7 @@ func (s *UDPServer) Serve(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return s.conn.Close()
+			return nil
 		default:
 		}
 
@@ -54,8 +65,8 @@ func (s *UDPServer) Serve(ctx context.Context) error {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
-			if ctx.Err() != nil {
-				return s.conn.Close()
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return nil
 			}
 			s.logger.Error("udp read error", "error", err)
 			continue
@@ -65,7 +76,11 @@ func (s *UDPServer) Serve(ctx context.Context) error {
 		query := make([]byte, n)
 		copy(query, buf[:n])
 
-		s.sem <- struct{}{}
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			return nil
+		}
 		go func(data []byte, addr net.Addr) {
 			defer func() { <-s.sem }()
 			s.handleUDP(data, addr)

@@ -123,6 +123,7 @@ func TestIsStreamTransport(t *testing.T) {
 		{network: "tcp", want: true},
 		{network: "tcp4", want: true},
 		{network: "tcp6", want: true},
+		{network: "doq", want: true},
 		{network: "udp", want: false},
 		{network: "udp4", want: false},
 		{nilAddr: true, want: false},

@@ -202,6 +202,7 @@ func startDNSServers(
 	go func() { errCh <- udpServer.Serve(ctx) }()
 
 	tcpServer, err := server.NewTCPServer(cfg.Server.ListenAddr, handler, cfg.Server.TCPTimeout, cfg.Server.MaxTCPConns, logger,
+		server.WithMaxConnsPerClient(cfg.Server.MaxTCPConnsPerClient),
 		server.WithPipelineMax(cfg.Server.TCPPipelineMax),
 		server.WithIdleTimeout(cfg.Server.TCPIdleTimeout),
 	)

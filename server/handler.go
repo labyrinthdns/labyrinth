@@ -732,71 +732,35 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		return h.buildBadVersResponse(query)
 	}
 
-	// RFC 7873 §5.2 cookie enforcement: when the client provides BOTH a
-	// client cookie and a server cookie, the server cookie MUST be valid.
-	// An invalid server cookie indicates a stale (post-secret-rotation),
-	// IP-mismatched, expired, or forged cookie — return BADCOOKIE so the
-	// client retries with a fresh issuance. A client sending only a client
-	// cookie (no server cookie yet) is not validated here; the normal
-	// addCookieToResponse path issues a server cookie in the success
-	// response. The early-exit position (before zone ACL, blocklist,
-	// cache lookup, and recursive resolution) means a flood of garbage
-	// cookies cannot consume CPU on expensive downstream work.
+	// Parse the cookie pair once for both normal validation and strict UDP
+	// enforcement. A client-only cookie is a valid bootstrap state in normal
+	// mode, but it has not yet proved return-routability and therefore does not
+	// satisfy strict UDP mode.
+	var clientCookie, serverCookie []byte
 	if h.cookiesEnabled && msg.EDNS0 != nil {
-		var clientCookie, serverCookie []byte
 		for _, opt := range msg.EDNS0.Options {
 			if opt.Code == dns.EDNSOptionCodeCookie {
 				clientCookie, serverCookie = dns.ParseCookieOption(opt.Data)
 				break
 			}
 		}
-		if len(clientCookie) == 8 && len(serverCookie) == 16 {
-			if !h.validateServerCookie(clientCookie, serverCookie, clientIP) {
-				h.metrics.IncResponses("BADCOOKIE")
-				return h.buildBadCookieResponse(query, clientCookie, clientIP)
-			}
-		}
 	}
 
-	// RFC 7873 §5.4 STRICT cookie enforcement (operator opt-in).
-	// When cookiesEnforce is true AND the transport is plain UDP AND the
-	// client did NOT supply a client cookie, refuse to answer. The
-	// BADCOOKIE response (with our newly-minted server cookie) tells the
-	// client to retry over a connection it can actually prove it owns —
-	// either by replaying the cookie pair over UDP, or by upgrading to
-	// TCP/DoT/DoH which already pass the source-validation bar implicitly.
-	//
-	// Why UDP-only: TCP / DoT / DoH establish a stateful handshake the
-	// client cannot spoof, so the source-validation property is already
-	// provided by the transport. Forcing those clients through a
-	// BADCOOKIE round-trip is pure overhead.
-	//
-	// Why operator opt-in: many legitimate clients (mobile resolvers,
-	// IoT, older stubs) do not implement RFC 7873 yet. Defaulting on
-	// would break service for those clients globally.
-	if h.cookiesEnabled && h.cookiesEnforce && isUDPAddr(clientAddr) {
-		hasClientCookie := false
-		if msg.EDNS0 != nil {
-			for _, opt := range msg.EDNS0.Options {
-				if opt.Code == dns.EDNSOptionCodeCookie {
-					cc, _ := dns.ParseCookieOption(opt.Data)
-					if len(cc) == 8 {
-						hasClientCookie = true
-					}
-					break
-				}
-			}
-		}
-		if !hasClientCookie {
-			h.metrics.IncResponses("BADCOOKIE")
-			// Build a BADCOOKIE response WITH a freshly-minted server
-			// cookie. The client will reissue with the pair and pass
-			// the gate on the second attempt — RFC 7873 §5.4 exactly.
-			// clientCookie nil here means buildBadCookieResponse emits
-			// a response cookie option without the client half (which
-			// the client will mint locally on retry).
-			return h.buildBadCookieResponse(query, nil, clientIP)
-		}
+	validCookiePair := len(clientCookie) == 8 && len(serverCookie) == 16 &&
+		h.validateServerCookie(clientCookie, serverCookie, clientIP)
+	if len(clientCookie) == 8 && len(serverCookie) == 16 && !validCookiePair {
+		h.metrics.IncResponses("BADCOOKIE")
+		return h.buildBadCookieResponse(query, clientCookie, clientIP)
+	}
+
+	// RFC 7873 §5.4 strict mode requires a VALID client/server cookie pair on
+	// UDP, not merely an 8-byte client cookie. Accepting the bootstrap half by
+	// itself would let a spoofed sender choose arbitrary bytes and receive the
+	// full answer, defeating the return-routability gate. Stateful transports
+	// (TCP, DoT, DoH, and DoQ) already validate the peer through a handshake.
+	if h.cookiesEnabled && h.cookiesEnforce && isUDPAddr(clientAddr) && !validCookiePair {
+		h.metrics.IncResponses("BADCOOKIE")
+		return h.buildBadCookieResponse(query, clientCookie, clientIP)
 	}
 
 	q := msg.Questions[0]
@@ -1044,11 +1008,25 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 						}
 					}
 				}
+				staleRCode := dns.RCodeToString[staleEntry.RCODE]
+				if staleRCode == "" {
+					staleRCode = "NOERROR"
+				}
+				if h.rrl != nil {
+					switch h.rrl.AllowResponse(clientIP, q.Name, staleRCode) {
+					case security.RRLDrop:
+						return nil, nil
+					case security.RRLSlip:
+						if !isStream {
+							return h.buildSlipResponse(query)
+						}
+					}
+				}
 				duration := time.Since(start)
 				h.metrics.ObserveQueryDuration(duration)
-				h.metrics.IncResponses("NOERROR")
+				h.metrics.IncResponses(staleRCode)
 				if h.OnQuery != nil {
-					h.OnQuery(clientIP, q.Name, qtypeStr, "NOERROR", true, float64(duration.Microseconds())/1000.0)
+					h.OnQuery(clientIP, q.Name, qtypeStr, staleRCode, true, float64(duration.Microseconds())/1000.0)
 				}
 				return resp, nil
 			}
@@ -1338,6 +1316,12 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry,
 	// comment for the full rationale).
 	answers := entry.Records
 	authority := entry.Authority
+	privateStripped := false
+	if h.privateFilter.Load() {
+		filtered := security.FilterPrivateAddresses(answers)
+		privateStripped = len(filtered) != len(answers)
+		answers = filtered
+	}
 	qtype := uint16(0)
 	if len(query.Questions) > 0 {
 		qtype = query.Questions[0].Type
@@ -1367,6 +1351,9 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry,
 	// Add OPT if client sent one
 	if query.EDNS0 != nil {
 		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
+		if privateStripped {
+			h.addEDEToResponse(resp, dns.EDECodeForgedAnswer, "rebind-protected")
+		}
 		// RFC 8914 §4.29 — when a cached entry was synthesised by the
 		// resolver itself (aggressive NSEC/NSEC3 negative caching, RFC 8198)
 		// rather than fetched directly from an authoritative, emit EDE 29
@@ -1541,17 +1528,16 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 // where reassembly uses 32-bit per-connection sequence numbers and is
 // structurally immune to off-path fragment-injection (Brandt et al, USENIX
 // Security 2018). RFC 9018 / DNS Flag Day 2020.
-// isStreamTransport reports whether a response to a query from clientAddr will
-// be delivered over a stream transport (TCP, DoT, DoH), where RFC 7766 §5
-// removes the UDP datagram size limit. UDP listeners pass a *net.UDPAddr
-// ("udp"); TCP/DoT pass a *net.TCPAddr and DoH synthesises one ("tcp"). A nil
-// address (test helpers, internal callers) is treated as a datagram so the
-// historic UDP-truncation behaviour is preserved.
+// isStreamTransport reports whether a response will be delivered over a
+// stateful stream. TCP covers plain DNS, DoT, and DoH; DoQ is explicitly
+// wrapped as "doq" by the QUIC listener because its underlying socket address
+// otherwise reports "udp" and would incorrectly trigger truncation/RRL slip.
 func isStreamTransport(clientAddr net.Addr) bool {
 	if clientAddr == nil {
 		return false
 	}
-	return strings.HasPrefix(clientAddr.Network(), "tcp")
+	network := clientAddr.Network()
+	return strings.HasPrefix(network, "tcp") || strings.HasPrefix(network, "doq")
 }
 
 func (h *MainHandler) maybeTruncateUDP(packed []byte, query *dns.Message, stream ...bool) []byte {
