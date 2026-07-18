@@ -1,3 +1,5 @@
+//go:build soak
+
 // Package soak provides a long-running integration test that exercises the
 // full resolver stack (UDP listener → cache → upstream resolution → DNSSEC
 // validation) under sustained load. It monitors goroutine count, memory
@@ -5,14 +7,14 @@
 // beyond the configured threshold.
 //
 // This test requires outbound network access to root DNS servers and runs
-// for several minutes by default. It is excluded from `make test` and CI
-// (`go test ./...`). Run it explicitly:
+// for several minutes by default. It is behind the `soak` build tag, so
+// `make test`, CI, and plain `go test ./...` never run it. Run it explicitly:
 //
 //	make soak
 //
 // Or directly:
 //
-//	go test ./test/soak/ -run TestSoak -timeout 24h -v
+//	go test -tags soak ./test/soak/ -run TestSoak -timeout 24h -v
 //
 // Duration defaults to 5 minutes and can be overridden via the
 // LABYRINTH_SOAK_DURATION environment variable (e.g. "72h", "30m").

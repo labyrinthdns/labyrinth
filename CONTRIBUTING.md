@@ -49,8 +49,9 @@ go build -ldflags="-s -w" -o labyrinth .
 ### Running Tests
 
 ```bash
-# Run all tests with race detector
-go test ./... -count=1 -race -timeout 120s
+# Run all first-party packages with the race detector
+# (the Makefile allowlist deliberately excludes frontend node_modules)
+make test-race
 
 # Run a specific package
 go test ./resolver/... -count=1 -race
@@ -58,8 +59,8 @@ go test ./resolver/... -count=1 -race
 # Run a specific test
 go test ./dnssec/... -run TestRFC4035AlgorithmRollover -v
 
-# Benchmarks
-go test ./... -bench=. -benchmem -run='^$'
+# Benchmarks across first-party packages
+make bench
 ```
 
 ## Development Workflow
@@ -90,8 +91,9 @@ Follow the [coding standards](#coding-standards) below.
 ### 4. Test your changes
 
 ```bash
-go test ./... -count=1 -race -timeout 120s
-go vet ./...
+make test-race
+make vet
+cd web/ui && npm run lint && npm test
 ```
 
 ### 5. Commit and push
@@ -121,7 +123,7 @@ See [pull request process](#pull-request-process) below.
 ### Go
 
 - Format with `gofumpt` (or `go fmt` as fallback).
-- Run `go vet ./...` before every commit.
+- Run `make vet` before every commit; it uses the first-party package allowlist and never traverses frontend `node_modules`.
 - Use `atomic.Bool` / `atomic.Int64` for cross-goroutine flags.
 - Avoid `interface{}` — use `any`.
 - Error wrapping: `fmt.Errorf("context: %w", err)`.
@@ -176,8 +178,8 @@ docs(web): add API reference for /api/cache endpoints
 
 ## Pull Request Process
 
-1. **Ensure tests pass** with `go test ./... -count=1 -race -timeout 120s`.
-2. **Run `go vet ./...`** — no warnings.
+1. **Ensure tests pass** with `make test-race`.
+2. **Run `make vet`** — no warnings.
 3. **Update CHANGELOG.md** under the `[Unreleased]` section.
 4. **Update PLAN.md** if your change affects a milestone item.
 5. **Update `docs/rfc-compliance-matrix.md`** if your change adds or modifies

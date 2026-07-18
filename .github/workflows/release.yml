@@ -19,11 +19,22 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
+      - name: Install frontend dependencies
+        working-directory: web/ui
+        run: npm ci
+      - name: Lint frontend
+        working-directory: web/ui
+        run: npm run lint
+      - name: Test frontend
+        working-directory: web/ui
+        run: npm test
       - name: Build frontend
         working-directory: web/ui
-        run: npm ci && npm run build
-      - name: Test
-        run: go test $(go list ./... | grep -v /test/soak) -count=1 -timeout 120s
+        run: npm run build
+      - name: Verify first-party Go package scope
+        run: make check-go-package-scope
+      - name: Test Go packages
+        run: make test
 
   build:
     needs: test
