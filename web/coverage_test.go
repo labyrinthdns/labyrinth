@@ -2127,7 +2127,7 @@ func TestHandleSetupComplete_WriteConfigError(t *testing.T) {
 	// Create a directory named labyrinth.yaml so os.Create fails
 	os.Mkdir(filepath.Join(tmpDir, "labyrinth.yaml"), 0755)
 
-	req := httptest.NewRequest("POST", "/api/setup/complete", strings.NewReader(`{}`))
+	req := httptest.NewRequest("POST", "/api/setup/complete", strings.NewReader(`{"username":"admin","password":"validpwd123"}`))
 	w := httptest.NewRecorder()
 	srv.handleSetupComplete(w, req)
 
@@ -2151,10 +2151,7 @@ func TestWriteConfigYAML_CreateError(t *testing.T) {
 }
 
 // ===========================================================================
-// handleSetupComplete: password hash error (api_setup.go lines 61-64)
-// HashPassword only fails for short passwords. Empty password skips hashing.
-// So this path is actually covered by the empty password + defaults test.
-// Let me trigger it with a short non-empty password.
+// handleSetupComplete: invalid password policy
 // ===========================================================================
 
 func TestHandleSetupComplete_ShortPassword(t *testing.T) {
@@ -2165,14 +2162,14 @@ func TestHandleSetupComplete_ShortPassword(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	// Password is non-empty but too short
-	reqBody := `{"password": "short"}`
+	// Password is non-empty but too short.
+	reqBody := `{"username":"admin","password":"short"}`
 	req := httptest.NewRequest("POST", "/api/setup/complete", strings.NewReader(reqBody))
 	w := httptest.NewRecorder()
 	srv.handleSetupComplete(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("want 500, got %d; body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d; body: %s", w.Code, w.Body.String())
 	}
 }
 

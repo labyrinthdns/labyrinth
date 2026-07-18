@@ -13,47 +13,71 @@ import (
 	"github.com/labyrinthdns/labyrinth/config"
 )
 
-func TestExtractPasswordHashFromYAML_Variants(t *testing.T) {
-	v, ok := extractPasswordHashFromYAML("web:\n  auth:\n    password_hash: \"abc\"\n")
-	if !ok || v != "abc" {
-		t.Fatalf("quoted hash parse mismatch: ok=%v v=%q", ok, v)
-	}
-
-	v, ok = extractPasswordHashFromYAML("web:\n  auth:\n    password_hash: \n")
-	if !ok || v != "" {
-		t.Fatalf("empty hash parse mismatch: ok=%v v=%q", ok, v)
-	}
-
-	if _, ok := extractPasswordHashFromYAML("web:\n  auth:\n    username: admin\n"); ok {
-		t.Fatalf("expected not found when password_hash is absent")
-	}
-}
-
 func TestEnsurePasswordHashUnchanged_Branches(t *testing.T) {
 	srv := testAdminServer(t)
 
 	// current empty + incoming non-empty should fail
-	if err := srv.ensurePasswordHashUnchanged("web:\n  auth:\n    password_hash: abc\n"); err == nil {
+	incoming := &config.Config{}
+	incoming.Web.Auth.PasswordHash = "abc"
+	if err := srv.ensurePasswordHashUnchanged(incoming); err == nil {
 		t.Fatalf("expected error when setting password from config editor")
 	}
 
 	srvAuth, _ := testAdminServerWithAuth(t)
 	current := srvAuth.config.Load().Web.Auth.PasswordHash
 
-	// current non-empty + missing password_hash should fail
-	if err := srvAuth.ensurePasswordHashUnchanged("web:\n  auth:\n    username: admin\n"); err == nil {
+	// current non-empty + missing or empty password_hash should fail
+	if err := srvAuth.ensurePasswordHashUnchanged(&config.Config{}); err == nil {
 		t.Fatalf("expected error when removing password_hash from config")
 	}
 
-	// current non-empty + empty password_hash should fail
-	if err := srvAuth.ensurePasswordHashUnchanged("web:\n  auth:\n    password_hash:\n"); err == nil {
-		t.Fatalf("expected error when clearing password_hash from config")
-	}
-
 	// unchanged should pass
-	content := "web:\n  auth:\n    username: admin\n    password_hash: " + current + "\n"
-	if err := srvAuth.ensurePasswordHashUnchanged(content); err != nil {
+	unchanged := &config.Config{}
+	unchanged.Web.Auth.PasswordHash = current
+	if err := srvAuth.ensurePasswordHashUnchanged(unchanged); err != nil {
 		t.Fatalf("expected unchanged hash to pass, got: %v", err)
+	}
+}
+
+func TestConfigRawPasswordGuardUsesEffectiveParsedHash(t *testing.T) {
+	srv, _ := testAdminServerWithAuth(t)
+	current := srv.config.Load().Web.Auth.PasswordHash
+	srv.SetConfigPath(filepath.Join(t.TempDir(), "labyrinth.yaml"))
+
+	// A raw-text scan would accept the top-level decoy and miss the effective
+	// nested value that config.Parse would publish as web.auth.password_hash.
+	content := "password_hash: " + current + "\nweb:\n  auth:\n    username: admin\n    password_hash: attacker-hash\n"
+	payload, err := json.Marshal(configEditRequest{Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/config/raw", strings.NewReader(string(payload)))
+	w := httptest.NewRecorder()
+	srv.handleConfigRaw(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if got := srv.config.Load().Web.Auth.PasswordHash; got != current {
+		t.Fatalf("published hash changed to %q", got)
+	}
+}
+
+func TestConfigRawRejectsDuplicateYAMLKeys(t *testing.T) {
+	srv, _ := testAdminServerWithAuth(t)
+	srv.SetConfigPath(filepath.Join(t.TempDir(), "labyrinth.yaml"))
+	current := srv.config.Load().Web.Auth.PasswordHash
+	content := "web:\n  auth:\n    password_hash: " + current + "\nweb:\n  auth:\n    password_hash: " + current + "\n"
+	payload, err := json.Marshal(configEditRequest{Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/config/raw", strings.NewReader(string(payload)))
+	w := httptest.NewRecorder()
+	srv.handleConfigRaw(w, req)
+
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "duplicate YAML key") {
+		t.Fatalf("expected duplicate YAML key rejection, got status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

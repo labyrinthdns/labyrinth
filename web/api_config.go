@@ -243,39 +243,86 @@ type configEditRequest struct {
 	Content string `json:"content"`
 }
 
-func extractPasswordHashFromYAML(content string) (string, bool) {
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "password_hash:") {
-			continue
-		}
-		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "password_hash:"))
-		if val == "" {
-			return "", true
-		}
-		if (strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) ||
-			(strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'")) {
-			val = strings.Trim(val, "\"'")
-		}
-		return val, true
+// parseConfigEdit rejects ambiguous duplicate keys before building the same
+// effective config snapshot that would be published after a successful save.
+// The config package's intentionally small YAML parser stores values in a map,
+// so without this preflight a later duplicate silently wins.
+func parseConfigEdit(content string) (*config.Config, error) {
+	if err := rejectDuplicateYAMLKeys(content); err != nil {
+		return nil, err
 	}
-	return "", false
+	return config.Parse([]byte(content))
 }
 
-func (s *AdminServer) ensurePasswordHashUnchanged(content string) error {
-	current := strings.TrimSpace(s.config.Load().Web.Auth.PasswordHash)
-	incoming, found := extractPasswordHashFromYAML(content)
-	incoming = strings.TrimSpace(incoming)
+func rejectDuplicateYAMLKeys(content string) error {
+	type section struct {
+		key    string
+		indent int
+	}
 
-	// Admin password is managed only via /api/auth/change-password.
+	seen := make(map[string]struct{})
+	var sections []section
+	lines := strings.Split(content, "\n")
+	if len(lines) > 0 {
+		lines[0] = strings.TrimPrefix(lines[0], "\ufeff")
+	}
+
+	for lineNumber, line := range lines {
+		// Match the config parser's comment and whitespace handling so the
+		// duplicate check reasons about the keys that config.Parse will see.
+		if idx := strings.Index(line, "#"); idx >= 0 {
+			line = line[:idx]
+		}
+		trimmed := strings.TrimRight(line, " \t\r")
+		if trimmed == "" {
+			continue
+		}
+
+		content := strings.TrimSpace(trimmed)
+		if strings.HasPrefix(content, "- ") || !strings.Contains(content, ":") {
+			continue
+		}
+
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		for len(sections) > 0 && sections[len(sections)-1].indent >= indent {
+			sections = sections[:len(sections)-1]
+		}
+
+		parts := strings.SplitN(content, ":", 2)
+		key := strings.TrimSpace(parts[0])
+		pathParts := make([]string, 0, len(sections)+1)
+		for _, parent := range sections {
+			pathParts = append(pathParts, parent.key)
+		}
+		pathParts = append(pathParts, key)
+		fullKey := strings.Join(pathParts, ".")
+		if _, exists := seen[fullKey]; exists {
+			return fmt.Errorf("duplicate YAML key %q on line %d", fullKey, lineNumber+1)
+		}
+		seen[fullKey] = struct{}{}
+
+		if strings.TrimSpace(parts[1]) == "" {
+			sections = append(sections, section{key: key, indent: indent})
+		}
+	}
+
+	return nil
+}
+
+func (s *AdminServer) ensurePasswordHashUnchanged(parsedCfg *config.Config) error {
+	current := strings.TrimSpace(s.config.Load().Web.Auth.PasswordHash)
+	incoming := strings.TrimSpace(parsedCfg.Web.Auth.PasswordHash)
+
+	// Admin password is managed only via /api/auth/change-password. Compare
+	// the effective parsed value, not the first password_hash-looking line in
+	// the raw document; unrelated or duplicate keys must not bypass the guard.
 	if current == "" {
-		if found && incoming != "" {
+		if incoming != "" {
 			return fmt.Errorf("admin password cannot be set from config editor; use change password")
 		}
 		return nil
 	}
-	if !found || incoming == "" {
+	if incoming == "" {
 		return fmt.Errorf("admin password cannot be removed from config editor; use change password")
 	}
 	if incoming != current {
@@ -296,15 +343,15 @@ func (s *AdminServer) handleValidateConfig(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	if err := s.ensurePasswordHashUnchanged(req.Content); err != nil {
+	parsedCfg, err := parseConfigEdit(req.Content)
+	if err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]interface{}{
 			"valid": false,
 			"error": err.Error(),
 		})
 		return
 	}
-
-	if _, err := config.Parse([]byte(req.Content)); err != nil {
+	if err := s.ensurePasswordHashUnchanged(parsedCfg); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]interface{}{
 			"valid": false,
 			"error": err.Error(),
@@ -341,18 +388,17 @@ func (s *AdminServer) handleConfigRaw(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Serialise concurrent config writes — see configFileMu on
-		// AdminServer for why. ensurePasswordHashUnchanged reads the
-		// current on-disk config, so it MUST run under the lock to
-		// avoid TOCTOU between the read and the writeFileAtomically.
+		// AdminServer for why. Parse before applying the password guard so
+		// it compares the same effective value that would be published.
 		s.configFileMu.Lock()
 		defer s.configFileMu.Unlock()
-		if err := s.ensurePasswordHashUnchanged(req.Content); err != nil {
+
+		parsedCfg, err := parseConfigEdit(req.Content)
+		if err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-
-		parsedCfg, err := config.Parse([]byte(req.Content))
-		if err != nil {
+		if err := s.ensurePasswordHashUnchanged(parsedCfg); err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}

@@ -1345,7 +1345,7 @@ func TestHandleSetupComplete_Defaults(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	req := httptest.NewRequest("POST", "/api/setup/complete", strings.NewReader(`{}`))
+	req := httptest.NewRequest("POST", "/api/setup/complete", strings.NewReader(`{"username":"admin","password":"validpwd123"}`))
 	w := httptest.NewRecorder()
 	srv.handleSetupComplete(w, req)
 

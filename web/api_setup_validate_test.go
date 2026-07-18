@@ -1,8 +1,10 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -72,5 +74,74 @@ func TestValidateSetupRequest_AcceptsValid(t *testing.T) {
 	}
 	if err := validateSetupRequest(req); err != nil {
 		t.Errorf("validateSetupRequest rejected a sane request: %v", err)
+	}
+}
+
+func TestSetupComplete_RequiresValidCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing username", body: `{"password":"validpwd123"}`},
+		{name: "blank username", body: `{"username":"  ","password":"validpwd123"}`},
+		{name: "username with newline", body: `{"username":"admin\nother","password":"validpwd123"}`},
+		{name: "missing password", body: `{"username":"admin"}`},
+		{name: "short password", body: `{"username":"admin","password":"short"}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testAdminServer(t)
+			srv.setupDone.Store(false)
+			srv.SetConfigPath(filepath.Join(t.TempDir(), "labyrinth.yaml"))
+
+			req := httptest.NewRequest(http.MethodPost, "/api/setup/complete", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			srv.handleSetupComplete(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if srv.setupDone.Load() {
+				t.Fatal("invalid credentials must not complete setup")
+			}
+		})
+	}
+}
+
+func TestSetupComplete_PublishesCredentialsImmediately(t *testing.T) {
+	srv := testAdminServer(t)
+	srv.setupDone.Store(false)
+	srv.SetConfigPath(filepath.Join(t.TempDir(), "labyrinth.yaml"))
+
+	mux := http.NewServeMux()
+	srv.registerRoutes(mux)
+
+	setupBody := `{"username":"admin","password":"validpwd123"}`
+	setupReq := httptest.NewRequest(http.MethodPost, "/api/setup/complete", strings.NewReader(setupBody))
+	setupW := httptest.NewRecorder()
+	mux.ServeHTTP(setupW, setupReq)
+	if setupW.Code != http.StatusOK {
+		t.Fatalf("setup status = %d, want 200; body=%s", setupW.Code, setupW.Body.String())
+	}
+
+	// The already-registered middleware must see the newly published auth
+	// snapshot immediately; no restart or route rebuild is allowed.
+	protectedReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	protectedW := httptest.NewRecorder()
+	mux.ServeHTTP(protectedW, protectedReq)
+	if protectedW.Code != http.StatusUnauthorized {
+		t.Fatalf("protected API status = %d, want 401 after setup", protectedW.Code)
+	}
+
+	loginBody, err := json.Marshal(map[string]string{"username": "admin", "password": "validpwd123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(string(loginBody)))
+	loginW := httptest.NewRecorder()
+	mux.ServeHTTP(loginW, loginReq)
+	if loginW.Code != http.StatusOK {
+		t.Fatalf("login status = %d, want 200 without restart; body=%s", loginW.Code, loginW.Body.String())
 	}
 }

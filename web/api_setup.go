@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/labyrinthdns/labyrinth/config"
 )
 
 // Sanity caps on user-supplied setup fields. Real values are tiny;
@@ -23,6 +25,13 @@ const (
 // violation as an error so the operator gets a clear message about
 // which field is wrong.
 func validateSetupRequest(req *SetupRequest) error {
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		return fmt.Errorf("username is required")
+	}
+	if err := ValidatePassword(req.Password); err != nil {
+		return err
+	}
 	if len(req.ListenAddr) > setupMaxStringLen {
 		return fmt.Errorf("listen_addr exceeds %d-byte cap", setupMaxStringLen)
 	}
@@ -31,6 +40,9 @@ func validateSetupRequest(req *SetupRequest) error {
 	}
 	if len(req.Username) > setupMaxStringLen {
 		return fmt.Errorf("username exceeds %d-byte cap", setupMaxStringLen)
+	}
+	if strings.ContainsAny(req.Username, "\r\n\x00") {
+		return fmt.Errorf("username contains invalid control characters")
 	}
 	if len(req.LogLevel) > setupMaxStringLen {
 		return fmt.Errorf("log_level exceeds %d-byte cap", setupMaxStringLen)
@@ -55,16 +67,16 @@ func validateSetupRequest(req *SetupRequest) error {
 
 // SetupRequest represents the JSON body for the setup completion endpoint.
 type SetupRequest struct {
-	ListenAddr     string `json:"listen_addr"`
-	WebAddr        string `json:"web_addr"`
-	Username       string `json:"username"`
-	Password       string `json:"password"`
-	MaxCacheSize   int    `json:"max_cache_size"`
-	MaxDepth       int    `json:"max_depth"`
+	ListenAddr     string  `json:"listen_addr"`
+	WebAddr        string  `json:"web_addr"`
+	Username       string  `json:"username"`
+	Password       string  `json:"password"`
+	MaxCacheSize   int     `json:"max_cache_size"`
+	MaxDepth       int     `json:"max_depth"`
 	RateLimitRate  float64 `json:"rate_limit_rate"`
-	RateLimitBurst int    `json:"rate_limit_burst"`
-	LogLevel       string `json:"log_level"`
-	LogFormat      string `json:"log_format"`
+	RateLimitBurst int     `json:"rate_limit_burst"`
+	LogLevel       string  `json:"log_level"`
+	LogFormat      string  `json:"log_format"`
 }
 
 // handleSetupStatus handles GET /api/setup/status — returns setup state.
@@ -121,15 +133,12 @@ func (s *AdminServer) handleSetupComplete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Hash the password
-	var passwordHash string
-	if req.Password != "" {
-		var err error
-		passwordHash, err = HashPassword(req.Password)
-		if err != nil {
-			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
-			return
-		}
+	passwordHash, err := HashPassword(req.Password)
+	if err != nil {
+		// validateSetupRequest already checked the password policy; reaching
+		// this branch means bcrypt itself failed.
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
+		return
 	}
 
 	// Apply defaults
@@ -169,6 +178,20 @@ func (s *AdminServer) handleSetupComplete(w http.ResponseWriter, r *http.Request
 	// Best-effort — Windows permissions semantics differ; ignore failure.
 	_ = os.Chmod(cfgPath, 0o600)
 
+	// Setup changes the auth boundary immediately. Parse the bytes just written
+	// and publish that complete snapshot in one atomic Store so protected APIs
+	// and /api/auth/login observe exactly the persisted credentials together.
+	persisted, err := os.ReadFile(cfgPath)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to load written config: " + err.Error()})
+		return
+	}
+	published, err := config.Parse(persisted)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to load written config: " + err.Error()})
+		return
+	}
+	s.config.Store(published)
 	s.setupDone.Store(true)
 	s.logger.Info("setup completed, config written", "path", cfgPath)
 
