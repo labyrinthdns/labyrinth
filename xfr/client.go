@@ -27,9 +27,9 @@ import (
 
 // Defaults
 const (
-	defaultPort     = "853"
-	defaultTimeout  = 30 * time.Second
-	maxXFRMessages  = 65535
+	defaultPort    = "853"
+	defaultTimeout = 30 * time.Second
+	maxXFRMessages = 65535
 )
 
 // ClientConfig configures an XFR client.
@@ -88,7 +88,7 @@ func dial(ctx context.Context, addr string, useTLS, skipVerify bool, timeout tim
 	if useTLS {
 		tlsCfg := &tls.Config{
 			InsecureSkipVerify: skipVerify,
-			MinVersion:         tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS13,
 		}
 		dialer := &tls.Dialer{Config: tlsCfg}
 		ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -187,7 +187,7 @@ func transferAXFR(conn net.Conn, zone string, timeout time.Duration) ([]dns.Reso
 func buildAXFRQuery(zone string) *dns.Message {
 	return &dns.Message{
 		Header: dns.Header{
-			ID:      0, // server assigns ID in response
+			ID:      0,      // server assigns ID in response
 			Flags:   0x0100, // RD=1
 			QDCount: 1,
 		},

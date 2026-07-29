@@ -54,7 +54,7 @@ func startXFRMock(t *testing.T, zone string, records []dns.ResourceRecord, useTL
 		}
 		tlsCfg = &tls.Config{
 			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+			MinVersion:   tls.VersionTLS13,
 		}
 	}
 
@@ -183,7 +183,7 @@ func TestAXFR_BasicTransferFullZone(t *testing.T) {
 	}
 }
 
-// TestAXFR_OverTLS verifies AXFR works over TLS (RFC 9103).
+// TestAXFR_OverTLS verifies AXFR works over TLS 1.3 (RFC 9103).
 func TestAXFR_OverTLS(t *testing.T) {
 	zone := "example.com"
 	records := []dns.ResourceRecord{
@@ -208,6 +208,50 @@ func TestAXFR_OverTLS(t *testing.T) {
 
 	if len(result) == 0 {
 		t.Fatal("AXFR over TLS returned no records")
+	}
+}
+
+func TestAXFR_OverTLSRejectsTLS12OnlyPrimary(t *testing.T) {
+	cert, err := generateTestCert()
+	if err != nil {
+		t.Fatalf("generate test cert: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		close(accepted)
+		tlsConn := tls.Server(conn, &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+			MaxVersion:   tls.VersionTLS12,
+		})
+		_ = tlsConn.Handshake()
+	}()
+
+	_, err = AXFR(context.Background(), ClientConfig{
+		PrimaryAddr:        ln.Addr().String(),
+		Zone:               "example.com",
+		Timeout:            time.Second,
+		UseTLS:             true,
+		InsecureSkipVerify: true,
+	})
+	if err == nil {
+		t.Fatal("AXFR over TLS succeeded against a TLS 1.2-only primary; RFC 9103 requires TLS 1.3")
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("TLS 1.2-only primary was not contacted")
 	}
 }
 
@@ -294,7 +338,6 @@ func TestMissingPrimaryAddr(t *testing.T) {
 		t.Error("expected error for missing primary address")
 	}
 }
-
 
 // generateTestCert creates a self-signed TLS certificate for testing XFR over TLS.
 func generateTestCert() (tls.Certificate, error) {
