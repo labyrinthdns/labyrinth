@@ -86,7 +86,9 @@ describe('api/client', () => {
   })
 
   it('builds cookie-authenticated websocket URLs without token query parameters', async () => {
-    const wsCtor = vi.fn().mockImplementation((url: string) => ({ url }))
+    const wsCtor = vi.fn().mockImplementation(function MockWebSocket(this: { url: string }, url: string) {
+      this.url = url
+    })
     vi.stubGlobal('WebSocket', wsCtor as unknown as typeof WebSocket)
 
     const mod = await import('./client')
