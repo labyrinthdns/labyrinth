@@ -1,0 +1,159 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Install frontend dependencies
+        working-directory: web/ui
+        run: npm ci
+      - name: Lint frontend
+        working-directory: web/ui
+        run: npm run lint
+      - name: Test frontend
+        working-directory: web/ui
+        run: npm test
+      - name: Build frontend
+        working-directory: web/ui
+        run: npm run build
+      - name: Verify first-party Go package scope
+        run: make check-go-package-scope
+      - name: Test Go packages
+        run: make test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64.exe
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Build frontend
+        working-directory: web/ui
+        run: npm ci && npm run build
+      - name: Build labyrinth
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          GO_VER=$(go version | cut -d' ' -f3)
+          go build -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME} -X main.goVersion=${GO_VER}" -o labyrinth-${{ matrix.suffix }} .
+      - name: Build labyrinth-bench
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build -ldflags="-s -w" -o labyrinth-bench-${{ matrix.suffix }} ./cmd/labyrinth-bench/
+      - uses: actions/upload-artifact@v5
+        with:
+          name: binaries-${{ matrix.suffix }}
+          path: |
+            labyrinth-${{ matrix.suffix }}
+            labyrinth-bench-${{ matrix.suffix }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          pattern: binaries-*
+          merge-multiple: true
+      - name: Checksums
+        working-directory: artifacts
+        run: sha256sum labyrinth-* > checksums.txt && cat checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/labyrinth-*
+            artifacts/checksums.txt
+          body: |
+            ## Install
+            ```bash
+            curl -sSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+            ```
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ```
+            Docs: https://labyrinthdns.com/docs
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Build frontend
+        working-directory: web/ui
+        run: npm ci && npm run build
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,189 @@
+package dns
+
+import "encoding/binary"
+
+// UnpackRR decodes a resource record from the wire format.
+// For types with compressed domain names in RDATA (NS, CNAME, PTR, MX, SOA, SRV),
+// the names are decompressed during unpack so stored RDATA is self-contained.
+func UnpackRR(msg []byte, offset int) (ResourceRecord, int, error) {
+	var rr ResourceRecord
+	var err error
+
+	rr.Name, offset, err = DecodeName(msg, offset)
+	if err != nil {
+		return rr, 0, err
+	}
+
+	r := &wireReader{buf: msg, offset: offset}
+
+	if rr.Type, err = r.readUint16(); err != nil {
+		return rr, 0, err
+	}
+	if rr.Class, err = r.readUint16(); err != nil {
+		return rr, 0, err
+	}
+	if rr.TTL, err = r.readUint32(); err != nil {
+		return rr, 0, err
+	}
+
+	var wireRDLength uint16
+	if wireRDLength, err = r.readUint16(); err != nil {
+		return rr, 0, err
+	}
+
+	if r.remaining() < int(wireRDLength) {
+		return rr, 0, errTruncated
+	}
+
+	rdataStart := r.offset
+	rr.RDataOffset = rdataStart
+	newOffset := rdataStart + int(wireRDLength)
+	// Restrict direct label reads to this RR's RDATA while retaining the message
+	// prefix so legal compression pointers can still refer to earlier names.
+	rdataMsg := msg[:newOffset]
+
+	// Decompress name-bearing RDATA types so stored RData is self-contained
+	switch rr.Type {
+	case TypeNS, TypeCNAME, TypePTR, TypeDNAME:
+		name, _, nameErr := DecodeName(rdataMsg, rdataStart)
+		if nameErr == nil {
+			rr.RData = encodePlainName(name)
+		} else {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+		}
+
+	case TypeMX:
+		if wireRDLength >= 2 {
+			pref := binary.BigEndian.Uint16(msg[rdataStart:])
+			name, _, nameErr := DecodeName(rdataMsg, rdataStart+2)
+			if nameErr == nil {
+				nameBytes := encodePlainName(name)
+				rr.RData = make([]byte, 2+len(nameBytes))
+				binary.BigEndian.PutUint16(rr.RData, pref)
+				copy(rr.RData[2:], nameBytes)
+			} else {
+				rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+			}
+		} else {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+		}
+
+	case TypeSOA:
+		mname, off1, err1 := DecodeName(rdataMsg, rdataStart)
+		if err1 != nil {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+			break
+		}
+		rname, off2, err2 := DecodeName(rdataMsg, off1)
+		if err2 != nil {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+			break
+		}
+		serialsEnd := off2 + 20
+		if serialsEnd > newOffset {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+			break
+		}
+		mnameBytes := encodePlainName(mname)
+		rnameBytes := encodePlainName(rname)
+		rr.RData = make([]byte, len(mnameBytes)+len(rnameBytes)+20)
+		copy(rr.RData, mnameBytes)
+		copy(rr.RData[len(mnameBytes):], rnameBytes)
+		copy(rr.RData[len(mnameBytes)+len(rnameBytes):], msg[off2:off2+20])
+
+	case TypeSRV:
+		if wireRDLength >= 6 {
+			header := make([]byte, 6)
+			copy(header, msg[rdataStart:rdataStart+6])
+			name, _, nameErr := DecodeName(rdataMsg, rdataStart+6)
+			if nameErr == nil {
+				nameBytes := encodePlainName(name)
+				rr.RData = make([]byte, 6+len(nameBytes))
+				copy(rr.RData, header)
+				copy(rr.RData[6:], nameBytes)
+			} else {
+				rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+			}
+		} else {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+		}
+
+	case TypeRRSIG:
+		// Fixed fields are 18 bytes, then signer name (possibly compressed), then signature.
+		// Keep the nameEnd check as defense in depth before deriving the signature length.
+		if wireRDLength >= 18 {
+			signerName, nameEnd, nameErr := DecodeName(rdataMsg, rdataStart+18)
+			if nameErr == nil && nameEnd <= newOffset {
+				fixedFields := make([]byte, 18)
+				copy(fixedFields, msg[rdataStart:rdataStart+18])
+				nameBytes := encodePlainName(signerName)
+				sigLen := newOffset - nameEnd
+				rr.RData = make([]byte, 18+len(nameBytes)+sigLen)
+				copy(rr.RData, fixedFields)
+				copy(rr.RData[18:], nameBytes)
+				if sigLen > 0 {
+					copy(rr.RData[18+len(nameBytes):], msg[nameEnd:nameEnd+sigLen])
+				}
+			} else {
+				rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+			}
+		} else {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+		}
+
+	case TypeNSEC:
+		// Next domain name (possibly compressed) followed by type bitmaps.
+		name, nameEnd, nameErr := DecodeName(rdataMsg, rdataStart)
+		if nameErr == nil && nameEnd <= newOffset {
+			nameBytes := encodePlainName(name)
+			bitmapLen := newOffset - nameEnd
+			rr.RData = make([]byte, len(nameBytes)+bitmapLen)
+			copy(rr.RData, nameBytes)
+			if bitmapLen > 0 {
+				copy(rr.RData[len(nameBytes):], msg[nameEnd:nameEnd+bitmapLen])
+			}
+		} else {
+			rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+		}
+
+	default:
+		rr.RData = copyRData(msg, rdataStart, int(wireRDLength))
+	}
+
+	rr.RDLength = uint16(len(rr.RData))
+	return rr, newOffset, nil
+}
+
+func copyRData(msg []byte, offset, n int) []byte {
+	b := make([]byte, n)
+	copy(b, msg[offset:offset+n])
+	return b
+}
+
+// BuildPlainName encodes a domain name as uncompressed wire-format label sequence.
+// Exported for use in tests and delegation handling.
+func BuildPlainName(name string) []byte {
+	return encodePlainName(name)
+}
+
+// encodePlainName encodes a domain name as uncompressed wire-format label sequence.
+func encodePlainName(name string) []byte {
+	if name == "" || name == "." {
+		return []byte{0x00}
+	}
+	if name[len(name)-1] == '.' {
+		name = name[:len(name)-1]
+	}
+	var buf []byte
+	start := 0
+	for i := 0; i <= len(name); i++ {
+		if i == len(name) || name[i] == '.' {
+			label := name[start:i]
+			buf = append(buf, byte(len(label)))
+			buf = append(buf, label...)
+			start = i + 1
+		}
+	}
+	buf = append(buf, 0x00)
+	return buf
+}

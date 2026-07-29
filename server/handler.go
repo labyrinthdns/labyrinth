@@ -1,0 +1,1906 @@
+package server
+
+import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/dns"
+	"github.com/labyrinthdns/labyrinth/internal/pool"
+	"github.com/labyrinthdns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/resolver"
+	"github.com/labyrinthdns/labyrinth/security"
+)
+
+// maxDNSMessageSize is the largest a DNS message can be on the wire: the
+// DNS-over-TCP 2-byte length prefix (RFC 7766 §8) caps a message at 65535
+// bytes. Used as the fallback pack buffer when the pooled 4 KiB scratch buffer
+// cannot hold a large response.
+const maxDNSMessageSize = 65535
+
+// Handler processes a raw DNS query and returns a raw DNS response.
+type Handler interface {
+	Handle(query []byte, clientAddr net.Addr) ([]byte, error)
+}
+
+// MainHandler ties together parsing, resolution, and response assembly.
+type MainHandler struct {
+	resolver    *resolver.Resolver
+	cache       *cache.Cache
+	limiter     *security.RateLimiter
+	rrl         *security.RRL
+	acl         *security.ACL
+	metrics     *metrics.Metrics
+	logger      *slog.Logger
+	noCacheNets []*net.IPNet
+	// privateFilter toggles RFC 6303 / private-address filtering of
+	// upstream answers. SetPrivateFilter is called from the
+	// /api/config/raw PUT hot-reload callback (runtimeApplier), while
+	// the DNS handler reads it on every query that returns an answer
+	// section. The two sites do not share a mutex; a plain bool field
+	// would be a data race (no torn-read risk for a 1-byte field on
+	// modern Go runtimes, but the memory-model visibility guarantee
+	// for cross-goroutine reads is not provided without sync). The
+	// atomic.Bool wrapper publishes the new value with the right
+	// happens-before edge while keeping the read overhead negligible.
+	privateFilter atomic.Bool
+	blocklist     interface {
+		IsBlocked(string) bool
+		BlockingMode() string
+		CustomIP() string
+	}
+
+	// DNS Cookies (RFC 7873)
+	cookiesEnabled bool
+	// cookiesEnforce is the RFC 7873 §5.4 "strict mode" toggle. When
+	// true, a client that sends a UDP query WITHOUT a COOKIE option is
+	// answered with BADCOOKIE and asked to retry. This eliminates the
+	// last UDP-amplification surface — spoofed clients cannot get
+	// answers at all until they prove they can complete one round trip.
+	// Default false: many legitimate clients (mobile resolvers, IoT
+	// stubs) do not implement cookies yet; refusing them outright
+	// breaks the service. Operators on a hostile network opt in.
+	cookiesEnforce bool
+	cookieMu       sync.RWMutex // protects cookieSecret + prevCookieSecret + prevExpiresAt
+	cookieSecret   []byte       // 16-byte server secret for SipHash
+	// prevCookieSecret is the immediately-previous secret kept after a
+	// rotation so server cookies the client minted moments before the
+	// rotation still validate (RFC 7873 §5.2.5: "Cookies created with old
+	// secrets remain valid until they expire."). Cleared when
+	// prevExpiresAt passes — the 1-hour cookie lifetime puts an upper
+	// bound on how long the previous secret needs to be kept around.
+	prevCookieSecret []byte
+	prevExpiresAt    time.Time
+
+	// ECS forwarding. The three values must be read as a consistent
+	// snapshot — SetECSPrefixes is called from the /api/config/raw
+	// hot-reload callback and rewrites all three together. Reading
+	// them as plain fields would let the DNS handler observe a mix of
+	// new+old values during the (small but non-zero) window between
+	// the three writes — e.g. (enabled=true, max=0) which would then
+	// fall through to the RFC-default branch, producing an inconsistent
+	// query under reload. atomic.Pointer publishes the whole struct
+	// in one store; readers load once at the top of buildOutboundECS
+	// and use the same snapshot for every decision in that call.
+	ecsCfg atomic.Pointer[ecsRuntime]
+
+	// downstreamUDPBufferSize is the EDNS0 UDP payload size advertised in
+	// outgoing OPT records on responses to clients. RFC 9018 / DNS Flag Day
+	// 2020 recommends 1232 to avoid IP fragmentation, which closes the
+	// off-path fragment-injection cache-poisoning vector. 0 means "use
+	// the safe default" (1232).
+	downstreamUDPBufferSize int
+
+	// OnQuery is an optional callback invoked after each query is resolved.
+	// Parameters: client IP, qname, qtype, rcode (may be "BLOCKED"), whether served from cache, duration in ms.
+	OnQuery func(client, qname, qtype, rcode string, cached bool, durationMs float64)
+}
+
+// SetPrivateFilter enables or disables private address filtering.
+// Called from the /api/config/raw hot-reload callback. The atomic store
+// publishes the new value to the DNS handler reader sites with the
+// right happens-before edge (see field comment).
+func (h *MainHandler) SetPrivateFilter(enabled bool) {
+	h.privateFilter.Store(enabled)
+}
+
+// ecsRuntime is the immutable snapshot of the three ECS knobs the DNS
+// handler reads on every query that carries an OPT. See ecsCfg field
+// comment for why the trio is packaged together.
+type ecsRuntime struct {
+	enabled     bool
+	maxPrefixV4 int
+	maxPrefixV6 int
+}
+
+// SetBlocklist configures an optional blocklist for the handler.
+func (h *MainHandler) SetBlocklist(bl interface {
+	IsBlocked(string) bool
+	BlockingMode() string
+	CustomIP() string
+}) {
+	h.blocklist = bl
+}
+
+// NewMainHandler creates a new MainHandler.
+func NewMainHandler(
+	res *resolver.Resolver,
+	c *cache.Cache,
+	rl *security.RateLimiter,
+	rrl *security.RRL,
+	acl *security.ACL,
+	m *metrics.Metrics,
+	logger *slog.Logger,
+) *MainHandler {
+	return &MainHandler{
+		resolver: res,
+		cache:    c,
+		limiter:  rl,
+		rrl:      rrl,
+		acl:      acl,
+		metrics:  m,
+		logger:   logger,
+	}
+}
+
+// SetCookiesEnforce toggles RFC 7873 §5.4 strict mode: cookie-less UDP
+// queries are rejected with BADCOOKIE. No-op unless cookies themselves
+// are also enabled (EnableCookies / EnableCookiesWithSecret).
+func (h *MainHandler) SetCookiesEnforce(enforce bool) {
+	h.cookiesEnforce = enforce
+}
+
+// CookiesEnforce reports the current §5.4 strict-mode setting.
+func (h *MainHandler) CookiesEnforce() bool {
+	return h.cookiesEnforce
+}
+
+// EnableCookies enables DNS cookie support (RFC 7873).
+// A random 16-byte server secret is generated at startup. M-6: if the OS
+// RNG fails we refuse to enable cookies rather than fall back to a public
+// literal (which would defeat the anti-spoofing property entirely).
+func (h *MainHandler) EnableCookies() error {
+	secret := make([]byte, 16)
+	if _, err := rand.Read(secret); err != nil {
+		h.cookiesEnabled = false
+		h.cookieSecret = nil
+		if h.logger != nil {
+			h.logger.Error("DNS cookies disabled: failed to generate server secret", "error", err)
+		}
+		return fmt.Errorf("dns cookies: secret generation failed: %w", err)
+	}
+	h.cookiesEnabled = true
+	h.cookieSecret = secret
+	return nil
+}
+
+// EnableCookiesWithSecret enables DNS cookies with a specific secret (for testing).
+func (h *MainHandler) EnableCookiesWithSecret(secret []byte) {
+	h.cookiesEnabled = true
+	h.cookieSecret = make([]byte, len(secret))
+	copy(h.cookieSecret, secret)
+}
+
+// RotateCookieSecret generates a fresh random 16-byte server cookie
+// secret. The previous secret is retained for one hour (the cookie
+// validity window per RFC 9018 §4.3) so cookies the client minted
+// moments before rotation are not invalidated — RFC 7873 §5.2.5
+// explicitly requires this grace ("Cookies created with old secrets
+// remain valid until they expire"). Without grace every rotation
+// would force every active client through a BADCOOKIE round-trip,
+// turning a routine operational action into a service blip.
+//
+// Returns the error from the OS RNG; on error the existing secrets
+// are left intact (better to keep using a known-good secret than
+// land on an all-zero replacement).
+func (h *MainHandler) RotateCookieSecret() error {
+	if !h.cookiesEnabled {
+		return errors.New("cookies disabled — cannot rotate secret")
+	}
+	fresh := make([]byte, 16)
+	if _, err := rand.Read(fresh); err != nil {
+		if h.logger != nil {
+			h.logger.Error("cookie secret rotation aborted: RNG failed", "error", err)
+		}
+		return fmt.Errorf("cookie rotation: RNG: %w", err)
+	}
+	// Cookies live one hour (RFC 9018 §4.3); the previous secret only
+	// needs to remain usable for that long.
+	graceUntil := time.Unix(int64(nowFunc()), 0).Add(time.Hour)
+	h.cookieMu.Lock()
+	h.prevCookieSecret = h.cookieSecret
+	h.prevExpiresAt = graceUntil
+	h.cookieSecret = fresh
+	h.cookieMu.Unlock()
+	return nil
+}
+
+// SetECS enables or disables ECS forwarding.
+// maxPrefix and maxPrefixV6 cap the source-prefix length we forward upstream
+// for IPv4 and IPv6 clients respectively. Pass 0 or out-of-range values to
+// accept the RFC 7871 §11.1 recommended defaults (/24 IPv4, /56 IPv6).
+func (h *MainHandler) SetECS(enabled bool, maxPrefix int) {
+	h.SetECSPrefixes(enabled, maxPrefix, 0)
+}
+
+// SetECSPrefixes is the IPv6-aware extension of SetECS. The legacy SetECS
+// is preserved as a convenience wrapper for callers that only care about
+// IPv4 limits.
+func (h *MainHandler) SetECSPrefixes(enabled bool, maxPrefixV4, maxPrefixV6 int) {
+	h.ecsCfg.Store(&ecsRuntime{
+		enabled:     enabled,
+		maxPrefixV4: maxPrefixV4,
+		maxPrefixV6: maxPrefixV6,
+	})
+}
+
+// buildOutboundECS prepares the EDNS Client Subnet option (RFC 7871) that
+// the resolver should forward upstream for this query. Policy: passthrough.
+//
+//   - If the client sent ECS in its OPT record, forward it. Source prefix is
+//     clamped down to the operator's ECSMaxPrefix ceiling. A client-sent
+//     SourcePrefixLen of 0 is an explicit opt-out and is preserved verbatim
+//     (the upstream sees "/0" and MUST NOT subnet-tailor).
+//   - If the client did not send ECS, do nothing — we do not synthesize
+//     from clientIP. (Synthesis would leak the resolver's clients' subnets
+//     to every authoritative server, which is the privacy hazard RFC 7871
+//     §11 calls out.)
+//   - Reserved / private / loopback / CGNAT / link-local source addresses
+//     are stripped: such ranges are never globally meaningful to any
+//     upstream CDN and would only serve as a side-channel fingerprint of
+//     the operator's network.
+//
+// Returns nil when no ECS should be forwarded for this query.
+func (h *MainHandler) buildOutboundECS(opt *dns.EDNS0) *dns.ECSOption {
+	cfg := h.ecsCfg.Load()
+	if cfg == nil || !cfg.enabled || opt == nil {
+		return nil
+	}
+	clientECS, err := dns.ExtractECSFromOPT(opt)
+	if err != nil || clientECS == nil {
+		return nil
+	}
+	// Honour explicit /0 opt-out — forward unchanged so the upstream sees it.
+	if clientECS.SourcePrefixLen == 0 {
+		out := *clientECS
+		out.ScopePrefixLen = 0
+		return &out
+	}
+	// Suppress non-public source addresses entirely.
+	if security.IsReservedIP(clientECS.Address) {
+		return nil
+	}
+
+	// Cap source prefix at the operator's per-family ceiling (RFC 7871
+	// §11.1 recommends /24 for IPv4 and /56 for IPv6). Out-of-range or
+	// zero configuration falls back to those recommended defaults.
+	maxV4 := cfg.maxPrefixV4
+	if maxV4 <= 0 || maxV4 > 32 {
+		maxV4 = 24
+	}
+	maxV6 := cfg.maxPrefixV6
+	if maxV6 <= 0 || maxV6 > 128 {
+		maxV6 = 56
+	}
+	src := clientECS.SourcePrefixLen
+	switch clientECS.Family {
+	case 1: // IPv4
+		if int(src) > maxV4 {
+			src = uint8(maxV4)
+		}
+	case 2: // IPv6
+		if int(src) > maxV6 {
+			src = uint8(maxV6)
+		}
+	default:
+		return nil // unknown family — strip
+	}
+
+	out := dns.ECSOption{
+		Family:          clientECS.Family,
+		SourcePrefixLen: src,
+		ScopePrefixLen:  0, // outgoing queries always set scope=0
+		Address:         dns.TruncateIP(clientECS.Address, src),
+	}
+	return &out
+}
+
+// chooseCacheECSKey decides under which ECS scope the result of this query
+// should be stored or fetched from cache. The rules follow RFC 7871 §7.3:
+//
+//   - No outbound ECS was sent → cache globally (key "").
+//   - Upstream returned scope=0 → cache globally (one entry serves all
+//     clients, even though we sent ECS).
+//   - Upstream returned scope>0 → cache under the truncated client subnet
+//     at the returned scope length. Clients whose subnet falls within that
+//     scope share the entry; clients in a different subnet get their own.
+//
+// outboundECS is the ECS option we sent upstream (or were going to);
+// upstreamECS is the option the upstream echoed back (nil if no ECS was
+// returned). Either may be nil.
+func chooseCacheECSKey(outboundECS, upstreamECS *dns.ECSOption) string {
+	if outboundECS == nil {
+		return ""
+	}
+	if upstreamECS == nil {
+		// Upstream is ECS-unaware — treat the answer as global. CDN behaviour
+		// here is the same as if we had never sent ECS.
+		return ""
+	}
+	if upstreamECS.ScopePrefixLen == 0 {
+		return ""
+	}
+	scoped := dns.ECSOption{
+		Family:          outboundECS.Family,
+		SourcePrefixLen: upstreamECS.ScopePrefixLen,
+		Address:         dns.TruncateIP(outboundECS.Address, upstreamECS.ScopePrefixLen),
+	}
+	return scoped.CacheKey()
+}
+
+// SetDownstreamUDPBufferSize configures the EDNS0 UDP payload size this
+// server advertises to clients in outgoing OPT records. Per RFC 9018 /
+// DNS Flag Day 2020, the safe default is 1232 (IPv6 minimum MTU 1280
+// minus 40-byte IPv6 header minus 8-byte UDP header). Values outside
+// [512, 65535] are silently clamped to 1232 by advertisedUDPBufferSize.
+func (h *MainHandler) SetDownstreamUDPBufferSize(size int) {
+	h.downstreamUDPBufferSize = size
+}
+
+// advertisedUDPBufferSize returns the EDNS0 UDP payload size to put on
+// the wire in outgoing OPT records. Falls back to the RFC 9018 default
+// of 1232 for unset (0) and out-of-range values, so a misconfigured
+// integer can never produce a pathological OPT record.
+func (h *MainHandler) advertisedUDPBufferSize() uint16 {
+	const (
+		defaultSize = 1232
+		minSize     = 512   // RFC 6891 §6.2.5 mandated minimum
+		maxSize     = 65535 // uint16 ceiling
+	)
+	v := h.downstreamUDPBufferSize
+	if v < minSize || v > maxSize {
+		return defaultSize
+	}
+	return uint16(v)
+}
+
+// nowFunc returns the current Unix timestamp. Overridden in tests.
+var nowFunc = func() uint32 { return uint32(time.Now().Unix()) }
+
+// generateServerCookie produces a 16-byte server cookie per RFC 9018:
+// Version(1) + Reserved(3) + Timestamp(4) + Hash(8).
+// Hash = SipHash-2-4(ClientCookie | Version | Reserved | Timestamp | ClientIP, Secret).
+func (h *MainHandler) generateServerCookie(clientCookie []byte, clientIP string) []byte {
+	return h.generateServerCookieAt(clientCookie, clientIP, nowFunc())
+}
+
+func (h *MainHandler) generateServerCookieAt(clientCookie []byte, clientIP string, timestamp uint32) []byte {
+	return h.generateServerCookieWithSecretAt(clientCookie, clientIP, timestamp, nil)
+}
+
+// generateServerCookieWithSecretAt builds the cookie deterministically using
+// `useSecret` when non-nil, falling back to the current cookieSecret. The
+// validation path uses this to re-mint cookies under the previous secret
+// during the post-rotation grace window (RFC 7873 §5.2.5).
+func (h *MainHandler) generateServerCookieWithSecretAt(clientCookie []byte, clientIP string, timestamp uint32, useSecret []byte) []byte {
+	cookie := make([]byte, 16)
+	cookie[0] = 1 // Version = 1 (RFC 9018)
+	binary.BigEndian.PutUint32(cookie[4:8], timestamp)
+
+	ipBytes := parseIPBytes(clientIP)
+	msg := make([]byte, 0, 8+8+len(ipBytes))
+	msg = append(msg, clientCookie...)
+	msg = append(msg, cookie[:8]...)
+	msg = append(msg, ipBytes...)
+
+	var key [16]byte
+	if useSecret != nil {
+		copy(key[:], useSecret)
+	} else {
+		h.cookieMu.RLock()
+		copy(key[:], h.cookieSecret)
+		h.cookieMu.RUnlock()
+	}
+	hash := security.SipHash24(key, msg)
+	binary.LittleEndian.PutUint64(cookie[8:16], hash)
+
+	return cookie
+}
+
+// validateServerCookie checks whether a received server cookie is valid and
+// not older than 1 hour per RFC 9018 §4.3. After RotateCookieSecret the
+// previous secret is also tried until its grace window expires — RFC 7873
+// §5.2.5 mandates this so a routine rotation does not invalidate every
+// active client's cookie simultaneously.
+func (h *MainHandler) validateServerCookie(clientCookie, serverCookie []byte, clientIP string) bool {
+	if len(serverCookie) != 16 || serverCookie[0] != 1 {
+		return false
+	}
+	timestamp := binary.BigEndian.Uint32(serverCookie[4:8])
+	now := nowFunc()
+	const futureSkewTolerance uint32 = 300
+	if now > timestamp && now-timestamp > 3600 {
+		return false // expired
+	}
+	if timestamp > now && timestamp-now > futureSkewTolerance {
+		return false // future
+	}
+	// Try current secret first — the common case.
+	expected := h.generateServerCookieWithSecretAt(clientCookie, clientIP, timestamp, nil)
+	if subtle.ConstantTimeCompare(serverCookie, expected) == 1 {
+		return true
+	}
+	// Grace path: try the previous secret if rotation happened within
+	// the past hour. Snapshot under read-lock so a concurrent rotation
+	// cannot tear the previous-secret reference out from under us.
+	h.cookieMu.RLock()
+	prev := h.prevCookieSecret
+	prevExp := h.prevExpiresAt
+	h.cookieMu.RUnlock()
+	if len(prev) == 0 || time.Unix(int64(now), 0).After(prevExp) {
+		return false
+	}
+	expectedPrev := h.generateServerCookieWithSecretAt(clientCookie, clientIP, timestamp, prev)
+	return subtle.ConstantTimeCompare(serverCookie, expectedPrev) == 1
+}
+
+// parseIPBytes returns the raw IP bytes for the given address string.
+func parseIPBytes(ipStr string) []byte {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return []byte(ipStr)
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4
+	}
+	return ip.To16()
+}
+
+// appendECSToResponse parses a packed wire-format response, appends the
+// given EDNS Client Subnet option to the existing OPT record (or builds
+// one if none is present), and re-packs. Used to echo the client's ECS
+// back per RFC 7871 §7.2.1 so the client knows the answer was geo-tailored.
+// Returns the original bytes on any parse/encode error.
+func appendECSToResponse(resp []byte, ecs *dns.ECSOption) []byte {
+	if ecs == nil {
+		return resp
+	}
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp
+	}
+	ecsOpt := dns.BuildECS(ecs)
+	found := false
+	for i, rr := range msg.Additional {
+		if rr.Type != dns.TypeOPT {
+			continue
+		}
+		optData := make([]byte, 4+len(ecsOpt.Data))
+		binary.BigEndian.PutUint16(optData[0:2], ecsOpt.Code)
+		binary.BigEndian.PutUint16(optData[2:4], uint16(len(ecsOpt.Data)))
+		copy(optData[4:], ecsOpt.Data)
+		msg.Additional[i].RData = append(msg.Additional[i].RData, optData...)
+		msg.Additional[i].RDLength = uint16(len(msg.Additional[i].RData))
+		found = true
+		break
+	}
+	if !found {
+		const defaultSize uint16 = 1232
+		msg.Additional = append(msg.Additional,
+			dns.BuildOPTWithOptions(defaultSize, false, []dns.EDNSOption{ecsOpt}))
+	}
+	out, err := dns.Pack(msg, make([]byte, 4096))
+	if err != nil {
+		// Oversized for the 4 KiB scratch buffer — retry at the 64 KiB ceiling
+		// so a large answer keeps its ECS option instead of being dropped.
+		out, err = dns.Pack(msg, make([]byte, maxDNSMessageSize))
+		if err != nil {
+			return resp
+		}
+	}
+	return append([]byte(nil), out...)
+}
+
+// addEDEToResponse appends an EDE option to the response OPT record.
+// If no OPT record exists, one is created using the handler's advertised
+// UDP buffer size (RFC 9018 / DNS Flag Day 2020 ceiling).
+func (h *MainHandler) addEDEToResponse(resp *dns.Message, code uint16, text string) {
+	edeOpt := dns.BuildEDEOption(code, text)
+
+	// Look for existing OPT record in Additional
+	for i, rr := range resp.Additional {
+		if rr.Type == dns.TypeOPT {
+			// Append EDE option data to existing OPT RDATA
+			optData := make([]byte, 4+len(edeOpt.Data))
+			binary.BigEndian.PutUint16(optData[0:2], edeOpt.Code)
+			binary.BigEndian.PutUint16(optData[2:4], uint16(len(edeOpt.Data)))
+			copy(optData[4:], edeOpt.Data)
+			resp.Additional[i].RData = append(resp.Additional[i].RData, optData...)
+			resp.Additional[i].RDLength = uint16(len(resp.Additional[i].RData))
+			return
+		}
+	}
+
+	// No OPT record found — create one with EDE using the handler's
+	// advertised UDP buffer size (RFC 9018 / DNS Flag Day 2020 ceiling).
+	// This branch only fires when an upstream response lacked an OPT,
+	// so the value is a fallback rather than a per-query advertisement.
+	resp.Additional = append(resp.Additional, dns.BuildOPTWithOptions(h.advertisedUDPBufferSize(), false, []dns.EDNSOption{edeOpt}))
+}
+
+// addEDEToRawResponse parses a wire-format response, appends an EDE option,
+// and re-packs it. Returns the original bytes on any error.
+func (h *MainHandler) addEDEToRawResponse(resp []byte, code uint16, text string) []byte {
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp
+	}
+	h.addEDEToResponse(msg, code, text)
+	out, packErr := h.packToOwnedBytes(msg)
+	if packErr != nil {
+		return resp
+	}
+	return out
+}
+
+// packToOwnedBytes packs msg using a pooled buffer and returns an owned
+// copy of the wire bytes. The pooled buffer is always released before
+// return. H-5: closes the use-after-pool race where concurrent goroutines
+// would receive each other's response payload because `dns.Pack` returns
+// a slice into the pooled buffer's backing array.
+func (h *MainHandler) packToOwnedBytes(msg *dns.Message) ([]byte, error) {
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
+	packed, err := dns.Pack(msg, buf)
+	if err != nil {
+		pool.PutBuffer(bufPtr)
+		// The pooled buffer (4 KiB) is too small for this response — e.g. a long
+		// CNAME chain or a large RRset/DNSSEC answer. Retry once with the full
+		// 64 KiB DNS-over-TCP message ceiling so the answer is delivered intact
+		// on a stream transport instead of being silently dropped. UDP callers
+		// still truncate the result afterwards via maybeTruncateUDP.
+		retry, retryErr := dns.Pack(msg, make([]byte, maxDNSMessageSize))
+		if retryErr != nil {
+			return nil, retryErr
+		}
+		return append([]byte(nil), retry...), nil
+	}
+	out := append([]byte(nil), packed...)
+	pool.PutBuffer(bufPtr)
+	return out, nil
+}
+
+// SetNoCacheClients configures the list of client IPs/CIDRs that should bypass the cache.
+func (h *MainHandler) SetNoCacheClients(cidrs []string) {
+	for _, cidr := range cidrs {
+		if !strings.Contains(cidr, "/") {
+			if strings.Contains(cidr, ":") {
+				cidr += "/128"
+			} else {
+				cidr += "/32"
+			}
+		}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			h.noCacheNets = append(h.noCacheNets, ipNet)
+		}
+	}
+}
+
+// shouldBypassCache returns true if the given client IP should bypass the cache.
+func (h *MainHandler) shouldBypassCache(clientIP string) bool {
+	if len(h.noCacheNets) == 0 {
+		return false
+	}
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
+		return false
+	}
+	for _, ipNet := range h.noCacheNets {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, err error) {
+	// Defence-in-depth: any panic that escapes from the resolver, the
+	// validator, the cache, or a third-party transport (DoH/DoT/DoQ)
+	// must not propagate out to the transport loop. Letting it crash a
+	// goroutine takes down a single connection on TCP, but on UDP it
+	// silently drops the client's request — they then re-query, which
+	// re-triggers the panic, and we have a feedback loop that looks
+	// like a deterministic DoS. Catch it here, return a SERVFAIL so the
+	// client sees a real answer, and keep the resolver running.
+	defer func() {
+		if r := recover(); r != nil {
+			if h.metrics != nil {
+				h.metrics.IncResponses("SERVFAIL")
+			}
+			if h.logger != nil {
+				h.logger.Error("panic in MainHandler.Handle",
+					"client", clientAddr,
+					"panic", r,
+				)
+			}
+			resp, err = h.buildError(query, dns.RCodeServFail)
+		}
+	}()
+
+	start := time.Now()
+
+	// Extract client IP
+	clientIP := extractIP(clientAddr)
+
+	// Whether this query arrived over a stream transport (TCP / DoT / DoH),
+	// where RFC 7766 §5 says the 512-byte UDP cap and TC-bit truncation do not
+	// apply. UDP datagrams — and the nil-addr test path — stay false so the
+	// size cap still bites there. (A future DoQ transport rides QUIC/UDP and
+	// would need to opt in explicitly rather than be inferred from Network().)
+	isStream := isStreamTransport(clientAddr)
+
+	// Global ACL check (fast pre-parse check without zone context).
+	// Zone-specific ACL is checked after the query is parsed.
+	if h.acl != nil && !h.acl.Check(clientIP) {
+		// RFC 8914 §4.18 — when the client carried EDNS we can tell
+		// them WHY their query was refused (helps operators of clients
+		// reaching the wrong resolver figure out the mistake quickly).
+		// Without EDNS the response stays as plain REFUSED.
+		if queryHasEDNS(query) {
+			return h.buildErrorWithEDE(query, dns.RCodeRefused, dns.EDECodeProhibited,
+				"client not authorised by resolver ACL")
+		}
+		return h.buildError(query, dns.RCodeRefused)
+	}
+
+	// Rate limit check
+	if h.limiter != nil && !h.limiter.Allow(clientIP) {
+		h.metrics.IncRateLimited()
+		h.metrics.IncResponses("REFUSED")
+		// RFC 8914 §4.17 EDE 17 (Filtered) — surface "rate-limited"
+		// so a client looping on this resolver can back off rather
+		// than treat REFUSED as an opaque policy decision.
+		if queryHasEDNS(query) {
+			return h.buildErrorWithEDE(query, dns.RCodeRefused, dns.EDECodeFiltered,
+				"rate limit exceeded")
+		}
+		return h.buildError(query, dns.RCodeRefused)
+	}
+
+	// 1. Parse incoming query
+	msg, err := dns.Unpack(query)
+	if err != nil {
+		h.metrics.IncResponses("FORMERR")
+		return h.buildError(query, dns.RCodeFormErr)
+	}
+
+	// 2. Validate
+	if msg.Header.QR() {
+		return nil, errors.New("received response as query")
+	}
+	if msg.Header.Opcode() != dns.OpcodeQuery {
+		h.metrics.IncResponses("NOTIMP")
+		return h.buildError(query, dns.RCodeNotImp)
+	}
+	if len(msg.Questions) != 1 {
+		h.metrics.IncResponses("FORMERR")
+		return h.buildError(query, dns.RCodeFormErr)
+	}
+
+	// RFC 6891 §6.1.1: "If a query message with more than one OPT RR is
+	// received, a FORMERR (RCODE=1) MUST be returned." Our wire parser
+	// keeps only the first OPT, so without this guard a multi-OPT query
+	// would silently proceed. RFC 6891 §6.1.2 also pins the OPT owner
+	// name to the root: "The fixed part of an OPT RR is structured as
+	// follows: NAME — domain name — MUST be 0 (root domain)." A non-root
+	// owner is a structural malformation and must be rejected with
+	// FORMERR — accepting it would let a buggy or hostile client smuggle
+	// arbitrary names through the pseudo-RR.
+	optCount := 0
+	for _, rr := range msg.Additional {
+		if rr.Type != dns.TypeOPT {
+			continue
+		}
+		optCount++
+		if rr.Name != "" && rr.Name != "." {
+			h.metrics.IncResponses("FORMERR")
+			return h.buildError(query, dns.RCodeFormErr)
+		}
+	}
+	if optCount > 1 {
+		h.metrics.IncResponses("FORMERR")
+		return h.buildError(query, dns.RCodeFormErr)
+	}
+
+	// RFC 6891 §6.1.3: "If the requestor's EDNS version is greater than
+	// the responder's supported version, the responder MUST respond with
+	// RCODE=BADVERS (16) ... [and] MUST include an EDNS OPT pseudo-RR in
+	// the response, with its version set to the highest EDNS version the
+	// responder supports." We only support version 0.
+	if msg.EDNS0 != nil && msg.EDNS0.Version != 0 {
+		h.metrics.IncResponses("BADVERS")
+		return h.buildBadVersResponse(query)
+	}
+
+	// Parse the cookie pair once for both normal validation and strict UDP
+	// enforcement. A client-only cookie is a valid bootstrap state in normal
+	// mode, but it has not yet proved return-routability and therefore does not
+	// satisfy strict UDP mode.
+	var clientCookie, serverCookie []byte
+	if h.cookiesEnabled && msg.EDNS0 != nil {
+		for _, opt := range msg.EDNS0.Options {
+			if opt.Code == dns.EDNSOptionCodeCookie {
+				clientCookie, serverCookie = dns.ParseCookieOption(opt.Data)
+				break
+			}
+		}
+	}
+
+	validCookiePair := len(clientCookie) == 8 && len(serverCookie) == 16 &&
+		h.validateServerCookie(clientCookie, serverCookie, clientIP)
+	if len(clientCookie) == 8 && len(serverCookie) == 16 && !validCookiePair {
+		h.metrics.IncResponses("BADCOOKIE")
+		return h.buildBadCookieResponse(query, clientCookie, clientIP)
+	}
+
+	// RFC 7873 §5.4 strict mode requires a VALID client/server cookie pair on
+	// UDP, not merely an 8-byte client cookie. Accepting the bootstrap half by
+	// itself would let a spoofed sender choose arbitrary bytes and receive the
+	// full answer, defeating the return-routability gate. Stateful transports
+	// (TCP, DoT, DoH, and DoQ) already validate the peer through a handshake.
+	if h.cookiesEnabled && h.cookiesEnforce && isUDPAddr(clientAddr) && !validCookiePair {
+		h.metrics.IncResponses("BADCOOKIE")
+		return h.buildBadCookieResponse(query, clientCookie, clientIP)
+	}
+
+	q := msg.Questions[0]
+	qtypeStr := dns.TypeToString[q.Type]
+	if qtypeStr == "" {
+		qtypeStr = "OTHER"
+	}
+	h.metrics.IncQueries(qtypeStr)
+
+	// RFC 1035 §3.2.4 — only the IN class is supported by this resolver.
+	// CHAOS (3) is sometimes used by operators to probe `version.bind. CH
+	// TXT`; we deliberately don't echo identifying information for that
+	// (a hardening choice). HS (4) is historical. ANY (255) at the
+	// question level is rarely meaningful for a recursive resolver and
+	// many implementations explicitly refuse it. Refuse anything other
+	// than IN with REFUSED + EDE 21 (Not Supported) so an operator
+	// debugging a misrouted client sees the right diagnostic.
+	if q.Class != dns.ClassIN {
+		h.metrics.IncResponses("REFUSED")
+		if queryHasEDNS(query) {
+			return h.buildErrorWithEDE(query, dns.RCodeRefused, dns.EDECodeNotSupported,
+				"only QCLASS=IN is supported")
+		}
+		return h.buildError(query, dns.RCodeRefused)
+	}
+
+	// 2.4 Per-zone ACL check (requires parsed qname)
+	if h.acl != nil && !h.acl.CheckWithZone(clientIP, q.Name) {
+		h.metrics.IncResponses("REFUSED")
+		// RFC 8914 §4.18 EDE 18 (Prohibited) — per-zone ACL refusal.
+		// Distinct from the global ACL block above (same EDE code but
+		// the text helps an operator see "you can recurse here, just
+		// not for this zone"). Only when the client carries EDNS.
+		if queryHasEDNS(query) {
+			return h.buildErrorWithEDE(query, dns.RCodeRefused, dns.EDECodeProhibited,
+				"client not authorised for this zone")
+		}
+		return h.buildError(query, dns.RCodeRefused)
+	}
+
+	// 2.5 Blocklist check
+	if h.blocklist != nil && h.blocklist.IsBlocked(q.Name) {
+		h.metrics.IncBlockedQueries()
+		resp, err := h.buildBlockedResponse(msg, q)
+		if err != nil {
+			return nil, err
+		}
+		// Add EDE "Blocked" (RFC 8914, info code 15) if client supports EDNS0
+		if msg.EDNS0 != nil {
+			resp = h.addEDEToRawResponse(resp, dns.EDECodeBlocked, "blocked")
+		}
+		duration := time.Since(start)
+		h.metrics.ObserveQueryDuration(duration)
+		h.metrics.IncResponses("BLOCKED")
+		durationMs := float64(duration.Microseconds()) / 1000.0
+		h.logger.Debug("query_blocked", "client", clientIP, "qname", q.Name, "qtype", qtypeStr)
+		if h.OnQuery != nil {
+			h.OnQuery(clientIP, q.Name, qtypeStr, "BLOCKED", true, durationMs)
+		}
+		return resp, nil
+	}
+
+	// 2.6 Minimal ANY response (RFC 8482): return synthetic HINFO instead
+	// of resolving, to prevent DNS amplification via ANY queries.
+	if q.Type == dns.TypeANY {
+		resp, err := h.buildMinimalANYResponse(msg, q, isStream)
+		if err != nil {
+			return nil, err
+		}
+		duration := time.Since(start)
+		h.metrics.ObserveQueryDuration(duration)
+		h.metrics.IncResponses("NOERROR")
+		durationMs := float64(duration.Microseconds()) / 1000.0
+		h.logger.Debug("minimal_any_response", "client", clientIP, "qname", q.Name)
+		if h.OnQuery != nil {
+			h.OnQuery(clientIP, q.Name, qtypeStr, "NOERROR", false, durationMs)
+		}
+		return resp, nil
+	}
+
+	bypassCache := h.shouldBypassCache(clientIP)
+
+	// 2.7 Build outbound ECS from the client's OPT record (RFC 7871).
+	// Passthrough policy: only forward what the client itself sent. Nil
+	// when the client opted out or ECS is disabled.
+	outboundECS := h.buildOutboundECS(msg.EDNS0)
+
+	// 3. Cache lookup. Try the global key first; that one is shared across
+	// all clients and matches authoritative answers with scope=0 (RFC 7871
+	// §7.3.1). On miss, if we have an outbound ECS, fall back to a scoped
+	// lookup so geo-tailored entries can still be reused by clients whose
+	// subnet maps to the same key.
+	if !bypassCache {
+		var entry *cache.Entry
+		var ok bool
+		entry, ok = h.cache.Get(q.Name, q.Type, q.Class)
+		if !ok && outboundECS != nil {
+			entry, ok = h.cache.GetWithECS(q.Name, q.Type, q.Class, outboundECS.CacheKey())
+		}
+		// A DNSKEY / DS / NS cache entry carrying no DNSSEC status is a
+		// resolver-internal artifact, not a client-validated answer, and must
+		// not be served to a direct client query with the AD bit stripped:
+		//
+		//   - DNSKEY / DS: resolver.QueryDNSSEC — which the validator calls
+		//     with validation skipped, to avoid recursing into itself — stores
+		//     the RRset it fetches for a trust-chain walk into this shared
+		//     cache with an empty status (cache.Store → StoreWithStatus("")).
+		//   - NS: cacheDelegation stores the PARENT-side delegation NS from a
+		//     referral's authority section under (zone, NS) with an empty
+		//     status. Per RFC 2181 §5.4.1 that parent-side NS is less
+		//     trustworthy than the child zone's own authoritative apex NS
+		//     RRset, and — unlike the child's — it carries no RRSIG, so serving
+		//     it to a direct `NS <zone>` query yields AD=0 where every
+		//     mainstream validator returns AD=1.
+		//
+		// Force a full validating resolution for these meta-types so the client
+		// receives the correct Secure/Insecure verdict and (for NS) the signed
+		// apex RRset from the child; the validated result is re-cached WITH its
+		// status (StoreWithStatus below), so subsequent hits stay correct until
+		// the next delegation/chain refresh re-seeds an unstatused entry.
+		// Scoped tightly: only the empty status, only these meta-types, and
+		// only when a validator is active, so every normal cached answer is
+		// untouched.
+		if ok && entry.DNSSECStatus == "" &&
+			(q.Type == dns.TypeDNSKEY || q.Type == dns.TypeDS || q.Type == dns.TypeNS) &&
+			h.resolver.DNSSECValidator() != nil {
+			ok = false
+			entry = nil
+		}
+		// RFC 8198 aggressive NSEC caching: if no direct hit, see whether
+		// a previously cached Secure NSEC interval proves qname does not
+		// exist. Synthesising NXDOMAIN here drops the auth-server load for
+		// signed zones hit with garbage-subdomain traffic by an order of
+		// magnitude in practice. Only consulted on a complete miss so that
+		// real positive entries always win.
+		if !ok {
+			// Typed lookup so RFC 8198 §5.4 NODATA synthesis fires
+			// when a cached owner-match NSEC's type bitmap excludes
+			// the queried type, not just on §5.2 NXDOMAIN coverage.
+			if synth, hit := h.cache.LookupNSECCoversTyped(q.Name, q.Type, q.Class); hit {
+				entry = synth
+				ok = true
+				h.metrics.IncCacheHits()
+			}
+		}
+		// RFC 8198 §5.3 / §5.4 NSEC3 aggressive lookup — second
+		// chance, only when NSEC didn't already hit. Most signed
+		// zones today use NSEC3 (opt-out skipped at registration
+		// time per RFC 5155 §6). Typed variant enables NODATA synth
+		// via owner-hash + type-bitmap exclusion.
+		if !ok {
+			if synth, hit := h.cache.LookupNSEC3CoversTyped(q.Name, q.Type, q.Class); hit {
+				entry = synth
+				ok = true
+				h.metrics.IncCacheHits()
+			}
+		}
+		if ok {
+			h.metrics.IncCacheHits()
+			resp, err := h.buildCacheResponseECS(msg, entry, outboundECS, isStream)
+			if err == nil {
+				duration := time.Since(start)
+				h.metrics.ObserveQueryDuration(duration)
+				durationMs := float64(duration.Microseconds()) / 1000.0
+				h.logger.Info("query_resolved",
+					"client", clientIP,
+					"qname", q.Name,
+					"qtype", qtypeStr,
+					"cache_hit", true,
+					"duration_ms", durationMs,
+				)
+				cacheRCode := dns.RCodeToString[entry.RCODE]
+				if cacheRCode == "" {
+					cacheRCode = "NOERROR"
+				}
+				if h.OnQuery != nil {
+					h.OnQuery(clientIP, q.Name, qtypeStr, cacheRCode, true, durationMs)
+				}
+				// Anti-amplification: cached responses are just as
+				// reflective as freshly resolved ones, so RRL must
+				// gate them too. This matters in particular for the
+				// RFC 9520 §3 failure-cache: a flood of requests for
+				// a broken name would otherwise be served unlimited
+				// SERVFAILs from cache without ever touching the
+				// rate-limiter.
+				if h.rrl != nil {
+					switch h.rrl.AllowResponse(clientIP, q.Name, cacheRCode) {
+					case security.RRLDrop:
+						return nil, nil
+					case security.RRLSlip:
+						// RRL slip forces a TCP retry via TC=1 — meaningless on a
+						// stream transport, where the client is already on TCP and
+						// cannot retry (RFC 7766 §4 also says TC SHOULD NOT be set
+						// on TCP). Stream defeats spoofed-source reflection anyway,
+						// so deliver the real answer instead of a dead-end stub.
+						if isStream {
+							return resp, nil
+						}
+						return h.buildSlipResponse(query)
+					}
+				}
+				return resp, nil
+			}
+		}
+	}
+	h.metrics.IncCacheMisses()
+
+	// 4. Recursive resolution
+	// RFC 6840 §5.9 — propagate the client's CD bit down to forward-mode
+	// upstreams so a downstream-validating client is not silently
+	// overruled. Iterative authoritatives ignore CD (RFC 4035 §3.2.2),
+	// so this only changes behaviour for forward zones.
+	result, err := h.resolver.ResolveWithECSAndCD(q.Name, q.Type, q.Class, outboundECS, msg.Header.CD())
+
+	// Serve stale (RFC 8767): if resolution failed (Go error or SERVFAIL),
+	// try serving expired cache entry before giving up.
+	resolveOK := err == nil && result != nil && result.RCODE != dns.RCodeServFail
+	if !resolveOK {
+		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok {
+			h.logger.Info("serving stale cache", "qname", q.Name, "qtype", qtypeStr)
+			resp, buildErr := h.buildCacheResponse(msg, staleEntry, isStream)
+			if buildErr == nil {
+				// EDE info-code selection (RFC 8914 / RFC 8767 §6):
+				// a stale NXDOMAIN gets its own code (19, STALE-NXDOMAIN-
+				// ANSWER) so the client can distinguish "expired denial
+				// of existence" from "expired positive answer" — useful
+				// for log/UI hints and for clients deciding whether to
+				// retry against a different resolver. Falls back to the
+				// generic stale-answer code for non-NX serves.
+				if msg.EDNS0 != nil {
+					staleResp, parseErr := dns.Unpack(resp)
+					if parseErr == nil {
+						edeCode := dns.EDECodeStaleAnswer
+						edeText := "serve-stale"
+						if staleEntry.RCODE == dns.RCodeNXDomain {
+							edeCode = dns.EDECodeStaleNXDOMAINAnswer
+							edeText = "serve-stale-nxdomain"
+						}
+						h.addEDEToResponse(staleResp, edeCode, edeText)
+						// H-5: copy packed bytes off the pooled buffer before the
+						// caller (UDP/TCP listener) reads them. packToOwnedBytes
+						// copies and returns the buffer to the pool atomically.
+						if owned, packErr := h.packToOwnedBytes(staleResp); packErr == nil {
+							resp = owned
+						}
+					}
+				}
+				staleRCode := dns.RCodeToString[staleEntry.RCODE]
+				if staleRCode == "" {
+					staleRCode = "NOERROR"
+				}
+				if h.rrl != nil {
+					switch h.rrl.AllowResponse(clientIP, q.Name, staleRCode) {
+					case security.RRLDrop:
+						return nil, nil
+					case security.RRLSlip:
+						if !isStream {
+							return h.buildSlipResponse(query)
+						}
+					}
+				}
+				duration := time.Since(start)
+				h.metrics.ObserveQueryDuration(duration)
+				h.metrics.IncResponses(staleRCode)
+				if h.OnQuery != nil {
+					h.OnQuery(clientIP, q.Name, qtypeStr, staleRCode, true, float64(duration.Microseconds())/1000.0)
+				}
+				return resp, nil
+			}
+		}
+		// Check for DNSSEC bogus — add EDE info code 6 by default, or a
+		// granular RFC 8914 §4 code when the validator pinpointed the
+		// cause (signature expired/not-yet-valid → 7/8, missing DNSKEY → 9,
+		// unsupported algorithm → 1, …). RFC 4035 §3.2.2 makes one
+		// exception: when the client sets CD=1 it has asked us to skip the
+		// validation gate, so a Bogus verdict MUST NOT mask the answer
+		// behind SERVFAIL. The AD bit is already cleared by the response-
+		// builder under CD=1, which communicates the non-validation state
+		// to the client; the data itself flows through unfiltered.
+		if result != nil && result.DNSSECStatus == "bogus" && !msg.Header.CD() && msg.EDNS0 != nil {
+			edeCode, edeText := bogusReasonToEDE(result.DNSSECReason)
+			bogusResp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, edeCode, edeText)
+			if buildErr == nil {
+				h.metrics.IncResponses("SERVFAIL")
+				return bogusResp, nil
+			}
+		}
+		if err != nil {
+			h.metrics.IncResponses("SERVFAIL")
+			// RFC 9520 §3: cache the resolution failure for a few seconds
+			// so a retry loop on a broken name does not re-run the full
+			// iterative chain on every QPS spike. TTL is capped at 30 s.
+			if !bypassCache {
+				h.cache.StoreFailure(q.Name, q.Type, q.Class, cache.DefaultFailureTTL)
+			}
+			if msg.EDNS0 != nil {
+				resp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, dns.EDECodeNetworkError, err.Error())
+				if buildErr == nil {
+					return resp, nil
+				}
+			}
+			return h.buildError(query, dns.RCodeServFail)
+		}
+	}
+
+	// 5. Cache store
+	rcodeStr := dns.RCodeToString[result.RCODE]
+	if rcodeStr == "" {
+		rcodeStr = "UNKNOWN"
+	}
+
+	if !bypassCache {
+		// RFC 7871 §7.3: scope=0 (or no ECS in response) → global cache;
+		// scope>0 → key under truncated client subnet at that scope.
+		ecsKey := chooseCacheECSKey(outboundECS, result.UpstreamECS)
+		var ecsScope uint8
+		if result.UpstreamECS != nil {
+			ecsScope = result.UpstreamECS.ScopePrefixLen
+		}
+		if result.RCODE == dns.RCodeNoError && len(result.Answers) > 0 {
+			// H-6: filter private addresses BEFORE inserting into the
+			// cache. Previously the filter only ran in buildResponse,
+			// so a first query that admitted a private IP would poison
+			// the cache for every later client (DNS-rebinding bypass).
+			// Filtering at the write site means subsequent cache hits
+			// (buildCacheResponse) are clean by construction.
+			answersToCache := result.Answers
+			if h.privateFilter.Load() {
+				answersToCache = security.FilterPrivateAddresses(answersToCache)
+			}
+			if ecsKey == "" {
+				h.cache.StoreWithStatus(q.Name, q.Type, q.Class, answersToCache, result.Authority, result.DNSSECStatus)
+			} else {
+				h.cache.StoreWithECSStatus(q.Name, q.Type, q.Class, ecsKey, ecsScope, answersToCache, result.Authority, result.DNSSECStatus)
+			}
+		} else if result.RCODE == dns.RCodeNXDomain {
+			// Negative caching is kept global for now: RFC 7871 §7.3 does
+			// not forbid per-subnet negatives, but NXDOMAIN scoping at
+			// authoritative servers is rare and per-subnet negatives
+			// would inflate cache pressure on the common case.
+			// Preserve the validator's verdict so a cached NXDOMAIN keeps its
+			// AD bit on re-serve (RFC 4035); without the status a signed denial
+			// silently downgrades to AD=0 on the second hit.
+			h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority, result.DNSSECStatus)
+		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
+			h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority, result.DNSSECStatus)
+		} else if result.RCODE == dns.RCodeServFail {
+			// RFC 9520 §3 failure caching for the resolver-returned-SERVFAIL
+			// path (DNSSEC bogus, all NS unreachable, lame delegation, etc.).
+			h.cache.StoreFailure(q.Name, q.Type, q.Class, cache.DefaultFailureTTL)
+		}
+	}
+
+	// 6. Build response
+	duration := time.Since(start)
+	h.metrics.ObserveQueryDuration(duration)
+	h.metrics.IncResponses(rcodeStr)
+
+	durationMs := float64(duration.Microseconds()) / 1000.0
+	h.logger.Info("query_resolved",
+		"client", clientIP,
+		"qname", q.Name,
+		"qtype", qtypeStr,
+		"rcode", rcodeStr,
+		"answer_count", len(result.Answers),
+		"cache_hit", false,
+		"duration_ms", durationMs,
+	)
+
+	if h.OnQuery != nil {
+		h.OnQuery(clientIP, q.Name, qtypeStr, rcodeStr, false, durationMs)
+	}
+
+	resp, buildErr := h.buildResponse(msg, result, isStream)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+
+	// RFC 7871 §7.2.1: if the client signalled ECS, echo back our derived
+	// option with the authoritative SCOPE PREFIX-LENGTH so the client knows
+	// the answer was (or was not) geo-tailored.
+	if outboundECS != nil {
+		var scope uint8
+		if result.UpstreamECS != nil {
+			scope = result.UpstreamECS.ScopePrefixLen
+		}
+		echo := dns.ECSOption{
+			Family:          outboundECS.Family,
+			SourcePrefixLen: outboundECS.SourcePrefixLen,
+			ScopePrefixLen:  scope,
+			Address:         outboundECS.Address,
+		}
+		resp = appendECSToResponse(resp, &echo)
+	}
+
+	// Add EDE info code for SERVFAIL when the cause was tagged by the
+	// resolver. "no-reachable-authority" → EDE 22 (RFC 8914 §4.22) with a
+	// human-readable hint so operators can tell the difference between
+	// "our resolver is broken" and "every NS in the delegation refused".
+	// This is the typical broken-reverse-zone shape (in-addr.arpa parent
+	// publishes NS for a /24 whose actual operators never set up real
+	// auth) — retry from the client is hopeless, the fix is upstream.
+	if result.RCODE == dns.RCodeServFail && msg.EDNS0 != nil {
+		switch result.FailureReason {
+		case "no-reachable-authority":
+			resp = h.addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority,
+				"all authoritative nameservers refused or were unreachable")
+		default:
+			// Keep EDE 22 as the conservative default for non-DNSSEC,
+			// non-network SERVFAILs — matches the prior behaviour and is
+			// the most common cause in practice. Generic text so a
+			// downstream parser doesn't mistake the empty-message for a
+			// crafted signal.
+			resp = h.addEDEToRawResponse(resp, dns.EDECodeNoReachableAuthority,
+				"resolver could not produce an authoritative answer")
+		}
+		// RFC 8914 §4.13 — when this SERVFAIL was replayed from the
+		// RFC 9520 resolution-failure cache (rather than a fresh
+		// upstream attempt) attach EDE 13 (Cached Error) so operators
+		// chasing intermittent failures can distinguish a cache replay
+		// from a live failure. EDE supports multiple codes in the same
+		// response; addEDEToRawResponse appends.
+		if result.FromFailureCache {
+			resp = h.addEDEToRawResponse(resp, dns.EDECodeCachedError,
+				"resolution failure replayed from RFC 9520 cache")
+		}
+	}
+
+	// Add cookie response if client sent a cookie option
+	if h.cookiesEnabled && msg.EDNS0 != nil {
+		resp = h.addCookieToResponse(resp, msg.EDNS0, clientIP)
+	}
+
+	// 7. Response Rate Limiting (anti-amplification)
+	if h.rrl != nil {
+		action := h.rrl.AllowResponse(clientIP, q.Name, rcodeStr)
+		switch action {
+		case security.RRLDrop:
+			return nil, nil // silently drop
+		case security.RRLSlip:
+			// Send truncated response (TC=1) to force a UDP client to retry over
+			// TCP. On a stream transport that retry is impossible (already TCP)
+			// and TC=1 is a dead end, so deliver the real answer instead — the
+			// stream handshake already prevents spoofed-source amplification.
+			if isStream {
+				return resp, nil
+			}
+			return h.buildSlipResponse(query)
+		}
+	}
+
+	return resp, nil
+}
+
+func (h *MainHandler) buildError(query []byte, rcode uint8) ([]byte, error) {
+	if len(query) < 12 {
+		// Minimal header-only error response
+		buf := make([]byte, 12)
+		flags := dns.NewFlagBuilder().SetQR(true).SetRA(true).SetRCODE(rcode).Build()
+		binary.BigEndian.PutUint16(buf[2:4], flags)
+		return buf, nil
+	}
+
+	// H-5: this function previously did `defer pool.PutBuffer(bufPtr)`
+	// and returned `buf[:N]` — a slice into the pooled buffer that the
+	// caller continues using after the defer fires. We now copy before
+	// release so the caller owns its bytes.
+	bufPtr := pool.GetBuffer()
+	buf := *bufPtr
+	copy(buf, query[:12])
+
+	// Set flags: QR=1, RA=1, RCODE
+	flags := binary.BigEndian.Uint16(buf[2:4])
+	flags |= 1 << 15 // QR
+	flags |= 1 << 7  // RA
+	flags = (flags & 0xFFF0) | uint16(rcode)
+	binary.BigEndian.PutUint16(buf[2:4], flags)
+
+	// Zero answer/authority/additional counts
+	binary.BigEndian.PutUint16(buf[6:8], 0)
+	binary.BigEndian.PutUint16(buf[8:10], 0)
+	binary.BigEndian.PutUint16(buf[10:12], 0)
+
+	// Keep question section intact
+	offset := 12
+	qdcount := binary.BigEndian.Uint16(query[4:6])
+	for i := 0; i < int(qdcount) && offset < len(query); i++ {
+		_, newOffset, err := dns.DecodeName(query, offset)
+		if err != nil {
+			out := append([]byte(nil), buf[:12]...)
+			pool.PutBuffer(bufPtr)
+			return out, nil
+		}
+		offset = newOffset + 4
+	}
+
+	if offset > len(query) {
+		offset = len(query)
+	}
+	copy(buf[12:], query[12:offset])
+	out := append([]byte(nil), buf[:offset]...)
+	pool.PutBuffer(bufPtr)
+	return out, nil
+}
+
+// buildSlipResponse creates a minimal response with TC=1 (truncated) to force
+// the client to retry over TCP. Used by RRL slip to rate-limit without dropping.
+func (h *MainHandler) buildSlipResponse(query []byte) ([]byte, error) {
+	resp, err := h.buildError(query, dns.RCodeNoError)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp) >= 4 {
+		flags := binary.BigEndian.Uint16(resp[2:4])
+		flags |= 1 << 9 // TC bit
+		binary.BigEndian.PutUint16(resp[2:4], flags)
+	}
+	return resp, nil
+}
+
+// buildCacheResponseECS is the ECS-aware variant of buildCacheResponse.
+// When the client sent ECS in its query, the response carries an ECS
+// option echoing the source prefix the client provided alongside the
+// SCOPE PREFIX-LENGTH from the cached entry (RFC 7871 §7.2.1). When the
+// client did not send ECS, the behaviour is identical to buildCacheResponse.
+func (h *MainHandler) buildCacheResponseECS(query *dns.Message, entry *cache.Entry, outboundECS *dns.ECSOption, stream ...bool) ([]byte, error) {
+	resp, err := h.buildCacheResponse(query, entry, stream...)
+	if err != nil {
+		return nil, err
+	}
+	if outboundECS == nil {
+		return resp, nil
+	}
+	echo := dns.ECSOption{
+		Family:          outboundECS.Family,
+		SourcePrefixLen: outboundECS.SourcePrefixLen,
+		ScopePrefixLen:  entry.ECSScope,
+		Address:         outboundECS.Address,
+	}
+	return appendECSToResponse(resp, &echo), nil
+}
+
+func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry, stream ...bool) ([]byte, error) {
+	// RFC 4035 §3.2.2: a recursive name server MUST clear the AD bit on a
+	// response unless and until it itself verified the data; if it did verify
+	// (or the client opted out of verification with CD=1), AD propagates.
+	// RFC 4035 §3.2.2 also says the server MUST copy the CD bit from the
+	// query to the response so the client knows whether validation was
+	// performed.
+	setAD := entry.DNSSECStatus == "secure" && !query.Header.CD()
+
+	// RFC 4035 §3.2.1: strip DNSSEC RRs for non-DO clients (see buildResponse
+	// comment for the full rationale).
+	answers := entry.Records
+	authority := entry.Authority
+	privateStripped := false
+	if h.privateFilter.Load() {
+		filtered := security.FilterPrivateAddresses(answers)
+		privateStripped = len(filtered) != len(answers)
+		answers = filtered
+	}
+	qtype := uint16(0)
+	if len(query.Questions) > 0 {
+		qtype = query.Questions[0].Type
+	}
+	if !clientWantsDNSSEC(query) {
+		answers = stripDNSSECRRs(answers, qtype)
+		authority = stripDNSSECRRs(authority, qtype)
+	}
+
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID: query.Header.ID,
+			Flags: dns.NewFlagBuilder().
+				SetQR(true).
+				SetRD(query.Header.RD()).
+				SetRA(true).
+				SetAD(setAD).
+				SetCD(query.Header.CD()).
+				SetRCODE(entry.RCODE).
+				Build(),
+		},
+		Questions: query.Questions,
+		Answers:   answers,
+		Authority: authority,
+	}
+
+	// Add OPT if client sent one
+	if query.EDNS0 != nil {
+		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
+		if privateStripped {
+			h.addEDEToResponse(resp, dns.EDECodeForgedAnswer, "rebind-protected")
+		}
+		// RFC 8914 §4.29 — when a cached entry was synthesised by the
+		// resolver itself (aggressive NSEC/NSEC3 negative caching, RFC 8198)
+		// rather than fetched directly from an authoritative, emit EDE 29
+		// so downstream clients know the answer was locally materialised
+		// from authenticated denial records.
+		if entry.Synthesized {
+			h.addEDEToResponse(resp, dns.EDECodeSynthesized, "aggressive-nsec-cache")
+		}
+	}
+
+	// H-5: pack into an owned slice so the caller doesn't read pooled memory.
+	packed, err := h.packToOwnedBytes(resp)
+	if err != nil {
+		return nil, err
+	}
+	return h.maybeTruncateUDP(packed, query, stream...), nil
+}
+
+// buildMinimalANYResponse returns a synthetic HINFO response per RFC 8482,
+// preventing DNS amplification attacks via ANY queries.
+func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question, stream ...bool) ([]byte, error) {
+	// HINFO RDATA: <CPU-length> <CPU-string> <OS-length> <OS-string>
+	// CPU = "RFC8482", OS = ""
+	cpu := []byte("RFC8482")
+	rdata := make([]byte, 1+len(cpu)+1)
+	rdata[0] = byte(len(cpu))
+	copy(rdata[1:], cpu)
+	rdata[1+len(cpu)] = 0 // empty OS string
+
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID: query.Header.ID,
+			Flags: dns.NewFlagBuilder().
+				SetQR(true).
+				SetRD(query.Header.RD()).
+				SetRA(true).
+				SetRCODE(dns.RCodeNoError).
+				Build(),
+		},
+		Questions: query.Questions,
+		Answers: []dns.ResourceRecord{{
+			Name:     q.Name,
+			Type:     dns.TypeHINFO,
+			Class:    dns.ClassIN,
+			TTL:      0,
+			RDLength: uint16(len(rdata)),
+			RData:    rdata,
+		}},
+	}
+
+	if query.EDNS0 != nil {
+		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
+	}
+
+	// H-5: pack into an owned slice (was: dns.Pack into pooled buf, then PutBuffer, then return slice).
+	packed, err := h.packToOwnedBytes(resp)
+	if err != nil {
+		return nil, err
+	}
+	return h.maybeTruncateUDP(packed, query, stream...), nil
+}
+
+func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.ResolveResult, stream ...bool) ([]byte, error) {
+	// Apply private address filtering before building the response. RFC 8914
+	// §4.6 "Forged Answer" (info code 4) is the standardised signal that the
+	// resolver replaced/stripped records relative to the authoritative
+	// answer; we emit it when the private-IP filter actually removed
+	// something so clients can distinguish "auth said empty" from
+	// "resolver rebind-protected the answer."
+	answers := result.Answers
+	privateStripped := false
+	if h.privateFilter.Load() {
+		filtered := security.FilterPrivateAddresses(answers)
+		if len(filtered) != len(answers) {
+			privateStripped = true
+		}
+		answers = filtered
+	}
+	authority := result.Authority
+	additional := result.Additional
+
+	// RFC 6891 §6.1.1: a DNS message MUST contain at most one OPT RR, and it
+	// is a pseudo-record generated by THIS server — never relayed. A fresh
+	// recursive resolution copies the upstream authoritative server's
+	// additional section through `result.Additional`, which carries that
+	// server's own OPT. Left in place, appending our OPT below produces two
+	// OPT records: a malformed message that dig flags ("malformed message
+	// packet") and strict stubs reject. The cache path never hits this
+	// because stored entries exclude OPT, so the bug surfaced only on cold
+	// positive answers. Strip any inbound OPT from every section before we
+	// build the response. OPT is only ever valid in the additional section,
+	// but we strip answers/authority defensively too.
+	answers = stripOPTRecords(answers)
+	authority = stripOPTRecords(authority)
+	additional = stripOPTRecords(additional)
+
+	// RFC 4035 §3.2.1: when the client did not signal DNSSEC support (no
+	// EDNS or DO=0), the server MUST NOT include DNSSEC RR types in the
+	// response unless the client explicitly asked for them by qtype.
+	// Sending RRSIGs to a non-DO client wastes bandwidth and confuses
+	// strict legacy stubs.
+	qtype := uint16(0)
+	if len(query.Questions) > 0 {
+		qtype = query.Questions[0].Type
+	}
+	if !clientWantsDNSSEC(query) {
+		answers = stripDNSSECRRs(answers, qtype)
+		authority = stripDNSSECRRs(authority, qtype)
+		additional = stripDNSSECRRs(additional, qtype)
+	}
+
+	// RFC 4035 §3.2.2: set AD only when this resolver validated the data
+	// as Secure. The CD bit MUST be copied from the query to the response.
+	// AD is never set when the client requested validation-bypass (CD=1).
+	setAD := result.DNSSECStatus == "secure" && !query.Header.CD()
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID: query.Header.ID,
+			Flags: dns.NewFlagBuilder().
+				SetQR(true).
+				SetRD(query.Header.RD()).
+				SetRA(true).
+				SetAD(setAD).
+				SetCD(query.Header.CD()).
+				SetRCODE(result.RCODE).
+				Build(),
+		},
+		Questions:  query.Questions,
+		Answers:    answers,
+		Authority:  authority,
+		Additional: additional,
+	}
+
+	// Add OPT if client sent one. Surface the RFC 8914 §4.6 "Forged Answer"
+	// info code when the private-IP filter actually removed records so
+	// clients can tell rebind-protection apart from a genuinely empty
+	// authoritative answer.
+	if query.EDNS0 != nil {
+		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
+		if privateStripped {
+			h.addEDEToResponse(resp, dns.EDECodeForgedAnswer, "rebind-protected")
+		}
+		// RFC 8914 §4.29 — when the answer was locally synthesised (DNS64
+		// AAAA synthesis, RFC 6147) rather than delivered intact from an
+		// authoritative server, emit EDE 29 so downstream clients know the
+		// record was constructed from an A record lookup, not a direct
+		// authoritative AAAA response.
+		if result.Synthesized {
+			h.addEDEToResponse(resp, dns.EDECodeSynthesized, "dns64-synthesis")
+		}
+	}
+
+	// H-5: pack into an owned slice.
+	packed, err := h.packToOwnedBytes(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return h.maybeTruncateUDP(packed, query, stream...), nil
+}
+
+// maybeTruncateUDP enforces the effective UDP response size cap on a packed
+// DNS message and returns the (possibly-truncated) bytes. The cap is
+// min(client-advertised, h.advertisedUDPBufferSize()): we honour the client's
+// stated buffer but never exceed our own configured ceiling, even if a
+// hostile client claims it can receive 65535 bytes. Client values below the
+// RFC 6891 §6.2.5 minimum of 512 bytes are ignored and treated as 512: a
+// broken middlebox advertising UDPSize=0 or 30 cannot induce us to truncate
+// fully RFC-compliant responses. Oversized responses are truncated per
+// RFC 1035 §4.1.1 — TC bit set, ANCount/NSCount/ARCount zeroed,
+// header+question section only — forcing the client to retry over TCP,
+// where reassembly uses 32-bit per-connection sequence numbers and is
+// structurally immune to off-path fragment-injection (Brandt et al, USENIX
+// Security 2018). RFC 9018 / DNS Flag Day 2020.
+// isStreamTransport reports whether a response will be delivered over a
+// stateful stream. TCP covers plain DNS, DoT, and DoH; DoQ is explicitly
+// wrapped as "doq" by the QUIC listener because its underlying socket address
+// otherwise reports "udp" and would incorrectly trigger truncation/RRL slip.
+func isStreamTransport(clientAddr net.Addr) bool {
+	if clientAddr == nil {
+		return false
+	}
+	network := clientAddr.Network()
+	return strings.HasPrefix(network, "tcp") || strings.HasPrefix(network, "doq")
+}
+
+func (h *MainHandler) maybeTruncateUDP(packed []byte, query *dns.Message, stream ...bool) []byte {
+	// RFC 7766 §5: over a stream transport (TCP, DoT, DoH) the 512-byte UDP
+	// datagram limit and the TC-bit truncation dance do not apply — the
+	// length-prefixed framing carries arbitrarily large messages. Truncating
+	// here would emit a TC=1 header-only answer that the client cannot recover
+	// from (there is no "retry over TCP" when it is already on TCP), which is
+	// exactly how a >512-byte response — e.g. a multi-hop CNAME chain — became
+	// unresolvable. Skip truncation entirely for stream transports.
+	if len(stream) > 0 && stream[0] {
+		return packed
+	}
+	const rfc6891MinUDPSize = 512
+	maxSize := rfc6891MinUDPSize
+	if query.EDNS0 != nil && int(query.EDNS0.UDPSize) >= rfc6891MinUDPSize {
+		maxSize = int(query.EDNS0.UDPSize)
+	}
+	if ceiling := int(h.advertisedUDPBufferSize()); maxSize > ceiling {
+		maxSize = ceiling
+	}
+	if len(packed) <= maxSize {
+		return packed
+	}
+
+	// Set TC bit and send only header + question section (RFC 1035 §4.1.1).
+	// This avoids sending a malformed message with partial records.
+	binary.BigEndian.PutUint16(packed[2:4], binary.BigEndian.Uint16(packed[2:4])|(1<<9))
+	binary.BigEndian.PutUint16(packed[6:8], 0)   // ANCount = 0
+	binary.BigEndian.PutUint16(packed[8:10], 0)  // NSCount = 0
+	binary.BigEndian.PutUint16(packed[10:12], 0) // ARCount = 0
+	// Keep header (12 bytes) + question section only
+	qEnd := 12
+	qdcount := binary.BigEndian.Uint16(packed[4:6])
+	for i := 0; i < int(qdcount) && qEnd < len(packed); i++ {
+		_, n, err := dns.DecodeName(packed, qEnd)
+		if err != nil {
+			break
+		}
+		qEnd = n + 4 // skip QTYPE + QCLASS
+	}
+	if qEnd > maxSize {
+		qEnd = 12                                  // question itself too big, send header only
+		binary.BigEndian.PutUint16(packed[4:6], 0) // QDCount = 0
+	}
+	return packed[:qEnd]
+}
+
+func (h *MainHandler) buildBlockedResponse(query *dns.Message, q dns.Question) ([]byte, error) {
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID:    query.Header.ID,
+			Flags: dns.NewFlagBuilder().SetQR(true).SetRD(query.Header.RD()).SetRA(true).SetRCODE(dns.RCodeNXDomain).Build(),
+		},
+		Questions: query.Questions,
+	}
+
+	mode := "nxdomain"
+	if h.blocklist != nil {
+		mode = h.blocklist.BlockingMode()
+	}
+
+	switch mode {
+	case "null_ip":
+		resp.Header.Flags = dns.NewFlagBuilder().SetQR(true).SetRD(query.Header.RD()).SetRA(true).SetRCODE(dns.RCodeNoError).Build()
+		if q.Type == dns.TypeA {
+			resp.Answers = []dns.ResourceRecord{{
+				Name: q.Name, Type: dns.TypeA, Class: dns.ClassIN, TTL: 0, RDLength: 4, RData: []byte{0, 0, 0, 0},
+			}}
+		} else if q.Type == dns.TypeAAAA {
+			resp.Answers = []dns.ResourceRecord{{
+				Name: q.Name, Type: dns.TypeAAAA, Class: dns.ClassIN, TTL: 0, RDLength: 16, RData: make([]byte, 16),
+			}}
+		}
+	case "custom_ip":
+		customIP := "0.0.0.0"
+		if h.blocklist != nil {
+			customIP = h.blocklist.CustomIP()
+		}
+		ip := net.ParseIP(customIP)
+		if ip != nil && q.Type == dns.TypeA {
+			ipv4 := ip.To4()
+			if ipv4 != nil {
+				resp.Header.Flags = dns.NewFlagBuilder().SetQR(true).SetRD(query.Header.RD()).SetRA(true).SetRCODE(dns.RCodeNoError).Build()
+				resp.Answers = []dns.ResourceRecord{{
+					Name: q.Name, Type: dns.TypeA, Class: dns.ClassIN, TTL: 0, RDLength: 4, RData: ipv4,
+				}}
+			}
+		}
+	}
+	// default: nxdomain - already set
+
+	// H-5: pack into an owned slice.
+	return h.packToOwnedBytes(resp)
+}
+
+// buildBadCookieResponse synthesizes the RFC 7873 §5.2.3 reply for a query
+// whose server cookie failed validation. The extended RCODE 23 (BADCOOKIE)
+// is split across the header (low 4 bits = 0x07) and the OPT TTL byte 0
+// (high 8 bits = 0x01) exactly like BADVERS. We MUST also echo a freshly
+// issued server cookie back in the response so the client can adopt it on
+// retry — refusing to do so would lock a legitimate client out indefinitely
+// after a server-secret rotation (the client's stored server cookie would
+// fail forever with no path to refresh).
+//
+// clientCookie may be nil; in that case the response carries no cookie
+// option (the client never identified itself with one).
+func (h *MainHandler) buildBadCookieResponse(query []byte, clientCookie []byte, clientIP string) ([]byte, error) {
+	resp, err := h.buildError(query, dns.RCodeBadCookie&0x0F) // low 4 bits = 7
+	if err != nil {
+		return nil, err
+	}
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp, nil //nolint:nilerr // fall back rather than mask
+	}
+	// Build OPT with ExtRCODE byte (high byte of TTL) = 1 → composes
+	// BADCOOKIE (23) with header RCODE=7. Version stays at 0. When the
+	// client identified itself with a client cookie, we MUST echo a fresh
+	// server cookie so the client can retry with a valid pair (RFC 7873
+	// §5.2.3 — refusing to issue would lock the client out forever after
+	// a server-secret rotation).
+	var ednsOpts []dns.EDNSOption
+	if len(clientCookie) == 8 {
+		serverCookie := h.generateServerCookie(clientCookie, clientIP)
+		cookieData := make([]byte, 8+len(serverCookie))
+		copy(cookieData[:8], clientCookie)
+		copy(cookieData[8:], serverCookie)
+		ednsOpts = append(ednsOpts, dns.EDNSOption{
+			Code: dns.EDNSOptionCodeCookie,
+			Data: cookieData,
+		})
+	}
+	opt := dns.BuildOPTWithOptions(h.advertisedUDPBufferSize(), false, ednsOpts)
+	opt.TTL = uint32(1) << 24 // ExtRCODE=1, Version=0, no DO, Z=0
+	msg.Additional = append(msg.Additional, opt)
+	return h.packToOwnedBytes(msg)
+}
+
+// buildBadVersResponse synthesizes the RFC 6891 §6.1.3 mandated reply for a
+// query whose EDNS version is greater than what we support (we support 0).
+//
+// The 12-bit Extended RCODE 16 (BADVERS) is split per RFC 6891 §6.1.3:
+//   - low 4 bits → DNS header RCODE field (= 0)
+//   - high 8 bits → OPT-record TTL byte 0 (= 1)
+//
+// The OPT record we emit carries our highest supported EDNS version (0),
+// so the requester can downgrade. The OPT MUST be present per the RFC —
+// without it, the BADVERS extended RCODE has no place to live.
+func (h *MainHandler) buildBadVersResponse(query []byte) ([]byte, error) {
+	resp, err := h.buildError(query, dns.RCodeNoError)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp, nil //nolint:nilerr // fall back rather than mask
+	}
+	// Build OPT with ExtRCODE byte (high byte of TTL) = 1 → composes
+	// BADVERS (16) with header RCODE=0. Our Version stays at 0.
+	opt := dns.BuildOPT(h.advertisedUDPBufferSize(), false)
+	opt.TTL = uint32(1) << 24 // ExtRCODE=1, Version=0, no DO, Z=0
+	msg.Additional = append(msg.Additional, opt)
+	return h.packToOwnedBytes(msg)
+}
+
+// buildErrorWithEDE creates an error response with an Extended DNS Error option.
+// queryHasEDNS reports whether the on-wire query carried an OPT pseudo-RR.
+// Used to gate RFC 8914 EDE emission on REFUSED responses — RFC 8914 §3
+// makes EDE meaningful only when the client speaks EDNS, and an OPT
+// shoved into a response to a non-EDNS query both wastes bytes and may
+// trip strict EDNS-0 enforcers in the wild. The check is byte-level so
+// we do not need to fully unpack the query (cheap on the refuse path).
+//
+// We accept any non-zero ARCount as evidence: in practice EDE-emitting
+// resolvers only see OPT in additional, and the alternative (full
+// parse to check Type==OPT) is wasted CPU on a path the resolver is
+// trying to make cheap. A FORMERR client that put TSIG/SIG(0) in
+// additional would still get its EDE — that is harmless.
+func queryHasEDNS(query []byte) bool {
+	if len(query) < 12 {
+		return false
+	}
+	// Header bytes 10-11 = ARCount.
+	return query[10] != 0 || query[11] != 0
+}
+
+func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint16, edeText string) ([]byte, error) {
+	// M4.6 / UI-M6.3 — count the EDE emission BEFORE we touch the
+	// fallible packing path. The metric reflects the resolver's
+	// DECISION to emit an EDE with this info code; if the subsequent
+	// pack fails and we ship plain REFUSED, the metric still tells
+	// the operator the reason the resolver tried to give.
+	if h.metrics != nil {
+		h.metrics.IncEDE(edeCode)
+	}
+
+	resp, err := h.buildError(query, rcode)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse, add EDE OPT, re-pack
+	msg, parseErr := dns.Unpack(resp)
+	if parseErr != nil {
+		return resp, nil // fallback to plain error
+	}
+	h.addEDEToResponse(msg, edeCode, edeText)
+	// H-5: pack into an owned slice.
+	out, packErr := h.packToOwnedBytes(msg)
+	if packErr != nil {
+		return resp, nil
+	}
+	return out, nil
+}
+
+// addCookieToResponse processes DNS cookie options in the response.
+// If the client sent a cookie option, the server echoes back the client cookie
+// plus a generated server cookie.
+func (h *MainHandler) addCookieToResponse(resp []byte, edns *dns.EDNS0, clientIP string) []byte {
+	// Find cookie option in client EDNS0
+	var clientCookie []byte
+	for _, opt := range edns.Options {
+		if opt.Code == dns.EDNSOptionCodeCookie {
+			clientCookie, _ = dns.ParseCookieOption(opt.Data)
+			break
+		}
+	}
+	if len(clientCookie) != 8 {
+		return resp // no valid client cookie
+	}
+
+	serverCookie := h.generateServerCookie(clientCookie, clientIP)
+
+	// Build cookie response: client cookie (8) + server cookie (16) per RFC 9018
+	cookieData := make([]byte, 8+len(serverCookie))
+	copy(cookieData[:8], clientCookie)
+	copy(cookieData[8:], serverCookie)
+	cookieOpt := dns.EDNSOption{Code: dns.EDNSOptionCodeCookie, Data: cookieData}
+
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return resp
+	}
+
+	// Add cookie option to existing OPT record or create new one
+	found := false
+	for i, rr := range msg.Additional {
+		if rr.Type == dns.TypeOPT {
+			optData := make([]byte, 4+len(cookieOpt.Data))
+			binary.BigEndian.PutUint16(optData[0:2], cookieOpt.Code)
+			binary.BigEndian.PutUint16(optData[2:4], uint16(len(cookieOpt.Data)))
+			copy(optData[4:], cookieOpt.Data)
+			msg.Additional[i].RData = append(msg.Additional[i].RData, optData...)
+			msg.Additional[i].RDLength = uint16(len(msg.Additional[i].RData))
+			found = true
+			break
+		}
+	}
+	if !found {
+		msg.Additional = append(msg.Additional, dns.BuildOPTWithOptions(h.advertisedUDPBufferSize(), false, []dns.EDNSOption{cookieOpt}))
+	}
+
+	// H-5: pack into an owned slice.
+	out, packErr := h.packToOwnedBytes(msg)
+	if packErr != nil {
+		return resp
+	}
+	return out
+}
+
+// clientWantsDNSSEC returns true if the client signalled DNSSEC support by
+// including an EDNS0 OPT record with the DO bit set.
+func clientWantsDNSSEC(query *dns.Message) bool {
+	return query.EDNS0 != nil && query.EDNS0.DOFlag
+}
+
+// isDNSSECRRType reports whether t is one of the DNSSEC-meta RR types that
+// must be stripped from responses to clients that did not opt in via DO.
+func isDNSSECRRType(t uint16) bool {
+	switch t {
+	case dns.TypeRRSIG, dns.TypeDNSKEY, dns.TypeDS, dns.TypeNSEC,
+		dns.TypeNSEC3, dns.TypeNSEC3PARAM:
+		return true
+	}
+	return false
+}
+
+// stripDNSSECRRs filters DNSSEC-meta records out of rrs unless they match the
+// client's query type (e.g. an explicit `RRSIG example.com` query keeps the
+// RRSIG records, but an `A example.com` query without DO does not).
+// Implements RFC 4035 §3.2.1.
+func stripDNSSECRRs(rrs []dns.ResourceRecord, qtype uint16) []dns.ResourceRecord {
+	if len(rrs) == 0 {
+		return rrs
+	}
+	// For an RRSIG query, also keep RRSIGs whose covered type matches the
+	// implicit intent; but the simplest correct rule is to keep RRs whose
+	// own rr.Type equals qtype. That covers the qtype==RRSIG / qtype==DNSKEY
+	// etc. direct query case without surprising heuristics.
+	out := make([]dns.ResourceRecord, 0, len(rrs))
+	for _, rr := range rrs {
+		if isDNSSECRRType(rr.Type) && rr.Type != qtype {
+			continue
+		}
+		out = append(out, rr)
+	}
+	return out
+}
+
+// stripOPTRecords removes every OPT pseudo-record (RFC 6891) from rrs. The
+// server generates exactly one OPT of its own when answering an EDNS client;
+// any OPT that arrived from an upstream authoritative server must not be
+// relayed, or the response would carry two OPT RRs and be malformed. Returns
+// the input unchanged (no allocation) in the common case where no OPT is
+// present.
+func stripOPTRecords(rrs []dns.ResourceRecord) []dns.ResourceRecord {
+	hasOPT := false
+	for _, rr := range rrs {
+		if rr.Type == dns.TypeOPT {
+			hasOPT = true
+			break
+		}
+	}
+	if !hasOPT {
+		return rrs
+	}
+	out := make([]dns.ResourceRecord, 0, len(rrs))
+	for _, rr := range rrs {
+		if rr.Type == dns.TypeOPT {
+			continue
+		}
+		out = append(out, rr)
+	}
+	return out
+}
+
+// isUDPAddr reports whether a client address came in over UDP. Used by
+// the RFC 7873 §5.4 strict cookie path to gate enforcement to the
+// unauthenticated transport — TCP / DoT / DoH already establish a
+// stateful handshake the client cannot spoof, so forcing those clients
+// through a BADCOOKIE round-trip is pure overhead.
+//
+// Implementation: we cannot type-switch reliably (DoH wraps the client
+// address through HTTP plumbing and may surface as *net.TCPAddr or as
+// a custom type). The cheap and robust check is the Network() string
+// the address itself reports: "udp", "udp4", "udp6" all start with
+// "udp"; nothing else does.
+func isUDPAddr(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	return strings.HasPrefix(addr.Network(), "udp")
+}
+
+func extractIP(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	addrStr := addr.String()
+	host, _, err := net.SplitHostPort(addrStr)
+	if err != nil {
+		return strings.TrimRight(addrStr, ":")
+	}
+	return host
+}

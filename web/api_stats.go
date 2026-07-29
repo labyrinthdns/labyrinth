@@ -1,0 +1,177 @@
+package web
+
+import (
+	"net/http"
+	"time"
+)
+
+// handleStats handles GET /api/stats — returns metrics snapshot + cache stats as JSON.
+func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	snap := s.metrics.Snapshot()
+	cacheStats := s.cache.DetailedStats()
+
+	var hitRatio float64
+	total := snap.CacheHits + snap.CacheMisses
+	if total > 0 {
+		hitRatio = float64(snap.CacheHits) / float64(total)
+	}
+
+	resolverReady := false
+	if s.resolver != nil {
+		resolverReady = s.resolver.IsReady()
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"queries_by_type":      snap.QueriesByType,
+		"responses_by_rcode":   snap.ResponsesByRCode,
+		"cache_hits":           snap.CacheHits,
+		"cache_misses":         snap.CacheMisses,
+		"cache_evictions":      snap.CacheEvictions,
+		"cache_entries":        cacheStats.Entries,
+		"cache_positive":       cacheStats.PositiveEntries,
+		"cache_negative":       cacheStats.NegativeEntries,
+		"cache_hit_ratio":      hitRatio,
+		"upstream_queries":     snap.UpstreamQueries,
+		"upstream_errors":      snap.UpstreamErrors,
+		"rate_limited":         snap.RateLimited,
+		"dnssec_secure":        snap.DNSSECSecure,
+		"dnssec_insecure":      snap.DNSSECInsecure,
+		"dnssec_bogus":         snap.DNSSECBogus,
+		"blocked_queries":      snap.BlockedQueries,
+		"fallback_queries":     snap.FallbackQueries,
+		"fallback_recoveries":  snap.FallbackRecoveries,
+		"uptime_seconds":       snap.UptimeSeconds,
+		"goroutines":           snap.Goroutines,
+		"query_duration_count": snap.QueryDurationCount,
+		"resolver_ready":       resolverReady,
+
+		// Y34/Y35/Y36 observability — exposed to the dashboard so the
+		// v0.6.18→v0.6.23 features (failure cache, server-cookie cache,
+		// aggressive NSEC/NSEC3 synth, BADCOOKIE retry, stale-while-refresh)
+		// are no longer a blind spot in the UI. The same numbers are
+		// available on /metrics for Prometheus scrapers.
+		"failure_cache_hits":           snap.FailureCacheHits,
+		"failure_cache_misses":         snap.FailureCacheMisses,
+		"server_cookie_cache_hits":     snap.ServerCookieCacheHits,
+		"server_cookie_cache_misses":   snap.ServerCookieCacheMisses,
+		"nsec_aggressive_synth_nx":     snap.NSECAggressiveSynthNX,
+		"nsec_aggressive_synth_nodata": snap.NSECAggressiveSynthNoData,
+		"nsec3_aggressive_synth_nx":    snap.NSEC3AggressiveSynthNX,
+		"nsec3_aggressive_synth_nodata": snap.NSEC3AggressiveSynthND,
+		"outbound_badcookie_retries":   snap.OutboundBadCookieRetries,
+		"stale_while_refresh":          snap.StaleWhileRefreshTriggers,
+	})
+}
+
+// handleTimeSeries handles GET /api/stats/timeseries?window=5m&interval=1m — returns time-bucketed data.
+// When interval is specified, raw 1s buckets are aggregated into larger intervals.
+func (s *AdminServer) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	windowStr := r.URL.Query().Get("window")
+	if windowStr == "" {
+		windowStr = "5m"
+	}
+
+	window, err := time.ParseDuration(windowStr)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid window duration"})
+		return
+	}
+
+	// Refuse non-positive durations explicitly. time.ParseDuration is
+	// happy to return a negative or zero value, but the downstream
+	// snapshot routines treat those as "no data" or produce empty
+	// buckets — which leaks the impression that the resolver has no
+	// traffic. A bad-input 400 is much clearer than a misleading
+	// empty 200.
+	if window <= 0 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "window must be positive"})
+		return
+	}
+	// Cap at 24 hours
+	if window > 24*time.Hour {
+		window = 24 * time.Hour
+	}
+
+	intervalStr := r.URL.Query().Get("interval")
+	resultBucketSec := int(bucketInterval.Seconds())
+
+	var buckets []Bucket
+	if intervalStr != "" {
+		interval, err := time.ParseDuration(intervalStr)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid interval duration"})
+			return
+		}
+		// Same reasoning as window: a non-positive interval produces
+		// nonsense buckets (division-by-zero risk in the aggregator if
+		// it ever multiplied by interval seconds). 400 is clearer than
+		// a silently-empty response.
+		if interval <= 0 {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "interval must be positive"})
+			return
+		}
+		buckets = s.timeSeries.SnapshotAggregated(window, interval)
+		resultBucketSec = int(interval.Seconds())
+	} else {
+		buckets = s.timeSeries.Snapshot(window)
+	}
+
+	if buckets == nil {
+		buckets = []Bucket{}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"window":         windowStr,
+		"bucket_seconds": resultBucketSec,
+		"buckets":        buckets,
+	})
+}
+
+// handleFallbackEvents handles GET /api/fallback-events — returns recent fallback events.
+func (s *AdminServer) handleFallbackEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	events := s.metrics.FallbackEventRing().Events()
+	type jsonEvent struct {
+		Timestamp             string `json:"timestamp"`
+		QueryName             string `json:"query_name"`
+		QType                 uint16 `json:"qtype"`
+		QClass                uint16 `json:"qclass"`
+		PrimaryFailureReason  string `json:"primary_failure_reason"`
+		ResolverAddr          string `json:"resolver_addr"`
+		Recovered             bool   `json:"recovered"`
+		RCODE                 uint8  `json:"rcode"`
+		Error                 string `json:"error,omitempty"`
+	}
+	out := make([]jsonEvent, len(events))
+	for i, e := range events {
+		out[i] = jsonEvent{
+			Timestamp:            e.Timestamp.UTC().Format(time.RFC3339),
+			QueryName:            e.QueryName,
+			QType:                e.QType,
+			QClass:               e.QClass,
+			PrimaryFailureReason: e.PrimaryFailureReason,
+			ResolverAddr:         e.ResolverAddr,
+			Recovered:            e.Recovered,
+			RCODE:                e.RCODE,
+			Error:                e.Error,
+		}
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"count":  len(out),
+		"events": out,
+	})
+}

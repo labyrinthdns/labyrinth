@@ -1,0 +1,454 @@
+export interface LoginRequest {
+  username: string
+  password: string
+}
+
+export interface LoginResponse {
+  username: string
+}
+
+export interface AuthUser {
+  username: string
+}
+
+export interface StatsResponse {
+  queries_by_type: Record<string, number>
+  responses_by_rcode: Record<string, number>
+  cache_hits: number
+  cache_misses: number
+  cache_evictions: number
+  upstream_queries: number
+  upstream_errors: number
+  rate_limited: number
+  uptime_seconds: number
+  goroutines: number
+  query_duration_count: number
+  cache_entries: number
+  cache_positive: number
+  cache_negative: number
+  cache_hit_ratio: number
+  resolver_ready: boolean
+  dnssec_secure: number
+  dnssec_insecure: number
+  dnssec_bogus: number
+  blocked_queries: number
+  fallback_queries: number
+  fallback_recoveries: number
+
+  // v0.6.26 — Y34/Y35/Y36 observability counters surfaced in the
+  // dashboard. Optional so a server running an older API still works.
+  failure_cache_hits?: number
+  failure_cache_misses?: number
+  server_cookie_cache_hits?: number
+  server_cookie_cache_misses?: number
+  nsec_aggressive_synth_nx?: number
+  nsec_aggressive_synth_nodata?: number
+  nsec3_aggressive_synth_nx?: number
+  nsec3_aggressive_synth_nodata?: number
+  outbound_badcookie_retries?: number
+  stale_while_refresh?: number
+}
+
+export interface TimeSeriesBucket {
+  ts?: string
+  timestamp: string
+  queries: number
+  cache_hits: number
+  cache_misses: number
+  errors: number
+  avg_latency_ms: number
+  cache_hit_ratio: number
+  fallback_queries?: number
+  fallback_recoveries?: number
+}
+
+export interface FallbackEvent {
+  timestamp: string
+  query_name: string
+  qtype: number
+  qclass: number
+  primary_failure_reason: string
+  resolver_addr: string
+  recovered: boolean
+  rcode: number
+  error?: string
+}
+
+export interface FallbackEventsResponse {
+  count: number
+  events: FallbackEvent[]
+}
+
+export interface TimeSeriesResponse {
+  window?: string
+  bucket_seconds?: number
+  buckets: TimeSeriesBucket[]
+}
+
+export type TSMode = 'live' | 'history'
+
+export interface TimeSeriesWSMessage {
+  mode: TSMode
+  window: string
+  interval: string
+  buckets: TimeSeriesBucket[]
+}
+
+export interface SystemProfileResponse {
+  hostname: string
+  network: {
+    ip_addresses: string[]
+    dns_listen_addresses?: string[]
+    interfaces: {
+      name: string
+      mtu: number
+      hardware_addr?: string
+      flags?: string[]
+      addrs?: string[]
+    }[]
+    io: {
+      rx_bytes_total: number
+      tx_bytes_total: number
+      rx_packets_total: number
+      tx_packets_total: number
+    }
+  }
+  runtime: {
+    version: string
+    build_time: string
+    go_version: string
+    os: string
+    arch: string
+    cpu_cores: number
+    go_maxprocs: number
+    goroutines: number
+  }
+  cpu: {
+    process_cpu_seconds_total: number
+    load_avg_1m: number
+    load_avg_5m: number
+    load_avg_15m: number
+  }
+  memory: {
+    process_alloc_bytes: number
+    process_heap_bytes: number
+    process_sys_bytes: number
+    system_total_bytes: number
+    system_free_bytes: number
+    gc_cycles: number
+  }
+  disk: {
+    path: string
+    total_bytes: number
+    free_bytes: number
+    used_bytes: number
+    used_pct: number
+  }
+  traffic: {
+    dns_queries_total: number
+    upstream_queries_total: number
+    blocked_queries_total: number
+    rate_limited_total: number
+    last_minute_qps_avg: number
+    last_minute_qps_peak: number
+    last_minute_error_total: number
+  }
+}
+
+export interface QueryEntry {
+  id: number
+  ts: string
+  client: string
+  qname: string
+  qtype: string
+  rcode: string
+  cached: boolean
+  duration_ms: number
+  global_num: number
+  client_num: number
+  blocked?: boolean
+  dnssec_status?: string
+}
+
+export interface CacheStats {
+  entries: number
+  positive_entries: number
+  negative_entries: number
+  hits: number
+  misses: number
+  evictions: number
+  hit_rate: number
+}
+
+export interface CacheRecord {
+  name: string
+  type: string
+  ttl: number
+  rdata: string
+}
+
+export interface CacheEntry {
+  name: string
+  type: string
+  ttl: number
+  negative: boolean
+  records: CacheRecord[]
+}
+
+export interface SetupStatus {
+  setup_required: boolean
+  version: string
+}
+
+export interface SetupRequest {
+  listen_addr: string
+  web_addr: string
+  username: string
+  password: string
+  max_cache_size: number
+  max_depth: number
+  rate_limit_rate: number
+  rate_limit_burst: number
+  log_level: string
+  log_format: string
+}
+
+export interface HealthResponse {
+  status: string
+  resolver_ready: boolean
+}
+
+export interface VersionResponse {
+  version: string
+  build_time: string
+  go_version: string
+  os: string
+  arch: string
+}
+
+export interface TopEntry {
+  key: string
+  count: number
+}
+
+export interface TopListResponse {
+  entries: TopEntry[]
+  total?: number
+  limit?: number
+  offset?: number
+  has_more?: boolean
+}
+
+export interface TLSCertInfo {
+  domain: string
+  issuer: string
+  subject: string
+  not_before: string
+  not_after: string
+  dns_names: string[]
+  auto_tls: boolean
+  acme: boolean
+}
+
+export interface TLSStatusResponse {
+  enabled: boolean
+  auto_tls: boolean
+  cert?: TLSCertInfo
+}
+
+export interface DNSGuideResponse {
+  listen_addr: string
+  doh_enabled: boolean
+  doh_url?: string
+  dot_enabled: boolean
+  dot_host?: string
+  tls_enabled: boolean
+  version: string
+}
+
+export interface NegativeCacheEntry {
+  name: string
+  qtype: string
+  neg_type: string
+  rcode: string
+  remaining_ttl: number
+  authority: { name: string; type: string; ttl: number; rdata: string }[]
+}
+
+export interface UpdateInfo {
+  current_version: string
+  latest_version: string
+  update_available: boolean
+  read_only?: boolean
+  read_only_hint?: string
+  release_url?: string
+  release_notes?: string
+  asset_name?: string
+}
+
+export interface BlocklistStats {
+  enabled: boolean
+  total_rules: number
+  list_count: number
+  blocked_total: number
+  custom_blocks: number
+  custom_allows: number
+  blocking_mode: string
+}
+
+export interface BlocklistListEntry {
+  url: string
+  format: string
+  enabled: boolean
+  last_update: string
+  rule_count: number
+  error?: string
+}
+
+export interface BlocklistDomainsResponse {
+  blocked_domains: string[]
+  allowed_domains: string[]
+}
+
+export interface ConfigRawResponse {
+  path: string
+  content: string
+}
+
+export interface ConfigValidateResponse {
+  valid: boolean
+  error?: string
+}
+
+export interface ConfigSaveResponse {
+  status: string
+  path: string
+  restart_required: boolean
+}
+
+export interface DashboardLayoutResponse {
+  panel_order: string[]
+  hidden_panels: string[]
+  status?: string
+  path?: string
+  storage?: string
+}
+
+export type TraceStatus = 'info' | 'ok' | 'warn' | 'error'
+
+export interface TraceEvent {
+  seq: number
+  stage: string
+  status: TraceStatus
+  time: string
+  elapsed_ms: number
+  message: string
+  details?: Record<string, unknown>
+}
+
+export interface TraceRR {
+  name: string
+  type: string
+  ttl: number
+  class: number
+  data: string
+}
+
+export interface TraceResult {
+  name: string
+  type: string
+  rcode: string
+  dnssec_status?: string
+  answers?: TraceRR[]
+  authority?: TraceRR[]
+  elapsed_ms: number
+  error?: string
+}
+
+export type TraceServerMsg =
+  | { kind: 'event'; event: TraceEvent }
+  | { kind: 'result'; result: TraceResult }
+  | { kind: 'error'; error: string }
+  | { kind: 'busy'; error: string }
+
+export interface TraceClientMsg {
+  action: 'start' | 'cancel'
+  name?: string
+  type?: string
+  bypass_cache?: boolean
+  skip_dnssec?: boolean
+}
+
+export interface TrustChainLevel {
+  zone: string
+  status: 'secure' | 'insecure' | 'bogus' | 'unreachable' | 'unknown'
+  dnskey?: {
+    flags: number
+    protocol: number
+    algorithm: number
+    key_tag: number
+    zone_key: boolean
+    key_data: string
+  }[]
+  ds?: {
+    key_tag: number
+    algorithm: number
+    digest_type: number
+    digest: string
+  }[]
+  error?: string
+}
+
+export interface TrustChainResponse {
+  name: string
+  levels: TrustChainLevel[]
+}
+
+export interface DNSSECNTAEntry {
+  zone: string
+  expires_at: string
+  expires_in_seconds: number
+  reason: string
+  state: 'active' | 'expired'
+}
+
+export interface DNSSECStatusResponse {
+  enabled: boolean
+  allow_sha1: boolean
+  nta_count: number
+  nta_matches: number
+  ntas: DNSSECNTAEntry[]
+  // M5.5 safety-net values surfaced for transparency. Optional so an
+  // older API server is still parsed.
+  safety_net?: {
+    max_rrsig_verify_attempts: number
+    max_trust_chain_depth: number
+  }
+}
+
+export interface SecurityStatusResponse {
+  cookies: {
+    enabled: boolean
+    enforce_strict_udp: boolean
+    badcookie_responses: number
+  }
+  rate_limit: {
+    enabled: boolean
+    rate_per_second: number
+    burst: number
+    rate_limited_total: number
+  }
+  rrl: {
+    enabled: boolean
+    responses_per_second: number
+    slip_ratio: number
+    ipv4_prefix: number
+    ipv6_prefix: number
+  }
+  acl_refused_total: number
+  blocklist_blocked_total: number
+  // UI-M6.3 — per-EDE-code emission counts (RFC 8914 §4). Keyed by
+  // info code as a decimal string ("6", "17", "25", …). Empty map
+  // when the resolver has not emitted any EDE since startup.
+  ede_counts?: Record<string, number>
+}

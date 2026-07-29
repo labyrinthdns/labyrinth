@@ -1,0 +1,349 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"crypto/tls"
+
+	"github.com/labyrinthdns/labyrinth/blocklist"
+	"github.com/labyrinthdns/labyrinth/cache"
+	"github.com/labyrinthdns/labyrinth/certmanager"
+	"github.com/labyrinthdns/labyrinth/config"
+	"github.com/labyrinthdns/labyrinth/daemon"
+	"github.com/labyrinthdns/labyrinth/metrics"
+	"github.com/labyrinthdns/labyrinth/resolver"
+	"github.com/labyrinthdns/labyrinth/server"
+	"github.com/labyrinthdns/labyrinth/web"
+)
+
+const dnsServerErrorBuffer = 4
+
+var (
+	waitSignalNotify = signal.Notify
+	waitSignalStop   = signal.Stop
+)
+
+func startHTTPServices(
+	ctx context.Context,
+	cfg *config.Config,
+	c *cache.Cache,
+	m *metrics.Metrics,
+	res *resolver.Resolver,
+	handler *server.MainHandler,
+	logger *slog.Logger,
+	blocklistMgr *blocklist.Manager,
+	configPath string,
+) error {
+	// Start web dashboard (replaces standalone metrics server when enabled)
+	if cfg.Web.Enabled {
+		adminServer, err := web.NewAdminServer(cfg, c, m, res, logger, blocklistMgr)
+		if err != nil {
+			logger.Error("failed to create admin server", "error", err)
+			return err
+		}
+		adminServer.SetConfigPath(configPath)
+
+		// Hot-reload hook: settings that can be applied without restart.
+		// Anything not listed here still requires a process restart to take effect.
+		adminServer.SetRuntimeApplier(func(newCfg *config.Config) {
+			handler.SetPrivateFilter(newCfg.Security.PrivateAddressFilter)
+			handler.SetECSPrefixes(newCfg.Resolver.ECSEnabled, newCfg.Resolver.ECSMaxPrefix, newCfg.Resolver.ECSMaxPrefixV6)
+			logger.Info("config hot-applied",
+				"private_address_filter", newCfg.Security.PrivateAddressFilter,
+				"ecs_enabled", newCfg.Resolver.ECSEnabled,
+				"ecs_max_prefix", newCfg.Resolver.ECSMaxPrefix,
+				"ecs_max_prefix_v6", newCfg.Resolver.ECSMaxPrefixV6,
+			)
+		})
+
+		// Auto-TLS: create certificate manager if enabled
+		if cfg.Web.AutoTLS {
+			cm := certmanager.New(
+				cfg.Web.AutoTLSDomain,
+				cfg.Web.AutoTLSEmail,
+				cfg.Web.AutoTLSCacheDir,
+				cfg.Web.AutoTLSStaging,
+				logger,
+			)
+			adminServer.SetCertManager(cm)
+			logger.Info("auto-tls enabled",
+				"domain", cfg.Web.AutoTLSDomain,
+				"cache_dir", cfg.Web.AutoTLSCacheDir,
+				"staging", cfg.Web.AutoTLSStaging,
+			)
+		}
+
+		// Enable DoH endpoint if any DoH transport is configured.
+		if cfg.Web.DoHEnabled || cfg.Web.DoH3Enabled {
+			adminServer.SetDoHHandler(handler)
+			adminServer.SetDoHEnabled(true)
+			logger.Info("DoH endpoint enabled on web dashboard",
+				"path", "/dns-query",
+				"http", cfg.Web.DoHEnabled,
+				"http3", cfg.Web.DoH3Enabled,
+			)
+			if !cfg.Web.TLSEnabled {
+				logger.Warn("DoH is enabled without web TLS; terminate TLS at reverse proxy or enable web.tls_* settings")
+			}
+			if cfg.Web.DoH3Enabled {
+				logger.Info("DoH/HTTP3 requested; web server will advertise Alt-Svc and accept QUIC connections")
+			}
+		}
+
+		// Wire query log hook
+		handler.OnQuery = func(client, qname, qtype, rcode string, cached bool, durationMs float64) {
+			adminServer.RecordQuery(client, qname, qtype, rcode, cached, durationMs)
+		}
+
+		go func() {
+			logger.Info("web dashboard starting", "addr", cfg.Web.Addr)
+			if err := adminServer.Start(ctx); err != nil && ctx.Err() == nil {
+				logger.Error("web dashboard error", "error", err)
+			}
+		}()
+
+		// Background update checker
+		go adminServer.StartUpdateChecker(ctx)
+
+		// Start Zabbix agent if enabled
+		if cfg.Zabbix.Enabled && cfg.Zabbix.Addr != "" {
+			go func() {
+				logger.Info("zabbix agent starting", "addr", cfg.Zabbix.Addr)
+				web.StartZabbixAgent(ctx, cfg.Zabbix.Addr, m, c, logger)
+			}()
+		}
+		return nil
+	}
+
+	// Standalone metrics server (legacy mode)
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", m)
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			stats := c.Stats()
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"status":"healthy","cache_entries":%d,"uptime":"%s"}`,
+				stats.Entries, time.Since(m.StartTime()).Round(time.Second))
+		})
+		mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "application/json")
+			if res.IsReady() {
+				fmt.Fprint(w, `{"status":"ready"}`)
+			} else {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprint(w, `{"status":"not ready"}`)
+			}
+		})
+		logger.Info("metrics server starting", "addr", cfg.Server.MetricsAddr)
+		// Standalone metrics server: must carry the same slowloris
+		// timeout regime as the admin HTTP servers, otherwise an
+		// attacker reaching the metrics port (which is often left
+		// exposed for Prometheus scrapers) can hold thousands of
+		// half-open connections sending one byte every few seconds
+		// and exhaust the resolver's file descriptors. http.ListenAndServe
+		// with default timeouts (=zero) is the documented Go footgun
+		// this defends against.
+		metricsSrv := &http.Server{
+			Addr:              cfg.Server.MetricsAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			// Cap header bytes to 16 KiB. Go's default is 1 MiB, which
+			// for a scrape/health endpoint is gratuitous: a Prometheus
+			// scraper sends a few hundred bytes of headers. Without the
+			// cap an attacker can sit just under the slowloris deadline,
+			// flush 900 KiB of headers per connection, and across many
+			// connections inflate resolver memory by orders of magnitude.
+			MaxHeaderBytes: 16 << 10,
+		}
+		if err := metricsSrv.ListenAndServe(); err != nil {
+			logger.Error("metrics server error", "error", err)
+		}
+	}()
+
+	return nil
+}
+
+func startDNSServers(
+	ctx context.Context,
+	cfg *config.Config,
+	handler *server.MainHandler,
+	logger *slog.Logger,
+	sharedTLSConfig ...*tls.Config,
+) (chan error, error) {
+	errCh := make(chan error, dnsServerErrorBuffer)
+
+	udpServer, err := server.NewUDPServer(cfg.Server.ListenAddr, handler, cfg.Server.MaxUDPWorkers, logger)
+	if err != nil {
+		logger.Error("failed to start UDP server", "error", err)
+		return nil, err
+	}
+	go func() { errCh <- udpServer.Serve(ctx) }()
+
+	tcpServer, err := server.NewTCPServer(cfg.Server.ListenAddr, handler, cfg.Server.TCPTimeout, cfg.Server.MaxTCPConns, logger,
+		server.WithMaxConnsPerClient(cfg.Server.MaxTCPConnsPerClient),
+		server.WithPipelineMax(cfg.Server.TCPPipelineMax),
+		server.WithIdleTimeout(cfg.Server.TCPIdleTimeout),
+	)
+	if err != nil {
+		logger.Error("failed to start TCP server", "error", err)
+		return nil, err
+	}
+	go func() { errCh <- tcpServer.Serve(ctx) }()
+
+	// Start DoT server if enabled
+	if cfg.Server.DoTEnabled {
+		var sharedCfg *tls.Config
+		if len(sharedTLSConfig) > 0 && sharedTLSConfig[0] != nil {
+			sharedCfg = sharedTLSConfig[0]
+		}
+
+		switch {
+		case sharedCfg != nil:
+			// Use auto-TLS shared config
+			dotServer, dotErr := server.NewDoTServerWithTLSConfig(
+				cfg.Server.DoTListenAddr,
+				handler,
+				sharedCfg,
+				cfg.Server.TCPTimeout,
+				cfg.Server.MaxTCPConns,
+				cfg.Server.MaxDoTConnsPerClient,
+				logger,
+			)
+			if dotErr != nil {
+				logger.Error("failed to start DoT server with auto-TLS", "error", dotErr)
+				return nil, dotErr
+			}
+			go func() { errCh <- dotServer.Serve(ctx) }()
+			logger.Info("DoT server started (auto-TLS)", "addr", cfg.Server.DoTListenAddr)
+
+		case cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "":
+			dotServer, dotErr := server.NewDoTServer(
+				cfg.Server.DoTListenAddr,
+				handler,
+				cfg.Server.TLSCertFile,
+				cfg.Server.TLSKeyFile,
+				cfg.Server.TCPTimeout,
+				cfg.Server.MaxTCPConns,
+				cfg.Server.MaxDoTConnsPerClient,
+				logger,
+			)
+			if dotErr != nil {
+				logger.Error("failed to start DoT server", "error", dotErr)
+				return nil, dotErr
+			}
+			go func() { errCh <- dotServer.Serve(ctx) }()
+			logger.Info("DoT server started", "addr", cfg.Server.DoTListenAddr)
+
+		default:
+			err := fmt.Errorf("DoT enabled but no TLS certificate available (set tls_cert_file/tls_key_file or enable web.auto_tls)")
+			logger.Error(err.Error())
+			return nil, err
+		}
+	}
+
+	// Start DoQ server if enabled (RFC 9250). Shares TLS certs with DoT.
+	if cfg.Server.DoQEnabled {
+		switch {
+		case len(sharedTLSConfig) > 0 && sharedTLSConfig[0] != nil:
+			doqServer, doqErr := server.NewDoQServerWithTLSConfig(
+				cfg.Server.DoQListenAddr,
+				handler,
+				sharedTLSConfig[0],
+				cfg.Server.TCPTimeout,
+				cfg.Server.MaxTCPConns,
+				logger,
+			)
+			if doqErr != nil {
+				logger.Error("failed to start DoQ server with auto-TLS", "error", doqErr)
+				return nil, doqErr
+			}
+			go func() { errCh <- doqServer.Serve(ctx) }()
+			logger.Info("DoQ server started (auto-TLS)", "addr", cfg.Server.DoQListenAddr)
+
+		case cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "":
+			doqServer, doqErr := server.NewDoQServer(
+				cfg.Server.DoQListenAddr,
+				handler,
+				cfg.Server.TLSCertFile,
+				cfg.Server.TLSKeyFile,
+				cfg.Server.TCPTimeout,
+				cfg.Server.MaxTCPConns,
+				logger,
+			)
+			if doqErr != nil {
+				logger.Error("failed to start DoQ server", "error", doqErr)
+				return nil, doqErr
+			}
+			go func() { errCh <- doqServer.Serve(ctx) }()
+			logger.Info("DoQ server started", "addr", cfg.Server.DoQListenAddr)
+
+		default:
+			logger.Warn("DoQ enabled but no TLS certificate available — set tls_cert_file/tls_key_file or enable web.auto_tls")
+		}
+	}
+
+	return errCh, nil
+}
+
+func waitForShutdown(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	cfg *config.Config,
+	c *cache.Cache,
+	daemonMode bool,
+	errCh <-chan error,
+	logger *slog.Logger,
+) int {
+	sigCh := make(chan os.Signal, 1)
+	waitSignalNotify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer waitSignalStop(sigCh)
+
+	for {
+		select {
+		case sig := <-sigCh:
+			switch sig {
+			case syscall.SIGINT, syscall.SIGTERM:
+				logger.Info("shutting down", "signal", sig)
+				cancel()
+				time.Sleep(cfg.Server.GracefulPeriod)
+				stats := c.Stats()
+				logger.Info("final stats", "cache_entries", stats.Entries)
+				// Clean up PID file if running as daemon
+				if daemonMode && cfg.Daemon.PIDFile != "" {
+					daemon.RemovePID(cfg.Daemon.PIDFile)
+				}
+				return 0
+			}
+
+		case err := <-errCh:
+			if ctx.Err() != nil {
+				continue
+			}
+			logger.Error("server error", "error", err)
+			cancel()
+			return 1
+		}
+	}
+}

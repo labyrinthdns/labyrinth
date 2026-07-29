@@ -1,0 +1,128 @@
+interface Props { dark: boolean }
+
+export default function Authentication({ dark }: Props) {
+  const h1 = `text-3xl font-bold mb-6 ${dark ? 'text-white' : 'text-navy-900'}`
+  const h2 = `text-xl font-semibold mt-10 mb-4 ${dark ? 'text-white' : 'text-navy-900'}`
+  const p = `mb-4 leading-relaxed ${dark ? 'text-gray-300' : 'text-navy-700'}`
+  const ul = `list-disc pl-6 mb-4 space-y-1 ${dark ? 'text-gray-300' : 'text-navy-700'}`
+  const info = `p-4 rounded-lg border-l-4 border-gold-500 mb-6 ${dark ? 'bg-navy-800/50' : 'bg-gold-500/5'}`
+  const ic = 'px-1.5 py-0.5 rounded text-sm font-mono bg-navy-800 text-gold-500'
+  const cb = 'code-block p-4 mb-6'
+
+  return (
+    <div>
+      <h1 className={h1}>Authentication</h1>
+
+      <p className={p}>
+        The web dashboard and API use JWT (JSON Web Tokens) for authentication. Browsers authenticate with
+        an HttpOnly same-origin cookie; command-line and other programmatic clients may use a Bearer token.
+      </p>
+
+      <h2 className={h2}>JWT Authentication Flow</h2>
+
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`1. Client sends POST /api/auth/login with username and password
+2. Server verifies credentials against the configured bcrypt hash
+3. Server sets an HttpOnly labyrinth_token cookie and also returns the JWT for API clients
+4. Browser requests automatically send the same-origin cookie
+5. Server validates the JWT signature and expiration on each request
+
+Timeline:
+┌──────────┐                           ┌──────────┐
+│  Client  │                           │  Server  │
+└────┬─────┘                           └────┬─────┘
+     │  POST /api/auth/login                │
+     │  { username, password }              │
+     │─────────────────────────────────────▶│
+     │                                      │ verify bcrypt hash
+     │  200 OK + Set-Cookie                 │
+     │  { token: "eyJhbG..." }              │
+     │◀─────────────────────────────────────│
+     │                                      │
+     │  GET /api/stats                      │
+     │  Cookie: labyrinth_token=eyJhbG...   │
+     │─────────────────────────────────────▶│
+     │                                      │ validate JWT
+     │  200 OK { ... }                      │
+     │◀─────────────────────────────────────│`}</code></pre>
+
+      <h2 className={h2}>Password Hashing</h2>
+
+      <p className={p}>
+        Passwords are hashed using bcrypt (cost factor 10) via the <code className={ic}>labyrinth hash</code> CLI command.
+        The plaintext password is never stored.
+      </p>
+
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Hash a password
+labyrinth hash "my-secure-password"
+# Output: $2a$10$K7L/FqkZxJ2b...
+`}</code></pre>
+
+      <h2 className={h2}>Token Lifetime</h2>
+
+      <p className={p}>
+        JWT tokens currently expire after 24 hours. After expiration, the client must re-authenticate.
+      </p>
+
+      <div className={info}>
+        <p className={`text-sm ${dark ? 'text-gray-300' : 'text-navy-700'}`}>
+          <strong className="text-gold-500">Important:</strong> Labyrinth generates an in-memory JWT signing secret
+          on startup. Existing tokens are invalidated after process restart.
+        </p>
+      </div>
+
+      <h2 className={h2}>API Authentication</h2>
+
+      <p className={p}>
+        Most <code className={ic}>/api/*</code> endpoints require a valid JWT. Public web-mode endpoints include
+        <code className={ic}> /api/auth/login </code>, <code className={ic}>/api/setup/*</code>,
+        <code className={ic}> /api/system/health </code>, and <code className={ic}>/api/system/version</code>.
+        Browser code should rely on the HttpOnly cookie and use same-origin requests; API clients may send the returned token in <code className={ic}>Authorization</code>:
+      </p>
+
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`# Authenticate
+TOKEN=$(curl -s -X POST http://localhost:9153/api/auth/login \\
+  -H "Content-Type: application/json" \\
+  -d '{"username":"admin","password":"your-password"}' | jq -r '.token')
+
+# Use the token
+curl -s http://localhost:9153/api/stats \\
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# Flush cache (requires auth)
+curl -s -X POST http://localhost:9153/api/cache/flush \\
+  -H "Authorization: Bearer $TOKEN"`}</code></pre>
+
+      <h2 className={h2}>WebSocket Authentication</h2>
+
+      <p className={p}>
+        The live query stream endpoint is <code className={ic}>/api/queries/stream</code>. A browser WebSocket
+        automatically carries the same-origin HttpOnly cookie, so the dashboard uses a token-free URL.
+        Non-browser WebSocket clients may use <code className={ic}>Authorization: Bearer</code> or the legacy
+        {' '}<code className={ic}>?token=...</code> upgrade-only fallback.
+      </p>
+
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`wss://dns.example.com/api/queries/stream`}</code></pre>
+
+      <h2 className={h2}>JWT Token Structure</h2>
+
+      <p className={p}>
+        The JWT payload contains:
+      </p>
+
+      <pre className={cb}><code className="text-sm text-gray-300 font-mono">{`{
+  "sub": "admin",           // username
+  "iat": 1700000000,        // issued at (Unix timestamp)
+  "exp": 1700086400         // expires at (issued + 24h)
+}`}</code></pre>
+
+      <h2 className={h2}>Security Recommendations</h2>
+
+      <ul className={ul}>
+        <li>Use HTTPS (directly or via reverse proxy) to protect the session cookie in transit</li>
+        <li>Keep browser integrations same-origin so the HttpOnly, SameSite=Strict cookie is sent safely</li>
+        <li>Do not place JWTs in browser storage or URLs; reserve Bearer tokens for programmatic clients</li>
+        <li>Restarting Labyrinth invalidates all existing tokens</li>
+      </ul>
+    </div>
+  )
+}

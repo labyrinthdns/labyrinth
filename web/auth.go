@@ -1,0 +1,531 @@
+package web
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+// jwtHeader is the fixed JWT header for HS256.
+var jwtHeaderB64 = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+
+// dummyBcryptHash is a precomputed bcrypt hash used for constant-time
+// comparison when the supplied username does not match the configured one.
+// It is generated once at package init so unknown-user login attempts run
+// the same bcrypt work as known-user attempts (defeats username enumeration
+// via response-time side channel).
+var dummyBcryptHash []byte
+
+func init() {
+	// Cost 10 matches bcrypt.DefaultCost; a constant placeholder password is
+	// fine because the resulting hash is only used as a timing absorber.
+	h, err := bcrypt.GenerateFromPassword([]byte("labyrinth-timing-absorber"), bcrypt.DefaultCost)
+	if err != nil {
+		// Generating a bcrypt hash with a constant input cannot realistically
+		// fail; if it does the security posture of the binary is degraded so
+		// fail loudly rather than ship a vulnerable login path.
+		panic("web: failed to precompute dummy bcrypt hash: " + err.Error())
+	}
+	dummyBcryptHash = h
+}
+
+type jwtPayload struct {
+	Sub string `json:"sub"`
+	Iat int64  `json:"iat"`
+	Exp int64  `json:"exp"`
+	Jti string `json:"jti,omitempty"`
+}
+
+// jwtHeader is the parsed shape of a JWT header. Only HS256 is accepted.
+type jwtHeader struct {
+	Alg string `json:"alg"`
+	Typ string `json:"typ"`
+}
+
+const (
+	authCookieName   = "labyrinth_token"
+	authCookieMaxAge = 24 * 60 * 60
+)
+
+// authCookie returns the shared security attributes used when setting or
+// clearing the browser session cookie. maxAge must be authCookieMaxAge for a
+// live session or -1 to delete it.
+func authCookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     authCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   maxAge,
+	}
+}
+
+// generateJWT creates a JWT token with a 24-hour expiry using HMAC-SHA256.
+// It generates a unique jti for each token to support revocation.
+func generateJWT(username string, secret []byte) (string, error) {
+	now := time.Now().Unix()
+	jtiBytes := make([]byte, 16)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return "", fmt.Errorf("failed to generate jti: %w", err)
+	}
+	payload := jwtPayload{
+		Sub: username,
+		Iat: now,
+		Exp: now + int64(authCookieMaxAge), // 24 hours
+		Jti: base64.RawURLEncoding.EncodeToString(jtiBytes),
+	}
+
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal payload: %w", err)
+	}
+
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signingInput := jwtHeaderB64 + "." + payloadB64
+
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(signingInput))
+	sig := mac.Sum(nil)
+	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
+
+	return signingInput + "." + sigB64, nil
+}
+
+// validateJWT verifies a JWT token and returns the username (sub) claim.
+func validateJWT(tokenStr string, secret []byte, revokedTokens *sync.Map) (string, error) {
+	payload, err := validateJWTPayload(tokenStr, secret, revokedTokens)
+	if err != nil {
+		return "", err
+	}
+	return payload.Sub, nil
+}
+
+// validateJWTPayload returns claims only after authenticating and validating the
+// complete token. Callers must not decode security-sensitive claims directly
+// from an unverified JWT payload.
+//
+// The header algorithm must be exactly "HS256"; "none" and any other
+// algorithm (including unknown asymmetric ones) are rejected. The token's jti
+// must also not be in the revokedTokens blocklist.
+func validateJWTPayload(tokenStr string, secret []byte, revokedTokens *sync.Map) (jwtPayload, error) {
+	parts := strings.SplitN(tokenStr, ".", 3)
+	if len(parts) != 3 {
+		return jwtPayload{}, errors.New("invalid token format")
+	}
+
+	// Pin the alg header before doing any cryptographic work. This blocks
+	// the classic alg=none / alg-confusion family of attacks.
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return jwtPayload{}, errors.New("invalid header encoding")
+	}
+	var hdr jwtHeader
+	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
+		return jwtPayload{}, errors.New("invalid header JSON")
+	}
+	if hdr.Alg != "HS256" {
+		return jwtPayload{}, errors.New("unsupported algorithm")
+	}
+	if hdr.Typ != "" && hdr.Typ != "JWT" {
+		return jwtPayload{}, errors.New("unsupported token type")
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+
+	// Verify signature
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(signingInput))
+	expectedSig := mac.Sum(nil)
+
+	actualSig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return jwtPayload{}, errors.New("invalid signature encoding")
+	}
+
+	if !hmac.Equal(expectedSig, actualSig) {
+		return jwtPayload{}, errors.New("invalid signature")
+	}
+
+	// Decode payload
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return jwtPayload{}, errors.New("invalid payload encoding")
+	}
+
+	var payload jwtPayload
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		return jwtPayload{}, fmt.Errorf("invalid payload: %w", err)
+	}
+
+	// Check expiration
+	if time.Now().Unix() > payload.Exp {
+		return jwtPayload{}, errors.New("token expired")
+	}
+
+	if payload.Sub == "" {
+		return jwtPayload{}, errors.New("missing subject claim")
+	}
+
+	// Reject tokens without a jti — prevents empty-string bypass of revocation.
+	if payload.Jti == "" {
+		return jwtPayload{}, errors.New("missing jti claim")
+	}
+
+	// Check revocation blocklist (tokens issued before a password change)
+	if revokedTokens != nil {
+		if _, revoked := revokedTokens.Load(payload.Jti); revoked {
+			return jwtPayload{}, errors.New("token has been revoked")
+		}
+	}
+
+	return payload, nil
+}
+
+// MinPasswordLength is the minimum required password length.
+const MinPasswordLength = 8
+
+// MaxPasswordLength caps the password at bcrypt's hard input limit.
+// bcrypt silently truncates input to 72 bytes — without an explicit
+// cap, two passwords sharing the same first 72 bytes hash identically.
+// An operator who chose a 128-char passphrase would not learn that
+// only the first 72 bytes are protective (the "long passphrase as
+// extra security" mental model is a real attack surface here). The
+// cap is enforced by ValidatePassword so the setup wizard and the
+// change-password endpoint both refuse over-cap inputs with a clear
+// message rather than silently accepting them.
+const MaxPasswordLength = 72
+
+// ValidatePassword checks if a password meets minimum requirements.
+func ValidatePassword(password string) error {
+	if len(password) < MinPasswordLength {
+		return fmt.Errorf("password too short: minimum %d characters required (got %d)", MinPasswordLength, len(password))
+	}
+	if len(password) > MaxPasswordLength {
+		return fmt.Errorf("password too long: bcrypt truncates after %d bytes (got %d); use a shorter passphrase or a password manager", MaxPasswordLength, len(password))
+	}
+	return nil
+}
+
+// HashPassword hashes a plaintext password using bcrypt.
+// Returns an error if the password is shorter than MinPasswordLength.
+func HashPassword(password string) (string, error) {
+	if err := ValidatePassword(password); err != nil {
+		return "", err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+// checkPassword verifies a plaintext password against a bcrypt hash.
+func checkPassword(password, hash string) bool {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+}
+
+// handleLogin handles POST /api/auth/login — validates credentials and returns a JWT.
+func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	clientIP := loginClientIP(r)
+	if s.loginLimiter != nil {
+		if ok, retryAfter := s.loginLimiter.allow(clientIP); !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+			jsonResponse(w, http.StatusTooManyRequests, map[string]string{
+				"error": "too many failed login attempts; try again later",
+			})
+			return
+		}
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	// Load the config snapshot once and use it for both credential field
+	// reads. atomic.Pointer guarantees the snapshot is complete; the
+	// v0.8.24 configFileMu extension on the reader side has been removed
+	// because the proper atomic publication on the writer side (v0.8.26)
+	// makes the reader lock unnecessary — readers always observe a
+	// coherent *config.Config that the writer Stored in one operation.
+	cfg := s.config.Load()
+	cfgUser := cfg.Web.Auth.Username
+	cfgHash := cfg.Web.Auth.PasswordHash
+
+	if cfgUser == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "authentication not configured"})
+		return
+	}
+
+	// Constant-time username comparison and unconditional bcrypt verification
+	// to prevent username enumeration via response-time side channel. When the
+	// supplied username is wrong we still run bcrypt against a precomputed
+	// dummy hash so the timing matches a known-user-wrong-password path.
+	userMatch := subtle.ConstantTimeCompare([]byte(req.Username), []byte(cfgUser)) == 1
+	hashToCheck := cfgHash
+	if !userMatch || hashToCheck == "" {
+		hashToCheck = string(dummyBcryptHash)
+	}
+	passMatch := checkPassword(req.Password, hashToCheck)
+
+	if !userMatch || !passMatch {
+		if s.loginLimiter != nil {
+			s.loginLimiter.recordFailure(clientIP)
+		}
+		jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		return
+	}
+
+	token, err := generateJWT(req.Username, *s.jwtSecret.Load())
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
+		return
+	}
+
+	if s.loginLimiter != nil {
+		s.loginLimiter.recordSuccess(clientIP)
+	}
+
+	// Set HttpOnly cookie for browser-based auth. The cookie is the
+	// primary auth mechanism; the JSON body token is kept for backward
+	// compatibility with programmatic clients.
+	http.SetCookie(w, authCookie(r, token, authCookieMaxAge))
+
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"token":    token,
+		"username": req.Username,
+	})
+}
+
+// handleMe handles GET /api/auth/me — returns the current user from JWT context.
+func (s *AdminServer) handleMe(w http.ResponseWriter, r *http.Request) {
+	username, ok := r.Context().Value(ctxKeyUser).(string)
+	if !ok || username == "" {
+		jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"username": username,
+	})
+}
+
+// handleLogout handles POST /api/auth/logout — revokes the current JWT and clears
+// the labyrinth_token cookie. Accepts authentication via cookie or Bearer header.
+func (s *AdminServer) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	// Extract token from cookie or Authorization header.
+	var tokenStr string
+	if c, err := r.Cookie(authCookieName); err == nil {
+		tokenStr = c.Value
+	} else if auth := r.Header.Get("Authorization"); auth != "" {
+		if strings.HasPrefix(auth, "Bearer ") {
+			tokenStr = strings.TrimPrefix(auth, "Bearer ")
+		}
+	}
+
+	// A jti is attacker-controlled until the JWT signature and registered
+	// claims have been validated. Invalid, expired, or already-revoked tokens
+	// are intentionally ignored here; logout still clears the browser cookie.
+	if tokenStr != "" {
+		if payload, err := validateJWTPayload(tokenStr, *s.jwtSecret.Load(), &s.revokedTokens); err == nil {
+			s.revokedTokens.Store(payload.Jti, true)
+		}
+	}
+
+	// Clear the cookie regardless of whether we found a valid token.
+	http.SetCookie(w, authCookie(r, "", -1))
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "logged_out"})
+}
+
+// handleChangePassword handles POST /api/auth/change-password — changes the admin password.
+// Requires current password verification, validates new password, updates YAML config on disk.
+func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	// Serialise the read-modify-write of the on-disk YAML against
+	// /api/config/raw PUT and /api/dashboard/layout PUT. Without
+	// this, a concurrent config-raw PUT could win the on-disk write
+	// after change-password has rotated the in-memory hash but
+	// before it lands the new hash on disk — leaving the operator
+	// authenticated against the new password in memory while disk
+	// still carries the old hash, so a restart silently reverts the
+	// password change. The same mutex also serialises the bcrypt
+	// `checkPassword` against the in-memory hash so the verify and
+	// the disk write see a single coherent snapshot.
+	s.configFileMu.Lock()
+	defer s.configFileMu.Unlock()
+
+	// Verify current password against one coherent configuration snapshot. The
+	// same snapshot supplies the replacement token subject below.
+	curCfg := s.config.Load()
+	if !checkPassword(req.CurrentPassword, curCfg.Web.Auth.PasswordHash) {
+		jsonResponse(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
+		return
+	}
+
+	// Validate new password
+	if err := ValidatePassword(req.NewPassword); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Hash new password
+	newHash, err := HashPassword(req.NewPassword)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
+		return
+	}
+
+	// Rotate JWT secret to invalidate all outstanding tokens (M-1 fix).
+	// Mint the replacement token before publishing any state so an entropy
+	// failure cannot leave the browser logged out after a successful change.
+	// Clear revocation blocklist after publication — the new secret supersedes it.
+	newSecret := make([]byte, 32)
+	if _, err := rand.Read(newSecret); err != nil {
+		// crypto/rand failure is fatal — abort the entire password change
+		// rather than leave an inconsistent state where the password is
+		// rotated but existing JWTs remain valid.
+		s.logger.Error("failed to rotate JWT secret during password change", "error", err)
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to rotate session secret; password not changed"})
+		return
+	}
+	replacementToken, err := generateJWT(curCfg.Web.Auth.Username, newSecret)
+	if err != nil {
+		s.logger.Error("failed to mint replacement JWT during password change", "error", err)
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to rotate session secret; password not changed"})
+		return
+	}
+	s.jwtSecret.Store(&newSecret)
+	s.revokedTokens.Range(func(k, _ any) bool {
+		s.revokedTokens.Delete(k)
+		return true
+	})
+
+	// Update config in memory — only after secret rotation succeeded.
+	// Copy-on-write: shallow-copy the coherent snapshot used for verification,
+	// mutate the copy's PasswordHash field, atomically publish the copy.
+	// Shallow copy is correct because PasswordHash is a Go string (value-
+	// type header) and the other fields (slices, maps inside Web.Dashboard)
+	// are either untouched here or already-shared safely with readers
+	// that loaded the previous snapshot.
+	newCfg := *curCfg
+	newCfg.Web.Auth.PasswordHash = newHash
+	s.config.Store(&newCfg)
+
+	// The old browser cookie was signed with the superseded secret. Replace it
+	// on every successful in-memory password change, including a partial result
+	// where only persistence to disk fails.
+	http.SetCookie(w, authCookie(r, replacementToken, authCookieMaxAge))
+
+	// Update YAML config file on disk
+	if err := updatePasswordInConfigAtPath(s.configFilePath(), newHash); err != nil {
+		s.logger.Error("failed to update password in config file", "error", err)
+		// Password is still updated in memory for this session
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status":  "partial",
+			"message": "Password updated in memory but config file could not be saved: " + err.Error(),
+		})
+		return
+	}
+
+	s.logger.Info("admin password changed via web UI")
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// updatePasswordInConfig reads the default YAML config locations, updates the
+// password_hash line, and writes it back.
+func updatePasswordInConfig(newHash string) error {
+	paths := []string{"labyrinth.yaml", "/etc/labyrinth/labyrinth.yaml"}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return updatePasswordInConfigAtPath(p, newHash)
+		}
+	}
+	return fmt.Errorf("config file not found")
+}
+
+// updatePasswordInConfigAtPath reads the YAML config at path, updates the
+// password_hash line, and writes it back atomically.
+func updatePasswordInConfigAtPath(configPath, newHash string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("config file not found")
+		}
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "password_hash:") {
+			// Preserve indentation
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			lines[i] = indent + "password_hash: " + newHash
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("password_hash field not found in config file")
+	}
+
+	updated := strings.Join(lines, "\n")
+	if !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+
+	// writeFileAtomically is shared with config raw save path.
+	if err := writeFileAtomically(configPath, []byte(updated)); err != nil {
+		return err
+	}
+
+	// The config file holds a bcrypt hash (and other sensitive values).
+	// Restrict to owner-only access so co-tenants can't read it.
+	_ = os.Chmod(configPath, 0600)
+	return nil
+}

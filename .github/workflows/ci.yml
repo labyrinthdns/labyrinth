@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Fast fail lane ──────────────────────────────────────────────
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          check-latest: true
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+      - name: Verify first-party Go package scope
+        run: make check-go-package-scope
+
+      - name: golangci-lint
+        run: make lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web/ui
+        run: npm ci
+
+      - name: Lint UI
+        working-directory: web/ui
+        run: npm run lint
+
+      - name: TypeScript type check (tsc -b)
+        working-directory: web/ui
+        run: npx tsc -b
+
+      - name: Test UI
+        working-directory: web/ui
+        run: npm test
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: labyrinth:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — image starts and reports version
+        run: |
+          docker run --rm labyrinth:ci-test -version 2>&1 | grep -q "Labyrinth"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          check-latest: true
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/ui/package-lock.json
+
+      - name: Build frontend
+        working-directory: web/ui
+        run: npm ci && npm run build
+
+      - name: Test with race detector
+        run: make test-race
+
+      - name: Test without race (full coverage fallback)
+        if: ${{ failure() }}
+        run: make test

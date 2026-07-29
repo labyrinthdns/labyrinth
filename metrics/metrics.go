@@ -1,0 +1,439 @@
+package metrics
+
+import (
+	"fmt"
+	"io"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// FallbackEvent records a single fallback query attempt.
+type FallbackEvent struct {
+	Timestamp    time.Time
+	QueryName    string
+	QType        uint16
+	QClass       uint16
+	// PrimaryFailureReason describes why the primary resolver failed:
+	// e.g. "SERVFAIL", "connection refused", "timeout", "nil result".
+	PrimaryFailureReason string
+	// ResolverAddr is the fallback resolver address that handled this query.
+	ResolverAddr string
+	Recovered   bool
+	RCODE       uint8
+	Error       string
+}
+
+// FallbackEventRing is a thread-safe, bounded ring buffer of FallbackEvents.
+// Pre-allocated [100]FallbackEvent array — no heap growth after init.
+type FallbackEventRing struct {
+	events [100]FallbackEvent
+	head   atomic.Uint64
+	count  atomic.Uint64
+	mu     sync.Mutex
+}
+
+// NewFallbackEventRing creates a new FallbackEventRing.
+func NewFallbackEventRing() *FallbackEventRing {
+	return &FallbackEventRing{}
+}
+
+// Add appends an event to the ring buffer, overwriting the oldest when full.
+func (r *FallbackEventRing) Add(e FallbackEvent) {
+	r.mu.Lock()
+	idx := r.head.Load() % 100
+	r.events[idx] = e
+	r.head.Store(r.head.Load() + 1)
+	c := r.count.Load()
+	if c < 100 {
+		r.count.Store(c + 1)
+	}
+	r.mu.Unlock()
+}
+
+// Events returns all events in oldest-to-newest order.
+func (r *FallbackEventRing) Events() []FallbackEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := int(r.count.Load())
+	out := make([]FallbackEvent, 0, n)
+	start := r.head.Load() - uint64(n)
+	for i := uint64(0); i < uint64(n); i++ {
+		out = append(out, r.events[(start+i)%100])
+	}
+	return out
+}
+
+// Metrics holds all application metrics using lock-free atomic counters.
+type Metrics struct {
+	queriesTotal   map[string]*atomic.Int64
+	responsesTotal map[string]*atomic.Int64
+	cacheHits      atomic.Int64
+	cacheMisses    atomic.Int64
+	cacheEvictions atomic.Int64
+	upstreamQueries atomic.Int64
+	upstreamErrors  atomic.Int64
+	rateLimited    atomic.Int64
+	dnssecSecure   atomic.Int64
+	dnssecInsecure atomic.Int64
+	dnssecBogus    atomic.Int64
+
+	// dnssecRolloverValidates is set by the resolver from the DNSSEC
+	// validator's rollover counter. It counts validations where at
+	// least one prior RRSIG candidate failed but a later one succeeded —
+	// characteristic of zone algorithm rollovers (RFC 4035 §4.6).
+	dnssecRolloverValidates atomic.Int64
+	blockedQueries    atomic.Int64
+	fallbackQueries   atomic.Int64
+	fallbackRecoveries atomic.Int64
+
+	// Y34: failure-cache (RFC 9520) hit/miss counters. A high hit ratio
+	// means the resolver is absorbing repeat queries against broken
+	// upstreams; a low ratio with high upstream errors means broken
+	// upstreams are not the same name twice in a row.
+	failureCacheHits   atomic.Int64
+	failureCacheMisses atomic.Int64
+
+	// Y34: server-cookie cache (RFC 7873 §5.3) hit/miss counters. A
+	// high hit ratio means cookie-enforcing auths see us as the same
+	// client across queries and we are NOT paying a BADCOOKIE round
+	// trip per query.
+	serverCookieCacheHits   atomic.Int64
+	serverCookieCacheMisses atomic.Int64
+
+	// Y35: RFC 8198 aggressive-use synthesis counters. NXDOMAIN and
+	// NODATA tracked separately so an operator can see the §5.2 vs
+	// §5.4 split. NSEC and NSEC3 indexes also separate because the
+	// rollover signal (NSEC zones moving to NSEC3 or vice-versa) is
+	// itself useful to surface.
+	nsecAggressiveSynthNX     atomic.Int64
+	nsecAggressiveSynthNoData atomic.Int64
+	nsec3AggressiveSynthNX    atomic.Int64
+	nsec3AggressiveSynthND    atomic.Int64
+
+	// Y36: outbound BADCOOKIE retry counter (RFC 7873 §5.4). Goes up
+	// only on the first query to a cookie-enforcing auth before the
+	// server-cookie cache (Y25) is warm; the steady-state should be
+	// near zero. A sustained non-zero rate means the cache is being
+	// evicted faster than it warms up.
+	outboundBadCookieRetries atomic.Int64
+
+	// Y36: RFC 8767 §3.1 stale-while-refresh trigger counter. Each
+	// increment is one stale serve that ALSO scheduled an async
+	// refresh. A high rate is fine — it means the freshness pipeline
+	// is doing its job; a zero rate with high stale-serve volume
+	// means the prefetch hook is mis-wired.
+	staleWhileRefreshTriggers atomic.Int64
+
+	// M4.6 / UI-M6.3 — Per-EDE-code emission counters (RFC 8914 §4).
+	// Each entry in the map counts how many times the resolver has
+	// emitted an EDE with that info code. Operators answering
+	// "what's failing today?" pivot on this: a spike in EDE 6
+	// (DNSSEC Bogus) means the upstream zone is broken; a spike in
+	// EDE 17 (Filtered) means rate-limiting is biting real clients.
+	// The map is keyed by uint16 info code so unknown / future codes
+	// (RFC 8914 makes the registry open) are tracked without code
+	// changes. Read/write goes through edeMu (existing m.mu protects
+	// the map ALLOCATION but the per-code Int64 is lock-free).
+	edeCounts map[uint16]*atomic.Int64
+
+	fallbackEventRing *FallbackEventRing
+
+	// RecordFallbackFunc is an optional callback invoked each time a fallback
+	// query fires (query=1) or recovers (recovery=1). Set by the web package
+	// to route fallback events into the time-series aggregator.
+	RecordFallbackFunc func(query, recovery int64)
+
+	queryDurations *histogram
+
+	startTime time.Time
+
+	mu sync.RWMutex
+}
+
+// NewMetrics creates a new Metrics instance.
+func NewMetrics() *Metrics {
+	return &Metrics{
+		queriesTotal:   make(map[string]*atomic.Int64),
+		responsesTotal: make(map[string]*atomic.Int64),
+		edeCounts:      make(map[uint16]*atomic.Int64),
+		startTime:      time.Now(),
+		queryDurations: newHistogram([]float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0}),
+		fallbackEventRing: NewFallbackEventRing(),
+	}
+}
+
+func (m *Metrics) IncQueries(qtype string) {
+	m.getOrCreate(m.queriesTotal, qtype).Add(1)
+}
+
+func (m *Metrics) IncResponses(rcode string) {
+	m.getOrCreate(m.responsesTotal, rcode).Add(1)
+}
+
+func (m *Metrics) IncCacheHits()    { m.cacheHits.Add(1) }
+func (m *Metrics) IncCacheMisses()  { m.cacheMisses.Add(1) }
+func (m *Metrics) IncUpstreamQueries() { m.upstreamQueries.Add(1) }
+func (m *Metrics) IncUpstreamErrors()  { m.upstreamErrors.Add(1) }
+func (m *Metrics) IncRateLimited()     { m.rateLimited.Add(1) }
+func (m *Metrics) IncDNSSECSecure()    { m.dnssecSecure.Add(1) }
+func (m *Metrics) IncDNSSECInsecure()  { m.dnssecInsecure.Add(1) }
+func (m *Metrics) IncDNSSECBogus()     { m.dnssecBogus.Add(1) }
+
+// SetDNSSECRolloverValidates sets the DNSSEC rollover validation counter
+// from the validator's cumulative count. Called periodically by the
+// resolver to expose zone algorithm rollover activity.
+func (m *Metrics) SetDNSSECRolloverValidates(n int64) { m.dnssecRolloverValidates.Store(n) }
+func (m *Metrics) IncBlockedQueries()     { m.blockedQueries.Add(1) }
+func (m *Metrics) IncFallbackQueries()    { m.fallbackQueries.Add(1) }
+func (m *Metrics) IncFallbackRecoveries() { m.fallbackRecoveries.Add(1) }
+
+// Y34 — failure cache & server-cookie cache.
+func (m *Metrics) IncFailureCacheHits()        { m.failureCacheHits.Add(1) }
+func (m *Metrics) IncFailureCacheMisses()      { m.failureCacheMisses.Add(1) }
+func (m *Metrics) IncServerCookieCacheHits()   { m.serverCookieCacheHits.Add(1) }
+func (m *Metrics) IncServerCookieCacheMisses() { m.serverCookieCacheMisses.Add(1) }
+
+// Y35 — RFC 8198 aggressive-use synthesis counters.
+func (m *Metrics) IncNSECAggressiveSynthNX()     { m.nsecAggressiveSynthNX.Add(1) }
+func (m *Metrics) IncNSECAggressiveSynthNoData() { m.nsecAggressiveSynthNoData.Add(1) }
+func (m *Metrics) IncNSEC3AggressiveSynthNX()    { m.nsec3AggressiveSynthNX.Add(1) }
+func (m *Metrics) IncNSEC3AggressiveSynthND()    { m.nsec3AggressiveSynthND.Add(1) }
+
+// Y36 — cookie retry & stale-while-refresh.
+func (m *Metrics) IncOutboundBadCookieRetries()  { m.outboundBadCookieRetries.Add(1) }
+func (m *Metrics) IncStaleWhileRefreshTriggers() { m.staleWhileRefreshTriggers.Add(1) }
+
+// IncEDE counts one emission of EDE info-code `code` (RFC 8914 §4).
+// The map allocates a counter the first time a code is seen — for the
+// fixed RFC-8914 code set this is bounded; the lazy approach also lets
+// us absorb future IANA-assigned codes without code changes.
+func (m *Metrics) IncEDE(code uint16) {
+	m.mu.RLock()
+	v, ok := m.edeCounts[code]
+	m.mu.RUnlock()
+	if ok {
+		v.Add(1)
+		return
+	}
+	m.mu.Lock()
+	if v, ok = m.edeCounts[code]; !ok {
+		v = &atomic.Int64{}
+		m.edeCounts[code] = v
+	}
+	m.mu.Unlock()
+	v.Add(1)
+}
+
+// EDECounts returns a snapshot of every EDE code observed so far
+// mapped to its emission count. Snapshot copy — callers may iterate
+// freely without holding any lock from this package.
+func (m *Metrics) EDECounts() map[uint16]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[uint16]int64, len(m.edeCounts))
+	for k, v := range m.edeCounts {
+		out[k] = v.Load()
+	}
+	return out
+}
+
+// FallbackEventRing returns the fallback event ring buffer.
+func (m *Metrics) FallbackEventRing() *FallbackEventRing { return m.fallbackEventRing }
+
+func (m *Metrics) IncCacheEvictions(reason string) {
+	m.cacheEvictions.Add(1)
+}
+
+func (m *Metrics) AddCacheEvictions(reason string, count int) {
+	m.cacheEvictions.Add(int64(count))
+}
+
+func (m *Metrics) ObserveQueryDuration(d time.Duration) {
+	m.queryDurations.observe(d.Seconds())
+}
+
+func (m *Metrics) StartTime() time.Time {
+	return m.startTime
+}
+
+func (m *Metrics) getOrCreate(mp map[string]*atomic.Int64, key string) *atomic.Int64 {
+	m.mu.RLock()
+	v, ok := mp[key]
+	m.mu.RUnlock()
+	if ok {
+		return v
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if v, ok = mp[key]; ok {
+		return v
+	}
+	v = &atomic.Int64{}
+	mp[key] = v
+	return v
+}
+
+// histogram is a simple bucketed histogram using atomic counters.
+type histogram struct {
+	boundaries []float64
+	counts     []atomic.Int64
+	sum        atomic.Int64
+	count      atomic.Int64
+}
+
+func newHistogram(boundaries []float64) *histogram {
+	return &histogram{
+		boundaries: boundaries,
+		counts:     make([]atomic.Int64, len(boundaries)+1), // +1 for +Inf bucket
+	}
+}
+
+func (h *histogram) observe(value float64) {
+	for i, b := range h.boundaries {
+		if value <= b {
+			h.counts[i].Add(1)
+			h.count.Add(1)
+			h.sum.Add(int64(value * 1e9)) // store as nanoseconds for precision
+			return
+		}
+	}
+	h.counts[len(h.boundaries)].Add(1)
+	h.count.Add(1)
+	h.sum.Add(int64(value * 1e9))
+}
+
+func (h *histogram) writeTo(w io.Writer, name string) {
+	var cumulative int64
+	for i, b := range h.boundaries {
+		cumulative += h.counts[i].Load()
+		fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", name, b, cumulative)
+	}
+	cumulative += h.counts[len(h.boundaries)].Load()
+	fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, cumulative)
+	fmt.Fprintf(w, "%s_sum %g\n", name, float64(h.sum.Load())/1e9)
+	fmt.Fprintf(w, "%s_count %d\n", name, h.count.Load())
+}
+
+// MetricsSnapshot holds a point-in-time snapshot of all metrics.
+type MetricsSnapshot struct {
+	QueriesByType      map[string]int64
+	ResponsesByRCode   map[string]int64
+	CacheHits          int64
+	CacheMisses        int64
+	CacheEvictions     int64
+	UpstreamQueries    int64
+	UpstreamErrors     int64
+	RateLimited        int64
+	UptimeSeconds      float64
+	Goroutines         int
+	QueryDurationCount int64
+	DNSSECSecure       int64
+	DNSSECInsecure     int64
+	DNSSECBogus        int64
+	BlockedQueries     int64
+	FallbackQueries    int64
+	FallbackRecoveries int64
+
+	// Y34/Y35/Y36 — observability counters surfaced via /api/stats.
+	FailureCacheHits          int64
+	FailureCacheMisses        int64
+	ServerCookieCacheHits     int64
+	ServerCookieCacheMisses   int64
+	NSECAggressiveSynthNX     int64
+	NSECAggressiveSynthNoData int64
+	NSEC3AggressiveSynthNX    int64
+	NSEC3AggressiveSynthND    int64
+	OutboundBadCookieRetries  int64
+	StaleWhileRefreshTriggers int64
+}
+
+// Snapshot returns a point-in-time snapshot of all metrics.
+func (m *Metrics) Snapshot() MetricsSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	qbt := make(map[string]int64, len(m.queriesTotal))
+	for k, v := range m.queriesTotal {
+		qbt[k] = v.Load()
+	}
+
+	rbr := make(map[string]int64, len(m.responsesTotal))
+	for k, v := range m.responsesTotal {
+		rbr[k] = v.Load()
+	}
+
+	return MetricsSnapshot{
+		QueriesByType:      qbt,
+		ResponsesByRCode:   rbr,
+		CacheHits:          m.cacheHits.Load(),
+		CacheMisses:        m.cacheMisses.Load(),
+		CacheEvictions:     m.cacheEvictions.Load(),
+		UpstreamQueries:    m.upstreamQueries.Load(),
+		UpstreamErrors:     m.upstreamErrors.Load(),
+		RateLimited:        m.rateLimited.Load(),
+		UptimeSeconds:      time.Since(m.startTime).Seconds(),
+		Goroutines:         runtime.NumGoroutine(),
+		QueryDurationCount: m.queryDurations.count.Load(),
+		DNSSECSecure:       m.dnssecSecure.Load(),
+		DNSSECInsecure:     m.dnssecInsecure.Load(),
+		DNSSECBogus:        m.dnssecBogus.Load(),
+		BlockedQueries:     m.blockedQueries.Load(),
+		FallbackQueries:    m.fallbackQueries.Load(),
+		FallbackRecoveries: m.fallbackRecoveries.Load(),
+
+		FailureCacheHits:          m.failureCacheHits.Load(),
+		FailureCacheMisses:        m.failureCacheMisses.Load(),
+		ServerCookieCacheHits:     m.serverCookieCacheHits.Load(),
+		ServerCookieCacheMisses:   m.serverCookieCacheMisses.Load(),
+		NSECAggressiveSynthNX:     m.nsecAggressiveSynthNX.Load(),
+		NSECAggressiveSynthNoData: m.nsecAggressiveSynthNoData.Load(),
+		NSEC3AggressiveSynthNX:    m.nsec3AggressiveSynthNX.Load(),
+		NSEC3AggressiveSynthND:    m.nsec3AggressiveSynthND.Load(),
+		OutboundBadCookieRetries:  m.outboundBadCookieRetries.Load(),
+		StaleWhileRefreshTriggers: m.staleWhileRefreshTriggers.Load(),
+	}
+}
+
+// WriteMetrics writes all metrics in Prometheus text format.
+func (m *Metrics) WriteMetrics(w io.Writer) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for qtype, counter := range m.queriesTotal {
+		fmt.Fprintf(w, "labyrinth_queries_total{type=%q} %d\n", qtype, counter.Load())
+	}
+	for rcode, counter := range m.responsesTotal {
+		fmt.Fprintf(w, "labyrinth_responses_total{rcode=%q} %d\n", rcode, counter.Load())
+	}
+	fmt.Fprintf(w, "labyrinth_cache_hits_total %d\n", m.cacheHits.Load())
+	fmt.Fprintf(w, "labyrinth_cache_misses_total %d\n", m.cacheMisses.Load())
+	fmt.Fprintf(w, "labyrinth_cache_evictions_total %d\n", m.cacheEvictions.Load())
+	fmt.Fprintf(w, "labyrinth_upstream_queries_total %d\n", m.upstreamQueries.Load())
+	fmt.Fprintf(w, "labyrinth_upstream_errors_total %d\n", m.upstreamErrors.Load())
+	fmt.Fprintf(w, "labyrinth_rate_limited_total %d\n", m.rateLimited.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_secure_total %d\n", m.dnssecSecure.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_insecure_total %d\n", m.dnssecInsecure.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_bogus_total %d\n", m.dnssecBogus.Load())
+	fmt.Fprintf(w, "labyrinth_dnssec_rollover_validates_total %d\n", m.dnssecRolloverValidates.Load())
+	fmt.Fprintf(w, "labyrinth_blocked_queries_total %d\n", m.blockedQueries.Load())
+	fmt.Fprintf(w, "labyrinth_fallback_queries_total %d\n", m.fallbackQueries.Load())
+	fmt.Fprintf(w, "labyrinth_fallback_recoveries_total %d\n", m.fallbackRecoveries.Load())
+	// Y34/Y35/Y36 — observability for the v0.6.18 → v0.6.23 features.
+	fmt.Fprintf(w, "labyrinth_failure_cache_hits_total %d\n", m.failureCacheHits.Load())
+	fmt.Fprintf(w, "labyrinth_failure_cache_misses_total %d\n", m.failureCacheMisses.Load())
+	fmt.Fprintf(w, "labyrinth_server_cookie_cache_hits_total %d\n", m.serverCookieCacheHits.Load())
+	fmt.Fprintf(w, "labyrinth_server_cookie_cache_misses_total %d\n", m.serverCookieCacheMisses.Load())
+	fmt.Fprintf(w, "labyrinth_nsec_aggressive_synth_total{kind=\"nxdomain\"} %d\n", m.nsecAggressiveSynthNX.Load())
+	fmt.Fprintf(w, "labyrinth_nsec_aggressive_synth_total{kind=\"nodata\"} %d\n", m.nsecAggressiveSynthNoData.Load())
+	fmt.Fprintf(w, "labyrinth_nsec3_aggressive_synth_total{kind=\"nxdomain\"} %d\n", m.nsec3AggressiveSynthNX.Load())
+	fmt.Fprintf(w, "labyrinth_nsec3_aggressive_synth_total{kind=\"nodata\"} %d\n", m.nsec3AggressiveSynthND.Load())
+	fmt.Fprintf(w, "labyrinth_outbound_badcookie_retries_total %d\n", m.outboundBadCookieRetries.Load())
+	fmt.Fprintf(w, "labyrinth_stale_while_refresh_total %d\n", m.staleWhileRefreshTriggers.Load())
+	fmt.Fprintf(w, "labyrinth_uptime_seconds %.0f\n", time.Since(m.startTime).Seconds())
+	fmt.Fprintf(w, "labyrinth_goroutines %d\n", runtime.NumGoroutine())
+
+	m.queryDurations.writeTo(w, "labyrinth_query_duration_seconds")
+}

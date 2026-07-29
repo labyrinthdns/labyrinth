@@ -1,0 +1,581 @@
+package blocklist
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// ListSource describes a single remote blocklist and its current state.
+type ListSource struct {
+	URL        string    `json:"url"`
+	Format     string    `json:"format"` // "hosts", "domains", "abp"
+	Enabled    bool      `json:"enabled"`
+	LastUpdate time.Time `json:"last_update"`
+	RuleCount  int       `json:"rule_count"`
+	Error      string    `json:"error,omitempty"`
+}
+
+// ManagerConfig holds the configuration for a blocklist Manager.
+type ManagerConfig struct {
+	Lists           []ListEntry
+	Whitelist       []string
+	BlockingMode    string // "nxdomain", "null_ip", "custom_ip"
+	CustomIP        string
+	RefreshInterval time.Duration
+}
+
+// ListEntry is a URL+format pair used to seed the initial list sources.
+type ListEntry struct {
+	URL    string
+	Format string
+}
+
+// Stats holds aggregate blocklist statistics.
+type Stats struct {
+	Enabled      bool   `json:"enabled"`
+	TotalRules   int    `json:"total_rules"`
+	ListCount    int    `json:"list_count"`
+	BlockedTotal int64  `json:"blocked_total"`
+	CustomBlocks int    `json:"custom_blocks"`
+	CustomAllows int    `json:"custom_allows"`
+	BlockingMode string `json:"blocking_mode"`
+}
+
+// Manager coordinates blocklist downloads, parsing, and matching. It is
+// safe for concurrent use.
+type Manager struct {
+	// matcher and rpzMatcher are swapped wholesale by RefreshAll under
+	// mu.Lock(). The hot-path readers (IsBlocked, RPZAction, Stats)
+	// previously read these as plain pointers without holding mu — a
+	// data race on the pointer publication. Go pointer stores are
+	// atomic in practice on all supported platforms, but the memory
+	// model gives no happens-before edge without sync, so a reader on
+	// a weak-ordering CPU could continue observing the pre-refresh
+	// matcher indefinitely. The Matcher / RPZMatcher structs are
+	// independently synchronised internally, so atomic.Pointer is the
+	// minimum publication primitive that gives readers an up-to-date
+	// snapshot without taking mu on every query.
+	matcher         atomic.Pointer[Matcher]
+	rpzMatcher      atomic.Pointer[RPZMatcher]
+	sources         []*ListSource
+	customBlocks    map[string]struct{}
+	customAllows    map[string]struct{}
+	blockingMode    string
+	customIP        string
+	refreshInterval time.Duration
+	blockedTotal    atomic.Int64
+	httpClient      *http.Client
+	logger          *slog.Logger
+	mu              sync.RWMutex
+	// refreshing acts as a singleflight gate around RefreshAll. A
+	// repeated admin POST to /api/blocklist/refresh (or the
+	// background tick racing with an operator click) used to spawn
+	// concurrent RefreshAll goroutines, each pulling every upstream
+	// blocklist URL — wasted bandwidth at our end and potential
+	// rate-limit / blocklisting at the upstream provider's. CAS
+	// keeps exactly one refresh in flight.
+	refreshing atomic.Bool
+}
+
+// NewManager creates a Manager from the supplied configuration. The
+// manager is idle until Start is called.
+func NewManager(cfg ManagerConfig, logger *slog.Logger) *Manager {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	blockingMode := cfg.BlockingMode
+	if blockingMode == "" {
+		blockingMode = "nxdomain"
+	}
+
+	refreshInterval := cfg.RefreshInterval
+	if refreshInterval <= 0 {
+		refreshInterval = 24 * time.Hour
+	}
+
+	sources := make([]*ListSource, 0, len(cfg.Lists))
+	for _, entry := range cfg.Lists {
+		sources = append(sources, &ListSource{
+			URL:     entry.URL,
+			Format:  entry.Format,
+			Enabled: true,
+		})
+	}
+
+	customAllows := make(map[string]struct{}, len(cfg.Whitelist))
+	for _, d := range cfg.Whitelist {
+		customAllows[strings.ToLower(strings.TrimSuffix(d, "."))] = struct{}{}
+	}
+
+	mgr := &Manager{
+		sources:         sources,
+		customBlocks:    make(map[string]struct{}),
+		customAllows:    customAllows,
+		blockingMode:    blockingMode,
+		customIP:        cfg.CustomIP,
+		refreshInterval: refreshInterval,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			// H-10: SSRF guard. Reject redirects that change scheme away
+			// from https/http or that resolve to internal IP space
+			// (loopback, RFC1918, link-local, multicast, IPv4-mapped
+			// IPv6). Blocklist URLs are operator-supplied today, but a
+			// compromised publisher (or a hijacked CDN) can redirect to
+			// http://127.0.0.1:8080/api/... or 169.254.169.254 metadata.
+			CheckRedirect: blocklistCheckRedirect,
+		},
+		logger: logger,
+	}
+	mgr.matcher.Store(NewMatcher())
+	mgr.rpzMatcher.Store(NewRPZMatcher())
+	return mgr
+}
+
+// blocklistCheckRedirect implements the H-10 SSRF guard.
+func blocklistCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return errors.New("too many redirects (>5)")
+	}
+	scheme := strings.ToLower(req.URL.Scheme)
+	if scheme != "https" && scheme != "http" {
+		return fmt.Errorf("blocked redirect to disallowed scheme %q", scheme)
+	}
+	host := req.URL.Hostname()
+	// Resolve and reject any IP that lands in private / loopback /
+	// link-local / multicast / IPv4-mapped ranges. Multiple A/AAAA
+	// records → reject if ANY answer is internal (DNS-rebinding-style
+	// defence).
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("redirect host %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+			ip.IsMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("blocked redirect to internal address %s (%s)", host, ip)
+		}
+	}
+	return nil
+}
+
+// Start runs the background refresh loop. It performs an immediate refresh
+// and then re-downloads all lists on the configured interval. It blocks
+// until ctx is cancelled.
+func (mgr *Manager) Start(ctx context.Context) {
+	mgr.RefreshAll()
+
+	ticker := time.NewTicker(mgr.refreshInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			mgr.logger.Info("blocklist manager stopped")
+			return
+		case <-ticker.C:
+			mgr.RefreshAll()
+		}
+	}
+}
+
+// IsBlocked checks whether domain is blocked and, if so, increments the
+// global blocked-query counter. It checks RPZ rules first, then the
+// traditional matcher.
+func (mgr *Manager) IsBlocked(domain string) bool {
+	// Check RPZ first: passthru returns nil (not blocked), other actions
+	// mean the domain is blocked.
+	if rpz := mgr.rpzMatcher.Load(); rpz != nil {
+		if action := rpz.Match(domain); action != nil {
+			mgr.blockedTotal.Add(1)
+			return true
+		}
+	}
+	if m := mgr.matcher.Load(); m != nil && m.Match(domain) {
+		mgr.blockedTotal.Add(1)
+		return true
+	}
+	return false
+}
+
+// RPZAction returns the RPZ action for a domain, or nil if no RPZ rule matches.
+func (mgr *Manager) RPZAction(domain string) *RPZAction {
+	rpz := mgr.rpzMatcher.Load()
+	if rpz == nil {
+		return nil
+	}
+	return rpz.Match(domain)
+}
+
+// BlockingMode returns the active blocking mode ("nxdomain", "null_ip",
+// or "custom_ip").
+func (mgr *Manager) BlockingMode() string {
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+	return mgr.blockingMode
+}
+
+// CustomIP returns the IP address used when the blocking mode is
+// "custom_ip".
+func (mgr *Manager) CustomIP() string {
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+	return mgr.customIP
+}
+
+// RefreshAll downloads and parses every enabled list source, rebuilds the
+// matcher, and atomically swaps it in. Errors on individual lists are
+// logged but do not prevent other lists from loading.
+func (mgr *Manager) RefreshAll() {
+	// Singleflight: refuse to start a second refresh while one is in
+	// flight. Repeated admin clicks or background tick / operator
+	// click race would otherwise fan out to N concurrent fetches of
+	// every upstream blocklist URL — wasted bandwidth on our side
+	// and an obvious "this client is misbehaving" signal to the
+	// upstream provider. CAS leaves the gate untouched on collision
+	// so the in-flight refresh continues normally.
+	if !mgr.refreshing.CompareAndSwap(false, true) {
+		mgr.logger.Info("blocklist refresh already in progress; skipping")
+		return
+	}
+	defer mgr.refreshing.Store(false)
+
+	mgr.logger.Info("blocklist refresh started")
+	start := time.Now()
+
+	newMatcher := NewMatcher()
+	newRPZMatcher := NewRPZMatcher()
+
+	mgr.mu.RLock()
+	sources := make([]*ListSource, len(mgr.sources))
+	copy(sources, mgr.sources)
+	mgr.mu.RUnlock()
+
+	for _, src := range sources {
+		if !src.Enabled {
+			continue
+		}
+
+		if strings.ToLower(src.Format) == "rpz" {
+			rules, err := mgr.downloadAndParseRPZ(src.URL)
+			if err != nil {
+				mgr.logger.Error("rpz download failed",
+					"url", src.URL,
+					"error", err,
+				)
+				mgr.mu.Lock()
+				src.Error = err.Error()
+				mgr.mu.Unlock()
+				continue
+			}
+
+			for _, rule := range rules {
+				newRPZMatcher.AddRule(rule)
+			}
+
+			mgr.mu.Lock()
+			src.LastUpdate = time.Now()
+			src.RuleCount = len(rules)
+			src.Error = ""
+			mgr.mu.Unlock()
+
+			mgr.logger.Info("rpz loaded",
+				"url", src.URL,
+				"rules", len(rules),
+			)
+			continue
+		}
+
+		domains, err := mgr.downloadAndParse(src.URL, src.Format)
+		if err != nil {
+			mgr.logger.Error("blocklist download failed",
+				"url", src.URL,
+				"error", err,
+			)
+			mgr.mu.Lock()
+			src.Error = err.Error()
+			mgr.mu.Unlock()
+			continue
+		}
+
+		for _, d := range domains {
+			newMatcher.AddExact(d)
+		}
+
+		mgr.mu.Lock()
+		src.LastUpdate = time.Now()
+		src.RuleCount = len(domains)
+		src.Error = ""
+		mgr.mu.Unlock()
+
+		mgr.logger.Info("blocklist loaded",
+			"url", src.URL,
+			"rules", len(domains),
+		)
+	}
+
+	// Apply custom block and whitelist rules.
+	mgr.mu.RLock()
+	for d := range mgr.customBlocks {
+		newMatcher.AddExact(d)
+	}
+	for d := range mgr.customAllows {
+		newMatcher.AddWhitelist(d)
+	}
+	mgr.mu.RUnlock()
+
+	// Atomic swap of both matchers. mu is not needed for the pointer
+	// publication itself (atomic.Pointer handles that), but other code
+	// paths that read non-atomic fields under mu still rely on it.
+	mgr.matcher.Store(newMatcher)
+	mgr.rpzMatcher.Store(newRPZMatcher)
+
+	exact, wildcards, wl := newMatcher.Stats()
+	rpzExact, rpzWild, rpzPT := newRPZMatcher.Stats()
+	mgr.logger.Info("blocklist refresh complete",
+		"exact_rules", exact,
+		"wildcard_rules", wildcards,
+		"whitelist_rules", wl,
+		"rpz_exact", rpzExact,
+		"rpz_wildcard", rpzWild,
+		"rpz_passthru", rpzPT,
+		"duration", time.Since(start).Round(time.Millisecond),
+	)
+}
+
+// downloadAndParse fetches a remote URL and parses it according to the
+// given format.
+func (mgr *Manager) downloadAndParse(url, format string) ([]string, error) {
+	resp, err := mgr.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	// Limit read to 50 MB to avoid memory issues with huge files.
+	limited := io.LimitReader(resp.Body, 50<<20)
+
+	switch strings.ToLower(format) {
+	case "hosts":
+		return ParseHostsFile(limited), nil
+	case "domains":
+		return ParseDomainList(limited), nil
+	case "abp":
+		return ParseABP(limited), nil
+	default:
+		return nil, fmt.Errorf("unknown list format %q", format)
+	}
+}
+
+// downloadAndParseRPZ fetches a remote URL and parses it as an RPZ zone file.
+func (mgr *Manager) downloadAndParseRPZ(url string) ([]RPZRule, error) {
+	resp, err := mgr.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	// Limit read to 50 MB to avoid memory issues with huge files.
+	limited := io.LimitReader(resp.Body, 50<<20)
+	return ParseRPZ(limited)
+}
+
+// AddList adds a new list source at runtime. The list will be fetched on
+// the next RefreshAll cycle.
+func (mgr *Manager) AddList(url, format string) {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+
+	// Avoid duplicates.
+	for _, s := range mgr.sources {
+		if s.URL == url {
+			s.Format = format
+			s.Enabled = true
+			return
+		}
+	}
+
+	mgr.sources = append(mgr.sources, &ListSource{
+		URL:     url,
+		Format:  format,
+		Enabled: true,
+	})
+	mgr.logger.Info("blocklist source added", "url", url, "format", format)
+}
+
+// RemoveList removes a list source by URL.
+func (mgr *Manager) RemoveList(url string) {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+
+	for i, s := range mgr.sources {
+		if s.URL == url {
+			mgr.sources = append(mgr.sources[:i], mgr.sources[i+1:]...)
+			mgr.logger.Info("blocklist source removed", "url", url)
+			return
+		}
+	}
+}
+
+// ErrCustomBlocklistFull is returned by BlockDomain / UnblockDomain
+// when the corresponding custom-rule map has reached
+// MaxCustomBlocklistEntries. Callers (the admin API handlers) surface
+// this as 507 Insufficient Storage so the operator sees the cap
+// rather than a silent no-op.
+var ErrCustomBlocklistFull = errors.New("custom blocklist is full")
+
+// MaxCustomBlocklistEntries caps the size of the customBlocks and
+// customAllows maps. /api/blocklist/{block,unblock} are authenticated
+// admin endpoints, so unbounded growth is a defence-in-depth concern
+// rather than a directly exploitable DoS — but a runaway automation
+// script, a misconfigured "import every domain in a 100M-row CSV"
+// integration, or a malicious operator with valid credentials could
+// pin gigabytes of resolver RAM by spamming unique block calls. The
+// matcher's exact/wildcard tries already incur per-entry allocation;
+// 100k custom entries is far above any realistic operator workload
+// (real custom-block lists in the wild are in the low thousands) and
+// well below the threshold at which the map alone bloats GC pressure.
+const MaxCustomBlocklistEntries = 100_000
+
+// BlockDomain adds a custom exact-match block rule that persists across
+// refreshes. Returns ErrCustomBlocklistFull when the per-map cap is
+// reached; the matcher is left untouched in that case so a retry after
+// removing entries works as expected.
+func (mgr *Manager) BlockDomain(domain string) error {
+	domain = normalize(domain)
+	if domain == "" {
+		return nil
+	}
+	mgr.mu.Lock()
+	if _, exists := mgr.customBlocks[domain]; !exists && len(mgr.customBlocks) >= MaxCustomBlocklistEntries {
+		mgr.mu.Unlock()
+		mgr.logger.Warn("custom block rejected: capacity reached",
+			"domain", domain,
+			"cap", MaxCustomBlocklistEntries,
+		)
+		return ErrCustomBlocklistFull
+	}
+	mgr.customBlocks[domain] = struct{}{}
+	mgr.mu.Unlock()
+
+	if m := mgr.matcher.Load(); m != nil {
+		m.AddExact(domain)
+	}
+	mgr.logger.Info("custom block added", "domain", domain)
+	return nil
+}
+
+// UnblockDomain adds a custom whitelist rule that persists across
+// refreshes. Returns ErrCustomBlocklistFull when the per-map cap is
+// reached; the existing block (if any) is left intact in that case so
+// the operator's view of the system stays consistent.
+func (mgr *Manager) UnblockDomain(domain string) error {
+	domain = normalize(domain)
+	if domain == "" {
+		return nil
+	}
+	mgr.mu.Lock()
+	if _, exists := mgr.customAllows[domain]; !exists && len(mgr.customAllows) >= MaxCustomBlocklistEntries {
+		mgr.mu.Unlock()
+		mgr.logger.Warn("custom unblock rejected: capacity reached",
+			"domain", domain,
+			"cap", MaxCustomBlocklistEntries,
+		)
+		return ErrCustomBlocklistFull
+	}
+	mgr.customAllows[domain] = struct{}{}
+	delete(mgr.customBlocks, domain)
+	mgr.mu.Unlock()
+
+	if m := mgr.matcher.Load(); m != nil {
+		m.AddWhitelist(domain)
+		m.Remove(domain)
+	}
+	mgr.logger.Info("custom unblock added", "domain", domain)
+	return nil
+}
+
+// CheckDomain returns whether a domain is blocked without incrementing
+// the blocked-query counter.
+func (mgr *Manager) CheckDomain(domain string) bool {
+	m := mgr.matcher.Load()
+	return m != nil && m.Match(domain)
+}
+
+// Stats returns aggregate blocklist statistics.
+func (mgr *Manager) Stats() Stats {
+	var exact, wildcards, wl int
+	if m := mgr.matcher.Load(); m != nil {
+		exact, wildcards, wl = m.Stats()
+	}
+	_ = wl
+
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+
+	enabledCount := 0
+	for _, s := range mgr.sources {
+		if s.Enabled {
+			enabledCount++
+		}
+	}
+
+	return Stats{
+		Enabled:      len(mgr.sources) > 0 || len(mgr.customBlocks) > 0,
+		TotalRules:   exact + wildcards,
+		ListCount:    enabledCount,
+		BlockedTotal: mgr.blockedTotal.Load(),
+		CustomBlocks: len(mgr.customBlocks),
+		CustomAllows: len(mgr.customAllows),
+		BlockingMode: mgr.blockingMode,
+	}
+}
+
+// BlockedDomains returns snapshots of custom block and allow rules.
+func (mgr *Manager) BlockedDomains() (blocks []string, allows []string) {
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+
+	blocks = make([]string, 0, len(mgr.customBlocks))
+	for d := range mgr.customBlocks {
+		blocks = append(blocks, d)
+	}
+
+	allows = make([]string, 0, len(mgr.customAllows))
+	for d := range mgr.customAllows {
+		allows = append(allows, d)
+	}
+
+	return blocks, allows
+}
+
+// Sources returns a snapshot of the current list sources.
+func (mgr *Manager) Sources() []*ListSource {
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+
+	result := make([]*ListSource, len(mgr.sources))
+	for i, s := range mgr.sources {
+		cp := *s
+		result[i] = &cp
+	}
+	return result
+}

@@ -1,0 +1,17 @@
+services:
+  labyrinth:
+    image: ghcr.io/labyrinthdns/labyrinth:latest
+    # Or build locally:
+    # build: .
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      # Publish 9153 only after setting web.addr: "0.0.0.0:9153" and
+      # non-empty web.auth credentials in the mounted configuration.
+      # - "127.0.0.1:9153:9153/tcp"
+    volumes:
+      - ./labyrinth.yaml:/etc/labyrinth/labyrinth.yaml:ro
+    command: ["-config", "/etc/labyrinth/labyrinth.yaml"]
+    restart: unless-stopped
+    cap_add:
+      - NET_BIND_SERVICE

@@ -1,0 +1,7 @@
+.git
+.github
+.project
+website
+web/ui/node_modules
+*.md
+cov*.html

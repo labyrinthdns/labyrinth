@@ -1,0 +1,1027 @@
+package web
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func withUpdateHooksReset(t *testing.T) {
+	t.Helper()
+	prevGet := updateHTTPGet
+	prevExe := updateExecutable
+	prevEval := updateEvalSymlinks
+	prevCreateTemp := updateCreateTemp
+	prevChmod := updateChmod
+	prevRename := updateRename
+	prevRemove := updateRemove
+	prevSleep := updateSleep
+	prevRestart := updateRestartSelf
+
+	t.Cleanup(func() {
+		updateHTTPGet = prevGet
+		updateExecutable = prevExe
+		updateEvalSymlinks = prevEval
+		updateCreateTemp = prevCreateTemp
+		updateChmod = prevChmod
+		updateRename = prevRename
+		updateRemove = prevRemove
+		updateSleep = prevSleep
+		updateRestartSelf = prevRestart
+	})
+}
+
+// releaseJSON now always includes a checksums.txt asset entry because
+// C-2 (interim) makes its presence mandatory for handleApplyUpdate.
+func releaseJSON(assetName string) string {
+	return `{
+		"tag_name":"v0.4.2",
+		"html_url":"https://example/release",
+		"body":"notes",
+		"assets":[
+			{"name":"` + assetName + `","browser_download_url":"https://example/download"},
+			{"name":"checksums.txt","browser_download_url":"https://example/checksums.txt"}
+		]
+	}`
+}
+
+// checksumsBody returns a sha256sum-style line for assetName matching body.
+func checksumsBody(assetName string, body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:]) + "  " + assetName + "\n"
+}
+
+// stringHTTP is jsonHTTP's text-content sibling; used for checksums.txt
+// and binary asset bodies.
+func stringHTTP(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+// classifyUpdateURL tells a mock transport whether the requested URL is
+// (a) the GitHub releases JSON, (b) the checksums.txt asset, or (c) the
+// binary asset. Lets tests dispatch by URL instead of brittle call counts.
+func classifyUpdateURL(rawURL string) string {
+	switch {
+	case strings.Contains(rawURL, "api.github.com/repos") || strings.Contains(rawURL, "/releases/latest"):
+		return "release"
+	case strings.HasSuffix(rawURL, "checksums.txt"):
+		return "checksums"
+	default:
+		return "asset"
+	}
+}
+
+func TestCheckForUpdate_HTTPAndDecodeErrors(t *testing.T) {
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return jsonHTTP(http.StatusBadGateway, `{"error":"bad gateway"}`), nil
+	})
+	if _, err := checkForUpdate(); err == nil {
+		t.Fatalf("expected checkForUpdate error for non-200 response")
+	}
+
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return jsonHTTP(http.StatusOK, `{not-json}`), nil
+	})
+	if _, err := checkForUpdate(); err == nil {
+		t.Fatalf("expected checkForUpdate decode error")
+	}
+}
+
+func TestFindAssetURL_HTTPAndDecodeErrors(t *testing.T) {
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return jsonHTTP(http.StatusInternalServerError, `{}`), nil
+	})
+	if _, err := findAssetURL("anything"); err == nil {
+		t.Fatalf("expected findAssetURL error for non-200 response")
+	}
+
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return jsonHTTP(http.StatusOK, `{not-json}`), nil
+	})
+	if _, err := findAssetURL("anything"); err == nil {
+		t.Fatalf("expected findAssetURL decode error")
+	}
+}
+
+func TestHandleApplyUpdate_AlreadyUpToDate(t *testing.T) {
+	srv := testAdminServer(t)
+
+	prevVersion := Version
+	Version = "v0.4.2"
+	defer func() { Version = prevVersion }()
+
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return jsonHTTP(http.StatusOK, `{
+			"tag_name":"v0.4.2",
+			"html_url":"https://example/release",
+			"body":"notes",
+			"assets":[]
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := decodeJSON(t, rec)
+	if body["status"] != "already up to date" {
+		t.Fatalf("unexpected status response: %#v", body["status"])
+	}
+}
+
+func TestHandleApplyUpdate_AssetNotFound(t *testing.T) {
+	srv := testAdminServer(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return jsonHTTP(http.StatusOK, `{
+			"tag_name":"v0.4.2",
+			"html_url":"https://example/release",
+			"body":"notes",
+			"assets":[
+				{"name":"not-the-right-asset","browser_download_url":"https://example/asset"}
+			]
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", rec.Code)
+	}
+}
+
+func TestHandleApplyUpdate_MethodAndFetchFailures(t *testing.T) {
+	srv := testAdminServer(t)
+
+	// Method not allowed branch.
+	req := httptest.NewRequest(http.MethodGet, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	// Update check fetch failure branch.
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		return jsonHTTP(http.StatusBadGateway, `{"error":"upstream down"}`), nil
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec = httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 when checkForUpdate fails, got %d", rec.Code)
+	}
+}
+
+func TestHandleApplyUpdate_DownloadFailures(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	call := int32(0)
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		c := atomic.AddInt32(&call, 1)
+		if c == 1 {
+			// checkForUpdate
+			return jsonHTTP(http.StatusOK, `{
+				"tag_name":"v0.4.2",
+				"html_url":"https://example/release",
+				"body":"notes",
+				"assets":[{"name":"`+assetName+`","browser_download_url":"https://example/download"}]
+			}`), nil
+		}
+		if c == 2 {
+			// findAssetURL
+			return jsonHTTP(http.StatusOK, `{
+				"tag_name":"v0.4.2",
+				"html_url":"https://example/release",
+				"body":"notes",
+				"assets":[{"name":"`+assetName+`","browser_download_url":"https://example/download"}]
+			}`), nil
+		}
+		// download URL status != 200
+		return jsonHTTP(http.StatusBadGateway, `bad`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 when download status is non-200, got %d", rec.Code)
+	}
+}
+
+func TestHandleApplyUpdate_SuccessPathWithoutExit(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	binaryBody := []byte("new-binary-bytes")
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		switch classifyUpdateURL(r.URL.String()) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
+		}
+	})
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatalf("os.WriteFile exe: %v", err)
+	}
+
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+	updateSleep = func(time.Duration) {}
+	_ = binaryBody // referenced via the closure above
+
+	restartCalled := make(chan struct{}, 1)
+	updateRestartSelf = func() error {
+		select {
+		case restartCalled <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for successful update, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if body["status"] != "updated" {
+		t.Fatalf("unexpected status: %#v", body["status"])
+	}
+
+	select {
+	case <-restartCalled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("expected restart hook to be called")
+	}
+
+	updatedBytes, err := os.ReadFile(exePath)
+	if err != nil {
+		t.Fatalf("os.ReadFile updated exe: %v", err)
+	}
+	if string(updatedBytes) != "new-binary-bytes" {
+		t.Fatalf("unexpected exe contents: %q", string(updatedBytes))
+	}
+	if runtime.GOOS == "windows" {
+		oldPath := exePath + ".old"
+		if _, err := os.Stat(oldPath); err != nil {
+			t.Fatalf("expected .old file on windows rename path: %v", err)
+		}
+	}
+}
+
+// TestHandleApplyUpdate_ChecksumMismatch verifies C-2: an attacker-controlled
+// asset host returning a different binary than the one named in
+// checksums.txt is refused.
+func TestHandleApplyUpdate_ChecksumMismatch(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	expectedBody := []byte("expected-good-binary")
+	tamperedBody := []byte("attacker-replacement-payload")
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		switch classifyUpdateURL(r.URL.String()) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			// Advertise the SHA-256 of expectedBody...
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, expectedBody)), nil
+		default:
+			// ...but serve tamperedBody from the asset host.
+			return stringHTTP(http.StatusOK, string(tamperedBody)), nil
+		}
+	})
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("orig"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for checksum mismatch, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if !strings.Contains(fmt.Sprint(body["error"]), "checksum mismatch") {
+		t.Fatalf("expected checksum-mismatch error, got %#v", body["error"])
+	}
+	// Original binary must NOT have been overwritten.
+	contents, _ := os.ReadFile(exePath)
+	if string(contents) != "orig" {
+		t.Fatalf("binary was overwritten on checksum mismatch: %q", string(contents))
+	}
+}
+
+func TestHandleApplyUpdate_CreateTempError(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	binaryBody := []byte("new-binary-bytes")
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		switch classifyUpdateURL(r.URL.String()) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
+		}
+	})
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatalf("os.WriteFile exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+	updateCreateTemp = func(string, string) (*os.File, error) {
+		return nil, fmt.Errorf("create temp failed")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for create temp failure, got %d", rec.Code)
+	}
+}
+
+func TestHandleApplyUpdate_CreateTempReadOnly(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	binaryBody := []byte("new-binary-bytes")
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		switch classifyUpdateURL(r.URL.String()) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
+		}
+	})
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatalf("os.WriteFile exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+	updateCreateTemp = func(string, string) (*os.File, error) {
+		return nil, &os.PathError{Op: "open", Path: filepath.Dir(exePath), Err: syscall.EROFS}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for read-only fs, got %d", rec.Code)
+	}
+	body := decodeJSON(t, rec)
+	if !strings.Contains(fmt.Sprint(body["error"]), "read-only") {
+		t.Fatalf("expected read-only hint, got %#v", body["error"])
+	}
+}
+
+func TestHandleApplyUpdate_ExecutableAndEvalErrors(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	binaryBody := []byte("new-binary")
+	updateHTTPGet = func(url string) (*http.Response, error) {
+		switch classifyUpdateURL(url) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+
+	updateExecutable = func() (string, error) { return "", errors.New("exe error") }
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for executable error, got %d", rec.Code)
+	}
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(string) (string, error) { return "", errors.New("symlink error") }
+
+	req = httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec = httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for symlink resolution error, got %d", rec.Code)
+	}
+}
+
+func TestHandleApplyUpdate_CopyAndRenameErrors(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+
+	binaryBody := []byte("new-binary")
+	updateHTTPGet = func(url string) (*http.Response, error) {
+		switch classifyUpdateURL(url) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			// Body that errors mid-read for the io.Copy failure path.
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(errReader{}),
+			}, nil
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for io.Copy error, got %d", rec.Code)
+	}
+
+	updateHTTPGet = func(url string) (*http.Response, error) {
+		switch classifyUpdateURL(url) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
+		}
+	}
+	updateRename = func(oldpath, newpath string) error {
+		if strings.Contains(newpath, ".old") || newpath == exePath {
+			return errors.New("rename failed")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec = httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for rename failure, got %d", rec.Code)
+	}
+}
+
+func TestHandleApplyUpdate_RenameReadOnly(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	assetName := "labyrinth-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+
+	tmpDir := t.TempDir()
+	exePath := filepath.Join(tmpDir, "labyrinth.exe")
+	if err := os.WriteFile(exePath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+	updateExecutable = func() (string, error) { return exePath, nil }
+	updateEvalSymlinks = func(path string) (string, error) { return path, nil }
+
+	binaryBody := []byte("new-binary")
+	updateHTTPGet = func(url string) (*http.Response, error) {
+		switch classifyUpdateURL(url) {
+		case "release":
+			return jsonHTTP(http.StatusOK, releaseJSON(assetName)), nil
+		case "checksums":
+			return stringHTTP(http.StatusOK, checksumsBody(assetName, binaryBody)), nil
+		default:
+			return stringHTTP(http.StatusOK, string(binaryBody)), nil
+		}
+	}
+	updateRename = func(oldpath, newpath string) error {
+		if newpath == exePath || strings.Contains(newpath, ".old") {
+			return &os.PathError{Op: "rename", Path: newpath, Err: syscall.EROFS}
+		}
+		return os.Rename(oldpath, newpath)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/apply", nil)
+	rec := httptest.NewRecorder()
+	srv.handleApplyUpdate(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for read-only fs on rename, got %d", rec.Code)
+	}
+	body := decodeJSON(t, rec)
+	if !strings.Contains(fmt.Sprint(body["error"]), "read-only") {
+		t.Fatalf("expected read-only hint, got %#v", body["error"])
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) {
+	return 0, errors.New("read error")
+}
+
+func TestHandleCheckUpdate_MethodAndFreshCache(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/update/check", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for method not allowed, got %d", rec.Code)
+	}
+
+	srv.updateMu.Lock()
+	srv.updateCache = &UpdateInfo{CurrentVersion: "v0.4.1", LatestVersion: "v0.4.2", UpdateAvailable: true}
+	srv.updateCheckedAt = time.Now()
+	srv.config.Load().Web.UpdateCheckInterval = time.Hour
+	srv.updateMu.Unlock()
+
+	updateHTTPGet = func(string) (*http.Response, error) {
+		t.Fatalf("fresh cache should avoid HTTP calls")
+		return nil, nil
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/system/update/check", nil)
+	rec = httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from fresh cache, got %d", rec.Code)
+	}
+}
+
+func TestStartUpdateChecker_PeriodicPath(t *testing.T) {
+	srv := testAdminServer(t)
+	srv.config.Load().Web.AutoUpdate = true
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
+
+	var calls atomic.Int32
+	withMockTransport(t, func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return jsonHTTP(http.StatusOK, `{
+			"tag_name":"v9.9.9",
+			"html_url":"https://example/release",
+			"body":"notes",
+			"assets":[]
+		}`), nil
+	})
+
+	prevDelay := updateInitialDelay
+	prevTickerFactory := updateTickerFactory
+	updateInitialDelay = 0
+	updateTickerFactory = func(time.Duration) *time.Ticker {
+		return time.NewTicker(5 * time.Millisecond)
+	}
+	defer func() {
+		updateInitialDelay = prevDelay
+		updateTickerFactory = prevTickerFactory
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.StartUpdateChecker(ctx)
+	}()
+
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		if calls.Load() >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected at least 2 update checks, got %d", calls.Load())
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("StartUpdateChecker did not stop after cancel")
+	}
+
+	srv.updateMu.RLock()
+	defer srv.updateMu.RUnlock()
+	if srv.updateCache == nil {
+		t.Fatalf("expected update cache to be populated")
+	}
+}
+
+func TestHandleCheckUpdate_StaleCacheFallbackDeterministic(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	srv.updateMu.Lock()
+	srv.updateCache = &UpdateInfo{
+		CurrentVersion:  "v0.4.1",
+		LatestVersion:   "v0.4.2",
+		UpdateAvailable: true,
+	}
+	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour)
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
+	srv.updateMu.Unlock()
+
+	updateHTTPGet = func(string) (*http.Response, error) {
+		return nil, errors.New("upstream unavailable")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/update/check", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 stale cache fallback, got %d", rec.Code)
+	}
+
+	body := decodeJSON(t, rec)
+	if body["latest_version"] != "v0.4.2" {
+		t.Fatalf("expected stale latest_version v0.4.2, got %#v", body["latest_version"])
+	}
+}
+
+func TestHandleCheckUpdate_ForceBypassesFreshCache(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	srv.updateMu.Lock()
+	srv.updateCache = &UpdateInfo{
+		CurrentVersion:  "v0.4.1",
+		LatestVersion:   "v0.4.2",
+		UpdateAvailable: true,
+	}
+	srv.updateCheckedAt = time.Now()
+	srv.config.Load().Web.UpdateCheckInterval = time.Hour
+	srv.updateMu.Unlock()
+
+	calls := int32(0)
+	updateHTTPGet = func(string) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return jsonHTTP(http.StatusOK, `{
+			"tag_name":"v0.4.3",
+			"html_url":"https://example/release",
+			"body":"notes",
+			"assets":[]
+		}`), nil
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/update/check?force=1", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for force refresh, got %d", rec.Code)
+	}
+
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("expected exactly 1 upstream call, got %d", atomic.LoadInt32(&calls))
+	}
+
+	body := decodeJSON(t, rec)
+	if body["latest_version"] != "v0.4.3" {
+		t.Fatalf("expected latest_version v0.4.3, got %#v", body["latest_version"])
+	}
+}
+
+func TestHandleCheckUpdate_ForceDoesNotFallbackToStaleCache(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	srv.updateMu.Lock()
+	srv.updateCache = &UpdateInfo{
+		CurrentVersion:  "v0.4.1",
+		LatestVersion:   "v0.4.2",
+		UpdateAvailable: true,
+	}
+	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour)
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
+	srv.updateMu.Unlock()
+
+	updateHTTPGet = func(string) (*http.Response, error) {
+		return nil, errors.New("upstream unavailable")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/update/check?force=1", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for forced fetch failure, got %d", rec.Code)
+	}
+}
+
+func TestHandleCheckUpdate_NoCacheFetchErrorDeterministic(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
+	updateHTTPGet = func(string) (*http.Response, error) {
+		return nil, errors.New("network down")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/update/check", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 when no cache and fetch fails, got %d", rec.Code)
+	}
+}
+
+func TestHandleCheckUpdate_RefreshesStaleCacheOnSuccess(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	prevVersion := Version
+	Version = "v0.4.1"
+	defer func() { Version = prevVersion }()
+
+	srv.updateMu.Lock()
+	srv.updateCache = &UpdateInfo{
+		CurrentVersion:  "v0.4.1",
+		LatestVersion:   "v0.4.1",
+		UpdateAvailable: false,
+	}
+	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour)
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
+	srv.updateMu.Unlock()
+
+	updateHTTPGet = func(string) (*http.Response, error) {
+		return jsonHTTP(http.StatusOK, `{
+			"tag_name":"v0.4.2",
+			"html_url":"https://example/release",
+			"body":"notes",
+			"assets":[]
+		}`), nil
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/update/check", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCheckUpdate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for successful refresh, got %d", rec.Code)
+	}
+
+	body := decodeJSON(t, rec)
+	if body["latest_version"] != "v0.4.2" {
+		t.Fatalf("expected refreshed latest_version v0.4.2, got %#v", body["latest_version"])
+	}
+}
+
+func TestStartUpdateChecker_IntervalClampToDaily(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	srv.config.Load().Web.AutoUpdate = true
+	srv.config.Load().Web.UpdateCheckInterval = time.Second
+
+	prevDelay := updateInitialDelay
+	prevTickerFactory := updateTickerFactory
+	defer func() {
+		updateInitialDelay = prevDelay
+		updateTickerFactory = prevTickerFactory
+	}()
+
+	updateInitialDelay = 0
+	updateHTTPGet = func(string) (*http.Response, error) {
+		return nil, errors.New("skip update fetch")
+	}
+
+	intervalCh := make(chan time.Duration, 1)
+	updateTickerFactory = func(d time.Duration) *time.Ticker {
+		select {
+		case intervalCh <- d:
+		default:
+		}
+		return time.NewTicker(time.Hour)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.StartUpdateChecker(ctx)
+	}()
+
+	var got time.Duration
+	select {
+	case got = <-intervalCh:
+	case <-time.After(300 * time.Millisecond):
+		cancel()
+		<-done
+		t.Fatalf("expected ticker interval to be captured")
+	}
+
+	if got != 24*time.Hour {
+		cancel()
+		<-done
+		t.Fatalf("expected interval clamp to 24h, got %v", got)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatalf("StartUpdateChecker did not stop after cancel")
+	}
+}
+
+func TestStartUpdateChecker_TickerErrorContinues(t *testing.T) {
+	srv := testAdminServer(t)
+	withUpdateHooksReset(t)
+
+	srv.config.Load().Web.AutoUpdate = true
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute
+
+	prevDelay := updateInitialDelay
+	prevTickerFactory := updateTickerFactory
+	defer func() {
+		updateInitialDelay = prevDelay
+		updateTickerFactory = prevTickerFactory
+	}()
+
+	updateInitialDelay = 0
+	updateTickerFactory = func(time.Duration) *time.Ticker {
+		return time.NewTicker(5 * time.Millisecond)
+	}
+
+	var calls atomic.Int32
+	updateHTTPGet = func(string) (*http.Response, error) {
+		c := calls.Add(1)
+		if c == 1 {
+			return jsonHTTP(http.StatusOK, `{
+				"tag_name":"v9.9.9",
+				"html_url":"https://example/release",
+				"body":"notes",
+				"assets":[]
+			}`), nil
+		}
+		return nil, errors.New("ticker fetch failure")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.StartUpdateChecker(ctx)
+	}()
+
+	deadline := time.After(300 * time.Millisecond)
+	for calls.Load() < 2 {
+		select {
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("expected at least one ticker fetch attempt")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatalf("StartUpdateChecker did not stop after cancel")
+	}
+
+	srv.updateMu.RLock()
+	defer srv.updateMu.RUnlock()
+	if srv.updateCache == nil {
+		t.Fatalf("expected first successful check to populate cache")
+	}
+}

@@ -1,0 +1,150 @@
+# labyrinth.yaml — Example configuration
+# All values shown are defaults. Uncomment and modify as needed.
+
+server:
+  listen_addr: ":53"
+  metrics_addr: "127.0.0.1:9153"
+  max_udp_size: 1232
+  tcp_timeout: 10s
+  max_tcp_connections: 256
+  max_udp_workers: 10000
+  tcp_pipeline_max: 100
+  tcp_idle_timeout: 5s
+  # Per-source-IP connection caps (slow-loris defence). 0 = unlimited.
+  max_tcp_conns_per_client: 16
+  max_dot_conns_per_client: 16
+  graceful_shutdown: 5s
+  dot_enabled: false
+  dot_listen_addr: ":853"
+  doq_enabled: false
+  doq_listen_addr: ":853"
+
+resolver:
+  max_depth: 30
+  max_cname_depth: 10
+  upstream_timeout: 2s
+  upstream_retries: 3
+  # Global per-request backstops (NXNS / runaway-referral defense). max_queries_per_request
+  # caps total outbound queries across every CNAME hop, QNAME-min step, and NS-address
+  # sub-resolution; request_timeout is the wall-clock deadline for one client request.
+  # Both are floored to the default if set <= 0.
+  max_queries_per_request: 200
+  request_timeout: 20s
+  # Caps NS hostnames per delegation (NXNS amplification defence). 0 = unlimited.
+  max_ns_names_per_delegation: 13
+  qname_minimization: true
+  caps_for_id: true
+  prefer_ipv4: true
+  dnssec_enabled: true
+  dnssec_allow_sha1: false
+  harden_below_nxdomain: true
+  root_hints_refresh: 12h
+  ecs_enabled: false
+  ecs_max_prefix: 24
+  ecs_max_prefix_v6: 56
+  dns64_enabled: false
+  dns64_prefix: "64:ff9b::/96"
+  upstream_udp_buffer_size: 1232
+
+cache:
+  max_entries: 100000
+  min_ttl: 5
+  max_ttl: 86400
+  negative_max_ttl: 3600
+  sweep_interval: 60s
+  serve_stale: false
+  serve_stale_ttl: 30
+  stale_max_age: 86400
+  prefetch: true
+  # Comma-separated list of client IPs/CIDRs that bypass the cache (always resolve fresh)
+  # no_cache_clients: 192.168.1.100, 10.0.0.0/24
+
+security:
+  # Strip A/AAAA records pointing at RFC1918 / reserved ranges from responses
+  # (DNS-rebinding protection). Default: false — many internal zones legitimately
+  # resolve to private IPs. Set to true if this resolver only serves public names.
+  private_address_filter: false
+  dns_cookies: false
+  dns_cookies_enforce: false
+  rate_limit:
+    enabled: true
+    rate: 50
+    burst: 100
+  rrl:
+    enabled: true
+    responses_per_second: 5
+    slip_ratio: 2
+    ipv4_prefix: 24
+    ipv6_prefix: 56
+
+logging:
+  level: info
+  format: json
+
+web:
+  enabled: true
+  addr: "127.0.0.1:9153"
+  # DNS-over-HTTPS over HTTP/2 (and HTTP/1.1 for compatibility)
+  doh_enabled: false
+  # DNS-over-HTTPS over HTTP/3 (QUIC). Requires web.tls_enabled + cert/key.
+  doh3_enabled: false
+  # Serve dashboard/API over HTTPS directly
+  tls_enabled: false
+  auto_tls: false
+  auto_tls_cache_dir: "certs"
+  auto_tls_staging: false
+  # tls_cert_file: "/etc/labyrinth/certs/web.crt"
+  # tls_key_file: "/etc/labyrinth/certs/web.key"
+  query_log_buffer: 1000
+  # Maximum number of entries for top clients/domains leaderboards
+  top_clients_limit: 2000
+  top_domains_limit: 2000
+  alert_error_threshold_pct: 5
+  alert_latency_threshold_ms: 250
+  # Automatic update check — queries GitHub Releases periodically
+  auto_update: true
+  update_check_interval: 24h
+  auth:
+    username: ""
+    password_hash: ""
+
+daemon:
+  enabled: false
+  pid_file: "/var/run/labyrinth.pid"
+
+zabbix:
+  enabled: false
+  addr: ""
+
+blocklist:
+  enabled: false
+  # Pipe-separated URL|format pairs
+  # lists: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|hosts"
+  refresh_interval: 24h
+  blocking_mode: nxdomain  # nxdomain, null_ip, custom_ip
+  # custom_ip: "0.0.0.0"
+  # whitelist: example.com, another.com
+
+cluster:
+  enabled: false
+  role: standalone  # standalone, master, secondary
+  node_id: node-1
+  # Comma-separated top-level keys/paths considered common
+  # shared_fields: access_control, blocklist, security.rate_limit
+  actions:
+    fanout_cache_flush: false
+    fanout_blocklist_refresh: false
+  sync:
+    mode: off        # off, manual_push, auto_push
+    push_on_save: false
+    pull_interval: 30s
+  # peers:
+  #   dns-2:
+  #     enabled: true
+  #     api_base: "http://10.0.0.2:9153"
+  #     api_token: "CHANGE_ME"
+  #     sync_fields: access_control, blocklist
+
+access_control:
+  allow:
+  deny:

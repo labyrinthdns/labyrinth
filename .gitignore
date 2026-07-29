@@ -1,0 +1,48 @@
+# Binaries
+/labyrinth
+/labyrinth.exe
+/labyrinth-*
+*.exe
+*.exe~
+*.bin
+/build/labyrinth-*
+/build/labyrinth-bench-*
+/build/
+
+# Test binaries
+*.test
+*.test.exe
+
+# Go build cache
+*.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Frontend
+web/ui/node_modules/
+web/ui/dist/
+website/node_modules/
+website/dist/
+
+# Coverage
+coverage*.out
+coverage*.html
+
+# Project spec (not part of source)
+.project/
+
+.dfmt/
+.wrongstack/
