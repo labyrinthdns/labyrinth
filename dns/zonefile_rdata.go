@@ -81,16 +81,18 @@ func FormatRData(r ResourceRecord) (string, error) {
 //
 // Labyrinth was not given a parser for the type, so its wire form is
 // preserved verbatim. The writer never makes up a presentation form
-// for a type it does not understand.
+// for a type it does not understand. The TYPE column on the line
+// already carries the numeric type; the RDATA portion here is just
+// the length-prefixed hex.
 //
 func formatGenericUnknown(r ResourceRecord) (string, error) {
 	if len(r.RData) == 0 {
-		// BIND writes the empty form as "TYPE<n> \# 0" — explicit
-		// zero length. Same on every other master-file reader.
-		return fmt.Sprintf("TYPE%d \\# 0", r.Type), nil
+		// BIND writes the empty form as `\# 0` — explicit zero length.
+		// Same on every other master-file reader.
+		return `\# 0`, nil
 	}
-	return fmt.Sprintf("TYPE%d \\# %d %s",
-		r.Type, len(r.RData), strings.ToLower(hex.EncodeToString(r.RData))), nil
+	return fmt.Sprintf("\\# %d %s",
+		len(r.RData), strings.ToLower(hex.EncodeToString(r.RData))), nil
 }
 
 // formatSingleName encodes the RDATA of single-name types (NS, CNAME, PTR,
