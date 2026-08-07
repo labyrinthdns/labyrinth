@@ -128,9 +128,14 @@ type Resolver struct {
 	// publishes the validator atomically; readers Load() once and use
 	// the snapshot, never re-reading the field mid-use.
 	dnssecValidator atomic.Pointer[dnssec.Validator]
-	localZones      *LocalZoneTable
-	forwardTable    *ForwardTable
-	infraCache      *InfraCache
+	// localZones is behind an atomic.Pointer because it is no longer set
+	// only at startup: the secondary-zone manager republishes the table
+	// after every successful transfer, while the query path reads it on
+	// every request. A plain field would be a data race, and the value it
+	// guards decides whether a query is answered locally at all.
+	localZones   atomic.Pointer[LocalZoneTable]
+	forwardTable *ForwardTable
+	infraCache   *InfraCache
 	// outboundClientCookie is the 8-byte stable client cookie this
 	// resolver presents to every authoritative we query (RFC 7873 §5.4).
 	// Sent in the EDNS COOKIE option; auths that support cookies echo it
@@ -162,6 +167,16 @@ type Resolver struct {
 	// and authoritative NXDOMAIN/NODATA stay in the normal answer
 	// cache because they carry their own authenticated denial proof.
 	failureCache *failureCache
+	// errorReporter drives RFC 9567 outbound error reporting, or is nil
+	// when the operator has not opted in (the default). Behind an
+	// atomic.Pointer because SetErrorReporting is reachable from the
+	// config hot-reload path while the query path reads it on every
+	// validation failure.
+	errorReporter atomic.Pointer[errorReporter]
+	// tcpPool holds idle upstream TCP connections for reuse (RFC 7766
+	// §6.2.1). Nil-safe: a resolver constructed without one falls back to
+	// dial-per-query.
+	tcpPool *tcpConnPool
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -179,6 +194,7 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 		logger:      logger,
 		inflight:    newInflight(),
 		infraCache:  NewInfraCache(),
+		tcpPool:     newTCPConnPool(),
 	}
 	// Stable per-resolver outbound client cookie (RFC 7873 §5.4). We
 	// generate 8 random bytes from the OS RNG; on rare RNG failure we
@@ -424,7 +440,14 @@ func (r *Resolver) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.M
 // SetLocalZones configures the resolver's local zone table. Queries
 // matching a local zone are answered immediately without recursion.
 func (r *Resolver) SetLocalZones(lz *LocalZoneTable) {
-	r.localZones = lz
+	r.localZones.Store(lz)
+}
+
+// LocalZones returns the current local zone table, or nil when none is
+// configured. Used by the secondary-zone manager to merge transferred zones
+// with the statically configured ones rather than replacing them.
+func (r *Resolver) LocalZones() *LocalZoneTable {
+	return r.localZones.Load()
 }
 
 // Resolve performs recursive resolution for the given query.
@@ -488,8 +511,8 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	// an admin who configured `myzone.local` or `something.test` knows what
 	// they want, and the special-use rule says "if no other local data
 	// authoritatively answers." Order matters.
-	if r.localZones != nil {
-		if result := r.localZones.Lookup(name, qtype, qclass); result != nil {
+	if lz := r.localZones.Load(); lz != nil {
+		if result := lz.Lookup(name, qtype, qclass); result != nil {
 			return result, nil
 		}
 	}
@@ -520,7 +543,7 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 			// downstream upstream does not validate on behalf of a
 			// client that asked us to skip validation.
 			r.logger.Debug("forward zone match", "name", name, "zone", fz.Name)
-			result, err = r.queryForwardECSCD(fz.Addrs, name, qtype, qclass, clientECS, cd)
+			result, err = r.queryForwardECSCD(fz.Addrs, name, qtype, qclass, clientECS, cd, fz.dotOrNil())
 		} else {
 			// Stub zone: start iterative resolution using configured addrs as initial NS.
 			r.logger.Debug("stub zone match", "name", name, "zone", fz.Name)
@@ -755,6 +778,7 @@ func (r *Resolver) resolveIterativeFromInner(
 					result.DNSSECReason = reason.String()
 				case dnssec.Bogus:
 					r.metrics.IncDNSSECBogus()
+					r.reportBogus(response, name, qtype, reason.String())
 					return &ResolveResult{
 						RCODE:        dns.RCodeServFail,
 						DNSSECStatus: "bogus",
@@ -788,6 +812,7 @@ func (r *Resolver) resolveIterativeFromInner(
 				cnameVerdict, cnameReason = v.ValidateResponseWithReason(response, name, dns.TypeCNAME)
 				if cnameVerdict == dnssec.Bogus {
 					r.metrics.IncDNSSECBogus()
+					r.reportBogus(response, name, dns.TypeCNAME, cnameReason.String())
 					return &ResolveResult{
 						RCODE:        dns.RCodeServFail,
 						DNSSECStatus: "bogus",
@@ -837,6 +862,7 @@ func (r *Resolver) resolveIterativeFromInner(
 				dnameVerdict, dnameReason = v.ValidateResponseWithReason(response, name, dns.TypeDNAME)
 				if dnameVerdict == dnssec.Bogus {
 					r.metrics.IncDNSSECBogus()
+					r.reportBogus(response, name, dns.TypeDNAME, dnameReason.String())
 					return &ResolveResult{
 						RCODE:        dns.RCodeServFail,
 						DNSSECStatus: "bogus",
@@ -978,15 +1004,21 @@ func (r *Resolver) resolveIterativeFromInner(
 			// .org, ccTLDs).
 			if clientECS == nil && result.DNSSECStatus == "secure" {
 				zone := nsecZoneFromAuthority(response.Authority)
-				negTTL := minNegativeTTL(response.Authority)
-				if zone != "" && negTTL > 0 {
-					r.cache.RegisterNSECInterval(zone, negTTL, response.Authority)
+				if zone != "" {
+					// RFC 9077 §4: each index gets a TTL clamped by the TTL
+					// of the denial records it is actually built from, not
+					// by the SOA alone. See aggressiveNegTTL.
+					if negTTL := aggressiveNegTTL(response.Authority, dns.TypeNSEC); negTTL > 0 {
+						r.cache.RegisterNSECInterval(zone, negTTL, response.Authority)
+					}
 					// RFC 8198 §5.3 — same idea for NSEC3-signed zones,
 					// which is most of the modern signed Internet (.com,
 					// .net, the majority of ccTLDs). Opt-out NSEC3s are
 					// filtered inside RegisterNSEC3Interval; if there
 					// are no usable NSEC3s the call is a no-op.
-					r.cache.RegisterNSEC3Interval(zone, negTTL, response.Authority)
+					if negTTL := aggressiveNegTTL(response.Authority, dns.TypeNSEC3); negTTL > 0 {
+						r.cache.RegisterNSEC3Interval(zone, negTTL, response.Authority)
+					}
 				}
 			}
 			return result, nil
@@ -1419,10 +1451,32 @@ func (r *Resolver) validateDenialIfEnabled(response *dns.Message, name string, q
 		return "insecure"
 	case dnssec.Bogus:
 		r.metrics.IncDNSSECBogus()
+		// A bogus denial is exactly the failure mode a zone operator most
+		// wants told about — a broken NSEC chain makes every non-existent
+		// name in the zone fail, and nothing in the zone's own monitoring
+		// would show it. This path has no classified reason (the denial
+		// validator returns a bare verdict), so the report carries the
+		// generic EDE 6.
+		r.reportBogus(response, name, qtype, "")
 		return "bogus"
 	default:
 		return "insecure"
 	}
+}
+
+// reportBogus forwards a DNSSEC validation failure to the zone's RFC 9567
+// agent domain, translating the validator's reason token into the same
+// RFC 8914 EDE code the server would send downstream for the same failure.
+//
+// Sharing dns.BogusReasonToEDE with the server matters: an operator reading
+// their agent-domain logs and a client reading its EDE must see one code for
+// one event, or correlating the two is guesswork.
+func (r *Resolver) reportBogus(response *dns.Message, name string, qtype uint16, reason string) {
+	if r.errorReporter.Load() == nil {
+		return // reporting disabled — skip before doing any work
+	}
+	edeCode, _ := dns.BogusReasonToEDE(reason)
+	r.reportError(response, name, qtype, edeCode)
 }
 
 // combineDNSSECStatus returns the AND of two DNSSEC verdicts along a chain.
