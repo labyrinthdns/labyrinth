@@ -1,6 +1,32 @@
 # LabyrinthDNS — RFC Gap Analysis Follow-up
 
-_Date: 2026-07-08 · Last updated: 2026-07-16 · Scope: RFC/compliance docs, roadmap, changelog, and targeted implementation paths._
+_Date: 2026-07-08 · Last updated: 2026-08-07 · Scope: RFC/compliance docs, roadmap, changelog, and targeted implementation paths._
+
+> **Update 2026-08-07 — this report's "highest-impact remaining items" list is
+> largely obsolete.** A re-audit against the current tree found that three of
+> the five transport/provisioning gaps below shipped after this document was
+> written, and one of the remaining two was never a gap in the sense described:
+>
+> | Item as listed below | Actual status 2026-08-07 |
+> |---|---|
+> | 1. RFC 8945 TSIG — not implemented | **Still open.** No TSIG code exists. |
+> | 2. RFC 9250 DoQ — not implemented | **Shipped.** `server/doq.go`, wired in `main_runtime_helpers.go` behind `server.doq_enabled`. |
+> | 3. RFC 9103 XFR-over-TLS — "zone-transfer infrastructure appears absent" | **Half-shipped, and the half that exists is unreachable.** `xfr/client.go` implements an AXFR-over-TLS-1.3 client, but nothing imports the package and IXFR is absent. It was briefly marked ✅ in the compliance matrix on the strength of the file existing; that claim has been withdrawn. |
+> | 4. RFC 9432 Catalog Zones — not implemented | **Still open.** |
+> | 5. RFC 8305 Happy Eyeballs v2 — not implemented | **Shipped.** `resolver/resolver.go` `resolveNSHappyEyeballs`, pinned by `resolver/security_regression_test.go`. |
+> | 6. NSEC3 per-query hash/salt budget | **Shipped in v0.8.32** (already noted in the 2026-07-16 update). |
+> | 7. Per-source TCP/DoT connection caps | **Shipped in v0.8.32.** |
+>
+> The same audit found gaps this report did not cover at all — RFC 9077
+> (aggressive-use TTL clamp, since fixed), missing EDNS option codes
+> (RFC 5001 NSID, RFC 9567 Report-Channel, RFC 9660 ZONEVERSION and others),
+> plaintext-only upstream transport, and no upstream TCP connection reuse.
+>
+> **This file is a point-in-time report and should not be read as current
+> status.** `docs/rfc-compliance-matrix.md` is the live surface, and it is now
+> mechanically pinned by `test/rfc_matrix_integrity_test.go`, which fails the
+> build if a row cites a file that does not exist or a package that nothing
+> imports — the two ways this drift entered the docs in the first place.
 
 > **Update 2026-07-16**: The following items from the P1/P2 hardening list were implemented in v0.8.32:
 > - Per-source TCP/DoT connection caps (P2 #7)
