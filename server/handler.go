@@ -100,9 +100,41 @@ type MainHandler struct {
 	// the safe default" (1232).
 	downstreamUDPBufferSize int
 
+	// nsid is the RFC 5001 Name Server Identifier this instance answers
+	// with, or nil/empty when the operator has not configured one (the
+	// default — RFC 5001 §2.3 makes emitting NSID entirely optional, and
+	// an unconfigured server should not leak a hostname it was never
+	// asked to publish). Stored behind an atomic.Pointer for the same
+	// reason as privateFilter: SetNSID is reachable from the
+	// /api/config/raw hot-reload path while the DNS handler reads it on
+	// every query.
+	nsid atomic.Pointer[[]byte]
+
+	// ddr is the RFC 9462 designation published in answer to
+	// `_dns.resolver.arpa` SVCB queries, or nil when the operator has not
+	// configured one. Behind an atomic.Pointer for the same reason as the
+	// fields above: SetDDR is reachable from the config hot-reload path.
+	ddr atomic.Pointer[dns.DDRConfig]
+
+	// resinfo is the RFC 9606 self-description served for our designated
+	// name, or nil when nothing has been declared.
+	resinfo atomic.Pointer[dns.ResolverInfo]
+
 	// OnQuery is an optional callback invoked after each query is resolved.
 	// Parameters: client IP, qname, qtype, rcode (may be "BLOCKED"), whether served from cache, duration in ms.
 	OnQuery func(client, qname, qtype, rcode string, cached bool, durationMs float64)
+}
+
+// SetNSID sets the RFC 5001 Name Server Identifier reported to clients that
+// ask for it. An empty string disables NSID responses entirely, which is
+// the default: RFC 5001 §3.1 warns that the identifier is visible to any
+// client and advises operators to choose a value that does not disclose
+// more topology than they intend.
+//
+// Identifiers longer than dns.MaxNSIDLength are truncated at emit time.
+func (h *MainHandler) SetNSID(id string) {
+	b := []byte(id)
+	h.nsid.Store(&b)
 }
 
 // SetPrivateFilter enables or disables private address filtering.
@@ -614,6 +646,36 @@ func (h *MainHandler) shouldBypassCache(clientIP string) bool {
 }
 
 func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, err error) {
+	// queryEDNS is the client's parsed OPT record, published here so the
+	// response decorator below can reach it without re-parsing. It stays
+	// nil on the return paths that fire before the query is parsed at all
+	// (global ACL refusal, malformed input).
+	var queryEDNS *dns.EDNS0
+
+	// Per-response EDNS decoration — DNS Cookies (RFC 7873 §5.2.3) and the
+	// Name Server Identifier (RFC 5001 §2.3).
+	//
+	// This is a defer rather than a pair of lines near the bottom of the
+	// function because Handle has ~20 return points, and both options are
+	// most wanted on the early ones. NSID answers "which anycast node
+	// served this?", which an operator asks precisely when the response was
+	// REFUSED, SERVFAIL or a recovered panic. Cookies had a live bug of
+	// exactly this shape: the single attach site sat past the cache-hit
+	// return, so a client that sent a cookie and got a cache hit — the
+	// common case on a warm resolver — received no server cookie back, and
+	// only refreshed its pair after a BADCOOKIE round trip following a
+	// secret rotation.
+	//
+	// Registered BEFORE the panic-recovery defer so it runs AFTER it
+	// (defers are LIFO): the recovery handler rewrites `resp`, and we must
+	// decorate the final value rather than the one it replaced.
+	defer func() {
+		if err != nil || len(resp) == 0 {
+			return
+		}
+		resp = h.decorateResponse(query, resp, queryEDNS, clientAddr)
+	}()
+
 	// Defence-in-depth: any panic that escapes from the resolver, the
 	// validator, the cache, or a third-party transport (DoH/DoT/DoQ)
 	// must not propagate out to the transport loop. Letting it crash a
@@ -683,6 +745,9 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		h.metrics.IncResponses("FORMERR")
 		return h.buildError(query, dns.RCodeFormErr)
 	}
+	// Publish the parsed OPT to the response decorator so it does not have
+	// to unpack the query a second time on the hot path.
+	queryEDNS = msg.EDNS0
 
 	// 2. Validate
 	if msg.Header.QR() {
@@ -764,6 +829,12 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 	}
 
 	q := msg.Questions[0]
+	// Deliberately NOT dns.TypeName here. This string becomes a metric
+	// label, and TypeName's RFC 3597 "TYPE<n>" fallback is unbounded — a
+	// client walking all 65536 qtype values would mint 65536 label values
+	// and blow up the metrics store. Indexing the registry directly keeps
+	// the label set bounded by the types we actually name, with everything
+	// else collapsed into one bucket.
 	qtypeStr := dns.TypeToString[q.Type]
 	if qtypeStr == "" {
 		qtypeStr = "OTHER"
@@ -835,6 +906,49 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		h.metrics.IncResponses("NOERROR")
 		durationMs := float64(duration.Microseconds()) / 1000.0
 		h.logger.Debug("minimal_any_response", "client", clientIP, "qname", q.Name)
+		if h.OnQuery != nil {
+			h.OnQuery(clientIP, q.Name, qtypeStr, "NOERROR", false, durationMs)
+		}
+		return resp, nil
+	}
+
+	// 2.65 RFC 9462 Discovery of Designated Resolvers. `_dns.resolver.arpa`
+	// is a special-use name with no delegation in the global DNS, so it MUST
+	// be answered locally — forwarding would leak the client's discovery
+	// attempt upstream and come back NXDOMAIN. The answer describes this
+	// resolver's own encrypted endpoints; see dns/ddr.go for why serving it
+	// unauthenticated over plaintext is sound.
+	if dns.IsDDRQuery(q.Name, q.Type) {
+		resp, err := h.buildDDRResponse(msg, q, isStream)
+		if err != nil {
+			return nil, err
+		}
+		duration := time.Since(start)
+		h.metrics.ObserveQueryDuration(duration)
+		h.metrics.IncResponses("NOERROR")
+		durationMs := float64(duration.Microseconds()) / 1000.0
+		h.logger.Debug("ddr_response", "client", clientIP, "qname", q.Name)
+		if h.OnQuery != nil {
+			h.OnQuery(clientIP, q.Name, qtypeStr, "NOERROR", false, durationMs)
+		}
+		return resp, nil
+	}
+
+	// 2.66 RFC 9606 RESINFO. A client that has just learned our name from a
+	// DDR designation asks it "what will you do to my queries?" — whether we
+	// minimise QNAMEs, which extended errors carry a policy meaning here,
+	// where to read the policy. Answered locally for our own designated
+	// name only; RESINFO for anything else is an ordinary lookup.
+	if q.Type == dns.TypeRESINFO && h.isOwnDesignatedName(q.Name) {
+		resp, err := h.buildRESINFOResponse(msg, q, isStream)
+		if err != nil {
+			return nil, err
+		}
+		duration := time.Since(start)
+		h.metrics.ObserveQueryDuration(duration)
+		h.metrics.IncResponses("NOERROR")
+		durationMs := float64(duration.Microseconds()) / 1000.0
+		h.logger.Debug("resinfo_response", "client", clientIP, "qname", q.Name)
 		if h.OnQuery != nil {
 			h.OnQuery(clientIP, q.Name, qtypeStr, "NOERROR", false, durationMs)
 		}
@@ -1041,7 +1155,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		// builder under CD=1, which communicates the non-validation state
 		// to the client; the data itself flows through unfiltered.
 		if result != nil && result.DNSSECStatus == "bogus" && !msg.Header.CD() && msg.EDNS0 != nil {
-			edeCode, edeText := bogusReasonToEDE(result.DNSSECReason)
+			edeCode, edeText := dns.BogusReasonToEDE(result.DNSSECReason)
 			bogusResp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, edeCode, edeText)
 			if buildErr == nil {
 				h.metrics.IncResponses("SERVFAIL")
@@ -1189,10 +1303,9 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		}
 	}
 
-	// Add cookie response if client sent a cookie option
-	if h.cookiesEnabled && msg.EDNS0 != nil {
-		resp = h.addCookieToResponse(resp, msg.EDNS0, clientIP)
-	}
+	// Cookie and NSID attachment happen in the response decorator deferred
+	// at the top of Handle, so every return path gets them — not just this
+	// one.
 
 	// 7. Response Rate Limiting (anti-amplification)
 	if h.rrl != nil {
@@ -1374,6 +1487,132 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry,
 
 // buildMinimalANYResponse returns a synthetic HINFO response per RFC 8482,
 // preventing DNS amplification attacks via ANY queries.
+// SetResolverInfo configures the RFC 9606 RESINFO record this resolver
+// publishes at its own designated name.
+func (h *MainHandler) SetResolverInfo(info dns.ResolverInfo) {
+	h.resinfo.Store(&info)
+}
+
+// isOwnDesignatedName reports whether `name` is the name this resolver
+// publishes itself under — the DDR target name.
+//
+// Scoping RESINFO to that one name rather than answering it for anything is
+// what keeps the feature from becoming a lie: RESINFO describes *this*
+// resolver's behaviour, and synthesising it for an arbitrary queried name
+// would assert our policy over someone else's zone.
+func (h *MainHandler) isOwnDesignatedName(name string) bool {
+	cfg := h.ddr.Load()
+	if cfg == nil || cfg.TargetName == "" {
+		return false
+	}
+	return strings.EqualFold(
+		strings.TrimSuffix(name, "."),
+		strings.TrimSuffix(cfg.TargetName, "."),
+	)
+}
+
+// buildRESINFOResponse answers a RESINFO query for our own name (RFC 9606).
+//
+// An unconfigured ResolverInfo yields NODATA rather than an empty record: a
+// resolver that has declared nothing should not publish a record asserting
+// that it declared nothing, which a client would cache and take as final.
+func (h *MainHandler) buildRESINFOResponse(query *dns.Message, q dns.Question, stream ...bool) ([]byte, error) {
+	var answers []dns.ResourceRecord
+	if info := h.resinfo.Load(); info != nil {
+		if rdata := dns.BuildRESINFORData(*info); len(rdata) > 0 {
+			answers = []dns.ResourceRecord{{
+				Name:     q.Name,
+				Type:     dns.TypeRESINFO,
+				Class:    dns.ClassIN,
+				TTL:      dns.DDRTTL,
+				RDLength: uint16(len(rdata)),
+				RData:    rdata,
+			}}
+		}
+	}
+
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID: query.Header.ID,
+			Flags: dns.NewFlagBuilder().
+				SetQR(true).
+				SetAA(true).
+				SetRD(query.Header.RD()).
+				SetRA(true).
+				SetRCODE(dns.RCodeNoError).
+				Build(),
+		},
+		Questions: query.Questions,
+		Answers:   answers,
+	}
+	if query.EDNS0 != nil {
+		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
+	}
+
+	packed, err := h.packToOwnedBytes(resp)
+	if err != nil {
+		return nil, err
+	}
+	return h.maybeTruncateUDP(packed, query, stream...), nil
+}
+
+// SetDDR configures the RFC 9462 designation this resolver publishes. An
+// empty target name (the default) disables discovery: a designation naming
+// a host whose certificate does not cover this resolver's address fails the
+// client's RFC 9462 §4.2 verification, so publishing one would cost a round
+// trip to hand out something guaranteed not to work.
+func (h *MainHandler) SetDDR(cfg dns.DDRConfig) {
+	h.ddr.Store(&cfg)
+}
+
+// buildDDRResponse answers the `_dns.resolver.arpa` SVCB query (RFC 9462 §4).
+//
+// When DDR is not configured the answer is NODATA — NOERROR with an empty
+// answer section — rather than NXDOMAIN. The distinction is load-bearing:
+// resolver.arpa exists as a special-use name whether or not this particular
+// resolver designates anything, and NXDOMAIN would tell the client the name
+// itself is bogus, which is a different (and wrong) statement.
+func (h *MainHandler) buildDDRResponse(query *dns.Message, q dns.Question, stream ...bool) ([]byte, error) {
+	var answers []dns.ResourceRecord
+	if cfg := h.ddr.Load(); cfg != nil {
+		var err error
+		answers, err = dns.BuildDDRAnswer(*cfg)
+		if err != nil {
+			// A malformed designation is our bug, not the client's. Fall
+			// back to NODATA rather than SERVFAIL: the client then keeps
+			// using the plaintext channel it already has, which is exactly
+			// what it would do if we had never implemented DDR.
+			h.logger.Error("failed to build DDR answer", "error", err)
+			answers = nil
+		}
+	}
+
+	resp := &dns.Message{
+		Header: dns.Header{
+			ID: query.Header.ID,
+			Flags: dns.NewFlagBuilder().
+				SetQR(true).
+				SetAA(true).
+				SetRD(query.Header.RD()).
+				SetRA(true).
+				SetRCODE(dns.RCodeNoError).
+				Build(),
+		},
+		Questions: query.Questions,
+		Answers:   answers,
+	}
+
+	if query.EDNS0 != nil {
+		resp.Additional = append(resp.Additional, dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))
+	}
+
+	packed, err := h.packToOwnedBytes(resp)
+	if err != nil {
+		return nil, err
+	}
+	return h.maybeTruncateUDP(packed, query, stream...), nil
+}
+
 func (h *MainHandler) buildMinimalANYResponse(query *dns.Message, q dns.Question, stream ...bool) ([]byte, error) {
 	// HINFO RDATA: <CPU-length> <CPU-string> <OS-length> <OS-string>
 	// CPU = "RFC8482", OS = ""
@@ -1757,7 +1996,69 @@ func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint1
 // addCookieToResponse processes DNS cookie options in the response.
 // If the client sent a cookie option, the server echoes back the client cookie
 // plus a generated server cookie.
+// decorateResponse attaches the per-response EDNS options that must appear
+// on every return path out of Handle: the DNS Cookie (RFC 7873 §5.2.3) and
+// the Name Server Identifier (RFC 5001 §2.3).
+//
+// queryEDNS is the already-parsed client OPT when the query got far enough
+// to be parsed, and nil otherwise (global ACL refusal, malformed query). In
+// the nil case the query is unpacked here — but only when NSID is actually
+// configured, so the default build never pays for it. Cookies are skipped
+// entirely in that case: a client refused before its query was parsed has
+// nothing to negotiate a cookie for.
+func (h *MainHandler) decorateResponse(query, resp []byte, queryEDNS *dns.EDNS0, clientAddr net.Addr) []byte {
+	id := h.nsid.Load()
+	wantNSID := id != nil && len(*id) > 0
+
+	if queryEDNS == nil {
+		if !wantNSID {
+			return resp
+		}
+		qmsg, err := dns.Unpack(query)
+		if err != nil || qmsg.EDNS0 == nil {
+			return resp
+		}
+		queryEDNS = qmsg.EDNS0
+	}
+
+	if h.cookiesEnabled {
+		resp = h.addCookieToResponse(resp, queryEDNS, extractIP(clientAddr))
+	}
+	if wantNSID && dns.HasNSIDOption(queryEDNS) {
+		resp = dns.AddNSIDToRawResponse(resp, *id)
+	}
+	return resp
+}
+
+// responseHasEDNSOption reports whether a wire-format response already
+// carries `code` in its OPT record. RFC 6891 §6.1.1 allows each option code
+// to appear at most once, so every append path has to check first.
+func responseHasEDNSOption(resp []byte, code uint16) bool {
+	msg, err := dns.Unpack(resp)
+	if err != nil {
+		return false
+	}
+	for i := range msg.Additional {
+		if msg.Additional[i].Type != dns.TypeOPT {
+			continue
+		}
+		edns, perr := dns.ParseOPT(&msg.Additional[i])
+		if perr != nil {
+			return false
+		}
+		for _, o := range edns.Options {
+			if o.Code == code {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (h *MainHandler) addCookieToResponse(resp []byte, edns *dns.EDNS0, clientIP string) []byte {
+	if edns == nil {
+		return resp
+	}
 	// Find cookie option in client EDNS0
 	var clientCookie []byte
 	for _, opt := range edns.Options {
@@ -1768,6 +2069,15 @@ func (h *MainHandler) addCookieToResponse(resp []byte, edns *dns.EDNS0, clientIP
 	}
 	if len(clientCookie) != 8 {
 		return resp // no valid client cookie
+	}
+
+	// Idempotence. buildBadCookieResponse issues its own fresh server
+	// cookie (RFC 7873 §5.2.3 requires it, or a client locked out by a
+	// secret rotation could never recover), and that response then flows
+	// through the same decorator. Appending a second COOKIE option would
+	// violate the one-option-per-code rule of RFC 6891 §6.1.1.
+	if responseHasEDNSOption(resp, dns.EDNSOptionCodeCookie) {
+		return resp
 	}
 
 	serverCookie := h.generateServerCookie(clientCookie, clientIP)

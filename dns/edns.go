@@ -151,13 +151,51 @@ const (
 	EDECodeSynthesized uint16 = 29
 )
 
-// EDNS option codes.
+// EDNS option codes, as assigned in the IANA "DNS EDNS0 Option Codes
+// (OPT)" registry. Codes are listed here even when Labyrinth does not act
+// on them: an unrecognised option in a query is silently ignored per
+// RFC 6891 §6.1.2, and having the constant means a log line or a metric
+// can name the option instead of printing a bare integer.
 const (
-	EDNSOptionCodeECS          uint16 = 8
+	// EDNSOptionCodeNSID is the Name Server Identifier option (RFC 5001).
+	// A client sends it with zero-length data to ask "which instance am I
+	// actually talking to?"; the server answers with an opaque identifier.
+	// On an anycast deployment this is the only in-band way to tell which
+	// node served a query, which is why it is the first thing an operator
+	// reaches for when one node in a cluster misbehaves.
+	EDNSOptionCodeNSID uint16 = 3
+	EDNSOptionCodeECS  uint16 = 8
+	// EDNSOptionCodeEXPIRE is the EDNS EXPIRE option (RFC 7314). A
+	// secondary uses it to learn the remaining lifetime of the zone it
+	// holds, so a zone can expire consistently across a chain of
+	// secondaries rather than each restarting the clock. Not acted on:
+	// Labyrinth has no secondary-zone role yet (see RFC 9103 in
+	// docs/rfc-compliance-matrix.md).
+	EDNSOptionCodeEXPIRE       uint16 = 9
 	EDNSOptionCodeCookie       uint16 = 10
 	EDNSOptionCodeTCPKeepalive uint16 = 11
 	EDNSOptionCodePadding      uint16 = 12
-	EDNSOptionCodeEDE          uint16 = 15
+	// EDNSOptionCodeCHAIN is the CHAIN query option (RFC 7901), by which a
+	// validating client asks for the whole DNSSEC chain in one response.
+	// Not acted on: Labyrinth validates on the client's behalf, so the
+	// chain-shipping case only arises for stubs that validate themselves.
+	EDNSOptionCodeCHAIN uint16 = 13
+	// EDNSOptionCodeKeyTag is edns-key-tag (RFC 8145 §4), by which a
+	// validator reports which trust anchors it holds. It is the mechanism
+	// that made the 2018 root KSK rollover measurable. Not acted on:
+	// Labyrinth tracks anchors via RFC 5011 but does not report them.
+	EDNSOptionCodeKeyTag uint16 = 14
+	EDNSOptionCodeEDE    uint16 = 15
+	// EDNSOptionCodeReportChannel is the Report-Channel option (RFC 9567
+	// §6.1). An authoritative server attaches it to advertise an agent
+	// domain that resolvers should send error reports to. See
+	// errorreport.go.
+	EDNSOptionCodeReportChannel uint16 = 18
+	// EDNSOptionCodeZoneVersion is the ZONEVERSION option (RFC 9660), by
+	// which an authoritative server discloses which version of a zone
+	// produced an answer. Not acted on: useful to zone operators
+	// debugging propagation, not to a recursive resolver.
+	EDNSOptionCodeZoneVersion uint16 = 19
 	// EDNSOptionCodeDAU is the "DNSSEC Algorithm Understood" option
 	// (RFC 6975 §3). The option data is the list of DNSKEY/RRSIG
 	// algorithm numbers the resolver can validate. Multi-signed zones
@@ -238,6 +276,105 @@ func HasTCPKeepaliveOption(e *EDNS0) bool {
 		}
 	}
 	return false
+}
+
+// MaxNSIDLength bounds the identifier a server will emit. RFC 5001 puts no
+// ceiling on NSID length, but the option travels in every response to a
+// client that asked for it, and an operator who pastes a long string into
+// the config should not silently start pushing responses over the UDP
+// buffer into TCP fallback. 64 bytes is comfortably more than the
+// hostname-or-site-code that real deployments use.
+const MaxNSIDLength = 64
+
+// HasNSIDOption reports whether the parsed EDNS0 record carries an NSID
+// option — the client's request for the server's identity (RFC 5001 §2.1).
+// The request form has zero-length data; we treat presence alone as the
+// signal, since a client that sent data is still unambiguously asking.
+func HasNSIDOption(e *EDNS0) bool {
+	if e == nil {
+		return false
+	}
+	for _, opt := range e.Options {
+		if opt.Code == EDNSOptionCodeNSID {
+			return true
+		}
+	}
+	return false
+}
+
+// BuildNSIDOption constructs an NSID option (RFC 5001 §2.3) carrying the
+// server's identifier. RFC 5001 §2.3 is explicit that the payload is an
+// opaque byte string with no imposed structure or encoding — so the
+// identifier is emitted verbatim rather than being hex-encoded or
+// null-terminated. Identifiers longer than MaxNSIDLength are truncated.
+func BuildNSIDOption(id []byte) EDNSOption {
+	if len(id) > MaxNSIDLength {
+		id = id[:MaxNSIDLength]
+	}
+	data := make([]byte, len(id))
+	copy(data, id)
+	return EDNSOption{Code: EDNSOptionCodeNSID, Data: data}
+}
+
+// AddNSIDToRawResponse parses a wire-format response and attaches an NSID
+// option carrying `id` (RFC 5001 §2.3). Used by every transport rather than
+// just the stateful ones: an operator debugging an anycast cluster is most
+// often doing it over UDP, which is where the misrouting happens.
+//
+// Idempotent — a response that already carries NSID is returned unchanged,
+// since RFC 6891 §6.1.1 allows each option code to appear only once.
+// Returns the original bytes on any parse/pack error or for an empty id.
+//
+// Like AddTCPKeepaliveToRawResponse, this appends to the existing OPT RR's
+// RData rather than rebuilding the record, so ExtRCODE/Version/DO bits set
+// by earlier stages survive.
+func AddNSIDToRawResponse(resp []byte, id []byte) []byte {
+	if len(id) == 0 {
+		return resp
+	}
+	if len(id) > MaxNSIDLength {
+		id = id[:MaxNSIDLength]
+	}
+
+	msg, err := Unpack(resp)
+	if err != nil {
+		return resp
+	}
+
+	optIdx := -1
+	for i, rr := range msg.Additional {
+		if rr.Type == TypeOPT {
+			optIdx = i
+			break
+		}
+	}
+
+	if optIdx < 0 {
+		msg.Additional = append(msg.Additional,
+			BuildOPTWithOptions(1232, false, []EDNSOption{BuildNSIDOption(id)}))
+	} else {
+		if edns, perr := ParseOPT(&msg.Additional[optIdx]); perr == nil {
+			for _, o := range edns.Options {
+				if o.Code == EDNSOptionCodeNSID {
+					return resp
+				}
+			}
+		}
+		hdr := make([]byte, 4+len(id))
+		binary.BigEndian.PutUint16(hdr[0:2], EDNSOptionCodeNSID)
+		binary.BigEndian.PutUint16(hdr[2:4], uint16(len(id)))
+		copy(hdr[4:], id)
+		msg.Additional[optIdx].RData = append(msg.Additional[optIdx].RData, hdr...)
+		msg.Additional[optIdx].RDLength = uint16(len(msg.Additional[optIdx].RData))
+	}
+
+	packed, err := Pack(msg, make([]byte, len(resp)+MaxNSIDLength+32))
+	if err != nil {
+		return resp
+	}
+	out := make([]byte, len(packed))
+	copy(out, packed)
+	return out
 }
 
 // BuildDAUOption constructs the DNSSEC Algorithm Understood option

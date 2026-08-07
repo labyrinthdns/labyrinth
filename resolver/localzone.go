@@ -211,14 +211,28 @@ func normalizeName(name string) string {
 
 // --- Record parsing ---
 
-// stringToType maps type name strings to dns type constants.
-var stringToType = map[string]uint16{
+// localZoneTypes are the record types a local zone can express in
+// presentation format.
+//
+// This is intentionally a small allowlist rather than dns.ParseType. The
+// resolver knows a great many types; the local-zone *encoder* can only build
+// RDATA for these, so accepting a name here that encodeRData will then reject
+// would turn a clear "unsupported type" into a confusing per-record parse
+// failure further down.
+//
+// The set covers what an operator actually overrides locally: addresses and
+// aliases, mail and service discovery, and CAA — where a wrong record blocks
+// certificate issuance for the whole name.
+var localZoneTypes = map[string]uint16{
 	"A":     dns.TypeA,
 	"AAAA":  dns.TypeAAAA,
 	"CNAME": dns.TypeCNAME,
 	"TXT":   dns.TypeTXT,
 	"PTR":   dns.TypePTR,
 	"MX":    dns.TypeMX,
+	"NS":    dns.TypeNS,
+	"SRV":   dns.TypeSRV,
+	"CAA":   dns.TypeCAA,
 }
 
 // ParseLocalRecord parses a string in "name TYPE rdata" format into a LocalRecord.
@@ -240,7 +254,7 @@ func ParseLocalRecord(s string) (*LocalRecord, error) {
 	name := normalizeName(parts[0])
 	typeName := strings.ToUpper(parts[1])
 
-	qtype, ok := stringToType[typeName]
+	qtype, ok := localZoneTypes[typeName]
 	if !ok {
 		return nil, fmt.Errorf("local record: unsupported type %q", typeName)
 	}
@@ -308,6 +322,59 @@ func encodeRData(qtype uint16, s string) ([]byte, error) {
 		buf := make([]byte, 2+len(nameBytes))
 		binary.BigEndian.PutUint16(buf[0:2], uint16(pref))
 		copy(buf[2:], nameBytes)
+		return buf, nil
+
+	case dns.TypeNS:
+		// Same wire shape as CNAME/PTR: a single uncompressed name.
+		return encodeNameWire(s), nil
+
+	case dns.TypeSRV:
+		// RFC 2782: "priority weight port target".
+		fields := strings.Fields(s)
+		if len(fields) != 4 {
+			return nil, fmt.Errorf("SRV record: expected \"priority weight port target\", got %q", s)
+		}
+		nums := make([]uint16, 3)
+		for i, label := range []string{"priority", "weight", "port"} {
+			n, err := strconv.Atoi(fields[i])
+			if err != nil || n < 0 || n > 65535 {
+				return nil, fmt.Errorf("SRV record: invalid %s %q", label, fields[i])
+			}
+			nums[i] = uint16(n)
+		}
+		nameBytes := encodeNameWire(fields[3])
+		buf := make([]byte, 6+len(nameBytes))
+		binary.BigEndian.PutUint16(buf[0:2], nums[0])
+		binary.BigEndian.PutUint16(buf[2:4], nums[1])
+		binary.BigEndian.PutUint16(buf[4:6], nums[2])
+		copy(buf[6:], nameBytes)
+		return buf, nil
+
+	case dns.TypeCAA:
+		// RFC 8659 §4.1: flags (1 octet), tag length (1 octet), tag, value.
+		// The value is NOT length-prefixed — it runs to the end of the
+		// RDATA — and the tag is lowercase ASCII.
+		//
+		// Worth supporting locally because a wrong CAA record blocks
+		// certificate issuance for the whole name, and an operator
+		// overriding one internally needs to be able to express it.
+		fields := strings.SplitN(strings.TrimSpace(s), " ", 3)
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("CAA record: expected \"flags tag value\", got %q", s)
+		}
+		flags, err := strconv.Atoi(fields[0])
+		if err != nil || flags < 0 || flags > 255 {
+			return nil, fmt.Errorf("CAA record: invalid flags %q", fields[0])
+		}
+		tag := strings.ToLower(fields[1])
+		if tag == "" || len(tag) > 255 {
+			return nil, fmt.Errorf("CAA record: tag must be 1-255 octets, got %d", len(tag))
+		}
+		value := strings.Trim(fields[2], "\"")
+		buf := make([]byte, 0, 2+len(tag)+len(value))
+		buf = append(buf, byte(flags), byte(len(tag)))
+		buf = append(buf, tag...)
+		buf = append(buf, value...)
 		return buf, nil
 
 	default:
