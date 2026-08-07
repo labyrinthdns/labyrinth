@@ -40,7 +40,20 @@ const PIPELINE_STAGES = [
 
 type StageId = (typeof PIPELINE_STAGES)[number]['id']
 
-const QUERY_TYPES = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA', 'PTR', 'SRV', 'DNSKEY', 'DS'] as const
+// Types offered in the trace form. The backend (dns.ParseType) accepts every
+// type in the shared registry plus the RFC 3597 §5 generic "TYPE<n>" form, so
+// this list is a convenience shortlist rather than a limit — an operator can
+// type "TYPE64" or any other mnemonic directly.
+//
+// The shortlist covers what people actually trace: the classic lookups, the
+// DNSSEC chain, and the modern types that dominate real traffic (HTTPS/SVCB
+// on any network with Apple devices or an HTTP/3 browser) or that break
+// visibly when wrong (CAA blocks certificate issuance, TLSA breaks DANE).
+const QUERY_TYPES = [
+  'A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA', 'PTR', 'SRV',
+  'DNSKEY', 'DS', 'RRSIG', 'NSEC', 'NSEC3',
+  'HTTPS', 'SVCB', 'CAA', 'TLSA', 'SSHFP', 'NAPTR',
+] as const
 
 function statusIcon(status: TraceStatus, size = 'h-4 w-4') {
   switch (status) {

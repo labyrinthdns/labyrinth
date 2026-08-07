@@ -1,6 +1,12 @@
 # RFC Compliance Matrix
 
-_Generated from test files and implementation audit — 2026-07-06_
+_Generated from test files and implementation audit — 2026-07-06 · Last verified against the codebase 2026-08-07_
+
+> **Correction 2026-08-07** — an audit found two false entries in this table:
+> RFC 9103 was marked ✅ on the strength of `xfr/client.go`, which no code path
+> calls, and RFC 8305 cited a test file that does not exist. Both are fixed
+> below, and `test/rfc_matrix_integrity_test.go` now fails the build on either
+> mistake. RFC 9077 was implemented in the same pass and added here.
 
 | RFC | Title | Status | Test / Implementation |
 |-----|-------|--------|----------------------|
@@ -9,17 +15,26 @@ _Generated from test files and implementation audit — 2026-07-06_
 | RFC 1035 | Domain Names — Implementation and Specification | ✅ | `server/rfc1035_opcode_test.go`, `server/rfc1035_qclass_test.go`, `server/rfc1035_qdcount_test.go` |
 | RFC 2181 | Clarifications to the DNS Specification | ✅ | `cache/rfc2181_rrset_test.go`, `resolver/rfc2181_cname_test.go` |
 | **Transport** |
-| RFC 7766 | DNS over TCP — Implementation Recommendations | ✅ | `resolver/rfc7766_tcp_fallback_test.go`, `server/stream_no_truncate_test.go` |
-| RFC 7858 | DNS over TLS (DoT) | ✅ | `server/dot.go`, `server/dot_test.go` |
+| RFC 7766 | DNS over TCP — Implementation Recommendations | ✅ | `resolver/rfc7766_tcp_fallback_test.go`, `server/stream_no_truncate_test.go`, `resolver/tcppool.go` + `resolver/rfc7766_tcp_reuse_test.go` (§6.2.1 upstream connection reuse) |
+| RFC 7858 | DNS over TLS (DoT) | ✅ | Server: `server/dot.go`, `server/dot_test.go`. Upstream (forward zones): `resolver/dot_upstream.go`, `resolver/rfc7858_upstream_dot_test.go` |
+| RFC 8310 | Usage Profiles for DNS over TLS | ✅ | `resolver/dot_upstream.go` — Strict Privacy only (auth domain name §6.1 and/or SPKI pinset §8.1). Opportunistic Privacy deliberately not implemented; `config/rfc8310_forward_tls_test.go` pins the refusal |
 | RFC 8484 | DNS Queries over HTTPS (DoH) | ✅ | `web/api_doh.go`, `web/api_doh_vary_test.go` |
-| RFC 9103 | Zone Transfer over TLS (XFR-over-TLS) | ✅ | `xfr/client.go` |
 | RFC 9250 | DNS over QUIC (DoQ) | ✅ | `server/doq.go` |
+| RFC 5936 | DNS Zone Transfer Protocol (AXFR) | ✅ | `xfr/client.go`, `xfr/client_test.go`, consumed by `secondary/manager.go` |
+| RFC 1995 | Incremental Zone Transfer (IXFR) | ✅ | `xfr/client.go` `IXFR`, `xfr/tsig_ixfr_test.go` — handles all three RFC 1995 §2 response shapes including full-zone fallback |
+| RFC 9103 | Zone Transfer over TLS (XFR-over-TLS) | ✅ | `xfr/client.go` (TLS 1.3 mandated per §9.3.1), `secondary/manager.go` — configured via `secondary_zones.<zone>.tls` |
+| RFC 8945 | Secret Key Transaction Authentication (TSIG) | ✅ | `dns/tsig.go`, `dns/rfc8945_tsig_test.go`, `xfr/tsig_ixfr_test.go` — HMAC-SHA1/224/256/384/512; HMAC-MD5 deliberately not offered |
+| RFC 9432 | DNS Catalog Zones | ✅ | `secondary/catalog.go`, `secondary/rfc9432_catalog_test.go` — members auto-provisioned inheriting the catalog's transfer parameters; §4.2.2 version gate enforced |
+| RFC 9462 | Discovery of Designated Resolvers (DDR) | ✅ | `dns/ddr.go`, `dns/rfc9462_ddr_test.go`, `server/rfc9462_ddr_handler_test.go` — opt-in via `server.ddr_target_name` |
+| RFC 9461 | Service Binding Mapping for DNS Servers | ✅ | `dns/svcb.go` — `alpn` / `port` / `dohpath` SvcParams in DDR designations |
+| RFC 9606 | DNS Resolver Information (RESINFO) | ✅ | `dns/ddr.go` `BuildRESINFORData`, `server/rfc9462_ddr_handler_test.go` — served for the DDR target name; declares QNAME minimisation and policy EDE codes from live config |
 | RFC 9210 | DNS Transport over TCP — Operational Requirements | ✅ | `server/rfc9210_tcp_idle_test.go` |
 | **EDNS0** |
 | RFC 6891 | Extension Mechanisms for DNS (EDNS0) | ✅ | `server/rfc6891_extrcode_test.go`, `server/rfc6891_opt_owner_test.go`, `server/rfc6891_udp_buffer_size_test.go` |
 | RFC 7830 | EDNS(0) Padding Option | ✅ | `dns/rfc7830_padding_test.go` |
 | RFC 8467 | Padding Policies for EDNS(0) | ✅ | `server/rfc8467_padding_policy_test.go` |
 | RFC 7828 | edns-tcp-keepalive EDNS0 Option | ✅ | `dns/rfc7828_keepalive_test.go` |
+| RFC 5001 | DNS Name Server Identifier (NSID) | ✅ | `dns/edns.go` `AddNSIDToRawResponse`, `server/rfc5001_nsid_test.go` — opt-in via `server.nsid` |
 | **DNSSEC** |
 | RFC 4033 | DNSSEC Introduction and Requirements | ✅ | `dnssec/` package |
 | RFC 4034 | Resource Records for DNSSEC | ✅ | `dnssec/rfc4034_canonical_order_test.go`, `dnssec/rfc4034_canonical_property_test.go`, `dnssec/rfc4034_canonical_rdata_test.go`, `dnssec/rfc4034_labels_test.go`, `dnssec/rfc4034_sep_advisory_test.go`, `dnssec/rfc4034_zone_key_test.go` |
@@ -40,17 +55,19 @@ _Generated from test files and implementation audit — 2026-07-06_
 | RFC 8020 | Harden-below-NXDOMAIN | ✅ | `cache/cache.go` `hardenBelowNX` |
 | RFC 8198 | Aggressive Use of DNSSEC-Validated Cache (NSEC/NSEC3) | ✅ | `cache/rfc8198_delegation_nsec_test.go`, `cache/rfc8198_nodata_aggressive_test.go`, `cache/rfc8198_nsec3_aggressive_test.go`, `cache/rfc8198_nsec3_delegation_test.go`, `cache/rfc8198_nsec3_nodata_test.go`, `cache/rfc8198_nsec_aggressive_test.go` |
 | RFC 8767 | Serving Stale Data to Improve DNS Resiliency | ✅ | `cache/rfc8767_stale_max_age_test.go`, `cache/rfc8767_stale_while_refresh_test.go` |
+| RFC 9077 | NSEC and NSEC3: TTLs and Aggressive Use | ✅ | `resolver/nsec_aggressive.go` `aggressiveNegTTL`, `resolver/rfc9077_nsec_ttl_test.go` |
 | RFC 9520 | Negative Caching of Resolution Failures | ✅ | `resolver/rfc9520_ede_cached_test.go`, `resolver/rfc9520_failure_cache_gate_test.go`, `resolver/rfc9520_failure_cache_test.go`, `resolver/failure_cache.go` |
 | **Security** |
 | RFC 5452 | Measures for Making DNS More Resilient against Forged Answers | ✅ | `resolver/rfc5452_0x20_test.go`, `resolver/rfc5452_source_port_test.go`, `resolver/rfc5452_txid_entropy_test.go` |
-| RFC 7871 | EDNS Client Subnet (ECS) | ✅ | `dns/ecs.go`, `resolver/ecs_test.go`, `server/ecs_handler_test.go` |
+| RFC 7871 | EDNS Client Subnet (ECS) | ✅ | `dns/ecs.go`, `dns/ecs_test.go`, `server/ecs_handler_test.go` |
 | RFC 7873 | DNS Cookies | ✅ | Various `rfc7873_*_test.go` files in `server/` and `resolver/` |
 | RFC 9018 | Interoperable DNS Server Cookies | ✅ | `server/rfc9018_cookie_ip_binding_test.go`, `server/rfc9018_cookie_rotation_test.go` |
 | **Error Reporting** |
 | RFC 8914 | Extended DNS Errors (EDE) | ✅ | Codes 0–29 defined, IANA-pinned, emitted for DNSSEC/DNS64/NSEC-cache/stale/reachability/etc. See all `rfc8914_*_test.go` files |
+| RFC 9567 | DNS Error Reporting | ✅ | `dns/errorreport.go`, `resolver/errorreport.go`, `dns/rfc9567_error_report_test.go`, `resolver/rfc9567_error_report_test.go` — opt-in via `resolver.error_reporting` |
 | **Resolution** |
 | RFC 8109 | Priming Stub Resolvers (Root Hints) | ✅ | `resolver/rfc8109_root_priming_test.go` |
-| RFC 8305 | Happy Eyeballs v2 | ✅ | `resolver/resolver.go` `resolveNSHappyEyeballs`, `resolver/rfc8305_happy_eyeballs_test.go` |
+| RFC 8305 | Happy Eyeballs v2 | ✅ | `resolver/resolver.go` `resolveNSHappyEyeballs`, `resolver/security_regression_test.go` |
 | RFC 9156 | DNS Query Name Minimisation (QNAME) | ✅ | `resolver/rfc9156_qmin_test.go` |
 | RFC 6672 | DNAME Redirection | ✅ | `resolver/rfc6672_dname_bailiwick_test.go`, `resolver/rfc6672_dname_synth_test.go` |
 | RFC 6147 | DNS64 — DNS Extensions for NAT64 | ✅ | `resolver/dns64.go`, `resolver/dns64_test.go` |
@@ -60,22 +77,26 @@ _Generated from test files and implementation audit — 2026-07-06_
 | RFC 8482 | Minimal ANY Query Responses | ✅ | `server/rfc8482_minimal_any_test.go` |
 | **Other** |
 | RFC 9460 | Service Binding (SVCB/HTTPS) | ✅ | `dns/rfc9460_svcb_test.go` |
-| RFC 3597 | Handling of Unknown RR Types | ✅ | `dns/rfc3597_unknown_rr_test.go` |
+| RFC 3597 | Handling of Unknown RR Types | ✅ | `dns/rfc3597_unknown_rr_test.go`, `dns/rfc3597_type_registry_test.go` — opaque RDATA passthrough plus §5 generic `TYPE<n>` naming and parsing |
 
 ## Legend
 
 | Symbol | Meaning |
 |--------|---------|
-| ✅ Compliant | Tested and verified against one or more RFC-pinned test files |
+| ✅ Compliant | Tested and verified against one or more RFC-pinned test files, **and reachable from a running code path** |
 | ◐ Partial | Core behaviour implemented, edge cases or optimisations deferred |
 | ❌ Missing | Not yet implemented (listed in PLAN.md for future milestones) |
 
+A ✅ requires both halves. Code that exists but nothing calls is not compliance —
+it is an unreleased feature, and it belongs in the table below until it is wired
+up. `test/rfc_matrix_integrity_test.go` enforces the first half mechanically by
+checking that every file path cited above exists; the second half is a review
+obligation.
+
 ## Missing (Future Milestones)
 
-| RFC | Title | Notes |
-|-----|-------|-------|
-| RFC 8945 | DNS Transaction Signatures (TSIG) | Not yet implemented |
-| RFC 9432 | Catalog Zones | Planned for M4.2 |
+_None currently tracked._ Items land here when the code exists but is not
+reachable from a running code path — see the ✅ definition above.
 
 ## Hardening Budgets (implemented in v0.8.32+)
 

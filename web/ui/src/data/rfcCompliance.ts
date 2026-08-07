@@ -100,6 +100,7 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
 
   // EDNS / Cookies / Padding
   { rfc: 'RFC 6891', title: 'EDNS(0)', summary: 'OPT pseudo-record, extended RCODE (12-bit), DO flag handling.', category: 'edns' },
+  { rfc: 'RFC 5001', title: 'Name Server Identifier (NSID)', summary: 'Opt-in server identity returned to clients that request it — names the answering node on an anycast deployment. Disabled unless server.nsid is set.', category: 'edns' },
   { rfc: 'RFC 7828', title: 'edns-tcp-keepalive', summary: 'TCP-only — server-side keepalive timeout advertised in OPT.', category: 'edns', since: 'v0.6.20' },
   { rfc: 'RFC 7830 + RFC 8467', title: 'EDNS(0) Padding', summary: 'DoT/DoH responses padded to 468-byte block boundary (§4.1 recommendation).', category: 'edns', since: 'v0.6.20' },
   { rfc: 'RFC 7871', title: 'Client Subnet (ECS)', summary: 'Outbound ECS forwarding configurable per-zone; client privacy preserved by default.', category: 'edns' },
@@ -118,9 +119,17 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
   { rfc: 'RFC 8467', section: '§6', title: 'Padding Never on Plaintext Transports', summary: 'PADDING option honoured only on encrypted transports (DoT/DoH); plaintext TCP responses pass through unpadded.', category: 'edns', since: 'v0.7.1' },
 
   // Transport security
-  { rfc: 'RFC 7858', title: 'DNS over TLS (DoT)', summary: 'TCP/853 with strict TLS 1.2+ and EDNS padding for response privacy.', category: 'transport-security' },
+  { rfc: 'RFC 7858', title: 'DNS over TLS (DoT)', summary: 'TCP/853 with strict TLS 1.2+ and EDNS padding for response privacy — inbound from clients, and outbound to forward-zone upstreams.', category: 'transport-security' },
+  { rfc: 'RFC 8310', title: 'Usage Profiles for DNS over TLS', summary: 'Strict Privacy only for upstream DoT: an authentication domain name (§6.1), an SPKI pinset (§8.1), or both. A forward zone that cannot authenticate its upstream is refused rather than downgraded — Opportunistic Privacy is deliberately not offered.', category: 'transport-security' },
   { rfc: 'RFC 8484', title: 'DNS over HTTPS (DoH)', summary: 'application/dns-message GET and POST; HTTP/2 multiplexing.', category: 'transport-security' },
   { rfc: 'RFC 9250', title: 'DNS over QUIC (DoQ)', summary: 'QUIC/853 transport with per-query streams; HTTP/3 not required.', category: 'transport-security' },
+  { rfc: 'RFC 9462 / RFC 9461', title: 'Discovery of Designated Resolvers (DDR)', summary: 'SVCB answer at _dns.resolver.arpa advertising the enabled DoH/DoT/DoQ endpoints with alpn, port and dohpath — lets a client that only knows our IP upgrade off plaintext. Opt-in; the target name must be covered by our TLS certificate.', category: 'transport-security' },
+
+  // Zone transfer
+  { rfc: 'RFC 5936 / RFC 1995', title: 'Zone Transfer (AXFR / IXFR)', summary: 'Secondary zones transferred from a primary and served from the local zone table. IXFR handles all three RFC 1995 §2 response shapes, including the unsignalled full-zone fallback.', category: 'core' },
+  { rfc: 'RFC 9103', title: 'Zone Transfer over TLS (XoT)', summary: 'Transfers run over TLS 1.3 as §9.3.1 mandates, with certificate verification against a configured authentication name.', category: 'transport-security' },
+  { rfc: 'RFC 9432', title: 'DNS Catalog Zones', summary: 'A catalog zone lists other zones; transferring it provisions each member as a secondary automatically, inheriting the catalog\'s primary and TSIG key. An unreadable or unversioned catalog leaves existing members in place rather than withdrawing them.', category: 'core' },
+  { rfc: 'RFC 8945', title: 'Secret Key Transaction Authentication (TSIG)', summary: 'HMAC-SHA1/224/256/384/512 signing and verification, with request-MAC binding and stream chaining so a transfer cannot be replayed or truncated. HMAC-MD5 deliberately not offered.', category: 'transport-security' },
 
   // Special-use names
   { rfc: 'RFC 6303', title: 'Locally-Served DNS Zones', summary: 'RFC 1918, RFC 4193 (ULA), link-local (RFC 3927/4291) PTR served locally — never forwarded.', category: 'special-use', since: 'v0.6.21' },
@@ -138,12 +147,15 @@ export const COMPLIANCE_ENTRIES: ComplianceEntry[] = [
     ],
   },
 
+  { rfc: 'RFC 9567', title: 'DNS Error Reporting', summary: 'When a zone advertises a Report-Channel agent domain and we reject its answer, a throwaway TXT report names the failure back to the operator. Opt-in; bounded to one report per failure per 5 min and 8 in flight.', category: 'error-signalling' },
+
   // Caching
   { rfc: 'RFC 8767', section: '§3.1', title: 'Serve-Stale + Stale-While-Refresh', summary: 'Stale answer served when origin fails; async refresh kicked in parallel.', category: 'caching', since: 'v0.6.22',
     metrics: [
       { label: 'stale-while-refresh triggers', source: 'stats', path: 'stale_while_refresh' },
     ],
   },
+  { rfc: 'RFC 9077', section: '§4', title: 'NSEC / NSEC3 TTLs and Aggressive Use', summary: 'Aggressive-use intervals expire with the NSEC/NSEC3 record they rest on, not just the SOA-derived negative TTL — a signer that publishes a shorter proof TTL is honoured.', category: 'nsec-aggressive' },
   { rfc: 'RFC 9520', title: 'Negative Caching of DNS Resolution Failures', summary: 'Bounded LRU failure cache absorbs retry storms against broken upstreams.', category: 'caching', since: 'v0.6.22',
     metrics: [
       { label: 'failure cache hits', source: 'stats', path: 'failure_cache_hits' },

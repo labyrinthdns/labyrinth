@@ -217,9 +217,11 @@ deferred as too large for a single pin.
   zones in multiple formats (abp, yaml, text, RPZ native). Supports
   NXDOMAIN/NODATA/CNAME/drop/passthru actions via the blocklist API.
 
-### M4.2 — Catalog zones (RFC 9432) ❌
+### M4.2 — Catalog zones (RFC 9432) ✅
 
-- **Status**: not implemented. `zone/` package does not exist.
+- **Status**: implemented. Catalog manager in `secondary/catalog.go`; member
+  zones are auto-provisioned as secondaries via `main_zones.go` →
+  `secondary.NewCatalogZoneManager`.
 
 ### M4.3 — Zone import/export (BIND format) ❌
 
@@ -234,11 +236,19 @@ deferred as too large for a single pin.
 ### M4.5 — Stub & forward zones ✅
 
 - **Status**: implemented. `resolver.ForwardTable` with `SetForwardTable`.
-  YAML config supports `stub:` and `forward:` zone blocks.
+  YAML config supports `stub:` and `forward:` zone blocks; forward zones
+  additionally support DoT (RFC 7858) with RFC 8310 Strict-Privacy auth via
+  `tls_auth_name` / `tls_pins` (`config/config.go`).
 
-### M4.6 — Compliance counter scaffolding ❌
+### M4.6 — Compliance counter scaffolding ✅
 
-- **Status**: not implemented. No per-RFC-pin Prometheus counters.
+- **Status**: implemented for the RFC 8914 (EDE) family only. `metrics.IncEDE`
+  increments a per-info-code atomic counter; `metrics/http.go` emits
+  `labyrinth_ede_emissions_total{code="N"}` Prometheus series. Verified by
+  `metrics/rfc8914_ede_counters_test.go`. Broader per-RFC-pin counters
+  (one per other RFC the project claims) are **not** in scope here — those
+  would need a separate decision about the canonical counter naming and
+  where the increments live.
 
 ---
 
@@ -384,10 +394,74 @@ UI-M8 diagnostic tools) are **not started**.
 
 ## Remaining work summary (after reconciliation)
 
-### Backend — done (35 of 35 items ✅)
+### Backend — M1–M8 complete (M4.3 ❌)
 
-M1, M2, M3, M4, M5 are complete. 100% of the backend roadmap
-is shipped.
+M1–M2, M3–M6 (except M6.2/6.3/6.4), M7, M8.1 / M8.5 are shipped. M4.3
+(BIND zone import/export) is the only remaining backend roadmap item
+that is genuinely not implemented. M4.2 / M4.6 were previously marked
+❌ in this file but the code is shipped; see the M4 section for the
+truthful status notes.
+
+### Uncommitted work-in-progress drop (working tree)
+
+The working tree on `main` carries a large feature drop that is
+**implemented and tested** but **not yet landed**: it predates the
+milestone tags and is not reflected in M1–M8 above. The whole drop
+passes `go test -count=1 ./...` and the RFC-named tests in
+particular; what it lacks is a milestone grouping and a CHANGELOG entry.
+
+Items in the drop (file pointers, not new code):
+
+- **RFC 9432 — Catalog zones** (`secondary/catalog.go`,
+  `secondary/manager.go`, `secondary/rfc9432_catalog_test.go`):
+  catalog transfer + member auto-provisioning with transport
+  inheritance. Underpins M4.2.
+- **RFC 8945 — TSIG** (`dns/tsig.go`, `xfr/tsig_ixfr_test.go`,
+  `dns/rfc8945_tsig_test.go`): HMAC-SHA256/384 with HMAC-MD5
+  deliberately not offered, signed AXFR/IXFR, MAC binding, last-record
+  rule. Underpins M2.3.
+- **RFC 7858 / RFC 8310 — DoT upstream + Strict-Privacy auth**
+  (`resolver/dot_upstream.go`, `config/config.go`,
+  `resolver/rfc7858_upstream_dot_test.go`,
+  `config/rfc8310_forward_tls_test.go`): forward-zone DoT with
+  SPKI-pin or auth-name authentication; pins are deliberately
+  required to disable the Opportunistic profile.
+- **RFC 9462 / RFC 9461 / RFC 9460 — DDR + SVCB**
+  (`dns/ddr.go`, `dns/svcb.go`, `server/rfc9462_ddr_handler_test.go`,
+  `dns/rfc9462_ddr_test.go`): Discovery of Designated Resolvers,
+  SVCB/HTTPS parameter ordering, ALPN, DoH path templates.
+- **RFC 5001 — NSID** (`server/rfc5001_nsid_test.go`): opt-in
+  identifier echo, opt-out by default to avoid information disclosure.
+- **RFC 9567 — DNS Error Reporting** (`dns/errorreport.go`,
+  `resolver/errorreport.go`, `dns/rfc9567_error_report_test.go`,
+  `resolver/rfc9567_error_report_test.go`): opt-in, with loop guard,
+  dedup window, and refusal to use an `er-*` agent domain.
+- **RFC 9606 — RESINFO** (`dns/types.go`): unconditional-resolver
+  info for own apex; served only when SVCB/HTTPS advertises it.
+- **RFC 6303 — Private reverse (RFC 1918 / ULA) short-circuit**
+  (`server/rfc6303_*_test.go`): NXDOMAIN/NODATA for private reverse
+  zones instead of leaking to the public DNS.
+- **RFC 7766 — TCP connection reuse** (`resolver/tcppool.go`,
+  `resolver/rfc7766_tcp_reuse_test.go`): per-host pool with TXID
+  guarding, sweep reaper, fallback to per-query dial.
+- **RFC 9077 — NSEC/NSEC3 TTL clamping** (`resolver/rfc9077_nsec_ttl_test.go`):
+  ceiling the aggressive-synthesis TTL so a hostile zone cannot pin
+  cache beyond the SOA minimum.
+- **RFC 5891 — IDNA** (`dns/idna.go`, `dns/rfc5891_idna_test.go`):
+  label-level IDNA2008 processing for DNS names.
+- **RFC 3597 — Generic type registry** (`dns/types.go`,
+  `dns/rfc3597_type_registry_test.go`): `TYPE<n>` mnemonic + wire
+  round-trip.
+- **`labyrinth_ede_emissions_total{code}` Prometheus counter**
+  (`metrics/metrics.go`, `metrics/http.go`,
+  `metrics/rfc8914_ede_counters_test.go`): per-RFC-8914-code series.
+  See the M4.6 status note for why this is the only RFC-pin counter.
+- **Doc-only updates**: `docs/rfc-compliance-matrix.md`,
+  `docs/rfc-gap-analysis-2026-07.md`, `docs/threat-model.md`.
+
+These items still need: a CHANGELOG entry, decision on which
+milestone label they belong to (they cut across M2/M3/M4/M5), and
+a commit/PR.
 
 ### UI — mostly open (∼40 items ❌)
 
