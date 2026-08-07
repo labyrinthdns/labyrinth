@@ -223,9 +223,18 @@ deferred as too large for a single pin.
   zones are auto-provisioned as secondaries via `main_zones.go` →
   `secondary.NewCatalogZoneManager`.
 
-### M4.3 — Zone import/export (BIND format) ❌
+### M4.3 — Zone import/export (BIND format) 🔶 (writer shipped)
 
-- **Status**: not implemented. No BIND zone-file parser or emitter.
+- **Status**: BIND-format zone-file writer shipped (RFC 1035 §5 + RFC 3597
+  §5 generic form for unknown types). `dns.FormatZone` emits a
+  parenthesised SOA header, per-record TTL column, NS-first owner
+  ordering, and the generic `TYPE<n> \# <rdlength> <hex>` form for
+  types Labyrinth does not model as a Go struct. Seven test cases
+  cover the basic zone, generic unknown, empty RDATA, no-SOA, TXT
+  backslash-escape, name escaping, and zero-TTL substitution. The
+  parser, the `/api/zones/:name/export` endpoint, the `zone_file`
+  config directive, and the round-trip from `secondary.records` are
+  scope-stretch goals for the next round.
 
 ### M4.4 — Hot-reload validation pipeline ✅
 
