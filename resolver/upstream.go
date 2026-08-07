@@ -363,27 +363,73 @@ func (r *Resolver) queryUDP(nsIP string, query []byte) ([]byte, error) {
 	return buf[:n], nil
 }
 
+// queryTCP performs a single DNS exchange over TCP, reusing a pooled
+// connection when one is available (RFC 7766 §6.2.1).
+//
+// A pooled connection may have been closed by the peer since it was returned
+// — RFC 7766 §6.2.3 lets a server drop an idle connection whenever it likes,
+// and we only find out by trying to use it. So a failure on a *reused*
+// connection is not reported to the caller: it is retried once on a freshly
+// dialled one. A failure on a fresh connection is a real failure and is
+// returned.
+//
+// Without that retry, enabling connection reuse would convert a silent,
+// harmless server-side idle timeout into a visible SERVFAIL for whichever
+// unlucky client happened to draw the stale connection.
 func (r *Resolver) queryTCP(nsIP string, query []byte) ([]byte, error) {
 	addr := net.JoinHostPort(nsIP, r.dnsPort())
+
+	if conn := r.tcpPool.get(addr); conn != nil {
+		resp, err := r.tcpExchange(conn, query)
+		if err == nil {
+			r.tcpPool.put(addr, conn)
+			return resp, nil
+		}
+		// Poisoned or dead: never pooled again. Fall through to a fresh dial.
+		conn.Close()
+	}
+
 	conn, err := net.DialTimeout("tcp", addr, r.config.UpstreamTimeout)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(r.config.UpstreamTimeout))
-
-	// Length-prefixed write
-	lenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(lenBuf, uint16(len(query)))
-	if _, err := conn.Write(lenBuf); err != nil {
+	resp, err := r.tcpExchange(conn, query)
+	if err != nil {
+		conn.Close()
 		return nil, err
 	}
-	if _, err := conn.Write(query); err != nil {
+	r.tcpPool.put(addr, conn)
+	return resp, nil
+}
+
+// tcpExchange writes one length-prefixed query and reads one length-prefixed
+// response (RFC 1035 §4.2.2).
+//
+// The transaction-ID check at the end is what makes connection reuse safe. On
+// a dial-per-query connection the stream could only ever hold our own answer,
+// so no check was needed. On a reused connection a desynchronised stream —
+// left over from an exchange that timed out mid-response — would deliver the
+// tail of a previous answer as the head of this one. Comparing the ID catches
+// that; the caller then closes the connection rather than pooling it, and the
+// desynchronisation dies with it.
+func (r *Resolver) tcpExchange(conn net.Conn, query []byte) ([]byte, error) {
+	if err := conn.SetDeadline(time.Now().Add(r.config.UpstreamTimeout)); err != nil {
+		return nil, err
+	}
+
+	// Length-prefixed write. Sent as one write so the 2-byte length and the
+	// message do not land in separate segments — some authoritative servers
+	// handle the split poorly, and it costs nothing to avoid.
+	buf := make([]byte, 2+len(query))
+	binary.BigEndian.PutUint16(buf[0:2], uint16(len(query)))
+	copy(buf[2:], query)
+	if _, err := conn.Write(buf); err != nil {
 		return nil, err
 	}
 
 	// Length-prefixed read
+	lenBuf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, err
 	}
@@ -392,6 +438,15 @@ func (r *Resolver) queryTCP(nsIP string, query []byte) ([]byte, error) {
 	resp := make([]byte, respLen)
 	if _, err := io.ReadFull(conn, resp); err != nil {
 		return nil, err
+	}
+
+	// Both must be long enough to carry a header ID; a runt response on a
+	// reused connection is itself evidence the stream is out of step.
+	if len(resp) < 2 || len(query) < 2 {
+		return nil, errTXIDMismatch
+	}
+	if resp[0] != query[0] || resp[1] != query[1] {
+		return nil, errTXIDMismatch
 	}
 
 	return resp, nil

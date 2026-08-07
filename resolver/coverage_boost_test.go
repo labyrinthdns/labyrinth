@@ -552,7 +552,10 @@ func TestSetLocalZones(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	r := NewResolver(c, ResolverConfig{MaxDepth: 30}, m, logger)
 
-	if r.localZones != nil {
+	// localZones moved behind an atomic.Pointer when the secondary-zone
+	// manager gained the ability to republish the table at runtime; the
+	// accessor is the supported way to read it.
+	if r.LocalZones() != nil {
 		t.Error("localZones should be nil initially")
 	}
 
@@ -561,7 +564,7 @@ func TestSetLocalZones(t *testing.T) {
 		Type: LocalStatic,
 	}})
 	r.SetLocalZones(lz)
-	if r.localZones == nil {
+	if r.LocalZones() == nil {
 		t.Error("localZones should be set")
 	}
 }
