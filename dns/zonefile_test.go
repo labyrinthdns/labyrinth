@@ -50,7 +50,9 @@ func TestFormatZone_Basic(t *testing.T) {
 // TestFormatZone_GenericUnknown confirms that an RR type the writer
 // does not decode is emitted in RFC 3597 §5 generic form. This is the
 // round-trip path for unknown types: same wire bytes in, same wire
-// bytes out, no information loss.
+// bytes out, no information loss. The TYPE column carries the numeric
+// type and the RDATA portion is just the length-prefixed hex: this is
+// the form a parser can recover verbatim.
 //
 func TestFormatZone_GenericUnknown(t *testing.T) {
 	// TYPE999 with a 4-byte RDATA payload.
@@ -64,14 +66,14 @@ func TestFormatZone_GenericUnknown(t *testing.T) {
 		t.Fatalf("FormatZone: %v", err)
 	}
 	got := string(out)
-	if !strings.Contains(got, "TYPE999 \\# 4 deadbeef") {
-		t.Errorf("expected RFC 3597 generic form `TYPE999 \\# 4 deadbeef`, got:\n%s", got)
+	if !strings.Contains(got, "IN\tTYPE999\t\\# 4 deadbeef") {
+		t.Errorf("expected RFC 3597 generic form `IN\tTYPE999\t\\# 4 deadbeef`, got:\n%s", got)
 	}
 }
 
 // TestFormatZone_EmptyRData confirms that an empty-RDATA record emits
-// `TYPE<n> \# 0` rather than omitting the RDATA, so a parser reading
-// the file back produces the same zero-length opaque block.
+// `\# 0` rather than omitting the RDATA, so a parser reading the file
+// back produces the same zero-length opaque block.
 //
 func TestFormatZone_EmptyRData(t *testing.T) {
 	records := []ResourceRecord{
@@ -83,8 +85,8 @@ func TestFormatZone_EmptyRData(t *testing.T) {
 		t.Fatalf("FormatZone: %v", err)
 	}
 	got := string(out)
-	if !strings.Contains(got, "TYPE999 \\# 0") {
-		t.Errorf("expected `TYPE999 \\# 0`, got:\n%s", got)
+	if !strings.Contains(got, "TYPE999\t\\# 0") {
+		t.Errorf("expected `TYPE999\t\\# 0`, got:\n%s", got)
 	}
 }
 
@@ -232,18 +234,4 @@ func buildMX(t *testing.T, pref uint16, exchange string) []byte {
 	out := []byte{byte(pref >> 8), byte(pref)}
 	out = append(out, buildName(t, exchange)...)
 	return out
-}
-
-// appendName concatenates a wire-format name to an existing byte slice.
-// (EncodeNameToBytes already returns a complete name; appendName is
-// provided for symmetry with the build* helpers.)
-//
-func appendName(dst []byte, name string) []byte {
-	encoded, err := EncodeNameToBytes(name)
-	if err != nil {
-		// Tests should not trigger this; the EncodeNameToBytes call
-		// already panics on bad input.
-		panic(err)
-	}
-	return append(dst, encoded...)
 }
