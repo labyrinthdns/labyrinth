@@ -404,64 +404,21 @@ truthful status notes.
 
 ### Uncommitted work-in-progress drop (working tree)
 
-The working tree on `main` carries a large feature drop that is
-**implemented and tested** but **not yet landed**: it predates the
-milestone tags and is not reflected in M1–M8 above. The whole drop
-passes `go test -count=1 ./...` and the RFC-named tests in
-particular; what it lacks is a milestone grouping and a CHANGELOG entry.
+_The drop is landed. This section is kept as a tombstone for one
+release cycle so the reader can see what landed when; remove before
+the next minor release._
 
-Items in the drop (file pointers, not new code):
-
-- **RFC 9432 — Catalog zones** (`secondary/catalog.go`,
-  `secondary/manager.go`, `secondary/rfc9432_catalog_test.go`):
-  catalog transfer + member auto-provisioning with transport
-  inheritance. Underpins M4.2.
-- **RFC 8945 — TSIG** (`dns/tsig.go`, `xfr/tsig_ixfr_test.go`,
-  `dns/rfc8945_tsig_test.go`): HMAC-SHA256/384 with HMAC-MD5
-  deliberately not offered, signed AXFR/IXFR, MAC binding, last-record
-  rule. Underpins M2.3.
-- **RFC 7858 / RFC 8310 — DoT upstream + Strict-Privacy auth**
-  (`resolver/dot_upstream.go`, `config/config.go`,
-  `resolver/rfc7858_upstream_dot_test.go`,
-  `config/rfc8310_forward_tls_test.go`): forward-zone DoT with
-  SPKI-pin or auth-name authentication; pins are deliberately
-  required to disable the Opportunistic profile.
-- **RFC 9462 / RFC 9461 / RFC 9460 — DDR + SVCB**
-  (`dns/ddr.go`, `dns/svcb.go`, `server/rfc9462_ddr_handler_test.go`,
-  `dns/rfc9462_ddr_test.go`): Discovery of Designated Resolvers,
-  SVCB/HTTPS parameter ordering, ALPN, DoH path templates.
-- **RFC 5001 — NSID** (`server/rfc5001_nsid_test.go`): opt-in
-  identifier echo, opt-out by default to avoid information disclosure.
-- **RFC 9567 — DNS Error Reporting** (`dns/errorreport.go`,
-  `resolver/errorreport.go`, `dns/rfc9567_error_report_test.go`,
-  `resolver/rfc9567_error_report_test.go`): opt-in, with loop guard,
-  dedup window, and refusal to use an `er-*` agent domain.
-- **RFC 9606 — RESINFO** (`dns/types.go`): unconditional-resolver
-  info for own apex; served only when SVCB/HTTPS advertises it.
-- **RFC 6303 — Private reverse (RFC 1918 / ULA) short-circuit**
-  (`server/rfc6303_*_test.go`): NXDOMAIN/NODATA for private reverse
-  zones instead of leaking to the public DNS.
-- **RFC 7766 — TCP connection reuse** (`resolver/tcppool.go`,
-  `resolver/rfc7766_tcp_reuse_test.go`): per-host pool with TXID
-  guarding, sweep reaper, fallback to per-query dial.
-- **RFC 9077 — NSEC/NSEC3 TTL clamping** (`resolver/rfc9077_nsec_ttl_test.go`):
-  ceiling the aggressive-synthesis TTL so a hostile zone cannot pin
-  cache beyond the SOA minimum.
-- **RFC 5891 — IDNA** (`dns/idna.go`, `dns/rfc5891_idna_test.go`):
-  label-level IDNA2008 processing for DNS names.
-- **RFC 3597 — Generic type registry** (`dns/types.go`,
-  `dns/rfc3597_type_registry_test.go`): `TYPE<n>` mnemonic + wire
-  round-trip.
-- **`labyrinth_ede_emissions_total{code}` Prometheus counter**
-  (`metrics/metrics.go`, `metrics/http.go`,
-  `metrics/rfc8914_ede_counters_test.go`): per-RFC-8914-code series.
-  See the M4.6 status note for why this is the only RFC-pin counter.
-- **Doc-only updates**: `docs/rfc-compliance-matrix.md`,
-  `docs/rfc-gap-analysis-2026-07.md`, `docs/threat-model.md`.
-
-These items still need: a CHANGELOG entry, decision on which
-milestone label they belong to (they cut across M2/M3/M4/M5), and
-a commit/PR.
+Twelve commits landed the previously-uncommitted feature drop. Each
+commit has its own CHANGELOG entry under `[Unreleased]`; together they
+add: RFC 5891 (IDNA), RFC 3597 (generic RR-type registry), RFC 8945
+(TSIG), RFC 7858 + RFC 8310 (DoT to forward-zone upstreams), RFC
+9432 (catalog zones), RFC 7766 (TCP connection reuse), RFC 9567
+(error reporting), RFC 9462/9461/9460 (DDR + SVCB), RFC 5001 (NSID),
+RFC 9606 (RESINFO), RFC 9077 (NSEC/NSEC3 TTL clamping), and DNS
+algorithm-naming extensions. RFC 6303 and the
+`labyrinth_ede_emissions_total{code}` Prometheus counter were already
+shipped in earlier releases and were not part of this drop — they
+were listed here erroneously when the section was first written.
 
 ### UI — mostly open (∼40 items ❌)
 
