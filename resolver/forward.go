@@ -14,6 +14,28 @@ type ForwardZone struct {
 	Name   string   // zone name (lowercase, no trailing dot)
 	Addrs  []string // upstream IP addresses
 	IsStub bool     // false = forward (RD=1), true = stub (RD=0, iterative from addrs)
+
+	// TLS enables DNS-over-TLS to this zone's upstreams (RFC 7858).
+	// Forward zones only: a stub zone drives iterative resolution against
+	// arbitrary authoritative servers, which do not speak DoT.
+	TLS bool
+	// DoT carries the RFC 8310 authentication policy. Meaningful only when
+	// TLS is set, and never empty in that case — the config layer rejects
+	// a TLS forward zone with no way to authenticate its upstream.
+	DoT DoTPolicy
+}
+
+// dotOrNil returns the zone's DoT policy when TLS is enabled, and nil
+// otherwise. Returning nil rather than a zero DoTPolicy is what keeps the
+// transport decision a single non-nil check all the way down the query path,
+// so a zone with TLS off cannot accidentally take the encrypted branch with
+// an empty authentication policy.
+func (z *ForwardZone) dotOrNil() *DoTPolicy {
+	if z == nil || !z.TLS {
+		return nil
+	}
+	cfg := z.DoT
+	return &cfg
 }
 
 // ForwardTable stores forward/stub zones and provides longest-suffix matching.
@@ -30,6 +52,8 @@ func NewForwardTable(zones []ForwardZone) *ForwardTable {
 			Name:   strings.ToLower(strings.TrimSuffix(z.Name, ".")),
 			Addrs:  z.Addrs,
 			IsStub: z.IsStub,
+			TLS:    z.TLS,
+			DoT:    z.DoT,
 		}
 	}
 	return &ForwardTable{zones: normalised}
@@ -92,17 +116,17 @@ func (r *Resolver) queryForward(addrs []string, name string, qtype uint16, qclas
 }
 
 func (r *Resolver) queryForwardECS(addrs []string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*ResolveResult, error) {
-	return r.queryForwardECSCD(addrs, name, qtype, qclass, clientECS, false)
+	return r.queryForwardECSCD(addrs, name, qtype, qclass, clientECS, false, nil)
 }
 
 // queryForwardECSCD is the CD-bit-aware forward path (RFC 6840 §5.9).
 // When cd=true, the client asked us to forward without invalidating
 // their validation context — we propagate CD downstream and do not
 // rewrite the upstream's verdict ourselves.
-func (r *Resolver) queryForwardECSCD(addrs []string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool) (*ResolveResult, error) {
+func (r *Resolver) queryForwardECSCD(addrs []string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool, dot *DoTPolicy) (*ResolveResult, error) {
 	var lastErr error
 	for _, addr := range addrs {
-		msg, err := r.sendForwardQueryECSCD(addr, name, qtype, qclass, clientECS, cd)
+		msg, err := r.sendForwardQueryECSCD(addr, name, qtype, qclass, clientECS, cd, dot)
 		if err != nil {
 			lastErr = err
 			r.logger.Debug("forward query error", "addr", addr, "name", name, "error", err)
@@ -133,10 +157,10 @@ func (r *Resolver) sendForwardQuery(nsIP string, name string, qtype uint16, qcla
 }
 
 func (r *Resolver) sendForwardQueryECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
-	return r.sendForwardQueryECSCD(nsIP, name, qtype, qclass, clientECS, false)
+	return r.sendForwardQueryECSCD(nsIP, name, qtype, qclass, clientECS, false, nil)
 }
 
-func (r *Resolver) sendForwardQueryECSCD(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool) (*dns.Message, error) {
+func (r *Resolver) sendForwardQueryECSCD(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool, dot *DoTPolicy) (*dns.Message, error) {
 	r.metrics.IncUpstreamQueries()
 
 	retries := r.config.UpstreamRetries
@@ -146,7 +170,7 @@ func (r *Resolver) sendForwardQueryECSCD(nsIP string, name string, qtype uint16,
 
 	var lastErr error
 	for attempt := 0; attempt < retries; attempt++ {
-		msg, err := r.sendForwardQueryOnceECSCD(nsIP, name, qtype, qclass, clientECS, cd)
+		msg, err := r.sendForwardQueryOnceECSCD(nsIP, name, qtype, qclass, clientECS, cd, dot)
 		if err != nil {
 			lastErr = err
 			r.metrics.IncUpstreamErrors()
@@ -163,11 +187,11 @@ func (r *Resolver) sendForwardQueryOnce(nsIP string, name string, qtype uint16, 
 }
 
 func (r *Resolver) sendForwardQueryOnceECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
-	return r.sendForwardQueryOnceECSCD(nsIP, name, qtype, qclass, clientECS, false)
+	return r.sendForwardQueryOnceECSCD(nsIP, name, qtype, qclass, clientECS, false, nil)
 }
 
-func (r *Resolver) sendForwardQueryOnceECSCD(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool) (*dns.Message, error) {
-	msg, err := r.sendQueryWithRDECSCD(nsIP, name, qtype, qclass, true, true, clientECS, cd)
+func (r *Resolver) sendForwardQueryOnceECSCD(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, cd bool, dot *DoTPolicy) (*dns.Message, error) {
+	msg, err := r.sendQueryWithRDECSCDT(nsIP, name, qtype, qclass, true, true, clientECS, cd, dot)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +202,7 @@ func (r *Resolver) sendForwardQueryOnceECSCD(nsIP string, name string, qtype uin
 	// propagated — it lives in the header, not the OPT, so a non-EDNS
 	// upstream can still honour or ignore it per its own policy.
 	if msg.Header.RCODE() == dns.RCodeFormErr {
-		msg, err = r.sendQueryWithRDECSCD(nsIP, name, qtype, qclass, true, false, nil, cd)
+		msg, err = r.sendQueryWithRDECSCDT(nsIP, name, qtype, qclass, true, false, nil, cd, dot)
 		if err != nil {
 			return nil, err
 		}
@@ -207,6 +231,19 @@ func (r *Resolver) sendQueryWithRDECS(nsIP string, name string, qtype uint16, qc
 // chose to validate. Iterative-mode auths ignore CD (RFC 4035 §3.2.2),
 // so this only matters on the forward path.
 func (r *Resolver) sendQueryWithRDECSCD(nsIP string, name string, qtype uint16, qclass uint16, rd bool, withEDNS0 bool, clientECS *dns.ECSOption, cd bool) (*dns.Message, error) {
+	return r.sendQueryWithRDECSCDT(nsIP, name, qtype, qclass, rd, withEDNS0, clientECS, cd, nil)
+}
+
+// sendQueryWithRDECSCDT is the transport-aware variant. `dot` selects
+// DNS-over-TLS (RFC 7858) for this query; nil keeps the historical
+// UDP-with-TCP-fallback behaviour.
+//
+// DoT is only ever reached from the forward path. An iterative resolver has
+// no way to know whether an arbitrary authoritative speaks TLS, and RFC 7858
+// provides no in-band way to find out, so the encrypted upstream is offered
+// exactly where the operator has made an explicit trust decision about a
+// named server.
+func (r *Resolver) sendQueryWithRDECSCDT(nsIP string, name string, qtype uint16, qclass uint16, rd bool, withEDNS0 bool, clientECS *dns.ECSOption, cd bool, dot *DoTPolicy) (*dns.Message, error) {
 	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
@@ -251,8 +288,15 @@ func (r *Resolver) sendQueryWithRDECSCD(nsIP string, name string, qtype uint16, 
 		return nil, err
 	}
 
-	// Try UDP first
-	response, err := r.queryUDP(nsIP, packed)
+	// DoT is a stream transport, so it goes straight out with no UDP
+	// attempt and no truncation to recover from. Plaintext keeps the
+	// historical path: UDP first, TCP on TC=1.
+	var response []byte
+	if dot != nil {
+		response, err = r.queryDoT(nsIP, *dot, packed)
+	} else {
+		response, err = r.queryUDP(nsIP, packed)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -271,8 +315,11 @@ func (r *Resolver) sendQueryWithRDECSCD(nsIP string, name string, qtype uint16, 
 		return nil, err
 	}
 
-	// TC bit set -> retry over TCP
-	if msg.Header.TC() {
+	// TC bit set -> retry over TCP. Not reachable over DoT: the answer
+	// already arrived on a stream, so there is nothing to fall back to, and
+	// RFC 7766 §4 says TC SHOULD NOT be set on a stream transport in the
+	// first place.
+	if msg.Header.TC() && dot == nil {
 		response, err = r.queryTCP(nsIP, packed)
 		if err != nil {
 			return nil, err

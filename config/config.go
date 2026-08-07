@@ -15,20 +15,22 @@ var yamlParser = parseYAML
 
 // Config holds the complete application configuration.
 type Config struct {
-	Server       ServerConfig
-	Resolver     ResolverConfig
-	Cache        CacheConfig
-	Security     SecurityConfig
-	Logging      LoggingConfig
-	ACL          ACLConfig
-	Web          WebConfig
-	Daemon       DaemonConfig
-	Zabbix       ZabbixConfig
-	Blocklist    BlocklistConfig
-	Cluster      ClusterConfig
-	LocalZones   []LocalZoneConfig
-	ForwardZones []ForwardZoneConfig
-	StubZones    []StubZoneConfig
+	Server         ServerConfig
+	Resolver       ResolverConfig
+	Cache          CacheConfig
+	Security       SecurityConfig
+	Logging        LoggingConfig
+	ACL            ACLConfig
+	Web            WebConfig
+	Daemon         DaemonConfig
+	Zabbix         ZabbixConfig
+	Blocklist      BlocklistConfig
+	Cluster        ClusterConfig
+	LocalZones     []LocalZoneConfig
+	ForwardZones   []ForwardZoneConfig
+	StubZones      []StubZoneConfig
+	SecondaryZones []SecondaryZoneConfig
+	CatalogZones   []CatalogZoneConfig
 }
 
 // ForwardZoneConfig holds a single forward zone: queries matching the zone
@@ -36,6 +38,42 @@ type Config struct {
 type ForwardZoneConfig struct {
 	Name  string
 	Addrs []string
+
+	// TLS enables DNS-over-TLS to this zone's upstreams (RFC 7858). The
+	// addresses are then contacted on port 853 unless they carry an
+	// explicit port.
+	TLS bool
+	// TLSAuthName is the RFC 8310 §6.1 authentication domain name — the
+	// name the upstream's certificate must be valid for, e.g.
+	// "cloudflare-dns.com" or "dns.quad9.net".
+	TLSAuthName string
+	// TLSPins holds RFC 8310 §8.1 SPKI pins: base64-encoded SHA-256
+	// digests of the upstream's SubjectPublicKeyInfo. Useful for an
+	// upstream with no publicly-valid certificate, and as belt-and-braces
+	// alongside an auth name.
+	TLSPins []string
+}
+
+// Validate checks that a TLS-enabled forward zone can actually authenticate
+// its upstream.
+//
+// RFC 8310 defines an Opportunistic profile that encrypts without
+// authenticating, and Labyrinth deliberately does not offer it. A forward
+// zone is a trust statement — the resolver honours the upstream's AD bit for
+// that zone on the operator's say-so — and an unauthenticated TLS session
+// lets any on-path attacker occupy that position while the config and the
+// dashboard both report the zone as encrypted. Failing the config load is
+// noisy; silently shipping a security claim we cannot back is worse.
+func (z ForwardZoneConfig) Validate() error {
+	if !z.TLS {
+		return nil
+	}
+	if z.TLSAuthName == "" && len(z.TLSPins) == 0 {
+		return fmt.Errorf("forward zone %q: tls is enabled but neither tls_auth_name "+
+			"nor tls_pins is set — RFC 8310 Strict Privacy requires authenticating "+
+			"the upstream, and Labyrinth does not implement the Opportunistic profile", z.Name)
+	}
+	return nil
 }
 
 // StubZoneConfig holds a single stub zone: the resolver starts iterative
@@ -43,6 +81,64 @@ type ForwardZoneConfig struct {
 type StubZoneConfig struct {
 	Name  string
 	Addrs []string
+}
+
+// SecondaryZoneConfig holds a zone transferred from a primary and served
+// locally (RFC 5936 AXFR / RFC 1995 IXFR, optionally over TLS per RFC 9103
+// and authenticated with TSIG per RFC 8945).
+//
+// This does not make Labyrinth authoritative for the zone on the public
+// internet — it serves the transferred copy from the local zone table, so
+// queries inside the zone are answered here instead of resolved iteratively.
+type SecondaryZoneConfig struct {
+	Name        string
+	Primary     string
+	TLS         bool
+	TLSAuthName string
+	// TSIGKeyName and TSIGSecret authenticate the transfer. The secret is
+	// base64 in the config file, matching how every other DNS
+	// implementation writes TSIG keys, and is decoded at load time.
+	TSIGKeyName   string
+	TSIGSecret    string
+	TSIGAlgorithm string
+}
+
+// Validate rejects a secondary zone that cannot work as configured.
+func (z SecondaryZoneConfig) Validate() error {
+	if z.Name == "" {
+		return fmt.Errorf("secondary zone: name is required")
+	}
+	if z.Primary == "" {
+		return fmt.Errorf("secondary zone %q: primary address is required", z.Name)
+	}
+	if z.TLS && z.TLSAuthName == "" {
+		return fmt.Errorf("secondary zone %q: tls is enabled but tls_auth_name is not set — "+
+			"a bare IP address gives the certificate nothing to be verified against", z.Name)
+	}
+	if (z.TSIGKeyName == "") != (z.TSIGSecret == "") {
+		return fmt.Errorf("secondary zone %q: tsig_key_name and tsig_secret must be set together", z.Name)
+	}
+	return nil
+}
+
+// CatalogZoneConfig holds a catalog zone (RFC 9432) whose member zones are
+// provisioned automatically as secondaries.
+//
+// The transfer parameters here apply to the catalog itself AND are inherited
+// by every member it lists. RFC 9432 §5.1 leaves the entry-to-configuration
+// mapping implementation-defined, and inheritance is the mapping that needs no
+// second configuration surface: the catalog says which zones, this block says
+// how to fetch them.
+type CatalogZoneConfig SecondaryZoneConfig
+
+// Validate applies the same checks as a secondary zone.
+func (z CatalogZoneConfig) Validate() error {
+	if err := SecondaryZoneConfig(z).Validate(); err != nil {
+		// Re-word so the operator is told which block to look at.
+		return fmt.Errorf("catalog zone %q: %s", z.Name,
+			strings.TrimPrefix(err.Error(), fmt.Sprintf("secondary zone %q: ", z.Name)))
+	}
+	return nil
 }
 
 // LocalZoneConfig holds a local zone's definition from the config file.
@@ -143,6 +239,34 @@ type ServerConfig struct {
 	// MaxDoTConnsPerClient is the per-source-IP cap for DoT connections.
 	// Same default and semantics as MaxTCPConnsPerClient.
 	MaxDoTConnsPerClient int
+	// NSID is the RFC 5001 Name Server Identifier reported to clients
+	// that request it. Empty (the default) disables NSID responses.
+	//
+	// The default is empty rather than the hostname on purpose: RFC 5001
+	// §3.1 notes the identifier is disclosed to any client that asks, and
+	// an operator running behind anycast usually wants a deliberate site
+	// code ("ams-01") rather than an internal hostname. Values longer
+	// than dns.MaxNSIDLength (64) are truncated when emitted.
+	NSID string
+
+	// DDRTargetName is the DNS name published in RFC 9462 Discovery of
+	// Designated Resolvers answers — the host a client should connect to
+	// for encrypted DNS with this resolver.
+	//
+	// Empty (the default) disables DDR. The name must be one whose TLS
+	// certificate covers the IP address clients already use for this
+	// resolver: RFC 9462 §4.2 requires the client to check exactly that
+	// before trusting the designation, so a mismatched name produces
+	// designations every client will reject. There is no safe default to
+	// guess here, which is why it is opt-in rather than derived from the
+	// listener address.
+	DDRTargetName string
+	// DDRDoHPath is the RFC 9461 §5 URI template advertised for the DoH
+	// designation. Defaults to "/dns-query{?dns}" when empty.
+	DDRDoHPath string
+	// DDRDoHPort is the port advertised for DoH. 0 means "omit the
+	// parameter", which tells the client to use the ALPN default (443).
+	DDRDoHPort int
 }
 
 // ResolverConfig holds resolver settings.
@@ -191,6 +315,17 @@ type ResolverConfig struct {
 	// class, CVE-2020-8616). Default 13 matches BIND's effective cap;
 	// 0 or negative means unlimited.
 	MaxNSNamesPerDelegation int
+	// ErrorReporting enables RFC 9567 outbound DNS error reporting. When a
+	// zone advertises a Report-Channel agent domain and this resolver
+	// rejects one of its answers, a throwaway TXT query naming the failure
+	// is sent to that agent domain so the zone operator learns about the
+	// breakage from the resolver that saw it.
+	//
+	// Default false. The mechanism is genuinely useful to zone operators,
+	// but it tells a third party that this resolver looked up a particular
+	// name and got a particular error (RFC 9567 §8), so enabling it is the
+	// operator's call rather than a default.
+	ErrorReporting bool
 }
 
 // CacheConfig holds cache settings.
@@ -399,6 +534,10 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setString(&cfg.Server.TLSKeyFile, "server.tls_key_file")
 	setInt(&cfg.Server.MaxTCPConnsPerClient, "server.max_tcp_conns_per_client", "server.max_tcp_connections_per_client")
 	setInt(&cfg.Server.MaxDoTConnsPerClient, "server.max_dot_conns_per_client", "server.max_dot_connections_per_client")
+	setString(&cfg.Server.NSID, "server.nsid")
+	setString(&cfg.Server.DDRTargetName, "server.ddr_target_name")
+	setString(&cfg.Server.DDRDoHPath, "server.ddr_doh_path")
+	setInt(&cfg.Server.DDRDoHPort, "server.ddr_doh_port")
 
 	// Resolver
 	setInt(&cfg.Resolver.MaxDepth, "resolver.max_depth")
@@ -426,6 +565,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setCSV(&cfg.Resolver.FallbackResolvers, "resolver.fallback_resolvers")
 	setInt(&cfg.Resolver.UpstreamUDPBufferSize, "resolver.upstream_udp_buffer_size")
 	setInt(&cfg.Resolver.MaxNSNamesPerDelegation, "resolver.max_ns_names_per_delegation")
+	setBool(&cfg.Resolver.ErrorReporting, "resolver.error_reporting")
 
 	// Cache
 	setInt(&cfg.Cache.MaxEntries, "cache.max_entries")
@@ -524,6 +664,12 @@ func applyYAML(cfg *Config, values map[string]string) {
 
 	// Stub zones: parsed from "stub_zones.<name>.addrs"
 	cfg.StubZones = parseStubZones(values)
+
+	// Secondary zones: parsed from "secondary_zones.<name>.<field>"
+	cfg.SecondaryZones = parseSecondaryZones(values)
+
+	// Catalog zones (RFC 9432): parsed from "catalog_zones.<name>.<field>"
+	cfg.CatalogZones = parseCatalogZones(values)
 }
 
 func firstConfigValue(values map[string]string, keys ...string) (string, bool) {
@@ -890,16 +1036,16 @@ func clampConfigBounds(cfg *Config) {
 // entirely gets the same behaviour as one who set them to a sentinel
 // "fall back" value like -1 or 0.
 const (
-	defaultMaxUDPWorkers         = 10000
-	defaultMaxTCPConns           = 256
-	defaultTCPPipelineMax        = 100
-	defaultRateLimitBurst        = 100
-	defaultMaxCNAMEDepth         = 10
-	defaultUpstreamTimeout       = 2 * time.Second
-	defaultTCPTimeout            = 10 * time.Second
-	defaultRRLResponsesPerSecond = 5.0
-	defaultMaxQueriesPerRequest   = 200
-	defaultRequestTimeout         = 20 * time.Second
+	defaultMaxUDPWorkers           = 10000
+	defaultMaxTCPConns             = 256
+	defaultTCPPipelineMax          = 100
+	defaultRateLimitBurst          = 100
+	defaultMaxCNAMEDepth           = 10
+	defaultUpstreamTimeout         = 2 * time.Second
+	defaultTCPTimeout              = 10 * time.Second
+	defaultRRLResponsesPerSecond   = 5.0
+	defaultMaxQueriesPerRequest    = 200
+	defaultRequestTimeout          = 20 * time.Second
 	defaultMaxNSNamesPerDelegation = 13
 )
 
@@ -1109,7 +1255,12 @@ func parseStubZones(values map[string]string) []StubZoneConfig {
 	zones := parseZoneAddrs(values, "stub_zones.")
 	result := make([]StubZoneConfig, len(zones))
 	for i, z := range zones {
-		result[i] = StubZoneConfig(z)
+		// Field-by-field rather than a conversion: ForwardZoneConfig grew
+		// TLS fields that a stub zone has no use for. A stub drives
+		// iterative resolution against whatever authoritative servers the
+		// delegation names, and those do not speak DoT — there is no single
+		// operator-chosen endpoint to authenticate.
+		result[i] = StubZoneConfig{Name: z.Name, Addrs: z.Addrs}
 	}
 	return result
 }
@@ -1131,7 +1282,9 @@ func parseZoneAddrs(values map[string]string, prefix string) []ForwardZoneConfig
 		zoneName := rest[:dotIdx]
 		field := rest[dotIdx+1:]
 
-		if field != "addrs" {
+		switch field {
+		case "addrs", "tls", "tls_auth_name", "tls_pins":
+		default:
 			continue
 		}
 
@@ -1140,11 +1293,28 @@ func parseZoneAddrs(values map[string]string, prefix string) []ForwardZoneConfig
 			zc = &ForwardZoneConfig{Name: zoneName}
 			zones[zoneName] = zc
 		}
-		if val != "" {
+
+		switch field {
+		case "addrs":
+			if val != "" {
+				for _, item := range strings.Split(val, ",") {
+					item = strings.TrimSpace(item)
+					if item != "" {
+						zc.Addrs = append(zc.Addrs, item)
+					}
+				}
+			}
+		case "tls":
+			// RFC 7858 upstream transport. Only meaningful for forward
+			// zones; a stub zone drives iterative resolution against
+			// arbitrary authoritative servers, which do not speak DoT.
+			zc.TLS = parseBool(val)
+		case "tls_auth_name":
+			zc.TLSAuthName = strings.TrimSpace(val)
+		case "tls_pins":
 			for _, item := range strings.Split(val, ",") {
-				item = strings.TrimSpace(item)
-				if item != "" {
-					zc.Addrs = append(zc.Addrs, item)
+				if item = strings.TrimSpace(item); item != "" {
+					zc.TLSPins = append(zc.TLSPins, item)
 				}
 			}
 		}
@@ -1223,5 +1393,70 @@ func parseClusterPeers(values map[string]string) []ClusterPeerConfig {
 		}
 		result = append(result, p)
 	}
+	return result
+}
+
+// parseSecondaryZones extracts secondary zone configs from the flat YAML key
+// map. Expected keys: "secondary_zones.<zonename>.<field>" where field is one
+// of primary, tls, tls_auth_name, tsig_key_name, tsig_secret, tsig_algorithm.
+func parseSecondaryZones(values map[string]string) []SecondaryZoneConfig {
+	return parseTransferZones(values, "secondary_zones.")
+}
+
+// parseCatalogZones extracts catalog zone configs (RFC 9432). The key shape is
+// identical to a secondary zone's — a catalog IS a zone transferred the same
+// way; the difference is entirely in what is done with the contents.
+func parseCatalogZones(values map[string]string) []CatalogZoneConfig {
+	zones := parseTransferZones(values, "catalog_zones.")
+	out := make([]CatalogZoneConfig, len(zones))
+	for i, z := range zones {
+		out[i] = CatalogZoneConfig(z)
+	}
+	return out
+}
+
+func parseTransferZones(values map[string]string, prefix string) []SecondaryZoneConfig {
+	zones := make(map[string]*SecondaryZoneConfig)
+
+	for key, val := range values {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		rest := key[len(prefix):]
+		dotIdx := strings.LastIndex(rest, ".")
+		if dotIdx < 0 {
+			continue
+		}
+		zoneName, field := rest[:dotIdx], rest[dotIdx+1:]
+		val = strings.TrimSpace(val)
+
+		zc, ok := zones[zoneName]
+		if !ok {
+			zc = &SecondaryZoneConfig{Name: zoneName}
+			zones[zoneName] = zc
+		}
+		switch field {
+		case "primary":
+			zc.Primary = val
+		case "tls":
+			zc.TLS = parseBool(val)
+		case "tls_auth_name":
+			zc.TLSAuthName = val
+		case "tsig_key_name":
+			zc.TSIGKeyName = val
+		case "tsig_secret":
+			zc.TSIGSecret = val
+		case "tsig_algorithm":
+			zc.TSIGAlgorithm = val
+		}
+	}
+
+	result := make([]SecondaryZoneConfig, 0, len(zones))
+	for _, zc := range zones {
+		if zc.Primary != "" {
+			result = append(result, *zc)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
 }
