@@ -251,25 +251,33 @@ func TestNegativeEntriesUnknownRCode(t *testing.T) {
 	}
 }
 
-// TestNegativeEntriesUnknownQType covers the "UNKNOWN" qtype branch.
-func TestNegativeEntriesUnknownQType(t *testing.T) {
+// TestNegativeEntriesUnnamedQType covers the display path for a qtype with
+// no mnemonic.
+//
+// This used to expect the literal "UNKNOWN". It now expects the RFC 3597 §5
+// generic form "TYPE999", which is strictly more useful: "UNKNOWN" told an
+// operator staring at the negative-cache view nothing at all, while
+// "TYPE999" tells them exactly which type was cached and can be pasted
+// straight back into the lookup box.
+func TestNegativeEntriesUnnamedQType(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := NewCache(1000, 5, 86400, 3600, m)
 
-	// Use NODATA (type-specific) with a qtype not in TypeToString (e.g., 999)
+	// NODATA (type-specific) with a qtype that has no mnemonic.
 	c.StoreNegative("unknown-qtype.com", 999, dns.ClassIN, NegNoData, dns.RCodeNoError, nil)
 
 	entries := c.NegativeEntries(10)
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
-	if entries[0].QType != "UNKNOWN" {
-		t.Errorf("expected qtype 'UNKNOWN', got '%s'", entries[0].QType)
+	if entries[0].QType != "TYPE999" {
+		t.Errorf("expected qtype 'TYPE999' (RFC 3597 §5 generic form), got '%s'", entries[0].QType)
 	}
 }
 
-// TestNegativeEntriesUnknownAuthorityType covers the "UNKNOWN" type branch for authority records.
-func TestNegativeEntriesUnknownAuthorityType(t *testing.T) {
+// TestNegativeEntriesUnnamedAuthorityType is the same change for authority
+// records inside a negative entry.
+func TestNegativeEntriesUnnamedAuthorityType(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := NewCache(1000, 5, 86400, 3600, m)
 
@@ -287,8 +295,28 @@ func TestNegativeEntriesUnknownAuthorityType(t *testing.T) {
 	if len(entries[0].Authority) != 1 {
 		t.Fatalf("expected 1 authority record, got %d", len(entries[0].Authority))
 	}
-	if entries[0].Authority[0].Type != "UNKNOWN" {
-		t.Errorf("expected authority type 'UNKNOWN', got '%s'", entries[0].Authority[0].Type)
+	if entries[0].Authority[0].Type != "TYPE999" {
+		t.Errorf("expected authority type 'TYPE999' (RFC 3597 §5 generic form), got '%s'",
+			entries[0].Authority[0].Type)
+	}
+}
+
+// TestNegativeEntriesNXDomainQTypeWildcard pins that the "*" special case
+// survived the switch to dns.TypeName. An NXDOMAIN denies every type
+// (RFC 2308 §5), so its cache key carries qtype 0 and the view must show "*"
+// rather than "TYPE0", which would read as a real type that does not exist.
+func TestNegativeEntriesNXDomainQTypeWildcard(t *testing.T) {
+	m := metrics.NewMetrics()
+	c := NewCache(1000, 5, 86400, 3600, m)
+
+	c.StoreNegative("nxdomain-wildcard.com", 0, dns.ClassIN, NegNXDomain, dns.RCodeNXDomain, nil)
+
+	entries := c.NegativeEntries(10)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].QType != "*" {
+		t.Errorf("expected qtype '*' for an NXDOMAIN covering all types, got '%s'", entries[0].QType)
 	}
 }
 
