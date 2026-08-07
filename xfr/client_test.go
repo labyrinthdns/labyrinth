@@ -89,6 +89,21 @@ func startXFRMock(t *testing.T, zone string, records []dns.ResourceRecord, useTL
 					return
 				}
 
+				// Echo the query's transaction ID and question, as any
+				// real primary must (RFC 1035 §4.1.1). The previous mock
+				// left both blank, which passed only because the old
+				// client checked neither — so a spoofed response injected
+				// into the TCP stream would have been accepted as zone
+				// data.
+				qmsg, err := dns.Unpack(query)
+				if err != nil {
+					return
+				}
+				openMsg.Header.ID = qmsg.Header.ID
+				closeMsg.Header.ID = qmsg.Header.ID
+				openMsg.Questions = qmsg.Questions
+				closeMsg.Questions = qmsg.Questions
+
 				// Send response messages
 				for _, msg := range []*dns.Message{openMsg, closeMsg} {
 					wire, err := dns.Pack(msg, make([]byte, 512))
@@ -313,9 +328,25 @@ func TestAXFR_Timeout(t *testing.T) {
 }
 
 // TestBuildAXFRQuery verifies the query message is well-formed.
+//
+// Two expectations changed when the client was rewritten:
+//
+//   - The query is now built as packed wire bytes rather than a *dns.Message,
+//     because TSIG signs the exact octets and cannot be applied to a struct.
+//   - RD is no longer set. RD asks a server to recurse on the querent's
+//     behalf, which is meaningless when addressing a primary that is
+//     authoritative for the zone being transferred; RFC 5936 §2.1.1 says the
+//     bit SHOULD be zero and MUST be ignored.
 func TestBuildAXFRQuery(t *testing.T) {
 	zone := "example.com"
-	msg := buildAXFRQuery(zone)
+	wire, err := buildQuery(0x1234, zone, dns.TypeAXFR, 0)
+	if err != nil {
+		t.Fatalf("buildQuery: %v", err)
+	}
+	msg, err := dns.Unpack(wire)
+	if err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
 
 	if len(msg.Questions) != 1 {
 		t.Fatalf("expected 1 question, got %d", len(msg.Questions))
@@ -326,8 +357,41 @@ func TestBuildAXFRQuery(t *testing.T) {
 	if msg.Questions[0].Name != zone {
 		t.Errorf("expected zone %q, got %q", zone, msg.Questions[0].Name)
 	}
-	if !msg.Header.RD() {
-		t.Error("expected RD=1 on AXFR query")
+	if msg.Header.ID != 0x1234 {
+		t.Errorf("transaction ID = %#x, want 0x1234 — the response is matched against it",
+			msg.Header.ID)
+	}
+	if msg.Header.RD() {
+		t.Error("RD set on an AXFR query; RFC 5936 §2.1.1 says it SHOULD be zero")
+	}
+}
+
+// TestBuildIXFRQueryCarriesSerial pins RFC 1995 §3: an IXFR query states the
+// client's current serial in an SOA record in the authority section. Without
+// it the server has no idea what to diff against and can only send the whole
+// zone — which works, but defeats the entire point of asking incrementally.
+func TestBuildIXFRQueryCarriesSerial(t *testing.T) {
+	wire, err := buildQuery(0x4321, "example.com", dns.TypeIXFR, 2024010199)
+	if err != nil {
+		t.Fatalf("buildQuery: %v", err)
+	}
+	msg, err := dns.Unpack(wire)
+	if err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+
+	if msg.Questions[0].Type != dns.TypeIXFR {
+		t.Fatalf("qtype = %d, want IXFR", msg.Questions[0].Type)
+	}
+	if len(msg.Authority) != 1 || msg.Authority[0].Type != dns.TypeSOA {
+		t.Fatalf("authority section = %+v, want one SOA", msg.Authority)
+	}
+	soa, err := dns.ParseSOA(msg.Authority[0].RData, 0)
+	if err != nil {
+		t.Fatalf("ParseSOA: %v", err)
+	}
+	if soa.Serial != 2024010199 {
+		t.Errorf("serial = %d, want 2024010199", soa.Serial)
 	}
 }
 
