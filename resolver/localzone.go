@@ -128,6 +128,40 @@ func (t *LocalZoneTable) findZone(name string) *LocalZone {
 	return nil
 }
 
+// FindZone returns the local zone whose apex name matches the argument,
+// or nil if no such zone exists. The lookup is exact and case-insensitive
+// (zone names are normalised to lowercase at construction time). The
+// returned pointer shares storage with the table; callers must not
+// mutate it.
+//
+// This is the public counterpart to findZone: it powers the
+// `/api/zones/:name/export` endpoint, which needs to materialise the
+// records of one specific zone in BIND master-file form.
+//
+func (t *LocalZoneTable) FindZone(name string) *LocalZone {
+	if t == nil {
+		return nil
+	}
+	name = normalizeName(name)
+	return t.findZone(name)
+}
+
+// Zones returns a snapshot of the local zones in the table. The slice
+// is freshly allocated and the caller may modify it without affecting
+// the table. The order matches the table's internal longest-suffix-first
+// order; the slice is stable for the lifetime of the table because
+// Go map and slice memory is not shared with the table's internal
+// storage once the copy is made.
+//
+func (t *LocalZoneTable) Zones() []LocalZone {
+	if t == nil {
+		return nil
+	}
+	out := make([]LocalZone, len(t.zones))
+	copy(out, t.zones)
+	return out
+}
+
 // lookupStatic returns matching records or NXDOMAIN.
 func (t *LocalZoneTable) lookupStatic(zone *LocalZone, name string, qtype uint16) *ResolveResult {
 	records := matchRecords(zone.Records, name, qtype)
