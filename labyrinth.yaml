@@ -18,6 +18,30 @@ server:
   dot_listen_addr: ":853"
   doq_enabled: false
   doq_listen_addr: ":853"
+  # Name Server Identifier (RFC 5001). Reported only to clients that ask
+  # for it with an NSID option; empty (the default) disables the feature
+  # entirely. On an anycast deployment set a per-node site code so
+  # `dig +nsid` can tell you which node answered. RFC 5001 §3.1: the value
+  # is visible to anyone who asks, so avoid internal hostnames.
+  # Truncated at 64 bytes.
+  nsid: ""
+  # RFC 9462 Discovery of Designated Resolvers. Clients that only know this
+  # resolver's IP send a SVCB query for _dns.resolver.arpa to find out which
+  # encrypted transports it offers; without this they stay on plaintext :53
+  # even when DoT/DoH/DoQ are enabled above.
+  #
+  # Set to the DNS name clients should connect to. Its TLS certificate MUST
+  # cover the IP address clients already use for this resolver — RFC 9462
+  # §4.2 makes the client verify exactly that before trusting a designation,
+  # so a mismatched name yields designations every client rejects. Empty (the
+  # default) disables DDR; transports are advertised only if enabled above.
+  ddr_target_name: ""
+  # RFC 9461 §5 URI template for the DoH designation. Defaults to
+  # "/dns-query{?dns}".
+  ddr_doh_path: ""
+  # Port advertised for DoH. 0 omits the parameter, telling clients to use
+  # the ALPN default (443).
+  ddr_doh_port: 0
 
 resolver:
   max_depth: 30
@@ -32,6 +56,14 @@ resolver:
   request_timeout: 20s
   # Caps NS hostnames per delegation (NXNS amplification defence). 0 = unlimited.
   max_ns_names_per_delegation: 13
+  # RFC 9567 outbound DNS error reporting. When a zone advertises a
+  # Report-Channel agent domain and we reject one of its answers, send a
+  # throwaway TXT query naming the failure so the zone operator hears about
+  # breakage from the resolver that saw it. Off by default: the report tells
+  # a third party that this resolver looked up a given name and got a given
+  # error (RFC 9567 §8). Bounded internally — one report per failure per
+  # 5 minutes, at most 8 in flight.
+  error_reporting: false
   qname_minimization: true
   caps_for_id: true
   prefer_ipv4: true
@@ -148,3 +180,91 @@ cluster:
 access_control:
   allow:
   deny:
+
+# Forward zones: queries matching the zone name are forwarded (RD=1) to the
+# configured upstream resolvers instead of being resolved iteratively.
+#
+# Upstream DNS-over-TLS (RFC 7858) is available per zone. Labyrinth implements
+# only RFC 8310's Strict Privacy profile, so a zone with tls: true MUST also
+# set tls_auth_name, tls_pins, or both — a zone that cannot authenticate its
+# upstream is rejected at startup rather than silently falling back to
+# plaintext. (Opportunistic Privacy is deliberately not offered: the forward
+# path honours the upstream's AD bit, so an unauthenticated session would hand
+# an on-path attacker a trusted position while the config still said
+# "encrypted".)
+#
+# forward_zones:
+#   corp.example:
+#     addrs: "1.1.1.1, 1.0.0.1"
+#     tls: true
+#     tls_auth_name: "cloudflare-dns.com"
+#   lab.internal:
+#     addrs: "10.0.0.53"
+#     tls: true
+#     # SPKI pin: base64 SHA-256 of the upstream's SubjectPublicKeyInfo.
+#     # Use when the upstream has no publicly-valid certificate. Obtain with:
+#     #   openssl s_client -connect 10.0.0.53:853 </dev/null 2>/dev/null \
+#     #     | openssl x509 -pubkey -noout \
+#     #     | openssl pkey -pubin -outform der \
+#     #     | openssl dgst -sha256 -binary | base64
+#     tls_pins: "CHANGE_ME="
+#   plain.example:
+#     addrs: "192.0.2.1"
+
+# Secondary zones: transferred from a primary and served from the local zone
+# table, so queries inside the zone are answered here instead of resolved
+# iteratively. This does NOT make Labyrinth authoritative for the zone on the
+# public internet — there is no NOTIFY listener and no onward transfer.
+#
+# The zone's own SOA drives refresh: REFRESH between checks, RETRY after a
+# failure, and EXPIRE as the point past which the copy is withdrawn rather
+# than served stale.
+#
+# TSIG (RFC 8945) is strongly recommended. Without it the only thing between
+# this resolver and a substituted zone is whatever source-address filtering
+# the primary happens to apply. tsig_secret is base64, as in every other DNS
+# implementation's config. Supported algorithms: hmac-sha1, hmac-sha224,
+# hmac-sha256 (default), hmac-sha384, hmac-sha512.
+#
+# secondary_zones:
+#   internal.example:
+#     primary: "10.0.0.53"
+#     tsig_key_name: "transfer-key"
+#     tsig_secret: "CHANGE_ME_BASE64=="
+#     tsig_algorithm: "hmac-sha256"
+#   partner.example:
+#     primary: "203.0.113.53"
+#     # XFR-over-TLS (RFC 9103). TLS 1.3 is mandatory per §9.3.1, and
+#     # tls_auth_name is required — a bare IP gives the certificate nothing
+#     # to be verified against.
+#     tls: true
+#     tls_auth_name: "xfr.partner.example"
+#     tsig_key_name: "partner-key"
+#     tsig_secret: "CHANGE_ME_BASE64=="
+
+# Catalog zones (RFC 9432). A catalog zone is an ordinary DNS zone whose
+# contents are a list of OTHER zones. Transferring it provisions every member
+# it names as a secondary zone automatically — so adding a zone to a fleet of
+# resolvers becomes a change on the primary rather than a config edit and
+# reload on every host.
+#
+# Members inherit this block's transfer parameters (primary, TLS, TSIG). The
+# catalog says *which* zones; these settings say *how* to fetch them.
+#
+# The catalog must carry `version.<catalog> TXT "2"` (RFC 9432 §4.2.2). A
+# catalog with no version, or a version this build does not implement, is NOT
+# processed — existing members are left in place rather than withdrawn, since
+# treating an unreadable catalog as an empty one would take every member zone
+# offline at once.
+#
+# A member that collides with a zone in secondary_zones above is ignored:
+# explicit configuration wins over a catalog entry.
+#
+# catalog_zones:
+#   catalog.example:
+#     primary: "10.0.0.53"
+#     tsig_key_name: "catalog-key"
+#     tsig_secret: "CHANGE_ME_BASE64=="
+#     tsig_algorithm: "hmac-sha256"
+#     # tls: true
+#     # tls_auth_name: "xfr.example"

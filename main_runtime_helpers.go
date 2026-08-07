@@ -55,11 +55,13 @@ func startHTTPServices(
 		adminServer.SetRuntimeApplier(func(newCfg *config.Config) {
 			handler.SetPrivateFilter(newCfg.Security.PrivateAddressFilter)
 			handler.SetECSPrefixes(newCfg.Resolver.ECSEnabled, newCfg.Resolver.ECSMaxPrefix, newCfg.Resolver.ECSMaxPrefixV6)
+			handler.SetNSID(newCfg.Server.NSID)
 			logger.Info("config hot-applied",
 				"private_address_filter", newCfg.Security.PrivateAddressFilter,
 				"ecs_enabled", newCfg.Resolver.ECSEnabled,
 				"ecs_max_prefix", newCfg.Resolver.ECSMaxPrefix,
 				"ecs_max_prefix_v6", newCfg.Resolver.ECSMaxPrefixV6,
+				"nsid", newCfg.Server.NSID,
 			)
 		})
 
