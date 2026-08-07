@@ -14,6 +14,7 @@ import (
 	applog "github.com/labyrinthdns/labyrinth/log"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
+	"github.com/labyrinthdns/labyrinth/secondary"
 	"github.com/labyrinthdns/labyrinth/security"
 	"github.com/labyrinthdns/labyrinth/server"
 	"github.com/labyrinthdns/labyrinth/web"
@@ -228,8 +229,11 @@ func run() int {
 	}
 	res := resolver.NewResolver(c, resCfg, m, logger)
 
-	// Build local zones from config + default localhost zone
-	res.SetLocalZones(buildLocalZones(cfg, logger))
+	// Build local zones from config + default localhost zone. The static
+	// set is kept because the secondary-zone manager rebuilds the whole
+	// table after each transfer and must not drop them.
+	staticZones := buildStaticLocalZones(cfg, logger)
+	res.SetLocalZones(resolver.NewLocalZoneTable(staticZones))
 
 	// Build forward/stub zone table from config
 	if len(cfg.ForwardZones) > 0 || len(cfg.StubZones) > 0 {
@@ -260,6 +264,26 @@ func run() int {
 	// EDNS Client Subnet forwarding (RFC 7871). Passthrough policy: only
 	// forward what the client itself sent, capped at per-family ceilings.
 	handler.SetECSPrefixes(cfg.Resolver.ECSEnabled, cfg.Resolver.ECSMaxPrefix, cfg.Resolver.ECSMaxPrefixV6)
+
+	// Name Server Identifier (RFC 5001). Empty by default — see the
+	// ServerConfig.NSID field comment for why we do not default to the
+	// hostname.
+	handler.SetNSID(cfg.Server.NSID)
+
+	// RFC 9567 outbound DNS error reporting. Off by default; see the
+	// ResolverConfig.ErrorReporting field comment.
+	res.SetErrorReporting(cfg.Resolver.ErrorReporting)
+
+	// RFC 9462 Discovery of Designated Resolvers. Which transports get
+	// advertised follows what is actually enabled — publishing a
+	// designation for a listener that is switched off would send clients
+	// to a closed port.
+	handler.SetDDR(buildDDRConfig(cfg))
+
+	// RFC 9606 RESINFO. The declared behaviour is read from the live config
+	// rather than hardcoded — a resolver that advertises QNAME minimisation
+	// it has switched off is worse than one that advertises nothing.
+	handler.SetResolverInfo(buildResolverInfo(cfg))
 
 	// Cache: harden-below-nxdomain (RFC 8020)
 	c.SetHardenBelowNX(cfg.Resolver.HardenBelowNXDomain)
@@ -311,6 +335,20 @@ func run() int {
 
 	// Infra cache cleanup (stale NS RTT entries)
 	go res.InfraCache().StartCleanup(ctx, infraCleanupInterval, infraEntryMaxAge)
+
+	// RFC 7766 §6.2.3 — close idle upstream TCP connections rather than
+	// leaving them parked on the authoritative's side.
+	go res.StartTCPPoolCleanup(ctx)
+
+	// Secondary and catalog zones (RFC 5936 / RFC 1995 / RFC 9103 /
+	// RFC 8945 / RFC 9432). The manager transfers each zone, republishes
+	// the local zone table, refreshes on each zone's own SOA schedule, and
+	// provisions catalog members as the catalog changes.
+	secondaryZones := buildSecondaryZones(cfg, logger)
+	catalogZones := buildCatalogZones(cfg, logger)
+	if len(secondaryZones) > 0 || len(catalogZones) > 0 {
+		go secondary.NewManager(res, staticZones, secondaryZones, catalogZones, logger).Run(ctx)
+	}
 
 	// NTA store cleanup. NTAStore.Cleanup existed since v0.6.x but was
 	// never wired up — expired NTAs stayed resident, consuming slots

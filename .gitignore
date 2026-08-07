@@ -46,3 +46,6 @@ coverage*.html
 
 .dfmt/
 .wrongstack/
+!/.wrongstack/
+/.wrongstack/*
+!/.wrongstack/project.json

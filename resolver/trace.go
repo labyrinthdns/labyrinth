@@ -107,8 +107,8 @@ func (r *Resolver) Trace(
 
 	// 1. Local zones (operator-configured authoritative data wins over the
 	// RFC 6761 short-circuit).
-	if r.localZones != nil {
-		if result := r.localZones.Lookup(name, qtype, qclass); result != nil {
+	if lz := r.localZones.Load(); lz != nil {
+		if result := lz.Lookup(name, qtype, qclass); result != nil {
 			t.emit("local-zones", TraceStatusOK, "answered from local zone", map[string]any{
 				"rcode":   rcodeName(result.RCODE),
 				"answers": len(result.Answers),
@@ -832,44 +832,11 @@ func classifyName(rt responseType) string {
 }
 
 func typeName(qtype uint16) string {
-	switch qtype {
-	case dns.TypeA:
-		return "A"
-	case dns.TypeAAAA:
-		return "AAAA"
-	case dns.TypeCNAME:
-		return "CNAME"
-	case dns.TypeMX:
-		return "MX"
-	case dns.TypeNS:
-		return "NS"
-	case dns.TypeTXT:
-		return "TXT"
-	case dns.TypeSOA:
-		return "SOA"
-	case dns.TypePTR:
-		return "PTR"
-	case dns.TypeSRV:
-		return "SRV"
-	case dns.TypeDNSKEY:
-		return "DNSKEY"
-	case dns.TypeDS:
-		return "DS"
-	case dns.TypeRRSIG:
-		return "RRSIG"
-	case dns.TypeNSEC:
-		return "NSEC"
-	case dns.TypeNSEC3:
-		return "NSEC3"
-	case dns.TypeDNAME:
-		return "DNAME"
-	case dns.TypeNSEC3PARAM:
-		return "NSEC3PARAM"
-	case dns.TypeANY:
-		return "ANY"
-	}
-	if s, ok := dns.TypeToString[qtype]; ok {
-		return s
-	}
-	return fmt.Sprintf("TYPE%d", qtype)
+	// Presentation names come from dns.TypeName, which covers every type in
+	// the shared registry and falls back to the RFC 3597 §5 generic
+	// "TYPE<n>" form. This was a twenty-case switch duplicating that table;
+	// it had already fallen behind (no CAA, SVCB, HTTPS, TLSA), so a trace
+	// of a real-world HTTPS lookup showed a type the rest of the dashboard
+	// named correctly.
+	return dns.TypeName(qtype)
 }
