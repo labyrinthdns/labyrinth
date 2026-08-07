@@ -68,19 +68,10 @@ func formatRData(rr dns.ResourceRecord) string {
 	return hex.EncodeToString(rr.RData)
 }
 
-// stringToType maps type name strings to DNS type constants.
-var stringToType = map[string]uint16{
-	"A":     dns.TypeA,
-	"NS":    dns.TypeNS,
-	"CNAME": dns.TypeCNAME,
-	"SOA":   dns.TypeSOA,
-	"PTR":   dns.TypePTR,
-	"MX":    dns.TypeMX,
-	"TXT":   dns.TypeTXT,
-	"AAAA":  dns.TypeAAAA,
-	"SRV":   dns.TypeSRV,
-	"DNAME": dns.TypeDNAME,
-}
+// Type-name resolution goes through dns.ParseType, which knows every type in
+// dns.TypeToString plus the RFC 3597 §5 generic "TYPE<n>" form. This file
+// used to carry its own ten-entry map, which meant the cache viewer refused
+// to show record types the resolver was already caching correctly.
 
 // handleCacheStats handles GET /api/cache/stats.
 func (s *AdminServer) handleCacheStats(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +125,11 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Normalize: try without trailing dot first (resolver convention), then with dot.
-	name = strings.ToLower(name)
+	// dns.ToASCII converts an internationalised name to its Punycode form
+	// (RFC 5891 §4) — without it, an operator pasting "müller.example" would
+	// query the literal UTF-8 octets, which name nothing, and the lookup
+	// would fail for a reason invisible in the input they typed.
+	name = strings.ToLower(dns.ToASCII(name))
 	nameNoDot := strings.TrimSuffix(name, ".")
 	nameDot := nameNoDot + "."
 	if typeStr == "" {
@@ -163,11 +158,11 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 			entryType := ""
 			for _, rr := range entry.Records {
 				if entryType == "" {
-					entryType = dns.TypeToString[rr.Type]
+					entryType = dns.TypeName(rr.Type)
 				}
 				records = append(records, map[string]interface{}{
 					"name":  rr.Name,
-					"type":  dns.TypeToString[rr.Type],
+					"type":  dns.TypeName(rr.Type),
 					"ttl":   rr.TTL,
 					"rdata": formatRData(rr),
 				})
@@ -192,7 +187,7 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	qtype, ok := stringToType[typeUpper]
+	qtype, ok := dns.ParseType(typeUpper)
 	if !ok {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "unsupported query type"})
 		return
@@ -215,7 +210,7 @@ func (s *AdminServer) handleCacheLookup(w http.ResponseWriter, r *http.Request) 
 	for _, rr := range entry.Records {
 		records = append(records, map[string]interface{}{
 			"name":  rr.Name,
-			"type":  dns.TypeToString[rr.Type],
+			"type":  dns.TypeName(rr.Type),
 			"ttl":   rr.TTL,
 			"rdata": formatRData(rr),
 		})
@@ -344,14 +339,14 @@ func (s *AdminServer) handleCacheDelete(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "name exceeds RFC 1035 §2.3.4 length cap"})
 		return
 	}
-	name = strings.ToLower(name)
+	name = strings.ToLower(dns.ToASCII(name))
 	nameNoDot := strings.TrimSuffix(name, ".")
 	nameDot := nameNoDot + "."
 	if typeStr == "" {
 		typeStr = "A"
 	}
 
-	qtype, ok := stringToType[strings.ToUpper(typeStr)]
+	qtype, ok := dns.ParseType(typeStr)
 	if !ok {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "unsupported query type"})
 		return

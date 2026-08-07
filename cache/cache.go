@@ -753,21 +753,14 @@ func (c *Cache) NegativeEntries(limit int) []NegativeEntryInfo {
 				rcodeStr = "UNKNOWN"
 			}
 
-			qtypeStr := dns.TypeToString[key.qtype]
-			if qtypeStr == "" {
-				if key.qtype == 0 && entry.NegType == NegNXDomain {
-					qtypeStr = "*" // NXDOMAIN covers all types (RFC 2308)
-				} else {
-					qtypeStr = "UNKNOWN"
-				}
+			qtypeStr := dns.TypeName(key.qtype)
+			if key.qtype == 0 && entry.NegType == NegNXDomain {
+				qtypeStr = "*" // NXDOMAIN covers all types (RFC 2308)
 			}
 
 			auth := make([]ResourceRecordInfo, 0, len(entry.Authority))
 			for _, rr := range entry.Authority {
-				typeStr := dns.TypeToString[rr.Type]
-				if typeStr == "" {
-					typeStr = "UNKNOWN"
-				}
+				typeStr := dns.TypeName(rr.Type)
 				auth = append(auth, ResourceRecordInfo{
 					Name:  rr.Name,
 					Type:  typeStr,

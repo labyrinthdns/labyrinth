@@ -128,41 +128,23 @@ type traceRR struct {
 	Data  string `json:"data"`
 }
 
-// parseQType maps the UI's textual type into the numeric DNS type.
-// Defaults to A on unknown input — the UI guards this but be lenient.
+// parseQType maps the UI's textual type into the numeric DNS type. An empty
+// string means A, which is what the diagnostics form submits when the
+// operator leaves the type field alone.
+//
+// Everything else defers to dns.ParseType, so the diagnostics page can trace
+// any type the resolver knows plus the RFC 3597 §5 generic "TYPE<n>" form.
+// This used to be an eleven-case switch that silently rejected TLSA, CAA,
+// SVCB, HTTPS and every other type an operator might actually be debugging.
 func parseQType(s string) (uint16, bool) {
-	switch strings.ToUpper(strings.TrimSpace(s)) {
-	case "", "A":
+	if strings.TrimSpace(s) == "" {
 		return dns.TypeA, true
-	case "AAAA":
-		return dns.TypeAAAA, true
-	case "MX":
-		return dns.TypeMX, true
-	case "TXT":
-		return dns.TypeTXT, true
-	case "NS":
-		return dns.TypeNS, true
-	case "CNAME":
-		return dns.TypeCNAME, true
-	case "SOA":
-		return dns.TypeSOA, true
-	case "PTR":
-		return dns.TypePTR, true
-	case "SRV":
-		return dns.TypeSRV, true
-	case "DNSKEY":
-		return dns.TypeDNSKEY, true
-	case "DS":
-		return dns.TypeDS, true
 	}
-	return 0, false
+	return dns.ParseType(s)
 }
 
 func qtypeString(qtype uint16) string {
-	if s, ok := dns.TypeToString[qtype]; ok {
-		return s
-	}
-	return fmt.Sprintf("TYPE%d", qtype)
+	return dns.TypeName(qtype)
 }
 
 func rcodeString(code uint8) string {
@@ -289,6 +271,13 @@ func (s *AdminServer) handleDiagnosticsTrace(w http.ResponseWriter, r *http.Requ
 			continue
 
 		case "start":
+			// Punycode conversion (RFC 5891 §4) happens BEFORE validation,
+			// not after. validateTraceName rejects any non-ASCII byte — a
+			// deliberate guard against turning the diagnostics socket into a
+			// query-flood vector — so converting afterwards would mean every
+			// internationalised name was rejected before it could be
+			// converted, and the conversion would be dead code.
+			msg.Name = dns.ToASCII(strings.TrimSpace(msg.Name))
 			if err := validateTraceName(msg.Name); err != nil {
 				writeMsg(traceServerMsg{Kind: "error", Error: err.Error()})
 				continue
