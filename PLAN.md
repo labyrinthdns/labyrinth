@@ -223,22 +223,24 @@ deferred as too large for a single pin.
   zones are auto-provisioned as secondaries via `main_zones.go` →
   `secondary.NewCatalogZoneManager`.
 
-### M4.3 — Zone import/export (BIND format) 🔶 (writer + parser shipped)
+### M4.3 — Zone import/export (BIND format) 🔶 (writer + parser + export endpoint shipped)
 
-- **Status**: BIND-format zone-file writer and parser ship round-trip.
-  `dns.FormatZone` emits master-file form (RFC 1035 §5) with a
-  parenthesised SOA header, per-record TTL column, NS-first owner
-  ordering, and RFC 3597 §5 generic form for unknown types.
-  `dns.ParseZone` reads the same form back: `$TTL` and `$ORIGIN`
-  directives, parenthesised continuation, quoted TXT strings, and
-  the generic `\# <rdlength> <hex>` form for unknown types. The
-  parser is round-trip-only: `$INCLUDE` and `$GENERATE` are
-  rejected with a clear error because the parser is the inverse of
-  the writer, not a general-purpose preprocessor. Six parser tests
-  cover SOA-only, multi-type round-trip, generic unknown, $TTL
-  directive, no-SOA error, and $INCLUDE rejection. The
-  `/api/zones/:name/export` endpoint and the `zone_file:` config
-  directive are scope-stretch goals for the next round.
+- **Status**: BIND-format zone-file writer, parser, and HTTP export
+  endpoint ship round-trip. `dns.FormatZone` emits master-file form
+  (RFC 1035 §5) with a parenthesised SOA header, per-record TTL
+  column, NS-first owner ordering, and RFC 3597 §5 generic form for
+  unknown types. `dns.ParseZone` reads the same form back: `$TTL` and
+  `$ORIGIN` directives, parenthesised continuation, quoted TXT
+  strings, and the generic form. `GET /api/zones/:name/export`
+  serves the local zone's records as `text/plain` in BIND format
+  with a `Content-Disposition: attachment` filename for piping to
+  `named-checkzone`. `GET /api/zones` enumerates the local zones
+  with type and record count. The parser is round-trip-only —
+  `$INCLUDE` and `$GENERATE` are rejected with a clear error because
+  the parser is the inverse of the writer, not a general-purpose
+  preprocessor. The `zone_file:` config directive that loads a BIND
+  file into the local zone table is the remaining scope-stretch
+  goal.
 
 ### M4.4 — Hot-reload validation pipeline ✅
 

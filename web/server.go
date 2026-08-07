@@ -691,6 +691,8 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/stats/top-clients", s.requireAuth(s.handleTopClients))
 	mux.HandleFunc("/api/stats/top-domains", s.requireAuth(s.handleTopDomains))
 	mux.HandleFunc("/api/cache/negative", s.requireAuth(s.handleNegativeCache))
+	mux.HandleFunc("/api/zones", s.requireAuth(s.handleZoneList))
+	mux.HandleFunc("/api/zones/", s.requireAuth(s.handleZoneExport))
 	mux.HandleFunc("/api/system/update/check", s.requireAuth(s.handleCheckUpdate))
 	mux.HandleFunc("/api/system/update/apply", s.requireAuth(s.handleApplyUpdate))
 	mux.HandleFunc("/api/blocklist/stats", s.requireAuth(s.handleBlocklistStats))
