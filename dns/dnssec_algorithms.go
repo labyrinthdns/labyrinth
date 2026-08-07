@@ -8,7 +8,21 @@ const (
 	AlgECDSAP256 uint8 = 13
 	AlgECDSAP384 uint8 = 14
 	AlgED25519   uint8 = 15
-	AlgED448     uint8 = 16
+	// AlgED448 is defined so the validator can *name* the algorithm when it
+	// declines to use it — an "unsupported algorithm 16" in a log is far
+	// more actionable than a bare number, and RFC 6840 §5.2 requires a zone
+	// signed only with algorithms we cannot verify to be treated as
+	// insecure rather than bogus, which is a decision that needs the
+	// constant.
+	//
+	// It is deliberately absent from dnssec/verify.go. Ed448 is a MAY in
+	// RFC 8624 §3.1, the Go standard library has no Ed448 implementation,
+	// and x/crypto does not provide one either — so supporting it would
+	// mean vendoring a third-party curve implementation to serve a
+	// vanishingly small number of zones. A zone signed only with Ed448 is
+	// therefore treated as insecure, exactly as the RFC prescribes for an
+	// unsupported algorithm.
+	AlgED448 uint8 = 16
 )
 
 // DNSSEC digest types (RFC 8624).
@@ -32,17 +46,17 @@ const (
 // readability — never for acceptance.
 //
 //   - RSAMD5 (1):       MD5 is cryptographically broken (RFC 6151) and
-//                       MUST NOT be used for new signatures (RFC 6944).
+//     MUST NOT be used for new signatures (RFC 6944).
 //   - DSA (3):          DSA-SHA1 is deprecated and dropped from the
-//                       Internet root signing key rollover (RFC 8624 §3.1).
+//     Internet root signing key rollover (RFC 8624 §3.1).
 //   - DSA-NSEC3 (6):    Same DSA constraints, NSEC3 variant.
 //   - RSASHA1-NSEC3 (7):RSA/SHA-1 in any form is deprecated; we honour
-//                       the validator's allowSHA1 gate via algorithm 5
-//                       only when explicitly opted in. Algorithm 7 is
-//                       legacy and we leave it strictly off.
+//     the validator's allowSHA1 gate via algorithm 5
+//     only when explicitly opted in. Algorithm 7 is
+//     legacy and we leave it strictly off.
 const (
-	AlgRSAMD5         uint8 = 1
-	AlgDSA            uint8 = 3
-	AlgDSANSEC3SHA1   uint8 = 6
-	AlgRSASHA1NSEC3   uint8 = 7
+	AlgRSAMD5       uint8 = 1
+	AlgDSA          uint8 = 3
+	AlgDSANSEC3SHA1 uint8 = 6
+	AlgRSASHA1NSEC3 uint8 = 7
 )

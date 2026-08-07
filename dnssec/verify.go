@@ -91,6 +91,11 @@ func VerifyRRSIG(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord, dnskey *dns
 	case dns.AlgED25519:
 		return verifyED25519(signedData, rrsig.Signature, dnskey.PublicKey)
 	default:
+		// Ed448 (algorithm 16) lands here on purpose — see the AlgED448
+		// comment in dns/dnssec_algorithms.go. RFC 6840 §5.2: a zone signed
+		// only with algorithms the validator does not implement is
+		// Insecure, not Bogus, and the caller maps errUnsupportedAlg to
+		// exactly that.
 		return errUnsupportedAlg
 	}
 }
