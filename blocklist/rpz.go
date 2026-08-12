@@ -98,7 +98,7 @@ func ParseRPZ(r io.Reader) ([]RPZRule, error) {
 			idx++
 		}
 
-		if idx+1 >= len(fields)+1 {
+		if idx+1 >= len(fields) {
 			continue // not enough fields for type + rdata
 		}
 

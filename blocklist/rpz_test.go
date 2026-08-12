@@ -334,6 +334,34 @@ func TestIsNumeric(t *testing.T) {
 	}
 }
 
+// TestParseRPZMissingRDataRegression covers the off-by-one in the
+// type+rdata availability guard: a line with only "owner TYPE" and no rdata
+// used to pass the filter and silently turn into an NXDOMAIN rule for CNAME
+// (empty rdata mapped to "."). Such a line is malformed input and must be
+// skipped, not silently misclassified.
+func TestParseRPZMissingRDataRegression(t *testing.T) {
+	input := `
+$TTL 300
+malware.example.com CNAME .
+; Owner with type but no rdata — must be ignored, not silently parsed.
+broken.example.com CNAME
+bad-a.example.com A
+; Owner with TTL, type, but no rdata — must also be ignored.
+weird.example.com 300 IN CNAME
+`
+	rules, err := ParseRPZ(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseRPZ error: %v", err)
+	}
+	for _, r := range rules {
+		if r.Name == "broken.example.com" ||
+			r.Name == "bad-a.example.com" ||
+			r.Name == "weird.example.com" {
+			t.Errorf("malformed line silently produced a rule: %+v", r)
+		}
+	}
+}
+
 func TestIsClass(t *testing.T) {
 	tests := []struct {
 		s    string
