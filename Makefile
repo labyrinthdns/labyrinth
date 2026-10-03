@@ -25,31 +25,45 @@ GO_PACKAGES := . \
 
 .PHONY: build build-go webui test test-race soak bench fuzz lint vet check-go-package-scope docker clean cross install uninstall
 
+# Parallelism caps for ~8 GiB hosts and GitHub runners. Race builds roughly
+# double RSS; unrestricted package parallelism OOMs the box (exit 143 /
+# soft lockup). Override with e.g. `make test-race GO_RACE_P=2` if you have RAM.
+GO_BUILD_P ?= 1
+GO_TEST_P  ?= 2
+GO_RACE_P  ?= 1
+GO_LINT_P  ?= 2
+
+# Packages worth the race-detector cost. Full-tree -race compile is what
+# freezes the DNS host and kills CI; keep the hot path covered, rest via
+# plain `make test`.
+GO_RACE_PACKAGES := ./dns/... ./dnssec/... ./resolver/... ./cache/... ./server/... ./security/...
+
 # Build frontend then Go binary
 build: webui
-	go build -ldflags="$(LDFLAGS)" -o labyrinth .
+	go build -p $(GO_BUILD_P) -ldflags="$(LDFLAGS)" -o labyrinth .
 
 # Build Go binary only (skip frontend)
 build-go:
-	go build -ldflags="$(LDFLAGS)" -o labyrinth .
+	go build -p $(GO_BUILD_P) -ldflags="$(LDFLAGS)" -o labyrinth .
 
 # Build React frontend
 webui:
 	cd web/ui && npm ci --silent && npm run build
 
 test:
-	go test $(GO_PACKAGES) -v -count=1 -timeout 120s
+	go test -p $(GO_TEST_P) $(GO_PACKAGES) -count=1 -timeout 120s
 
 test-race:
-	# -p 2 keeps peak RSS down on 7 GiB GitHub runners; unrestricted
-	# package parallelism was SIGTERM'd (exit 143) under -race.
-	go test $(GO_PACKAGES) -count=1 -race -timeout 10m -p 2
+	# Serial packages (-p 1) + low GOMAXPROCS: one race-instrumented compile
+	# at a time. Still covers the concurrency-critical packages.
+	GOMAXPROCS=$(GO_RACE_P) go test -p $(GO_RACE_P) -parallel $(GO_RACE_P) \
+		$(GO_RACE_PACKAGES) -count=1 -race -timeout 15m
 
 soak:
 	go test -tags soak ./test/soak/ -run TestSoak -timeout 72h -v
 
 bench:
-	go test $(GO_PACKAGES) -bench=. -benchmem -run='^$' -timeout 120s
+	go test -p $(GO_TEST_P) $(GO_PACKAGES) -bench=. -benchmem -run='^$' -timeout 120s
 
 fuzz:
 	go test ./dns/ -fuzz=FuzzUnpack -fuzztime=60s
@@ -57,14 +71,14 @@ fuzz:
 
 lint:
 	@if command -v golangci-lint > /dev/null 2>&1; then \
-		golangci-lint run $(GO_PACKAGES); \
+		golangci-lint run --concurrency=$(GO_LINT_P) $(GO_PACKAGES); \
 	else \
-		go vet $(GO_PACKAGES); \
+		go vet -p $(GO_BUILD_P) $(GO_PACKAGES); \
 		if command -v staticcheck > /dev/null 2>&1; then staticcheck $(GO_PACKAGES); fi; \
 	fi
 
 vet:
-	go vet $(GO_PACKAGES)
+	go vet -p $(GO_BUILD_P) $(GO_PACKAGES)
 
 check-go-package-scope:
 	@packages="$$(go list $(GO_PACKAGES))"; \

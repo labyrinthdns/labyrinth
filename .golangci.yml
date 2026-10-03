@@ -3,6 +3,8 @@
 run:
   timeout: 5m
   tests: true
+  # Cap analyzer workers — default = NumCPU locks ~8 GiB DNS hosts.
+  concurrency: 2
 
 linters:
   disable-all: true
