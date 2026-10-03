@@ -82,6 +82,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
@@ -101,6 +102,8 @@ jobs:
         run: npm ci && npm run build
 
       - name: Test with race detector
+        env:
+          GOMAXPROCS: "2"
         run: make test-race
 
       - name: Test without race (full coverage fallback)
