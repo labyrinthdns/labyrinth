@@ -246,8 +246,9 @@ type RRLConfig struct {
 
 // LoggingConfig holds logging settings.
 type LoggingConfig struct {
-	Level  string
-	Format string
+	Level       string
+	Format      string
+	FallbackLog string
 }
 
 // ACLConfig holds access control list settings.
@@ -460,6 +461,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	// Logging
 	setString(&cfg.Logging.Level, "logging.level")
 	setString(&cfg.Logging.Format, "logging.format")
+	setString(&cfg.Logging.FallbackLog, "logging.fallback_log")
 
 	// Web
 	setBool(&cfg.Web.Enabled, "web.enabled")

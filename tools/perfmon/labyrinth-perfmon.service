@@ -1,0 +1,13 @@
+[Unit]
+Description=Labyrinth DNS performance monitor (snapshot writer)
+After=network-online.target labyrinth.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/labyrinth/monitor/labyrinth-perfmon.py once --save
+Nice=10
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/labyrinth/perfmon

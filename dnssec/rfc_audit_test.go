@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/labyrinthdns/labyrinth/dns"
@@ -177,11 +178,11 @@ func TestVerifyNSEC3Denial5155_OptOutCoveredNCIsNotProof(t *testing.T) {
 
 	denied, err := VerifyNSEC3Denial5155("nonexist.example.com", dns.TypeA,
 		dns.RCodeNXDomain, records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, errNSEC3OptOutNameError) {
+		t.Fatalf("expected errNSEC3OptOutNameError, got denied=%v err=%v", denied, err)
 	}
 	if denied {
-		t.Error("opt-out NC-cover must invalidate NXDOMAIN proof (RFC 5155 §6)")
+		t.Error("opt-out NC-cover must invalidate Secure NXDOMAIN proof (RFC 5155 §6)")
 	}
 }
 

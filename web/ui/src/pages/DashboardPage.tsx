@@ -26,7 +26,6 @@ import {
 import { api } from '@/api/client'
 import type { StatsResponse, TopEntry, SystemProfileResponse, CacheEntry, TopListResponse } from '@/api/types'
 import { formatBytes, formatNumber, formatUptime, formatVersion } from '@/lib/utils'
-import { useQueryStream } from '@/hooks/useWebSocket'
 import { useTimeSeriesStream } from '@/hooks/useTimeSeriesStream'
 
 const QUERY_TYPE_COUNTERS = ['A', 'AAAA', 'MX', 'NS', 'PTR', 'SRV', 'CNAME', 'TXT'] as const
@@ -64,7 +63,6 @@ const CHART_SERIES_LABELS: Record<ChartSeriesKey, string> = {
 const CHART_SERIES_STORAGE_KEY = 'labyrinth.dashboard.chart_series_visibility'
 const TOP_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 250] as const
 const TOP_WINDOW_LIMIT = 2000
-const CHART_HEARTBEAT_MS = 5000
 
 function movingAverage(values: number[], windowSize = 4): number[] {
   if (values.length === 0) return []
@@ -307,7 +305,6 @@ export default function DashboardPage() {
   const [chartInterval, setChartInterval] = useState<string>(INTERVAL_OPTIONS['live'][0])
   const [topClients, setTopClients] = useState<TopEntry[]>([])
   const [topDomains, setTopDomains] = useState<TopEntry[]>([])
-  const [statsSnapshotAtMs, setStatsSnapshotAtMs] = useState(0)
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshMs, setRefreshMs] = useState(15000)
@@ -338,8 +335,6 @@ export default function DashboardPage() {
   })
   const [error, setError] = useState('')
 
-  const { queries: streamQueries, connected: streamConnected } = useQueryStream(300, CHART_HEARTBEAT_MS)
-
   const tsStreamParams = useMemo(() => ({
     mode: (chartMode === 'live' ? 'live' : 'history') as 'live' | 'history',
     window: chartMode === 'live' ? '1m' : chartMode,
@@ -367,7 +362,6 @@ export default function DashboardPage() {
 
       if (statsRes.status === 'fulfilled') {
         setStats(statsRes.value)
-        setStatsSnapshotAtMs(Date.now())
       }
       if (clientsRes.status === 'fulfilled') {
         const data = clientsRes.value as TopListResponse
@@ -509,51 +503,9 @@ export default function DashboardPage() {
     }
   }, [tsBuckets, intervalSeconds])
 
-  const streamDelta = useMemo(() => {
-    const queryTypeDelta: Record<string, number> = {}
-    const rcodeDelta: Record<string, number> = {}
-    let hits = 0
-    let misses = 0
-    let blocked = 0
-    for (const q of streamQueries) {
-      const ts = Date.parse(q.ts || '')
-      if (!Number.isFinite(ts) || ts <= statsSnapshotAtMs) continue
-      const qt = (q.qtype || '').toUpperCase()
-      if (qt) queryTypeDelta[qt] = (queryTypeDelta[qt] || 0) + 1
-      const rc = (q.rcode || '').toUpperCase() || 'UNKNOWN'
-      rcodeDelta[rc] = (rcodeDelta[rc] || 0) + 1
-      if (q.cached) hits++
-      else misses++
-      if (q.blocked) blocked++
-    }
-    return { queryTypeDelta, rcodeDelta, hits, misses, blocked }
-  }, [streamQueries, statsSnapshotAtMs])
-
-  const statsView = useMemo<StatsResponse | null>(() => {
-    if (!stats) return null
-    const nextQueriesByType: Record<string, number> = { ...stats.queries_by_type }
-    for (const [k, v] of Object.entries(streamDelta.queryTypeDelta)) {
-      nextQueriesByType[k] = (nextQueriesByType[k] || 0) + v
-    }
-    const nextRcodes: Record<string, number> = { ...stats.responses_by_rcode }
-    for (const [k, v] of Object.entries(streamDelta.rcodeDelta)) {
-      nextRcodes[k] = (nextRcodes[k] || 0) + v
-    }
-
-    const cacheHits = (stats.cache_hits || 0) + streamDelta.hits
-    const cacheMisses = (stats.cache_misses || 0) + streamDelta.misses
-    const totalForHit = cacheHits + cacheMisses
-
-    return {
-      ...stats,
-      queries_by_type: nextQueriesByType,
-      responses_by_rcode: nextRcodes,
-      cache_hits: cacheHits,
-      cache_misses: cacheMisses,
-      cache_hit_ratio: totalForHit > 0 ? cacheHits / totalForHit : 0,
-      blocked_queries: (stats.blocked_queries || 0) + streamDelta.blocked,
-    }
-  }, [stats, streamDelta])
+  // Stats come from the poll interval; live chart accuracy is owned by
+  // the timeseries WebSocket (no per-query stream on the dashboard).
+  const statsView = stats
 
   const totalQueries = statsView?.queries_by_type
     ? Object.values(statsView.queries_by_type).reduce((a, b) => a + b, 0)
@@ -798,8 +750,8 @@ export default function DashboardPage() {
           <span className="px-2.5 h-8 inline-flex items-center rounded-md text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
             Updated {updatedAt ? updatedAt.toLocaleTimeString() : '-'}
           </span>
-          <span className={`px-2.5 h-8 inline-flex items-center rounded-md text-xs border ${streamConnected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
-            WS: {streamConnected ? 'Live' : 'Offline'}
+          <span className={`px-2.5 h-8 inline-flex items-center rounded-md text-xs border ${tsConnected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
+            WS: {tsConnected ? 'Live' : 'Offline'}
           </span>
         </div>
       )}

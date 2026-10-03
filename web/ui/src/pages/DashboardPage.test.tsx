@@ -26,9 +26,6 @@ vi.mock('@/api/client', () => ({
 }))
 
 // WebSocket hooks — return empty data so the dashboard doesn't crash
-vi.mock('@/hooks/useWebSocket', () => ({
-  useQueryStream: () => ({ queries: [], connected: false }),
-}))
 vi.mock('@/hooks/useTimeSeriesStream', () => ({
   useTimeSeriesStream: () => ({
     buckets: [

@@ -21,10 +21,13 @@ type tsSubscription struct {
 }
 
 // tsMessage is the JSON envelope pushed to the client.
+// When Delta is true the client merges Buckets by timestamp into its
+// existing window instead of replacing the whole series (live mode).
 type tsMessage struct {
 	Mode     string   `json:"mode"`
 	Window   string   `json:"window"`
 	Interval string   `json:"interval"`
+	Delta    bool     `json:"delta,omitempty"`
 	Buckets  []Bucket `json:"buckets"`
 }
 
@@ -170,7 +173,7 @@ func (s *AdminServer) handleTimeSeriesWS(w http.ResponseWriter, r *http.Request)
 	subMu.Lock()
 	initialSub := *sub
 	subMu.Unlock()
-	if err := s.pushTimeSeries(ctx, conn, &initialSub); err != nil {
+	if err := s.pushTimeSeries(ctx, conn, &initialSub, false); err != nil {
 		return
 	}
 
@@ -212,16 +215,30 @@ func (s *AdminServer) handleTimeSeriesWS(w http.ResponseWriter, r *http.Request)
 				lastPush = currentSub.PushEvery
 			}
 
-			if err := s.pushTimeSeries(ctx, conn, &currentSub); err != nil {
+			// Live mode: push only the last 2 buckets as a delta merge.
+			// History mode: full aggregated snapshot (unchanged).
+			delta := currentSub.Mode == "live"
+			if err := s.pushTimeSeries(ctx, conn, &currentSub, delta); err != nil {
 				return
 			}
 		}
 	}
 }
 
-// pushTimeSeries sends a single time-series snapshot to the WebSocket client.
-func (s *AdminServer) pushTimeSeries(ctx context.Context, conn *websocket.Conn, sub *tsSubscription) error {
-	buckets := s.timeSeries.SnapshotAggregated(sub.Window, sub.Interval)
+// pushTimeSeries sends a time-series snapshot (or live delta) to the WebSocket client.
+func (s *AdminServer) pushTimeSeries(ctx context.Context, conn *websocket.Conn, sub *tsSubscription, delta bool) error {
+	var buckets []Bucket
+	if delta && sub.Mode == "live" {
+		buckets = s.timeSeries.LatestBuckets(2)
+		for i := range buckets {
+			total := buckets[i].CacheHits + buckets[i].CacheMisses
+			if total > 0 {
+				buckets[i].CacheHitRatio = float64(buckets[i].CacheHits) / float64(total)
+			}
+		}
+	} else {
+		buckets = s.timeSeries.SnapshotAggregated(sub.Window, sub.Interval)
+	}
 	if buckets == nil {
 		buckets = []Bucket{}
 	}
@@ -230,6 +247,7 @@ func (s *AdminServer) pushTimeSeries(ctx context.Context, conn *websocket.Conn, 
 		Mode:     sub.Mode,
 		Window:   sub.WindowStr,
 		Interval: sub.InterStr,
+		Delta:    delta,
 		Buckets:  buckets,
 	}
 

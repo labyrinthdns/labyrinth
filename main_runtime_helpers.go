@@ -97,7 +97,10 @@ func startHTTPServices(
 			}
 		}
 
-		// Wire query log hook
+		// Wire query log hook. Sample cached successes under load so the
+		// admin path (top lists + query log + client counters) does not
+		// contend with every cache hit; errors/uncached always recorded.
+		adminServer.SetQuerySampleEvery(16)
 		handler.OnQuery = func(client, qname, qtype, rcode string, cached bool, durationMs float64) {
 			adminServer.RecordQuery(client, qname, qtype, rcode, cached, durationMs)
 		}
@@ -199,6 +202,7 @@ func startDNSServers(
 		logger.Error("failed to start UDP server", "error", err)
 		return nil, err
 	}
+	udpServer.SetMetrics(handler.Metrics())
 	go func() { errCh <- udpServer.Serve(ctx) }()
 
 	tcpServer, err := server.NewTCPServer(cfg.Server.ListenAddr, handler, cfg.Server.TCPTimeout, cfg.Server.MaxTCPConns, logger,
