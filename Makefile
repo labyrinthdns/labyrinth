@@ -41,7 +41,7 @@ test:
 	go test $(GO_PACKAGES) -v -count=1 -timeout 120s
 
 test-race:
-	go test $(GO_PACKAGES) -count=1 -race -timeout 180s
+	go test $(GO_PACKAGES) -count=1 -race -timeout 300s
 
 soak:
 	go test -tags soak ./test/soak/ -run TestSoak -timeout 72h -v

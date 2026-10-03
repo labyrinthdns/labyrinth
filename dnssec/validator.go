@@ -2086,23 +2086,12 @@ func isInBailiwick(qname, signer string) bool {
 	return strings.HasSuffix(q, "."+s)
 }
 
-// validateDenialResponse validates NSEC3 proofs in NXDOMAIN/NODATA responses.
-// It first checks for RRSIG signatures in the authority section, then validates
-// NSEC3 records to prove the queried name does not exist or the type is absent.
-//
-// Unlike a positive answer, the absence of a verifiable NSEC/NSEC3 denial
-// proof is *not* a benign condition once RRSIGs are present in the authority
-// section: a signed-but-unverified denial response is treated as Bogus, not
-// Insecure, because the zone has clearly opted into DNSSEC.
-func (v *Validator) validateDenialResponse(response *dns.Message, qname string, qtype uint16, budget ...*cryptoBudget) ValidationResult {
-	return v.validateDenialResponseN(
-		response, qname, qtype, budget, nil,
-	)
-}
-
-// validateDenialResponseN is the internal implementation shared by
-// validateDenialResponse (no hash budget, for callers that don't need it)
-// and the full path (with nsec3 budget, from validateResponseImpl).
+// validateDenialResponseN validates NSEC/NSEC3 proofs in NXDOMAIN/NODATA
+// responses. Unlike a positive answer, the absence of a verifiable denial
+// proof is *not* benign once RRSIGs are present in the authority section: a
+// signed-but-unverified denial is Bogus, not Insecure, because the zone has
+// opted into DNSSEC. nsec3Budget may be nil when the caller does not need a
+// hash budget (tests); the hot path from validateResponseImpl always passes one.
 func (v *Validator) validateDenialResponseN(response *dns.Message, qname string, qtype uint16, budget []*cryptoBudget, nsec3Budget []*nsec3HashBudget) ValidationResult {
 	cb := budgetFrom(budget)
 	nsec3B := nsec3HashBudgetFrom(nsec3Budget)

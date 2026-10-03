@@ -609,17 +609,6 @@ func (r *Resolver) resolveIterative(
 	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "", false, nil)
 }
 
-func (r *Resolver) resolveIterativeECS(
-	name string,
-	qtype uint16,
-	qclass uint16,
-	cnameDepth int,
-	visited *visitedSet,
-	clientECS *dns.ECSOption,
-) (*ResolveResult, error) {
-	return r.resolveIterativeFromInner(name, qtype, qclass, cnameDepth, visited, toNameServerList(r.rootServers), "", false, clientECS)
-}
-
 // resolveFromClosest is the client-query entry for iterative resolution.
 // It may skip already-cached parent zones (e.g. start at .com for
 // deneme.com). Nested callers must use resolveIterative instead.
