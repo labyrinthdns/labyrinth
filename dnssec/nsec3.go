@@ -87,15 +87,6 @@ func nsec3HashBudgetFrom(budgets []*nsec3HashBudget) *nsec3HashBudget {
 	return nil
 }
 
-// nsec3AggressiveHashBudget is the hash budget used for aggressive NSEC3 cache
-// synthesis (RFC 8198 §5.3). It is intentionally smaller (150 units) than the
-// on-wire validation budget (600 units) because the cache path can be triggered
-// by many more queries than on-wire validation. 150 units covers the realistic
-// worst case (a 100-iteration zone needs 101 units per hash, so even a single
-// closest-encloser + next-closer = 2 hashes = 202 units would exceed it; the
-// cache path is expected to hit lower-iteration zones or fall back to upstream).
-const nsec3AggressiveHashBudget = 150
-
 // nsec3Base32 is the extended hex base32 encoding used by NSEC3 (RFC 4648 §7),
 // without padding.
 var nsec3Base32 = base32.HexEncoding.WithPadding(base32.NoPadding)
