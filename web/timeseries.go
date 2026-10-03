@@ -1,7 +1,9 @@
 package web
 
 import (
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,22 +26,36 @@ type Bucket struct {
 }
 
 // activeBucket holds the mutable counters for the current time window.
+// Kept for tests that inspect/manipulate the in-flight bucket; the hot
+// path uses atomics and mirrors into this under mu on rotate/snapshot.
 type activeBucket struct {
-	ts                time.Time
-	queries           int64
-	cacheHits         int64
-	cacheMisses       int64
-	errors            int64
-	totalLatency      float64
-	fallbackQueries   int64
+	ts                 time.Time
+	queries            int64
+	cacheHits          int64
+	cacheMisses        int64
+	errors             int64
+	totalLatency       float64
+	fallbackQueries    int64
 	fallbackRecoveries int64
 }
 
-// TimeSeriesAggregator collects rolling 1-hour bucketed counters at 1-second intervals.
+// TimeSeriesAggregator collects rolling bucketed counters at 1-second intervals.
+// Record is lock-free on the steady-state path (same second); rotation and
+// Snapshot take mu.
 type TimeSeriesAggregator struct {
 	mu      sync.Mutex
 	buckets []Bucket
-	current *activeBucket
+	current *activeBucket // mirror of hot counters; tests may poke this
+
+	// Hot-path atomics for the in-flight second.
+	curSec         atomic.Int64 // unix second; 0 = uninitialized
+	queries        atomic.Int64
+	cacheHits      atomic.Int64
+	cacheMisses    atomic.Int64
+	errors         atomic.Int64
+	totalLatencyUs atomic.Int64 // sum of latency in microseconds
+	fallbackQ      atomic.Int64
+	fallbackR      atomic.Int64
 }
 
 // NewTimeSeriesAggregator creates a new time-series aggregator.
@@ -51,87 +67,204 @@ func NewTimeSeriesAggregator() *TimeSeriesAggregator {
 
 // Record records a single query into the current time bucket.
 func (ts *TimeSeriesAggregator) Record(cached bool, latencyMs float64, isError bool) {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
+	sec := time.Now().Unix()
+	if ts.curSec.Load() != sec {
+		ts.rotateTo(sec)
+	}
 
-	ts.rotateLocked(time.Now())
-
-	ts.current.queries++
-	ts.current.totalLatency += latencyMs
+	ts.queries.Add(1)
 	if cached {
-		ts.current.cacheHits++
+		ts.cacheHits.Add(1)
 	} else {
-		ts.current.cacheMisses++
+		ts.cacheMisses.Add(1)
 	}
 	if isError {
-		ts.current.errors++
+		ts.errors.Add(1)
+	}
+	if latencyMs > 0 && !math.IsNaN(latencyMs) && !math.IsInf(latencyMs, 0) {
+		ts.totalLatencyUs.Add(int64(latencyMs * 1000))
 	}
 }
 
 // RecordFallback records one fallback query attempt and optionally one recovery.
 func (ts *TimeSeriesAggregator) RecordFallback(query, recovery int64) {
+	sec := time.Now().Unix()
+	if ts.curSec.Load() != sec {
+		ts.rotateTo(sec)
+	}
+	if query != 0 {
+		ts.fallbackQ.Add(query)
+	}
+	if recovery != 0 {
+		ts.fallbackR.Add(recovery)
+	}
+}
+
+// rotateTo flushes hot counters into buckets when the second boundary moves.
+func (ts *TimeSeriesAggregator) rotateTo(sec int64) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	ts.rotateLocked(time.Now())
-
-	ts.current.fallbackQueries += query
-	ts.current.fallbackRecoveries += recovery
-}
-
-// rotateLocked flushes the current bucket and starts a new one if the interval has elapsed.
-// Must be called with ts.mu held.
-func (ts *TimeSeriesAggregator) rotateLocked(now time.Time) {
-	bucketStart := now.Truncate(bucketInterval)
-
-	if ts.current == nil {
-		ts.current = &activeBucket{ts: bucketStart}
+	cur := ts.curSec.Load()
+	if cur == sec {
+		return
+	}
+	if cur == 0 {
+		// Tests may inject a stale current mirror before any Record.
+		if ts.current != nil && ts.current.ts.Unix() < sec {
+			ts.flushMirrorLocked()
+		}
+		ts.curSec.Store(sec)
+		ts.current = &activeBucket{ts: time.Unix(sec, 0).UTC()}
 		return
 	}
 
-	if bucketStart.Equal(ts.current.ts) {
-		return
+	// Flush every elapsed second between cur and sec (usually just one).
+	// The first flush carries real counters; later seconds are empty
+	// continuity buckets (hot atomics already zeroed).
+	for s := cur; s < sec; s++ {
+		ts.flushHotLocked(s)
 	}
-
-	// Flush current bucket
-	ts.flushCurrentLocked()
-
-	// Start new bucket
-	ts.current = &activeBucket{ts: bucketStart}
+	ts.curSec.Store(sec)
+	ts.current = &activeBucket{ts: time.Unix(sec, 0).UTC()}
 }
 
-// flushCurrentLocked converts the active bucket to an immutable Bucket and appends it.
-// Must be called with ts.mu held.
-func (ts *TimeSeriesAggregator) flushCurrentLocked() {
-	if ts.current == nil || ts.current.queries == 0 {
-		if ts.current != nil {
-			// Even empty buckets get recorded for continuity
-			b := Bucket{
-				Timestamp: ts.current.ts.UTC().Format(time.RFC3339),
-			}
-			ts.buckets = append(ts.buckets, b)
-		}
-	} else {
-		avgLatency := ts.current.totalLatency / float64(ts.current.queries)
-		b := Bucket{
-			Timestamp:          ts.current.ts.UTC().Format(time.RFC3339),
-			Queries:            ts.current.queries,
-			CacheHits:          ts.current.cacheHits,
-			CacheMisses:        ts.current.cacheMisses,
-			Errors:             ts.current.errors,
-			AvgLatencyMs:       avgLatency,
-			FallbackQueries:    ts.current.fallbackQueries,
-			FallbackRecoveries: ts.current.fallbackRecoveries,
-		}
-		ts.buckets = append(ts.buckets, b)
-	}
+// flushHotLocked swaps out hot atomics into a sealed Bucket for sec.
+// Must be called with ts.mu held. Leaves hot counters at zero.
+func (ts *TimeSeriesAggregator) flushHotLocked(sec int64) {
+	q := ts.queries.Swap(0)
+	hits := ts.cacheHits.Swap(0)
+	misses := ts.cacheMisses.Swap(0)
+	errs := ts.errors.Swap(0)
+	latUs := ts.totalLatencyUs.Swap(0)
+	fbQ := ts.fallbackQ.Swap(0)
+	fbR := ts.fallbackR.Swap(0)
 
-	// Trim to max buckets
+	var avg float64
+	if q > 0 {
+		avg = float64(latUs) / 1000.0 / float64(q)
+	}
+	b := Bucket{
+		Timestamp:          time.Unix(sec, 0).UTC().Format(time.RFC3339),
+		Queries:            q,
+		CacheHits:          hits,
+		CacheMisses:        misses,
+		Errors:             errs,
+		AvgLatencyMs:       avg,
+		FallbackQueries:    fbQ,
+		FallbackRecoveries: fbR,
+	}
+	ts.buckets = append(ts.buckets, b)
+	ts.trimLocked()
+
+	// Keep current mirror in sync for tests that inspect it after rotate.
+	ts.current = &activeBucket{ts: time.Unix(sec, 0).UTC()}
+}
+
+func (ts *TimeSeriesAggregator) trimLocked() {
 	if len(ts.buckets) > maxBuckets {
 		excess := len(ts.buckets) - maxBuckets
 		copy(ts.buckets, ts.buckets[excess:])
 		ts.buckets = ts.buckets[:maxBuckets]
 	}
+}
+
+// flushCurrentLocked converts the active hot counters to a bucket.
+// Kept for coverage/tests that call it directly under mu.
+func (ts *TimeSeriesAggregator) flushCurrentLocked() {
+	sec := ts.curSec.Load()
+	if sec == 0 && ts.current == nil {
+		return
+	}
+	if sec == 0 && ts.current != nil {
+		// Test-injected current without hot atomics — flush the mirror.
+		ts.flushMirrorLocked()
+		return
+	}
+	ts.flushHotLocked(sec)
+	// After an explicit flush, start a fresh second mirror at the same sec
+	// so subsequent Records in this second accumulate again.
+	ts.curSec.Store(sec)
+	ts.current = &activeBucket{ts: time.Unix(sec, 0).UTC()}
+}
+
+// flushMirrorLocked seals ts.current (test-injected) into buckets.
+func (ts *TimeSeriesAggregator) flushMirrorLocked() {
+	if ts.current == nil {
+		return
+	}
+	cur := ts.current
+	var avg float64
+	if cur.queries > 0 {
+		avg = cur.totalLatency / float64(cur.queries)
+	}
+	b := Bucket{
+		Timestamp:          cur.ts.UTC().Format(time.RFC3339),
+		Queries:            cur.queries,
+		CacheHits:          cur.cacheHits,
+		CacheMisses:        cur.cacheMisses,
+		Errors:             cur.errors,
+		AvgLatencyMs:       avg,
+		FallbackQueries:    cur.fallbackQueries,
+		FallbackRecoveries: cur.fallbackRecoveries,
+	}
+	if cur.queries == 0 {
+		b = Bucket{Timestamp: cur.ts.UTC().Format(time.RFC3339)}
+	}
+	ts.buckets = append(ts.buckets, b)
+	ts.trimLocked()
+	ts.current = nil
+}
+
+// syncMirrorLocked copies hot atomics into current for test inspection.
+func (ts *TimeSeriesAggregator) syncMirrorLocked() {
+	sec := ts.curSec.Load()
+	if sec == 0 {
+		return
+	}
+	q := ts.queries.Load()
+	ts.current = &activeBucket{
+		ts:                 time.Unix(sec, 0).UTC(),
+		queries:            q,
+		cacheHits:          ts.cacheHits.Load(),
+		cacheMisses:        ts.cacheMisses.Load(),
+		errors:             ts.errors.Load(),
+		totalLatency:       float64(ts.totalLatencyUs.Load()) / 1000.0,
+		fallbackQueries:    ts.fallbackQ.Load(),
+		fallbackRecoveries: ts.fallbackR.Load(),
+	}
+}
+
+// rotateLocked flushes when the interval has elapsed. Must hold ts.mu.
+// Compatibility shim for older call sites/tests.
+func (ts *TimeSeriesAggregator) rotateLocked(now time.Time) {
+	sec := now.Unix()
+	cur := ts.curSec.Load()
+	if cur == 0 {
+		// Prefer test-injected current with an old timestamp.
+		if ts.current != nil {
+			bucketStart := now.Truncate(bucketInterval)
+			if !ts.current.ts.Equal(bucketStart) {
+				ts.flushMirrorLocked()
+				ts.curSec.Store(sec)
+				ts.current = &activeBucket{ts: time.Unix(sec, 0).UTC()}
+			}
+			return
+		}
+		ts.curSec.Store(sec)
+		ts.current = &activeBucket{ts: time.Unix(sec, 0).UTC()}
+		return
+	}
+	if cur == sec {
+		ts.syncMirrorLocked()
+		return
+	}
+	// Release-and-reenter pattern avoided: rotateTo needs mu; we're already holding it.
+	for s := cur; s < sec; s++ {
+		ts.flushHotLocked(s)
+	}
+	ts.curSec.Store(sec)
+	ts.current = &activeBucket{ts: time.Unix(sec, 0).UTC()}
 }
 
 // Snapshot returns all buckets within the given time window.
@@ -142,8 +275,8 @@ func (ts *TimeSeriesAggregator) Snapshot(window time.Duration) []Bucket {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	// Rotate to flush current bucket if needed
 	ts.rotateLocked(now)
+	ts.syncMirrorLocked()
 
 	var result []Bucket
 	for _, b := range ts.buckets {
@@ -156,9 +289,12 @@ func (ts *TimeSeriesAggregator) Snapshot(window time.Duration) []Bucket {
 		}
 	}
 
-	// Include current bucket
+	// Include current hot bucket
 	if ts.current != nil && ts.current.queries > 0 {
-		avgLatency := ts.current.totalLatency / float64(ts.current.queries)
+		avgLatency := float64(0)
+		if ts.current.queries > 0 {
+			avgLatency = ts.current.totalLatency / float64(ts.current.queries)
+		}
 		cur := Bucket{
 			Timestamp:          ts.current.ts.UTC().Format(time.RFC3339),
 			Queries:            ts.current.queries,
@@ -176,6 +312,35 @@ func (ts *TimeSeriesAggregator) Snapshot(window time.Duration) []Bucket {
 	}
 
 	return result
+}
+
+// LatestBuckets returns up to n most recent sealed+current buckets (for WS delta).
+func (ts *TimeSeriesAggregator) LatestBuckets(n int) []Bucket {
+	if n <= 0 {
+		return nil
+	}
+	snap := ts.Snapshot(time.Duration(n+1) * bucketInterval)
+	if len(snap) <= n {
+		return snap
+	}
+	return snap[len(snap)-n:]
+}
+
+// ForceRotateForTest flushes hot counters into buckets without advancing the
+// logical second. Used by unit tests that previously rewound current.ts.
+func (ts *TimeSeriesAggregator) ForceRotateForTest() {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	sec := ts.curSec.Load()
+	if sec == 0 {
+		if ts.current != nil {
+			ts.flushMirrorLocked()
+		}
+		return
+	}
+	ts.flushHotLocked(sec)
+	ts.curSec.Store(sec)
+	ts.current = &activeBucket{ts: time.Unix(sec, 0).UTC()}
 }
 
 // SnapshotAggregated returns buckets within the given window, aggregated into

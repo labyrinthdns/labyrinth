@@ -337,11 +337,14 @@ func TestNSEntryHelpers(t *testing.T) {
 	}
 
 	remaining := removeNSByIP(entries, "1.1.1.1")
-	if len(remaining) != 1 {
-		t.Fatalf("expected 1 remaining, got %d", len(remaining))
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 remaining (hostname kept for alternate A), got %d", len(remaining))
 	}
-	if remaining[0].ipv4 != "2.2.2.2" {
-		t.Errorf("wrong NS remaining: %+v", remaining[0])
+	if remaining[0].ipv4 != "" {
+		t.Errorf("expected cleared ipv4 on excluded NS, got %+v", remaining[0])
+	}
+	if remaining[1].ipv4 != "2.2.2.2" {
+		t.Errorf("wrong NS remaining: %+v", remaining[1])
 	}
 }
 

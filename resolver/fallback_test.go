@@ -59,11 +59,22 @@ func TestShouldFallback_NXDOMAIN(t *testing.T) {
 	}
 }
 
+func TestShouldFallback_NoReachableAuthority(t *testing.T) {
+	result := &ResolveResult{RCODE: dns.RCodeServFail, FailureReason: "no-reachable-authority", Error: errTXIDMismatch}
+	fb := shouldFallback(result, nil)
+	if fb.triggered {
+		t.Error("expected shouldFallback=false when every NS was already exhausted")
+	}
+}
+
 func TestShouldFallback_DNSSECBogus(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}
 	fb := shouldFallback(result, nil)
-	if fb.triggered {
-		t.Error("expected shouldFallback=false for DNSSEC bogus")
+	if !fb.triggered {
+		t.Error("expected shouldFallback=true for DNSSEC bogus (recover via public resolver when it answers)")
+	}
+	if fb.reason != "DNSSEC bogus" {
+		t.Errorf("expected reason %q, got %q", "DNSSEC bogus", fb.reason)
 	}
 }
 
@@ -636,10 +647,22 @@ func TestQueryFallback_NetworkError(t *testing.T) {
 }
 
 func TestQueryFallback_MultipleResolvers_PicksOne(t *testing.T) {
-	// Verify that with multiple fallback resolvers, exactly one query is made.
+	// First configured address SERVFAILs; second recovers. Engagement
+	// still counts as a single fallback_queries increment.
+	var calls atomic.Int32
 	fallbackMock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		if len(q.Questions) == 0 {
 			return nil
+		}
+		n := calls.Add(1)
+		if n == 1 {
+			return &dns.Message{
+				Header: dns.Header{
+					Flags:   dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeServFail).Build(),
+					QDCount: 1,
+				},
+				Questions: q.Questions,
+			}
 		}
 		return &dns.Message{
 			Header: dns.Header{
@@ -660,22 +683,27 @@ func TestQueryFallback_MultipleResolvers_PicksOne(t *testing.T) {
 	c := cache.NewCache(100, 5, 86400, 3600, m)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	// All three entries point to the same mock, but the resolver picks one randomly.
 	r := NewResolver(c, ResolverConfig{
 		MaxDepth:          30,
 		UpstreamTimeout:   2 * time.Second,
 		UpstreamRetries:   1,
 		UpstreamPort:      fallbackMock.port,
-		FallbackResolvers: []string{fallbackMock.ip, fallbackMock.ip, fallbackMock.ip},
+		FallbackResolvers: []string{fallbackMock.ip, fallbackMock.ip},
 	}, m, logger)
 
 	result := r.queryFallback("example.com", dns.TypeA, dns.ClassIN, "test")
 	if result == nil {
-		t.Fatal("expected non-nil result")
+		t.Fatal("expected non-nil result after second fallback resolver")
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("expected at least 2 fallback attempts, got %d", calls.Load())
 	}
 
 	snap := m.Snapshot()
 	if snap.FallbackQueries != 1 {
-		t.Errorf("expected exactly 1 fallback query (not 3), got %d", snap.FallbackQueries)
+		t.Errorf("expected 1 fallback engagement, got %d", snap.FallbackQueries)
+	}
+	if snap.FallbackRecoveries != 1 {
+		t.Errorf("expected 1 recovery, got %d", snap.FallbackRecoveries)
 	}
 }

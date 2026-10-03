@@ -105,6 +105,11 @@ type MainHandler struct {
 	OnQuery func(client, qname, qtype, rcode string, cached bool, durationMs float64)
 }
 
+// Metrics returns the handler's metrics registry (may be nil in tests).
+func (h *MainHandler) Metrics() *metrics.Metrics {
+	return h.metrics
+}
+
 // SetPrivateFilter enables or disables private address filtering.
 // Called from the /api/config/raw hot-reload callback. The atomic store
 // publishes the new value to the DNS handler reader sites with the

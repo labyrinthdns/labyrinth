@@ -114,6 +114,14 @@ func (m *Metrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "# TYPE labyrinth_stale_while_refresh_total counter")
 	fmt.Fprintf(w, "labyrinth_stale_while_refresh_total %d\n", m.staleWhileRefreshTriggers.Load())
 
+	fmt.Fprintln(w, "# HELP labyrinth_udp_worker_drops_total Client UDP datagrams dropped because the worker semaphore was full.")
+	fmt.Fprintln(w, "# TYPE labyrinth_udp_worker_drops_total counter")
+	fmt.Fprintf(w, "labyrinth_udp_worker_drops_total %d\n", m.udpWorkerDrops.Load())
+
+	fmt.Fprintln(w, "# HELP labyrinth_prefetch_drops_total Background prefetch/stale-refresh launches skipped under concurrency cap.")
+	fmt.Fprintln(w, "# TYPE labyrinth_prefetch_drops_total counter")
+	fmt.Fprintf(w, "labyrinth_prefetch_drops_total %d\n", m.prefetchDrops.Load())
+
 	fmt.Fprintln(w, "# HELP labyrinth_dnssec_verdicts_total DNSSEC validator verdicts, partitioned by Secure/Insecure/Bogus.")
 	fmt.Fprintln(w, "# TYPE labyrinth_dnssec_verdicts_total counter")
 	fmt.Fprintf(w, "labyrinth_dnssec_verdicts_total{verdict=\"secure\"} %d\n", m.dnssecSecure.Load())

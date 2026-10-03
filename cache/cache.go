@@ -14,6 +14,10 @@ const shardCount = 256
 const (
 	defaultShardMapCapacity = 512
 	negativeTTLFallback     = 60
+	// defaultPrefetchConcurrency caps background re-resolutions. 64 is
+	// enough to keep hot names warm on a busy recursive resolver without
+	// letting a TTL cliff spawn thousands of competing Resolve calls.
+	defaultPrefetchConcurrency = 64
 )
 
 // Cache is a sharded in-memory DNS cache with TTL-based expiration.
@@ -41,6 +45,10 @@ type Cache struct {
 	// 10% of the original TTL.
 	prefetchEnabled bool
 	prefetchFunc    func(name string, qtype, qclass uint16)
+	// prefetchSem bounds concurrent prefetch / stale-while-refresh
+	// goroutines so an expiry stampede cannot compete with client
+	// traffic for resolver workers and upstream sockets.
+	prefetchSem chan struct{}
 
 	// nsecIdx implements RFC 8198 aggressive use of DNSSEC-validated
 	// cache: cached Secure NSEC intervals are consulted on cache miss to
@@ -77,20 +85,61 @@ func NewCache(maxEntries int, minTTL, maxTTL, negMaxTTL uint32, m *metrics.Metri
 // NewCacheWithStale creates a cache with optional serve-stale support (RFC 8767).
 func NewCacheWithStale(maxEntries int, minTTL, maxTTL, negMaxTTL uint32, serveStale bool, staleTTL uint32, m *metrics.Metrics) *Cache {
 	c := &Cache{
-		maxEntries: maxEntries,
-		minTTL:     minTTL,
-		maxTTL:     maxTTL,
-		negMaxTTL:  negMaxTTL,
-		serveStale: serveStale,
-		staleTTL:   staleTTL,
-		metrics:    m,
-		nsecIdx:    newNSECIndex(),
-		nsec3Idx:   newNSEC3Index(),
+		maxEntries:  maxEntries,
+		minTTL:      minTTL,
+		maxTTL:      maxTTL,
+		negMaxTTL:   negMaxTTL,
+		serveStale:  serveStale,
+		staleTTL:    staleTTL,
+		metrics:     m,
+		prefetchSem: make(chan struct{}, defaultPrefetchConcurrency),
+		nsecIdx:     newNSECIndex(),
+		nsec3Idx:    newNSEC3Index(),
 	}
 	for i := range c.shards {
 		c.shards[i].resetEntries()
 	}
 	return c
+}
+
+// launchPrefetch starts prefetchFunc under the concurrency cap. after
+// runs once the goroutine finishes (success or panic recovery in the
+// callback itself). Returns false if the cap is saturated — caller
+// should clear any in-flight bit so a later hit can retry.
+func (c *Cache) launchPrefetch(name string, qtype, class uint16, after func()) bool {
+	if c.prefetchFunc == nil {
+		return false
+	}
+	if c.prefetchSem == nil {
+		// Tests that construct Cache literals without NewCache*.
+		go func() {
+			defer func() {
+				if after != nil {
+					after()
+				}
+			}()
+			c.prefetchFunc(name, qtype, class)
+		}()
+		return true
+	}
+	select {
+	case c.prefetchSem <- struct{}{}:
+		go func() {
+			defer func() {
+				<-c.prefetchSem
+				if after != nil {
+					after()
+				}
+			}()
+			c.prefetchFunc(name, qtype, class)
+		}()
+		return true
+	default:
+		if c.metrics != nil {
+			c.metrics.IncPrefetchDrops()
+		}
+		return false
+	}
 }
 
 func (c *Cache) shardIndex(name string) uint8 {
@@ -164,7 +213,11 @@ func (c *Cache) Get(name string, qtype uint16, class uint16) (*Entry, bool) {
 			threshold = 1
 		}
 		if remaining < threshold && entry.tryPrefetch() {
-			go c.prefetchFunc(name, qtype, class)
+			if !c.launchPrefetch(name, qtype, class, nil) {
+				// Cap saturated — clear the one-shot bit so a later
+				// Get can retry when capacity frees up.
+				entry.prefetched.Store(0)
+			}
 		}
 	}
 
@@ -291,15 +344,17 @@ func (c *Cache) GetStale(name string, qtype uint16, class uint16) (*Entry, bool)
 	// RFC 8767 §3.1 stale-while-refresh: concurrent stale hits launch at
 	// most one refresh. The in-flight bit is cleared when the callback returns
 	// so a later stale serve can retry after a failed/no-op refresh; a Store
-	// also installs a new Entry with a clear bit.
+	// also installs a new Entry with a clear bit. Prefetch concurrency cap
+	// applies here too — if saturated, clear the bit immediately.
 	if c.prefetchEnabled && c.prefetchFunc != nil && entry.staleRefreshing.CompareAndSwap(false, true) {
 		if c.metrics != nil {
 			c.metrics.IncStaleWhileRefreshTriggers()
 		}
-		go func() {
-			defer entry.staleRefreshing.Store(false)
-			c.prefetchFunc(name, qtype, class)
-		}()
+		if !c.launchPrefetch(name, qtype, class, func() {
+			entry.staleRefreshing.Store(false)
+		}) {
+			entry.staleRefreshing.Store(false)
+		}
 	}
 	return stale, true
 }
