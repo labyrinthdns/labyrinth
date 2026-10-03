@@ -655,6 +655,13 @@ func TestEndToEndConcurrentQueries(t *testing.T) {
 	// At least 80% should succeed (network may have some timeouts)
 	minSuccess := len(domains) * 10 * 80 / 100
 	if successCount < minSuccess {
+		// GitHub Actions sets CI=true and has reliable egress; fail hard there.
+		// Local/dev hosts (firewalled resolvers, captive nets) often cannot
+		// complete 100 live lookups — skip instead of red-herring failures.
+		if os.Getenv("CI") == "" {
+			t.Skipf("only %d/%d external queries succeeded (expected >=%d); network unreliable locally",
+				successCount, len(domains)*10, minSuccess)
+		}
 		t.Errorf("only %d/%d queries succeeded (expected >=%d)", successCount, len(domains)*10, minSuccess)
 	}
 }

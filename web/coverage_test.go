@@ -1079,6 +1079,12 @@ func TestUpdatePasswordInConfig_FileNotFound(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
+	// updatePasswordInConfig also probes /etc/labyrinth/labyrinth.yaml —
+	// on a live host that file exists, so the relative miss is not enough.
+	if _, err := os.Stat("/etc/labyrinth/labyrinth.yaml"); err == nil {
+		t.Skip("system config present; cannot exercise not-found path")
+	}
+
 	err := updatePasswordInConfig("newhash")
 	if err == nil {
 		t.Fatal("expected error when config not found")

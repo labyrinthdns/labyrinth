@@ -512,7 +512,7 @@ func TestResolveNSAddrBypassesInflight(t *testing.T) {
 	r := testResolver(t, mock)
 
 	// Call resolveNSAddr directly — should succeed without going through inflight
-	result, err := r.resolveNSAddr("ns1.example.tr", dns.TypeA, nil)
+	result, err := r.resolveNSAddr("ns1.example.tr", dns.TypeA, (*visitedSet)(nil))
 	if err != nil {
 		t.Fatalf("resolveNSAddr error: %v", err)
 	}
@@ -664,6 +664,22 @@ func TestResolveIterativeDNSSECBogus(t *testing.T) {
 			return nil
 		}
 		qname := q.Questions[0].Name
+		qtype := q.Questions[0].Type
+
+		// DNSSEC meta-fetches must not receive a fake A+RRSIG answer (that
+		// mis-classifies and can stall Happy Eyeballs while chasing glue).
+		if qtype == dns.TypeDNSKEY || qtype == dns.TypeDS {
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetAA(true).SetRCODE(dns.RCodeServFail).Build()},
+				Questions: q.Questions,
+			}
+		}
+		if qtype != dns.TypeA {
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetAA(true).Build()},
+				Questions: q.Questions,
+			}
+		}
 
 		// Build a minimal RRSIG RDATA with expired expiration time.
 		signerName := dns.BuildPlainName("example.com")
@@ -687,7 +703,7 @@ func TestResolveIterativeDNSSECBogus(t *testing.T) {
 		rrsigRData = append(rrsigRData, make([]byte, 64)...) // Fake signature
 
 		return &dns.Message{
-			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).Build()},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetAA(true).Build()},
 			Questions: q.Questions,
 			Answers: []dns.ResourceRecord{
 				{
