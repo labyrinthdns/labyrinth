@@ -82,7 +82,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
@@ -99,13 +99,18 @@ jobs:
 
       - name: Build frontend
         working-directory: web/ui
+        env:
+          NODE_OPTIONS: --max-old-space-size=2048
         run: npm ci && npm run build
 
-      - name: Test with race detector
-        env:
-          GOMAXPROCS: "2"
-        run: make test-race
-
-      - name: Test without race (full coverage fallback)
-        if: ${{ failure() }}
+      # Plain tests first — cheap, covers the full tree, no race compile storm.
+      - name: Test
         run: make test
+
+      # Race only on concurrency-critical packages, one at a time (-p 1).
+      # Full-tree -race was OOMing runners and locking the 8 GiB DNS host.
+      - name: Test race (hot packages)
+        env:
+          GOMAXPROCS: "1"
+          GO_RACE_P: "1"
+        run: make test-race
