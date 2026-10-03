@@ -91,6 +91,8 @@ export interface TimeSeriesWSMessage {
   mode: TSMode
   window: string
   interval: string
+  /** When true, merge buckets by timestamp instead of replacing the series. */
+  delta?: boolean
   buckets: TimeSeriesBucket[]
 }
 

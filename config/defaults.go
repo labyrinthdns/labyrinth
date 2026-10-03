@@ -71,8 +71,9 @@ func defaultConfig() *Config {
 			},
 		},
 		Logging: LoggingConfig{
-			Level:  "info",
-			Format: "json",
+			Level:       "info",
+			Format:      "json",
+			FallbackLog: "/var/lib/labyrinth/fallback.jsonl",
 		},
 		ACL: ACLConfig{},
 		Web: WebConfig{

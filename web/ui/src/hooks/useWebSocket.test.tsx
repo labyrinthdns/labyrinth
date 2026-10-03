@@ -83,7 +83,7 @@ describe('useQueryStream', () => {
     vi.useRealTimers()
   })
 
-  it('ignores incoming messages while paused', () => {
+  it('unsubscribes (closes socket) while paused and ignores late messages', () => {
     const sockets: MockWS[] = []
     vi.mocked(createQueryWebSocket).mockImplementation(() => {
       const ws = new MockWS()
@@ -93,16 +93,20 @@ describe('useQueryStream', () => {
 
     const { result, unmount } = renderHook(() => useQueryStream(10, 10))
     act(() => sockets[0].open())
+    expect(result.current.connected).toBe(true)
 
     act(() => {
       result.current.setPaused(true)
     })
+
+    expect(result.current.paused).toBe(true)
+    expect(result.current.connected).toBe(false)
+    expect(sockets[0].readyState).toBe(MockWS.CLOSED)
+
     act(() => {
       sockets[0].emitMessage(mkEntry(1))
       vi.advanceTimersByTime(20)
     })
-
-    expect(result.current.paused).toBe(true)
     expect(result.current.queries).toHaveLength(0)
 
     unmount()

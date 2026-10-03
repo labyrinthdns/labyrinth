@@ -666,7 +666,7 @@ func TestPushTimeSeries(t *testing.T) {
 			WindowStr: "5m",
 			InterStr:  "1m",
 		}
-		_ = srv.pushTimeSeries(r.Context(), conn, sub)
+		_ = srv.pushTimeSeries(r.Context(), conn, sub, false)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

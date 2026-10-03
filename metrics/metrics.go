@@ -126,6 +126,15 @@ type Metrics struct {
 	// means the prefetch hook is mis-wired.
 	staleWhileRefreshTriggers atomic.Int64
 
+	// udpWorkerDrops counts client UDP datagrams discarded because the
+	// worker semaphore was full. Non-zero under load means admission
+	// control is protecting the read loop (preferred to Recv-Q drops).
+	udpWorkerDrops atomic.Int64
+
+	// prefetchDrops counts background prefetch/stale-refresh launches
+	// skipped because the prefetch concurrency cap was saturated.
+	prefetchDrops atomic.Int64
+
 	// M4.6 / UI-M6.3 — Per-EDE-code emission counters (RFC 8914 §4).
 	// Each entry in the map counts how many times the resolver has
 	// emitted an EDE with that info code. Operators answering
@@ -204,6 +213,18 @@ func (m *Metrics) IncNSEC3AggressiveSynthND()    { m.nsec3AggressiveSynthND.Add(
 // Y36 — cookie retry & stale-while-refresh.
 func (m *Metrics) IncOutboundBadCookieRetries()  { m.outboundBadCookieRetries.Add(1) }
 func (m *Metrics) IncStaleWhileRefreshTriggers() { m.staleWhileRefreshTriggers.Add(1) }
+
+// IncUDPWorkerDrops counts one UDP datagram dropped at the admit gate.
+func (m *Metrics) IncUDPWorkerDrops() { m.udpWorkerDrops.Add(1) }
+
+// UDPWorkerDrops returns the cumulative UDP admit-gate drop count.
+func (m *Metrics) UDPWorkerDrops() int64 { return m.udpWorkerDrops.Load() }
+
+// IncPrefetchDrops counts one skipped prefetch/stale-refresh under concurrency cap.
+func (m *Metrics) IncPrefetchDrops() { m.prefetchDrops.Add(1) }
+
+// PrefetchDrops returns the cumulative prefetch concurrency-cap drop count.
+func (m *Metrics) PrefetchDrops() int64 { return m.prefetchDrops.Load() }
 
 // IncEDE counts one emission of EDE info-code `code` (RFC 8914 §4).
 // The map allocates a counter the first time a code is seen — for the

@@ -146,6 +146,53 @@ func VerifyNSECDenial(qname string, qtype uint16, rcode uint8, records []NSECRec
 	return false, nil
 }
 
+// VerifyNSECDenialDSAbsent reports whether authenticated NSEC records prove
+// that no DS exists at qname. This is the NSEC counterpart of
+// VerifyNSEC3DenialDSAbsent, used for client-facing TypeDS NODATA under
+// reverse zones that still sign with NSEC (Afrinic, ARIN, …).
+//
+// Accepted forms:
+//
+//  1. NSEC owner == qname with the DS bit clear (and no CNAME). Unlike
+//     VerifyNSECDenial, parent-side NS-without-SOA bitmaps are accepted —
+//     that shape is the RFC 4035 insecure-delegation signal for DS queries
+//     (e.g. 8.222.154.in-addr.arpa DS → NSEC NS RRSIG NSEC, no DS).
+//
+//  2. Covering NSEC over qname: the name is proven nonexistent, so no DS
+//     can exist. RIR reverse parents commonly return this with NOERROR
+//     rather than NXDOMAIN for multi-label cuts (e.g. 222.154.in-addr.arpa
+//     covered by 33.221.154 → 8.222.154). Unbound/1.1.1.1 accept it;
+//     requiring NXDOMAIN here was forcing Bogus → public-resolver fallback.
+func VerifyNSECDenialDSAbsent(qname string, records []NSECRecordWithOwner) (bool, error) {
+	if len(records) == 0 {
+		return false, errNoNSECRecords
+	}
+	qname = canonicalName(qname)
+
+	for _, n := range records {
+		owner := canonicalName(n.OwnerName)
+		if owner != qname {
+			continue
+		}
+		if nsecHasType(&n.NSECRecord, dns.TypeDS) {
+			continue
+		}
+		if nsecHasType(&n.NSECRecord, dns.TypeCNAME) {
+			continue
+		}
+		return true, nil
+	}
+
+	for _, n := range records {
+		owner := canonicalName(n.OwnerName)
+		next := canonicalName(n.NextDomainName)
+		if nsecCoversName(owner, next, qname) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // nsecCoversName reports whether qname falls in the open canonical interval
 // (owner, next). Handles wrap-around for the zone's last NSEC where the
 // owner sorts after next.

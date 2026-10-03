@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Pause, Play, Trash2, Wifi, WifiOff, Shield, Search, Download, Copy, Check, Database, Loader2 } from 'lucide-react'
 import { useQueryStream } from '@/hooks/useWebSocket'
 import { api } from '@/api/client'
 import { copyTextToClipboard, formatDuration, formatNumber } from '@/lib/utils'
+import type { QueryEntry } from '@/api/types'
+
+const QUERY_ROW_HEIGHT = 44
+const QUERY_FLUSH_MS = 200
 
 const RCODE_STYLES: Record<string, string> = {
   NOERROR: 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400',
@@ -155,8 +160,67 @@ function DomainCell({ domain, qtype, paused }: { domain: string; qtype: string; 
   )
 }
 
+function QueryRow({ q, paused }: { q: QueryEntry; paused: boolean }) {
+  return (
+    <div
+      className="grid grid-cols-[72px_88px_140px_minmax(140px,1.4fr)_64px_120px_72px_72px] gap-0 items-center px-4 text-sm border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/30"
+      style={{ height: QUERY_ROW_HEIGHT }}
+    >
+      <div className="text-xs font-mono text-slate-400 dark:text-slate-500 whitespace-nowrap truncate">
+        {q.global_num ?? q.id}
+      </div>
+      <div className="text-xs font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
+        {new Date(q.ts).toLocaleTimeString()}
+      </div>
+      <div className="text-xs font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap truncate">
+        {q.client}
+        {q.client_num != null && (
+          <span className="ml-1.5 text-xs text-slate-400">#{q.client_num}</span>
+        )}
+      </div>
+      <div className="text-slate-900 dark:text-slate-100 font-medium min-w-0">
+        <DomainCell domain={q.qname} qtype={q.qtype} paused={paused} />
+      </div>
+      <div className="text-xs font-mono text-slate-500 dark:text-slate-400">
+        {q.qtype}
+      </div>
+      <div className="flex items-center gap-1.5 min-w-0">
+        {q.blocked ? (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400">
+            <Shield size={10} />
+            Blocked
+          </span>
+        ) : (
+          <RcodeBadge rcode={q.rcode} />
+        )}
+        {q.dnssec_status === 'secure' && (
+          <span title="DNSSEC Secure — signed zone, signature validated">
+            <Shield size={12} className="text-green-500 dark:text-green-400" />
+          </span>
+        )}
+        {q.dnssec_status === 'insecure' && (
+          <span title="DNSSEC Insecure — unsigned zone (no DS chain). Normal for unsigned domains; not a failure.">
+            <Shield size={12} className="text-slate-400 dark:text-slate-500" strokeWidth={1.5} />
+          </span>
+        )}
+        {q.dnssec_status === 'bogus' && (
+          <span title="DNSSEC Bogus — validator rejected signatures (forgery, expired, broken chain)">
+            <Shield size={12} className="text-red-500 dark:text-red-400" />
+          </span>
+        )}
+      </div>
+      <div>
+        <CachedBadge cached={q.cached} />
+      </div>
+      <div className="text-right text-xs font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
+        {formatDuration(q.duration_ms)}
+      </div>
+    </div>
+  )
+}
+
 export default function QueriesPage() {
-  const { queries, connected, paused, setPaused, clear } = useQueryStream(200, 0)
+  const { queries, connected, paused, setPaused, clear } = useQueryStream(200, QUERY_FLUSH_MS)
   const [totalQueries, setTotalQueries] = useState(0)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [search, setSearch] = useState('')
@@ -198,6 +262,13 @@ export default function QueriesPage() {
     const timer = setInterval(() => setNowMs(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [])
+
+  const rowVirtualizer = useVirtualizer({
+    count: filteredQueries.length,
+    getScrollElement: () => tableRef.current,
+    estimateSize: () => QUERY_ROW_HEIGHT,
+    overscan: 12,
+  })
 
   useEffect(() => {
     if (!autoScroll) return
@@ -365,116 +436,51 @@ export default function QueriesPage() {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Virtualized table */}
       <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
+        <div className="grid grid-cols-[72px_88px_140px_minmax(140px,1.4fr)_64px_120px_72px_72px] gap-0 px-4 py-3 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
+          {['#', 'Time', 'Client', 'Domain', 'Type', 'RCode', 'Cached', 'Duration'].map((label, i) => (
+            <div
+              key={label}
+              className={`text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider ${i === 7 ? 'text-right' : 'text-left'}`}
+            >
+              {label}
+            </div>
+          ))}
+        </div>
         <div ref={tableRef} className="overflow-x-auto max-h-[calc(100vh-220px)] overflow-y-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 dark:bg-slate-900 sticky top-0 z-10">
-              <tr>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  #
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Time
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Client
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Domain
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Type
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  RCode
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Cached
-                </th>
-                <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Duration
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-              {filteredQueries.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={8}
-                    className="px-4 py-12 text-center text-slate-400 dark:text-slate-500"
-                  >
-                    <div className="flex flex-col items-center gap-2">
-                      <Wifi size={24} className="text-slate-300 dark:text-slate-600" />
-                      <p>No matching queries...</p>
-                      <p className="text-xs">
-                        Try clearing filters or wait for new events
-                      </p>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                filteredQueries.map((q) => (
-                  <tr
+          {filteredQueries.length === 0 ? (
+            <div className="px-4 py-12 text-center text-slate-400 dark:text-slate-500">
+              <div className="flex flex-col items-center gap-2">
+                <Wifi size={24} className="text-slate-300 dark:text-slate-600" />
+                <p>No matching queries...</p>
+                <p className="text-xs">
+                  Try clearing filters or wait for new events
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div
+              className="relative w-full"
+              style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const q = filteredQueries[virtualRow.index]
+                return (
+                  <div
                     key={q.id}
-                    className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors"
+                    className="absolute top-0 left-0 w-full"
+                    style={{
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
                   >
-                    <td className="px-4 py-2.5 text-xs font-mono text-slate-400 dark:text-slate-500 whitespace-nowrap">
-                      {q.global_num ?? q.id}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                      {new Date(q.ts).toLocaleTimeString()}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                      {q.client}
-                      {q.client_num != null && (
-                        <span className="ml-1.5 text-xs text-slate-400">#{q.client_num}</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100 font-medium max-w-xs">
-                      <DomainCell domain={q.qname} qtype={q.qtype} paused={paused} />
-                    </td>
-                    <td className="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">
-                      {q.qtype}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1.5">
-                        {q.blocked ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400">
-                            <Shield size={10} />
-                            Blocked
-                          </span>
-                        ) : (
-                          <RcodeBadge rcode={q.rcode} />
-                        )}
-                        {q.dnssec_status === 'secure' && (
-                          <span title="DNSSEC Secure — signed zone, signature validated">
-                            <Shield size={12} className="text-green-500 dark:text-green-400" />
-                          </span>
-                        )}
-                        {q.dnssec_status === 'insecure' && (
-                          <span title="DNSSEC Insecure — unsigned zone (no DS chain). Normal for unsigned domains; not a failure.">
-                            <Shield size={12} className="text-slate-400 dark:text-slate-500" strokeWidth={1.5} />
-                          </span>
-                        )}
-                        {q.dnssec_status === 'bogus' && (
-                          <span title="DNSSEC Bogus — validator rejected signatures (forgery, expired, broken chain)">
-                            <Shield size={12} className="text-red-500 dark:text-red-400" />
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <CachedBadge cached={q.cached} />
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-xs font-mono text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                      {formatDuration(q.duration_ms)}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                    <QueryRow q={q} paused={paused} />
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

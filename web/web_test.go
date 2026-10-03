@@ -234,24 +234,28 @@ func TestTimeSeries_Record(t *testing.T) {
 	ts.Record(false, 3.0, true)
 	ts.Record(false, 2.0, false)
 
-	ts.mu.Lock()
-	cur := ts.current
-	ts.mu.Unlock()
-
-	if cur == nil {
-		t.Fatal("current bucket is nil after recording")
+	snap := ts.Snapshot(time.Hour)
+	if len(snap) == 0 {
+		t.Fatal("expected at least 1 bucket after recording")
 	}
-	if cur.queries != 3 {
-		t.Fatalf("want 3 queries, got %d", cur.queries)
+	var q, hits, misses, errs int64
+	for _, b := range snap {
+		q += b.Queries
+		hits += b.CacheHits
+		misses += b.CacheMisses
+		errs += b.Errors
 	}
-	if cur.cacheHits != 1 {
-		t.Fatalf("want 1 cache hit, got %d", cur.cacheHits)
+	if q != 3 {
+		t.Fatalf("want 3 queries, got %d", q)
 	}
-	if cur.cacheMisses != 2 {
-		t.Fatalf("want 2 cache misses, got %d", cur.cacheMisses)
+	if hits != 1 {
+		t.Fatalf("want 1 cache hit, got %d", hits)
 	}
-	if cur.errors != 1 {
-		t.Fatalf("want 1 error, got %d", cur.errors)
+	if misses != 2 {
+		t.Fatalf("want 2 cache misses, got %d", misses)
+	}
+	if errs != 1 {
+		t.Fatalf("want 1 error, got %d", errs)
 	}
 }
 
@@ -2324,21 +2328,10 @@ func TestTimeSeries_FlushCurrentLocked(t *testing.T) {
 	ts.Record(false, 4.0, true)
 	ts.Record(true, 6.0, false)
 
-	// Manually trigger a flush by calling Snapshot with a large window.
-	// Snapshot calls rotateLocked which triggers flushCurrentLocked when
-	// the bucket boundary changes. Since we just recorded, the current
-	// bucket is active. We can force a flush by manipulating the bucket
-	// timestamp.
-	ts.mu.Lock()
-	if ts.current == nil {
-		ts.mu.Unlock()
-		t.Fatal("current bucket should not be nil")
-	}
-	// Move the current bucket timestamp back so the next rotation flushes it
-	ts.current.ts = ts.current.ts.Add(-bucketInterval)
-	ts.mu.Unlock()
+	// Force a flush of the hot counters (replaces rewinding current.ts).
+	ts.ForceRotateForTest()
 
-	// Now record again, which will trigger rotation and flush the old bucket
+	// Now record again into a fresh hot bucket
 	ts.Record(false, 1.0, false)
 
 	// Snapshot with a large window to get all buckets
