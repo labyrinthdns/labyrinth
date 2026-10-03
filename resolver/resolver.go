@@ -1041,17 +1041,23 @@ func (r *Resolver) resolveIterativeFromInner(
 		case responseServFail:
 			visited.MarkFailedIP(nsIP)
 			nameservers = excludeNSIP(nameservers, nsIP)
-			if len(nameservers) == 0 {
-				// Every authoritative NS in the delegation refused or
-				// errored out (typical broken-reverse-zone shape: parent
-				// publishes NS records for a /24 whose actual operators
-				// never set up real auth). Tag the cause so the server
-				// emits EDE 22 (No Reachable Authority) — clients then
-				// know retry won't help and the failure is upstream.
+			// Do not Happy-Eyeballs-re-resolve a hostname whose only glue
+			// just failed — that cannot recover and, before the nsAddrName
+			// guard, fanned out into a goroutine storm.
+			if !nsListHasAlternateAddress(nameservers, visited, r) {
+				// REFUSED/FORMERR ⇒ no reachable authority (EDE 22, no
+				// public-resolver fallback). Plain SERVFAIL keeps fallback
+				// eligible so stub/forward soft failures can recover.
+				if response != nil && response.Header.RCODE() != dns.RCodeServFail {
+					return &ResolveResult{
+						RCODE:         dns.RCodeServFail,
+						FailureReason: "no-reachable-authority",
+						Error:         errors.New("no reachable nameserver"),
+					}, nil
+				}
 				return &ResolveResult{
-					RCODE:         dns.RCodeServFail,
-					FailureReason: "no-reachable-authority",
-					Error:         errors.New("no reachable nameserver"),
+					RCODE: dns.RCodeServFail,
+					Error: errors.New("all nameservers returned SERVFAIL"),
 				}, nil
 			}
 			continue
@@ -1119,9 +1125,17 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 	// an A timeout before trying AAAA (or vice-versa).
 	// First pass: out-of-bailiwick NS (safe, no loop risk).
 	// Second pass: in-bailiwick NS (needed for TLDs like .tr where NS is *.ns.tr).
+	//
+	// Never Happy-Eyeballs-resolve the hostname we are already inside
+	// resolveNSAddr for — that re-enters the same root/NS set, fans out
+	// unbounded goroutines under race (live: ServFail-all-NS → 7 GiB RSS).
 	happyEyeballsDelay := 300 * time.Millisecond
 	for pass := 0; pass < 2; pass++ {
 		for _, ns := range shuffled {
+			if visited != nil && visited.nsAddrName != "" &&
+				strings.EqualFold(ns.hostname, visited.nsAddrName) {
+				continue
+			}
 			inZone := security.InZone(ns.hostname, currentZone)
 			if pass == 0 && inZone {
 				continue
@@ -1172,7 +1186,7 @@ func (r *Resolver) resolveNSHappyEyeballs(hostname string, delay time.Duration, 
 	}()
 
 	resolveFamily := func(qtype uint16, label string) nsResult {
-		result, err := r.resolveNSAddr(hostname, qtype, visited.budget)
+		result, err := r.resolveNSAddr(hostname, qtype, visited)
 		if err == nil && result != nil && !nsHasCNAMERedirect(hostname, result.Answers) {
 			for _, rr := range result.Answers {
 				if rr.Type == qtype {
@@ -1201,7 +1215,8 @@ func (r *Resolver) resolveNSHappyEyeballs(hostname string, delay time.Duration, 
 	}()
 
 	// Launch the second address family after the staggered delay, unless the
-	// first has already succeeded and canceled it.
+	// first has already succeeded and canceled it. Always send a result so
+	// the collector cannot block forever if the sibling is canceled mid-wait.
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
@@ -1209,27 +1224,36 @@ func (r *Resolver) resolveNSHappyEyeballs(hostname string, delay time.Duration, 
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
+			results <- nsResult{err: context.Canceled}
 			return
 		case <-timer.C:
+		}
+		// Re-check after the delay — success on the first family cancels us.
+		select {
+		case <-ctx.Done():
+			results <- nsResult{err: context.Canceled}
+			return
+		default:
 		}
 		results <- resolveFamily(secondType, secondLabel)
 	}()
 
-	// Collect results — return the first success, or the last error if both
-	// families completed unsuccessfully. The deferred join handles any loser.
+	// Collect results — return the first success, or the last non-cancel error
+	// if both families completed unsuccessfully. The deferred join handles
+	// any loser still in flight.
 	var lastErr error
-	for completed := 0; completed < 2; {
-		select {
-		case res := <-results:
-			completed++
-			if res.err == nil {
-				cancel()
-				return hostname, res.ip, nil
-			}
-			lastErr = res.err
-		case <-ctx.Done():
-			return "", "", lastErr
+	for completed := 0; completed < 2; completed++ {
+		res := <-results
+		if res.err == nil {
+			cancel()
+			return hostname, res.ip, nil
 		}
+		if !errors.Is(res.err, context.Canceled) {
+			lastErr = res.err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no reachable address for nameserver")
 	}
 	return "", "", lastErr
 }
@@ -1308,6 +1332,11 @@ type visitedSet struct {
 	cname     map[string]struct{}
 	failedIPs map[string]struct{}
 	budget    *reqBudget
+	// nsAddrName is the NS hostname currently being resolved via
+	// resolveNSAddr. Copied into child visited sets so selectAndResolveNS
+	// will not Happy-Eyeballs that same hostname again (re-entrancy storm
+	// under race: ServFail-all-NS → multi-GiB RSS).
+	nsAddrName string
 }
 
 func newVisitedSet() *visitedSet {
@@ -1327,6 +1356,22 @@ func newVisitedSetWithBudget(b *reqBudget) *visitedSet {
 	v := newVisitedSet()
 	if b != nil {
 		v.budget = b
+	}
+	return v
+}
+
+// newVisitedSetForNSAddr builds the visitedSet for an NS-address sub-resolution.
+// Independent loop keys, shared budget, nsAddrName set for re-entrancy guard.
+func newVisitedSetForNSAddr(parent *visitedSet, hostname string) *visitedSet {
+	var budget *reqBudget
+	if parent != nil {
+		budget = parent.budget
+	}
+	v := newVisitedSetWithBudget(budget)
+	if hostname != "" {
+		v.nsAddrName = hostname
+	} else if parent != nil {
+		v.nsAddrName = parent.nsAddrName
 	}
 	return v
 }
@@ -1409,6 +1454,42 @@ func removeNSByIP(nameservers []nsEntry, ip string) []nsEntry {
 	return excludeNSIP(nameservers, ip)
 }
 
+// nsListHasAlternateAddress reports whether any candidate still has a
+// non-failed glue or cached A/AAAA that selectAndResolveNS could use
+// without recursively resolving the NS hostname.
+func nsListHasAlternateAddress(nameservers []nsEntry, visited *visitedSet, r *Resolver) bool {
+	for _, ns := range nameservers {
+		if ns.ipv4 != "" && (visited == nil || !visited.IsFailedIP(ns.ipv4)) {
+			return true
+		}
+		if ns.ipv6 != "" && (visited == nil || !visited.IsFailedIP(ns.ipv6)) {
+			return true
+		}
+		if r == nil || ns.hostname == "" {
+			continue
+		}
+		if entry, ok := r.cache.Get(ns.hostname, dns.TypeA, dns.ClassIN); ok {
+			for _, rr := range entry.Records {
+				if ip, err := dns.ParseA(rr.RData); err == nil {
+					if visited == nil || !visited.IsFailedIP(ip.String()) {
+						return true
+					}
+				}
+			}
+		}
+		if entry, ok := r.cache.Get(ns.hostname, dns.TypeAAAA, dns.ClassIN); ok {
+			for _, rr := range entry.Records {
+				if ip, err := dns.ParseAAAA(rr.RData); err == nil {
+					if visited == nil || !visited.IsFailedIP(ip.String()) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // excludeNSIP drops nameserver candidates whose only glue is ip, and clears
 // matching glue on multi-address entries so a later cache lookup can still
 // try alternate addresses for the same hostname.
@@ -1457,12 +1538,25 @@ func parseIPv4Bytes(ipStr string) []byte {
 // coalescer. This prevents deadlock when the NS hostname resolution would
 // hit the same inflight key as the caller (e.g., ns1.example.tr while
 // already resolving something under example.tr).
-func (r *Resolver) resolveNSAddr(name string, qtype uint16, budget *reqBudget) (*ResolveResult, error) {
+//
+// parent carries the request budget and nsAddrName re-entrancy guard; a nil
+// parent is allowed for diagnostic/trace helpers.
+//
+// DNSSEC validation is skipped here: glue/NS-address lookups are an internal
+// transport step. Validating them re-enters the validator (DNSKEY fetches)
+// while Happy Eyeballs still holds the parent request — a deadlock under
+// race (TestResolveIterativeDNSSECBogus hung 10m).
+func (r *Resolver) resolveNSAddr(name string, qtype uint16, parent *visitedSet) (*ResolveResult, error) {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
 	// Fresh loop-detection state (a distinct query subtree) but the SAME
 	// request budget, so NXNS-style NS-address fan-out counts against the
 	// originating client request's global query/time allowance.
-	return r.resolveIterative(name, qtype, dns.ClassIN, 0, newVisitedSetWithBudget(budget))
+	return r.resolveIterativeFromInner(
+		name, qtype, dns.ClassIN, 0, newVisitedSetForNSAddr(parent, name),
+		toNameServerList(r.rootServers), "",
+		true, // skipValidation — see doc comment
+		nil,
+	)
 }
 
 func (r *Resolver) dnsPort() string {
