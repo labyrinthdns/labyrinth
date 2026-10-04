@@ -42,7 +42,7 @@ type FormState = {
     alertErrorThresholdPct: number; alertLatencyThresholdMs: number
     autoUpdate: boolean; updateCheckInterval: string
   }
-  logging: { level: string; format: string }
+  logging: { level: string; format: string; fallbackDebug: boolean; fallbackLog: string }
   daemon: { enabled: boolean; pidFile: string }
   zabbix: { enabled: boolean; addr: string }
   acl: { allow: string[]; deny: string[] }
@@ -147,7 +147,12 @@ function mapForm(cfg: Record<string, unknown>, authHash: string): FormState {
       alertErrorThresholdPct: num(web.alert_error_threshold_pct, 5), alertLatencyThresholdMs: num(web.alert_latency_threshold_ms, 250),
       autoUpdate: boo(web.auto_update), updateCheckInterval: str(web.update_check_interval, '24h'),
     },
-    logging: { level: str(obj(cfg.logging).level, 'info'), format: str(obj(cfg.logging).format, 'json') },
+    logging: {
+      level: str(obj(cfg.logging).level, 'info'),
+      format: str(obj(cfg.logging).format, 'json'),
+      fallbackDebug: boo(obj(cfg.logging).fallback_debug),
+      fallbackLog: str(obj(cfg.logging).fallback_log, '/var/lib/labyrinth/fallback.jsonl'),
+    },
     daemon: { enabled: boo(obj(cfg.daemon).enabled), pidFile: str(obj(cfg.daemon).pid_file, '/var/run/labyrinth.pid') },
     zabbix: { enabled: boo(obj(cfg.zabbix).enabled), addr: str(obj(cfg.zabbix).addr) },
     acl: { allow: arr(acl.allow), deny: arr(acl.deny) },
@@ -258,6 +263,8 @@ function buildYAML(f: FormState): string {
   L.push('logging:')
   L.push(`  level: ${y(f.logging.level)}`)
   L.push(`  format: ${y(f.logging.format)}`)
+  L.push(`  fallback_debug: ${f.logging.fallbackDebug}`)
+  if (f.logging.fallbackLog) L.push(`  fallback_log: ${y(f.logging.fallbackLog)}`)
   L.push('')
 
   // Web
@@ -728,6 +735,12 @@ export default function ConfigPage() {
           <div className="grid grid-cols-2 gap-2">
             <I label="Log Level" path="logging.level" value={form.logging.level} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, level: v } }))} />
             <I label="Log Format" path="logging.format" value={form.logging.format} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, format: v } }))} />
+          </div>
+          <div className="border-t border-slate-200 dark:border-slate-700 pt-3 mt-1 space-y-2">
+            <Toggle label="Fallback Debug Log" checked={form.logging.fallbackDebug} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, fallbackDebug: v } }))} />
+            {form.logging.fallbackDebug && (
+              <I label="Fallback Log Path" path="logging.fallback_log" value={form.logging.fallbackLog} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, fallbackLog: v } }))} />
+            )}
           </div>
           <div className="border-t border-slate-200 dark:border-slate-700 pt-3 mt-1">
             <Toggle label="Daemon Mode" checked={form.daemon.enabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, daemon: { ...p.daemon, enabled: v } }))} />
