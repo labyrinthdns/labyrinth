@@ -154,7 +154,6 @@ No pre-existing findings in modified files. This is a targeted diff scan of chan
 
 - `labyrinth.1` — deleted man page (no security impact)
 - `security-report/*` — deleted old security report files (intentional cleanup)
-- `.cursorrules`, `.windsurfrules`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` — config/meta files
 
 ---
 
