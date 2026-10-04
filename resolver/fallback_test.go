@@ -256,15 +256,16 @@ func TestQueryFallback_NXDOMAIN_IsRecovery(t *testing.T) {
 	}
 }
 
-func TestResolve_FallbackOnServFail(t *testing.T) {
-	// Single mock: iterative queries (RD=0) return SERVFAIL,
-	// recursive/fallback queries (RD=1) return a valid A record.
+func TestResolve_NoFallbackOnIterativeServFail(t *testing.T) {
+	// Exhausted iterative SERVFAIL is tagged no-reachable-authority.
+	// Public recursive fallback would hit the same dead auth (EDE 22);
+	// even if a fallback listener would answer, Resolve must not engage it.
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		if len(q.Questions) == 0 {
 			return nil
 		}
 		if q.Header.RD() {
-			// Fallback query (recursive, RD=1) → success
+			t.Error("public fallback must not be queried for all-NS SERVFAIL")
 			return &dns.Message{
 				Header: dns.Header{
 					Flags:   dns.NewFlagBuilder().SetQR(true).SetRD(true).SetRA(true).Build(),
@@ -278,7 +279,6 @@ func TestResolve_FallbackOnServFail(t *testing.T) {
 				}},
 			}
 		}
-		// Primary iterative query (RD=0) → SERVFAIL
 		return &dns.Message{
 			Header: dns.Header{
 				Flags:   dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeServFail).Build(),
@@ -311,19 +311,22 @@ func TestResolve_FallbackOnServFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.RCODE != dns.RCodeNoError {
-		t.Errorf("expected NOERROR from fallback, got %d", result.RCODE)
+	if result.RCODE != dns.RCodeServFail {
+		t.Errorf("expected SERVFAIL without fallback, got %d", result.RCODE)
 	}
-	if len(result.Answers) != 1 {
-		t.Errorf("expected 1 answer from fallback, got %d", len(result.Answers))
+	if result.FailureReason != "no-reachable-authority" {
+		t.Errorf("FailureReason: want no-reachable-authority, got %q", result.FailureReason)
+	}
+	if len(result.Answers) != 0 {
+		t.Errorf("expected 0 answers, got %d", len(result.Answers))
 	}
 
 	snap := m.Snapshot()
-	if snap.FallbackQueries != 1 {
-		t.Errorf("expected 1 fallback query, got %d", snap.FallbackQueries)
+	if snap.FallbackQueries != 0 {
+		t.Errorf("expected 0 fallback queries, got %d", snap.FallbackQueries)
 	}
-	if snap.FallbackRecoveries != 1 {
-		t.Errorf("expected 1 fallback recovery, got %d", snap.FallbackRecoveries)
+	if snap.FallbackRecoveries != 0 {
+		t.Errorf("expected 0 fallback recoveries, got %d", snap.FallbackRecoveries)
 	}
 }
 
@@ -567,15 +570,16 @@ func TestResolve_ForwardZone_FallbackRecovers(t *testing.T) {
 	}
 }
 
-func TestResolve_StubZone_FallbackOnServFail(t *testing.T) {
-	// Stub zone: iterative queries (RD=0) return SERVFAIL.
-	// Fallback (RD=1) returns success.
+func TestResolve_StubZone_NoFallbackOnServFail(t *testing.T) {
+	// Stub zones iterate against configured NS (RD=0). All-NS SERVFAIL
+	// is the same exhausted-auth shape as recursion — do not recover via
+	// public resolvers. Forward zones remain fallback-eligible.
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		if len(q.Questions) == 0 {
 			return nil
 		}
 		if q.Header.RD() {
-			// Fallback query (RD=1) → success
+			t.Error("public fallback must not be queried for stub-zone all-NS SERVFAIL")
 			return &dns.Message{
 				Header: dns.Header{
 					Flags:   dns.NewFlagBuilder().SetQR(true).SetRD(true).SetRA(true).Build(),
@@ -589,7 +593,6 @@ func TestResolve_StubZone_FallbackOnServFail(t *testing.T) {
 				}},
 			}
 		}
-		// Stub iterative query (RD=0) → SERVFAIL
 		return &dns.Message{
 			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeServFail).Build(), QDCount: 1},
 			Questions: q.Questions,
@@ -622,19 +625,19 @@ func TestResolve_StubZone_FallbackOnServFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.RCODE != dns.RCodeNoError {
-		t.Errorf("expected NOERROR from fallback, got %d", result.RCODE)
+	if result.RCODE != dns.RCodeServFail {
+		t.Errorf("expected SERVFAIL without fallback, got %d", result.RCODE)
 	}
-	if len(result.Answers) != 1 {
-		t.Errorf("expected 1 answer from fallback, got %d", len(result.Answers))
+	if result.FailureReason != "no-reachable-authority" {
+		t.Errorf("FailureReason: want no-reachable-authority, got %q", result.FailureReason)
 	}
 
 	snap := m.Snapshot()
-	if snap.FallbackQueries != 1 {
-		t.Errorf("expected 1 fallback query (stub zone path), got %d", snap.FallbackQueries)
+	if snap.FallbackQueries != 0 {
+		t.Errorf("expected 0 fallback queries (stub zone path), got %d", snap.FallbackQueries)
 	}
-	if snap.FallbackRecoveries != 1 {
-		t.Errorf("expected 1 fallback recovery, got %d", snap.FallbackRecoveries)
+	if snap.FallbackRecoveries != 0 {
+		t.Errorf("expected 0 fallback recoveries, got %d", snap.FallbackRecoveries)
 	}
 }
 
