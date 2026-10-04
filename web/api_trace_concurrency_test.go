@@ -8,7 +8,9 @@ import (
 
 func TestDiagnosticTraceLimiterGlobalCap(t *testing.T) {
 	limiter := newDiagnosticTraceLimiter(2)
-	if !limiter.tryAcquire() || !limiter.tryAcquire() {
+	first := limiter.tryAcquire()
+	second := limiter.tryAcquire()
+	if !first || !second {
 		t.Fatal("expected both configured diagnostic trace slots to be available")
 	}
 	if limiter.tryAcquire() {

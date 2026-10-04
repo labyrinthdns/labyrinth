@@ -434,7 +434,7 @@ func computeNSEC3HashForCache(name string, algorithm uint8, iterations uint16, s
 	}
 	const maxSaltLen = 128 // match dnssec.MaxNSEC3SaltLength
 	if len(salt) > maxSaltLen {
-		return nil, fmt.Errorf("cache: NSEC3 salt length %d exceeds max %d", len(salt), maxSaltLen)
+		return nil, fmt.Errorf("%w: %d > %d", errNSEC3SaltTooLong, len(salt), maxSaltLen)
 	}
 	name = strings.ToLower(name)
 	if !strings.HasSuffix(name, ".") {

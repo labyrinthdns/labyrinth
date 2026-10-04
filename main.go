@@ -212,6 +212,7 @@ func run() int {
 		DNSSECEnabled:           cfg.Resolver.DNSSECEnabled,
 		DNS64Enabled:            cfg.Resolver.DNS64Enabled,
 		FallbackResolvers:       cfg.Resolver.FallbackResolvers,
+		FallbackLogPath:         cfg.Logging.FallbackLog,
 		UpstreamUDPBufferSize:   cfg.Resolver.UpstreamUDPBufferSize,
 		MaxNSNamesPerDelegation: cfg.Resolver.MaxNSNamesPerDelegation,
 	}
@@ -377,10 +378,12 @@ func run() int {
 		}
 	}()
 
-	// Root hint priming
+	// Root hint priming (+ busy TLD NS so first .com/.net lookups skip a root RTT)
 	go func() {
 		if err := res.PrimeRootHints(); err != nil {
 			logger.Warn("root hint priming failed", "error", err)
+		} else {
+			res.PrimeCommonTLDs()
 		}
 		if cfg.Resolver.DNSSECEnabled {
 			res.EnableDNSSEC(logger)

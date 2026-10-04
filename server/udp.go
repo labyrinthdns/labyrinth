@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/internal/pool"
+	"github.com/labyrinthdns/labyrinth/metrics"
 )
 
 // UDPServer handles DNS queries over UDP.
@@ -17,13 +18,34 @@ type UDPServer struct {
 	maxWorkers int
 	sem        chan struct{}
 	logger     *slog.Logger
+	metrics    *metrics.Metrics
 }
+
+// udpSocketBufferBytes is the SO_RCVBUF/SO_SNDBUF target for the
+// client-facing UDP listener. The kernel doubles the requested value
+// for bookkeeping, so 4 MiB ≈ 8 MiB of actual socket memory — enough
+// to absorb short query bursts without Recv-Q saturation (which we
+// observed dropping answers under load when the default ~212 KiB
+// rmem was in effect).
+const udpSocketBufferBytes = 4 << 20
 
 // NewUDPServer creates a new UDP DNS server.
 func NewUDPServer(addr string, handler Handler, maxWorkers int, logger *slog.Logger) (*UDPServer, error) {
 	conn, err := net.ListenPacket("udp", addr)
 	if err != nil {
 		return nil, err
+	}
+	if uc, ok := conn.(*net.UDPConn); ok {
+		if err := uc.SetReadBuffer(udpSocketBufferBytes); err != nil {
+			logger.Warn("udp SetReadBuffer failed", "size", udpSocketBufferBytes, "error", err)
+		}
+		if err := uc.SetWriteBuffer(udpSocketBufferBytes); err != nil {
+			logger.Warn("udp SetWriteBuffer failed", "size", udpSocketBufferBytes, "error", err)
+		}
+	}
+
+	if maxWorkers <= 0 {
+		maxWorkers = 1
 	}
 
 	return &UDPServer{
@@ -33,6 +55,11 @@ func NewUDPServer(addr string, handler Handler, maxWorkers int, logger *slog.Log
 		sem:        make(chan struct{}, maxWorkers),
 		logger:     logger,
 	}, nil
+}
+
+// SetMetrics wires optional metrics for UDP admission drops.
+func (s *UDPServer) SetMetrics(m *metrics.Metrics) {
+	s.metrics = m
 }
 
 // Serve starts the UDP server loop.
@@ -72,15 +99,25 @@ func (s *UDPServer) Serve(ctx context.Context) error {
 			continue
 		}
 
-		// Copy buffer before dispatching
+		// Non-blocking admit: if all workers are busy, drop this
+		// datagram and keep reading. Blocking here would stall
+		// ReadFrom, fill the kernel Recv-Q, and drop *older* packets
+		// invisibly — worse than shedding the newest query.
+		select {
+		case s.sem <- struct{}{}:
+		default:
+			if s.metrics != nil {
+				s.metrics.IncUDPWorkerDrops()
+			}
+			s.logger.Debug("udp worker saturated; dropping query",
+				"client", clientAddr, "size", n)
+			continue
+		}
+
+		// Copy buffer only after admission — avoid alloc on drops.
 		query := make([]byte, n)
 		copy(query, buf[:n])
 
-		select {
-		case s.sem <- struct{}{}:
-		case <-ctx.Done():
-			return nil
-		}
 		go func(data []byte, addr net.Addr) {
 			defer func() { <-s.sem }()
 			s.handleUDP(data, addr)

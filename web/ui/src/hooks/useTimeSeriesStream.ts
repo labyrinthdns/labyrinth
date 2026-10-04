@@ -8,6 +8,47 @@ export interface TSStreamParams {
   interval: string  // "1m" | "2m" | "5m" | "15m" | "30m" | "1h" (ignored for live)
 }
 
+function bucketKey(b: TimeSeriesBucket): string {
+  return b.timestamp || b.ts || ''
+}
+
+function mergeDeltaBuckets(
+  prev: TimeSeriesBucket[],
+  delta: TimeSeriesBucket[],
+  windowMs: number,
+): TimeSeriesBucket[] {
+  const byTs = new Map<string, TimeSeriesBucket>()
+  for (const b of prev) {
+    const k = bucketKey(b)
+    if (k) byTs.set(k, b)
+  }
+  for (const b of delta) {
+    const k = bucketKey(b)
+    if (k) byTs.set(k, b)
+  }
+  const merged = Array.from(byTs.values()).sort((a, b) => {
+    const ta = Date.parse(bucketKey(a))
+    const tb = Date.parse(bucketKey(b))
+    return (Number.isFinite(ta) ? ta : 0) - (Number.isFinite(tb) ? tb : 0)
+  })
+  if (windowMs <= 0) return merged
+  const cutoff = Date.now() - windowMs
+  return merged.filter((b) => {
+    const t = Date.parse(bucketKey(b))
+    return !Number.isFinite(t) || t >= cutoff
+  })
+}
+
+function windowMsFor(params: TSStreamParams): number {
+  if (params.mode === 'live') return 60_000
+  switch (params.window) {
+    case '15m': return 15 * 60_000
+    case '1h': return 60 * 60_000
+    case '24h': return 24 * 60 * 60_000
+    default: return 60_000
+  }
+}
+
 export function useTimeSeriesStream(params: TSStreamParams) {
   const [buckets, setBuckets] = useState<TimeSeriesBucket[]>([])
   const [connected, setConnected] = useState(false)
@@ -77,7 +118,11 @@ export function useTimeSeriesStream(params: TSStreamParams) {
       lastMsgAtRef.current = Date.now()
       try {
         const msg = JSON.parse(event.data) as TimeSeriesWSMessage
-        if (msg.buckets) {
+        if (!msg.buckets) return
+        if (msg.delta) {
+          const winMs = windowMsFor(paramsRef.current)
+          setBuckets((prev) => mergeDeltaBuckets(prev, msg.buckets, winMs))
+        } else {
           setBuckets(msg.buckets)
         }
       } catch { /* ignore parse errors */ }

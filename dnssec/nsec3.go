@@ -14,6 +14,14 @@ var (
 	errUnsupportedHashAlg = errors.New("dnssec: unsupported NSEC3 hash algorithm")
 	errTooManyIterations  = errors.New("dnssec: NSEC3 iterations exceed maximum (100)")
 	errNoNSEC3Records     = errors.New("dnssec: no NSEC3 records provided")
+	// errNSEC3OptOutNameError means the NXDOMAIN closest-encloser proof's
+	// next-closer cover has the opt-out flag. RFC 5155 §6: that cannot
+	// authenticate a Secure (AD=1) name error — the NC name may exist as
+	// an unsigned delegation — but it is also not a forgery. Callers must
+	// treat the response as Insecure NXDOMAIN (AD=0), not Bogus/SERVFAIL.
+	// This is the shape .com/.net emit for nonexistent names under the
+	// TLD (e.g. eklenti.bothavuzu.com).
+	errNSEC3OptOutNameError = errors.New("dnssec: NSEC3 NXDOMAIN next-closer covered by opt-out")
 )
 
 // MaxNSEC3Iterations is the hard ceiling on the NSEC3 iteration count this
@@ -78,15 +86,6 @@ func nsec3HashBudgetFrom(budgets []*nsec3HashBudget) *nsec3HashBudget {
 	}
 	return nil
 }
-
-// nsec3AggressiveHashBudget is the hash budget used for aggressive NSEC3 cache
-// synthesis (RFC 8198 §5.3). It is intentionally smaller (150 units) than the
-// on-wire validation budget (600 units) because the cache path can be triggered
-// by many more queries than on-wire validation. 150 units covers the realistic
-// worst case (a 100-iteration zone needs 101 units per hash, so even a single
-// closest-encloser + next-closer = 2 hashes = 202 units would exceed it; the
-// cache path is expected to hit lower-iteration zones or fall back to upstream).
-const nsec3AggressiveHashBudget = 150
 
 // nsec3Base32 is the extended hex base32 encoding used by NSEC3 (RFC 4648 §7),
 // without padding.
@@ -566,12 +565,14 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 	if ncRec == nil {
 		return false, nil
 	}
-	// RFC 5155 §6: opt-out at the NC-covering NSEC3 makes NXDOMAIN proof
-	// inconclusive — the NC name may exist as an unsigned delegation.
-	// For NODATA we still accept it because the lower bound on validation
-	// is "the type doesn't exist", not "the name doesn't exist".
+	// RFC 5155 §6: opt-out at the NC-covering NSEC3 makes a Secure
+	// NXDOMAIN proof impossible — the NC name may exist as an unsigned
+	// delegation. Surface a dedicated error so the validator can return
+	// Insecure (AD=0 NXDOMAIN) instead of falling through to Bogus and
+	// SERVFAIL-ing every nonexistent name under opt-out TLDs (.com/.net).
+	// NODATA still accepts the cover: "type absent" is a weaker claim.
 	if rcode == dns.RCodeNXDomain && nsec3OptOut(&ncRec.NSEC3Record) {
-		return false, nil
+		return false, errNSEC3OptOutNameError
 	}
 
 	// Verify wildcard at CE.
