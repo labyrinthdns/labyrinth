@@ -319,7 +319,7 @@ func (p *zoneParser) parseRecord(lines []string) (ResourceRecord, error) {
 		ttl = v
 		idx++
 	}
-	class := uint16(ClassIN)
+	class := ClassIN
 	if idx < len(fields) && isClass(fields[idx]) {
 		c, err := parseClassField(fields[idx])
 		if err != nil {
@@ -405,17 +405,11 @@ func absolutiseOwner(owner, origin string) string {
 	if strings.HasSuffix(owner, ".") {
 		return strings.ToLower(owner)
 	}
-	// Relative: append the origin unless the owner starts with a name
-	// that already includes the origin (which would produce a duplicate
-	// suffix). The simple implementation here is correct as long as the
-	// caller does not pre-strip the origin.
+	// Relative owner: RFC 1035 §5 appends $ORIGIN even if the owner
+	// already contains those labels (www.example.com + origin example.com.
+	// becomes www.example.com.example.com.). Callers that want an
+	// absolute name must write a trailing dot.
 	combined := strings.ToLower(owner + "." + strings.TrimSuffix(origin, "."))
-	// Avoid the double-origin case where the owner already ends with
-	// the origin's labels.
-	if origin != "" && strings.HasSuffix(combined, "."+strings.TrimSuffix(origin, ".")) &&
-		strings.Count(combined, ".") > strings.Count(origin, ".") {
-		// already absolute-ish; do not double-add
-	}
 	return combined + "."
 }
 

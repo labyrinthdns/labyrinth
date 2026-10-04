@@ -72,7 +72,7 @@ func TestZoneExport_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FormatZone: %v", err)
 	}
-	if string(body) != string(expected) {
+	if body != string(expected) {
 		t.Errorf("response body != FormatZone output\n got:\n%s\n want:\n%s", body, expected)
 	}
 }
