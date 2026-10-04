@@ -104,9 +104,10 @@ func (s *AdminServer) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		"logging": map[string]interface{}{
-			"level":        cfg.Logging.Level,
-			"format":       cfg.Logging.Format,
-			"fallback_log": cfg.Logging.FallbackLog,
+			"level":          cfg.Logging.Level,
+			"format":         cfg.Logging.Format,
+			"fallback_log":   cfg.Logging.FallbackLog,
+			"fallback_debug": cfg.Logging.FallbackDebug,
 		},
 		"web": map[string]interface{}{
 			"enabled":                    cfg.Web.Enabled,

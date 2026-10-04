@@ -249,6 +249,9 @@ type LoggingConfig struct {
 	Level       string
 	Format      string
 	FallbackLog string
+	// FallbackDebug enables JSONL writes to FallbackLog for each
+	// public-resolver fallback engagement (reason + recovered).
+	FallbackDebug bool
 }
 
 // ACLConfig holds access control list settings.
@@ -462,6 +465,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setString(&cfg.Logging.Level, "logging.level")
 	setString(&cfg.Logging.Format, "logging.format")
 	setString(&cfg.Logging.FallbackLog, "logging.fallback_log")
+	setBool(&cfg.Logging.FallbackDebug, "logging.fallback_debug")
 
 	// Web
 	setBool(&cfg.Web.Enabled, "web.enabled")
@@ -892,16 +896,16 @@ func clampConfigBounds(cfg *Config) {
 // entirely gets the same behaviour as one who set them to a sentinel
 // "fall back" value like -1 or 0.
 const (
-	defaultMaxUDPWorkers         = 10000
-	defaultMaxTCPConns           = 256
-	defaultTCPPipelineMax        = 100
-	defaultRateLimitBurst        = 100
-	defaultMaxCNAMEDepth         = 10
-	defaultUpstreamTimeout       = 2 * time.Second
-	defaultTCPTimeout            = 10 * time.Second
-	defaultRRLResponsesPerSecond = 5.0
-	defaultMaxQueriesPerRequest   = 200
-	defaultRequestTimeout         = 20 * time.Second
+	defaultMaxUDPWorkers           = 10000
+	defaultMaxTCPConns             = 256
+	defaultTCPPipelineMax          = 100
+	defaultRateLimitBurst          = 100
+	defaultMaxCNAMEDepth           = 10
+	defaultUpstreamTimeout         = 2 * time.Second
+	defaultTCPTimeout              = 10 * time.Second
+	defaultRRLResponsesPerSecond   = 5.0
+	defaultMaxQueriesPerRequest    = 200
+	defaultRequestTimeout          = 20 * time.Second
 	defaultMaxNSNamesPerDelegation = 13
 )
 

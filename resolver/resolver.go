@@ -51,8 +51,11 @@ type ResolverConfig struct {
 	// FallbackResolvers is a list of backup recursive DNS servers (e.g. 8.8.8.8, 1.1.1.1).
 	// When primary resolution returns SERVFAIL, one randomly-picked fallback is tried once.
 	FallbackResolvers []string
-	// FallbackLogPath, when set, appends one JSON line per fallback
-	// engagement (independent of logging.level). Empty disables the file.
+	// FallbackDebug enables JSONL writes to FallbackLogPath for each
+	// public-resolver fallback engagement (reason + recovered).
+	FallbackDebug bool
+	// FallbackLogPath is the destination for fallback debug JSONL.
+	// Used only when FallbackDebug is true; empty disables the file.
 	FallbackLogPath string
 	// UpstreamUDPBufferSize is the EDNS0 UDP payload size advertised in
 	// outgoing OPT records. RFC 9018 / DNS Flag Day 2020 recommends 1232
@@ -204,7 +207,9 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	// usual long-tail of broken delegations a busy resolver
 	// encounters in a given hour; ttl 5s is the RFC §4 upper bound.
 	r.failureCache = newFailureCache(4096, 5*time.Second)
-	r.fallbackLog = newFallbackFileLog(cfg.FallbackLogPath)
+	if cfg.FallbackDebug {
+		r.fallbackLog = newFallbackFileLog(cfg.FallbackLogPath)
+	}
 	return r
 }
 
