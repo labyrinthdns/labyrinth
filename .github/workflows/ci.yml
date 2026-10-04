@@ -104,13 +104,32 @@ jobs:
         run: npm ci && npm run build
 
       # Plain tests first — serial packages (-p 1). Parallel compile of
-      # server/web/cache on ubuntu-latest was OOMing (go test exit 2).
+      # server/web/cache on ubuntu-latest was OOMing (make exit 2).
+      # Stream FAIL/panic lines as ::error:: annotations so the check UI
+      # surfaces the failing package without downloading private logs.
       - name: Test
         env:
           GOMAXPROCS: "2"
           GO_TEST_P: "1"
           GOMEMLIMIT: "5GiB"
-        run: make test
+        run: |
+          set -o pipefail
+          make test 2>&1 | tee test-plain.log | awk '
+            /^--- FAIL:/ { print "::error::" $0; next }
+            /^FAIL\t/    { print "::error::" $0; next }
+            /^panic:/    { print "::error::" $0; next }
+            /\[build failed\]/ { print "::error::" $0; next }
+            /signal: killed/ { print "::error::" $0; next }
+            { print }
+          '
+
+      - name: Upload plain test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-plain-log
+          path: test-plain.log
+          if-no-files-found: ignore
 
       # Race only on concurrency-critical packages, one at a time (-p 1).
       # Full-tree -race was OOMing runners and locking the 8 GiB DNS host.
@@ -119,4 +138,21 @@ jobs:
           GOMAXPROCS: "1"
           GO_RACE_P: "1"
           GOMEMLIMIT: "5GiB"
-        run: make test-race
+        run: |
+          set -o pipefail
+          make test-race 2>&1 | tee test-race.log | awk '
+            /^--- FAIL:/ { print "::error::" $0; next }
+            /^FAIL\t/    { print "::error::" $0; next }
+            /^panic:/    { print "::error::" $0; next }
+            /\[build failed\]/ { print "::error::" $0; next }
+            /signal: killed/ { print "::error::" $0; next }
+            { print }
+          '
+
+      - name: Upload race test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-race-log
+          path: test-race.log
+          if-no-files-found: ignore
