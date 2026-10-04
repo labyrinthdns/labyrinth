@@ -49,6 +49,47 @@ func TestResolveIterative_AllNSRefused_TagsNoReachableAuthority(t *testing.T) {
 	}
 }
 
+// TestResolveIterative_AllNSServFail_TagsNoReachableAuthority pins the
+// soft-SERVFAIL exhaustion shape seen in fallback.jsonl for broken reverse
+// zones (e.g. ip6.arpa delegations whose auth answers SERVFAIL). Before the
+// tag, Error="all nameservers returned SERVFAIL" alone engaged public
+// fallback even though 1.1.1.1/8.8.8.8 hit the same dead auth. With the tag,
+// shouldFallback is suppressed and the client gets EDE 22.
+func TestResolveIterative_AllNSServFail_TagsNoReachableAuthority(t *testing.T) {
+	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
+		if len(q.Questions) == 0 {
+			return nil
+		}
+		return &dns.Message{
+			Header: dns.Header{
+				ID:    q.Header.ID,
+				Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeServFail).Build(),
+			},
+			Questions: q.Questions,
+		}
+	})
+	defer mock.close()
+
+	r := testResolver(t, mock)
+	result, _ := r.Resolve("1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.0.0.1.1.0.0.9.5.a.f.2.0.6.2.ip6.arpa", dns.TypePTR, dns.ClassIN)
+	if result == nil {
+		t.Fatal("expected SERVFAIL ResolveResult, got nil")
+	}
+	if result.RCODE != dns.RCodeServFail {
+		t.Fatalf("rcode: want SERVFAIL, got %d", result.RCODE)
+	}
+	if result.FailureReason != "no-reachable-authority" {
+		t.Errorf("FailureReason: want %q, got %q", "no-reachable-authority", result.FailureReason)
+	}
+	if result.Error == nil || result.Error.Error() != "all nameservers returned SERVFAIL" {
+		t.Errorf("Error: want all-nameservers SERVFAIL, got %v", result.Error)
+	}
+	fb := shouldFallback(result, nil)
+	if fb.triggered {
+		t.Fatalf("shouldFallback must stay off for all-NS soft SERVFAIL (got reason %q)", fb.reason)
+	}
+}
+
 // TestResolveResult_FailureReasonOnly_NotSetForSuccess sanity-checks the
 // negative: a NOERROR resolution must NOT carry FailureReason. Otherwise
 // a downstream consumer keying on the field gets false positives.

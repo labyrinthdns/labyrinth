@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Code2, Eye, FilePenLine, Loader2, PencilLine, Plus, Save, Trash2 } from 'lucide-react'
 import { api } from '@/api/client'
 
@@ -394,6 +394,47 @@ function Field({ label, path, children }: { label: string; path: string; childre
   )
 }
 
+function FormInput({
+  label, path, value, onChange, type = 'text', min, step, disabled,
+}: {
+  label: string
+  path: string
+  value: string | number
+  onChange: (v: string) => void
+  type?: string
+  min?: number
+  step?: number
+  disabled: boolean
+}) {
+  const isNumber = type === 'number'
+  const focused = useRef(false)
+  const [draft, setDraft] = useState(() => String(value))
+
+  useEffect(() => {
+    if (!focused.current) setDraft(String(value))
+  }, [value])
+
+  return (
+    <Field label={label} path={path}>
+      <input
+        type={type}
+        className={inputClass}
+        disabled={disabled}
+        value={isNumber ? draft : value}
+        min={min}
+        step={step}
+        onFocus={() => { focused.current = true; setDraft(String(value)) }}
+        onBlur={() => { focused.current = false; setDraft(String(value)) }}
+        onChange={(e) => {
+          const next = e.target.value
+          if (isNumber) setDraft(next)
+          onChange(next)
+        }}
+      />
+    </Field>
+  )
+}
+
 function Toggle({ label, checked, disabled, onChange }: { label: string; checked: boolean; disabled: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
@@ -505,13 +546,6 @@ export default function ConfigPage() {
     : statusType === 'error' ? 'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'
     : 'bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400'
 
-  const I = (props: { value: string | number; path: string; label: string; type?: string; min?: number; step?: number; onChange: (v: string) => void }) => (
-    <Field label={props.label} path={props.path}>
-      <input type={props.type || 'text'} className={inputClass} disabled={readonly} value={props.value} min={props.min} step={props.step}
-        onChange={(e) => props.onChange(e.target.value)} />
-    </Field>
-  )
-
   return (
     <div className="space-y-6">
       {/* Header + actions */}
@@ -556,62 +590,62 @@ export default function ConfigPage() {
         {/* ── Server ─────────────────────────────────────────── */}
         <Section title="Server">
           <div className="grid grid-cols-2 gap-2">
-            <I label="Listen Address" path="server.listen_addr" value={form.server.listen} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, listen: v } }))} />
-            <I label="Metrics Address" path="server.metrics_addr" value={form.server.metrics} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, metrics: v } }))} />
+            <FormInput disabled={readonly} label="Listen Address" path="server.listen_addr" value={form.server.listen} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, listen: v } }))} />
+            <FormInput disabled={readonly} label="Metrics Address" path="server.metrics_addr" value={form.server.metrics} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, metrics: v } }))} />
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <I label="Max UDP Size" path="server.max_udp_size" type="number" value={form.server.maxUDP} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, maxUDP: Number(v) || 0 } }))} />
-            <I label="Max TCP Conns" path="server.max_tcp_conns" type="number" value={form.server.maxTCP} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, maxTCP: Number(v) || 0 } }))} />
-            <I label="Max UDP Workers" path="server.max_udp_workers" type="number" value={form.server.maxUDPWorkers} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, maxUDPWorkers: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Max UDP Size" path="server.max_udp_size" type="number" value={form.server.maxUDP} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, maxUDP: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Max TCP Conns" path="server.max_tcp_conns" type="number" value={form.server.maxTCP} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, maxTCP: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Max UDP Workers" path="server.max_udp_workers" type="number" value={form.server.maxUDPWorkers} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, maxUDPWorkers: Number(v) || 0 } }))} />
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <I label="TCP Timeout" path="server.tcp_timeout" value={form.server.tcpTimeout} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tcpTimeout: v } }))} />
-            <I label="TCP Idle Timeout" path="server.tcp_idle_timeout" value={form.server.tcpIdleTimeout} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tcpIdleTimeout: v } }))} />
-            <I label="Graceful Period" path="server.graceful_period" value={form.server.graceful} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, graceful: v } }))} />
+            <FormInput disabled={readonly} label="TCP Timeout" path="server.tcp_timeout" value={form.server.tcpTimeout} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tcpTimeout: v } }))} />
+            <FormInput disabled={readonly} label="TCP Idle Timeout" path="server.tcp_idle_timeout" value={form.server.tcpIdleTimeout} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tcpIdleTimeout: v } }))} />
+            <FormInput disabled={readonly} label="Graceful Period" path="server.graceful_period" value={form.server.graceful} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, graceful: v } }))} />
           </div>
-          <I label="TCP Pipeline Max" path="server.tcp_pipeline_max" type="number" value={form.server.tcpPipelineMax} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tcpPipelineMax: Number(v) || 0 } }))} />
+          <FormInput disabled={readonly} label="TCP Pipeline Max" path="server.tcp_pipeline_max" type="number" value={form.server.tcpPipelineMax} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tcpPipelineMax: Number(v) || 0 } }))} />
           <Toggle label="DNS-over-TLS (DoT)" checked={form.server.dotEnabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, dotEnabled: v } }))} />
-          {form.server.dotEnabled && <I label="DoT Listen Address" path="server.dot_listen_addr" value={form.server.dotListenAddr} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, dotListenAddr: v } }))} />}
+          {form.server.dotEnabled && <FormInput disabled={readonly} label="DoT Listen Address" path="server.dot_listen_addr" value={form.server.dotListenAddr} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, dotListenAddr: v } }))} />}
           <div className="grid grid-cols-2 gap-2">
-            <I label="TLS Cert File" path="server.tls_cert_file" value={form.server.tlsCertFile} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tlsCertFile: v } }))} />
-            <I label="TLS Key File" path="server.tls_key_file" value={form.server.tlsKeyFile} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tlsKeyFile: v } }))} />
+            <FormInput disabled={readonly} label="TLS Cert File" path="server.tls_cert_file" value={form.server.tlsCertFile} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tlsCertFile: v } }))} />
+            <FormInput disabled={readonly} label="TLS Key File" path="server.tls_key_file" value={form.server.tlsKeyFile} onChange={(v) => patch((p) => ({ ...p, server: { ...p.server, tlsKeyFile: v } }))} />
           </div>
         </Section>
 
         {/* ── Resolver ───────────────────────────────────────── */}
         <Section title="Resolver">
           <div className="grid grid-cols-2 gap-2">
-            <I label="Max Depth" path="resolver.max_depth" type="number" value={form.resolver.maxDepth} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, maxDepth: Number(v) || 0 } }))} />
-            <I label="Max CNAME Depth" path="resolver.max_cname_depth" type="number" value={form.resolver.maxCnameDepth} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, maxCnameDepth: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Max Depth" path="resolver.max_depth" type="number" value={form.resolver.maxDepth} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, maxDepth: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Max CNAME Depth" path="resolver.max_cname_depth" type="number" value={form.resolver.maxCnameDepth} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, maxCnameDepth: Number(v) || 0 } }))} />
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <I label="Upstream Timeout" path="resolver.upstream_timeout" value={form.resolver.upstreamTimeout} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, upstreamTimeout: v } }))} />
-            <I label="Upstream Retries" path="resolver.upstream_retries" type="number" value={form.resolver.upstreamRetries} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, upstreamRetries: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Upstream Timeout" path="resolver.upstream_timeout" value={form.resolver.upstreamTimeout} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, upstreamTimeout: v } }))} />
+            <FormInput disabled={readonly} label="Upstream Retries" path="resolver.upstream_retries" type="number" value={form.resolver.upstreamRetries} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, upstreamRetries: Number(v) || 0 } }))} />
           </div>
-          <I label="Root Hints Refresh" path="resolver.root_hints_refresh" value={form.resolver.rootHintsRefresh} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, rootHintsRefresh: v } }))} />
+          <FormInput disabled={readonly} label="Root Hints Refresh" path="resolver.root_hints_refresh" value={form.resolver.rootHintsRefresh} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, rootHintsRefresh: v } }))} />
           <Toggle label="QNAME Minimization" checked={form.resolver.qmin} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, qmin: v } }))} />
           <Toggle label="Prefer IPv4" checked={form.resolver.preferIPv4} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, preferIPv4: v } }))} />
           <Toggle label="DNSSEC Validation" checked={form.resolver.dnssec} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, dnssec: v } }))} />
           <Toggle label="Harden Below NXDOMAIN" checked={form.resolver.hardenBelowNX} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, hardenBelowNX: v } }))} />
           <Toggle label="ECS (EDNS Client Subnet)" checked={form.resolver.ecsEnabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsEnabled: v } }))} />
-          {form.resolver.ecsEnabled && <I label="ECS Max Prefix (IPv4)" path="resolver.ecs_max_prefix" type="number" value={form.resolver.ecsMaxPrefix} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsMaxPrefix: Number(v) || 0 } }))} />}
-          {form.resolver.ecsEnabled && <I label="ECS Max Prefix (IPv6)" path="resolver.ecs_max_prefix_v6" type="number" value={form.resolver.ecsMaxPrefixV6} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsMaxPrefixV6: Number(v) || 0 } }))} />}
+          {form.resolver.ecsEnabled && <FormInput disabled={readonly} label="ECS Max Prefix (IPv4)" path="resolver.ecs_max_prefix" type="number" value={form.resolver.ecsMaxPrefix} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsMaxPrefix: Number(v) || 0 } }))} />}
+          {form.resolver.ecsEnabled && <FormInput disabled={readonly} label="ECS Max Prefix (IPv6)" path="resolver.ecs_max_prefix_v6" type="number" value={form.resolver.ecsMaxPrefixV6} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, ecsMaxPrefixV6: Number(v) || 0 } }))} />}
           <Toggle label="DNS64" checked={form.resolver.dns64Enabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, dns64Enabled: v } }))} />
-          {form.resolver.dns64Enabled && <I label="DNS64 Prefix" path="resolver.dns64_prefix" value={form.resolver.dns64Prefix} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, dns64Prefix: v } }))} />}
+          {form.resolver.dns64Enabled && <FormInput disabled={readonly} label="DNS64 Prefix" path="resolver.dns64_prefix" value={form.resolver.dns64Prefix} onChange={(v) => patch((p) => ({ ...p, resolver: { ...p.resolver, dns64Prefix: v } }))} />}
           <StringList title="Fallback Resolvers" path="resolver.fallback_resolvers" values={form.resolver.fallbackResolvers} onChange={(n) => patch((p) => ({ ...p, resolver: { ...p.resolver, fallbackResolvers: n } }))} disabled={readonly} placeholder="8.8.8.8" />
         </Section>
 
         {/* ── Cache ──────────────────────────────────────────── */}
         <Section title="Cache">
-          <I label="Max Entries" path="cache.max_entries" type="number" value={form.cache.maxEntries} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, maxEntries: Number(v) || 0 } }))} />
+          <FormInput disabled={readonly} label="Max Entries" path="cache.max_entries" type="number" value={form.cache.maxEntries} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, maxEntries: Number(v) || 0 } }))} />
           <div className="grid grid-cols-3 gap-2">
-            <I label="Min TTL" path="cache.min_ttl" type="number" min={0} value={form.cache.minTTL} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, minTTL: Number(v) || 0 } }))} />
-            <I label="Max TTL" path="cache.max_ttl" type="number" min={0} value={form.cache.maxTTL} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, maxTTL: Number(v) || 0 } }))} />
-            <I label="Negative Max TTL" path="cache.negative_max_ttl" type="number" min={0} value={form.cache.negMaxTTL} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, negMaxTTL: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Min TTL" path="cache.min_ttl" type="number" min={0} value={form.cache.minTTL} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, minTTL: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Max TTL" path="cache.max_ttl" type="number" min={0} value={form.cache.maxTTL} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, maxTTL: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Negative Max TTL" path="cache.negative_max_ttl" type="number" min={0} value={form.cache.negMaxTTL} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, negMaxTTL: Number(v) || 0 } }))} />
           </div>
-          <I label="Sweep Interval" path="cache.sweep_interval" value={form.cache.sweep} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, sweep: v } }))} />
+          <FormInput disabled={readonly} label="Sweep Interval" path="cache.sweep_interval" value={form.cache.sweep} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, sweep: v } }))} />
           <Toggle label="Serve Stale" checked={form.cache.serveStale} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, serveStale: v } }))} />
-          {form.cache.serveStale && <I label="Stale TTL" path="cache.stale_ttl" type="number" value={form.cache.staleTTL} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, staleTTL: Number(v) || 0 } }))} />}
+          {form.cache.serveStale && <FormInput disabled={readonly} label="Stale TTL" path="cache.stale_ttl" type="number" value={form.cache.staleTTL} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, staleTTL: Number(v) || 0 } }))} />}
           <Toggle label="Prefetch" checked={form.cache.prefetch} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, cache: { ...p.cache, prefetch: v } }))} />
           <StringList title="No-Cache Clients" path="cache.no_cache_clients" values={form.cache.noCacheClients} onChange={(n) => patch((p) => ({ ...p, cache: { ...p.cache, noCacheClients: n } }))} disabled={readonly} placeholder="192.168.1.0/24" />
         </Section>
@@ -625,8 +659,8 @@ export default function ConfigPage() {
           </div>
           {form.security.rateEnabled && (
             <div className="grid grid-cols-2 gap-2">
-              <I label="Rate (req/s)" path="security.rate_limit.rate" type="number" step={1} value={form.security.rate} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rate: Number(v) || 0 } }))} />
-              <I label="Burst" path="security.rate_limit.burst" type="number" value={form.security.burst} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, burst: Number(v) || 0 } }))} />
+              <FormInput disabled={readonly} label="Rate (req/s)" path="security.rate_limit.rate" type="number" step={1} value={form.security.rate} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rate: Number(v) || 0 } }))} />
+              <FormInput disabled={readonly} label="Burst" path="security.rate_limit.burst" type="number" value={form.security.burst} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, burst: Number(v) || 0 } }))} />
             </div>
           )}
           <div className="border-t border-slate-200 dark:border-slate-700 pt-3 mt-1">
@@ -635,12 +669,12 @@ export default function ConfigPage() {
           {form.security.rrlEnabled && (
             <>
               <div className="grid grid-cols-2 gap-2">
-                <I label="Responses/sec" path="security.rrl.responses_per_second" type="number" value={form.security.rrlRPS} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rrlRPS: Number(v) || 0 } }))} />
-                <I label="Slip Ratio" path="security.rrl.slip_ratio" type="number" value={form.security.rrlSlip} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rrlSlip: Number(v) || 0 } }))} />
+                <FormInput disabled={readonly} label="Responses/sec" path="security.rrl.responses_per_second" type="number" value={form.security.rrlRPS} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rrlRPS: Number(v) || 0 } }))} />
+                <FormInput disabled={readonly} label="Slip Ratio" path="security.rrl.slip_ratio" type="number" value={form.security.rrlSlip} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rrlSlip: Number(v) || 0 } }))} />
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <I label="IPv4 Prefix" path="security.rrl.ipv4_prefix" type="number" value={form.security.rrlV4} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rrlV4: Number(v) || 0 } }))} />
-                <I label="IPv6 Prefix" path="security.rrl.ipv6_prefix" type="number" value={form.security.rrlV6} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rrlV6: Number(v) || 0 } }))} />
+                <FormInput disabled={readonly} label="IPv4 Prefix" path="security.rrl.ipv4_prefix" type="number" value={form.security.rrlV4} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rrlV4: Number(v) || 0 } }))} />
+                <FormInput disabled={readonly} label="IPv6 Prefix" path="security.rrl.ipv6_prefix" type="number" value={form.security.rrlV6} onChange={(v) => patch((p) => ({ ...p, security: { ...p.security, rrlV6: Number(v) || 0 } }))} />
               </div>
             </>
           )}
@@ -650,38 +684,38 @@ export default function ConfigPage() {
         <Section title="Web & Auth">
           <Toggle label="Web Enabled" checked={form.web.enabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, enabled: v } }))} />
           <div className="grid grid-cols-2 gap-2">
-            <I label="Web Address" path="web.addr" value={form.web.addr} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, addr: v } }))} />
-            <I label="Admin Username" path="web.auth.username" value={form.web.authUser} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, authUser: v } }))} />
+            <FormInput disabled={readonly} label="Web Address" path="web.addr" value={form.web.addr} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, addr: v } }))} />
+            <FormInput disabled={readonly} label="Admin Username" path="web.auth.username" value={form.web.authUser} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, authUser: v } }))} />
           </div>
           <Toggle label="DoH (HTTP/1.1+2)" checked={form.web.doh} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, doh: v } }))} />
           <Toggle label="DoH (HTTP/3)" checked={form.web.doh3} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, doh3: v } }))} />
           <Toggle label="Web TLS" checked={form.web.tlsEnabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, tlsEnabled: v } }))} />
           {(form.web.tlsEnabled || form.web.tlsCertFile) && !form.web.autoTLS && (
             <div className="grid grid-cols-2 gap-2">
-              <I label="TLS Cert File" path="web.tls_cert_file" value={form.web.tlsCertFile} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, tlsCertFile: v } }))} />
-              <I label="TLS Key File" path="web.tls_key_file" value={form.web.tlsKeyFile} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, tlsKeyFile: v } }))} />
+              <FormInput disabled={readonly} label="TLS Cert File" path="web.tls_cert_file" value={form.web.tlsCertFile} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, tlsCertFile: v } }))} />
+              <FormInput disabled={readonly} label="TLS Key File" path="web.tls_key_file" value={form.web.tlsKeyFile} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, tlsKeyFile: v } }))} />
             </div>
           )}
           <Toggle label="Auto-TLS (Let's Encrypt)" checked={form.web.autoTLS} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLS: v } }))} />
           {form.web.autoTLS && (
             <div className="grid grid-cols-2 gap-2">
-              <I label="Domain" path="web.auto_tls_domain" value={form.web.autoTLSDomain} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSDomain: v } }))} />
-              <I label="Email" path="web.auto_tls_email" value={form.web.autoTLSEmail} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSEmail: v } }))} />
-              <I label="Cache Dir" path="web.auto_tls_cache_dir" value={form.web.autoTLSCacheDir} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSCacheDir: v } }))} />
+              <FormInput disabled={readonly} label="Domain" path="web.auto_tls_domain" value={form.web.autoTLSDomain} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSDomain: v } }))} />
+              <FormInput disabled={readonly} label="Email" path="web.auto_tls_email" value={form.web.autoTLSEmail} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSEmail: v } }))} />
+              <FormInput disabled={readonly} label="Cache Dir" path="web.auto_tls_cache_dir" value={form.web.autoTLSCacheDir} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSCacheDir: v } }))} />
               <Toggle label="Staging (Test)" checked={form.web.autoTLSStaging} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoTLSStaging: v } }))} />
             </div>
           )}
           <div className="border-t border-slate-200 dark:border-slate-700 pt-3 mt-1 grid grid-cols-3 gap-2">
-            <I label="Query Log Buffer" path="web.query_log_buffer" type="number" value={form.web.queryLogBuffer} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, queryLogBuffer: Number(v) || 0 } }))} />
-            <I label="Top Clients Limit" path="web.top_clients_limit" type="number" value={form.web.topClientsLimit} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, topClientsLimit: Number(v) || 0 } }))} />
-            <I label="Top Domains Limit" path="web.top_domains_limit" type="number" value={form.web.topDomainsLimit} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, topDomainsLimit: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Query Log Buffer" path="web.query_log_buffer" type="number" value={form.web.queryLogBuffer} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, queryLogBuffer: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Top Clients Limit" path="web.top_clients_limit" type="number" value={form.web.topClientsLimit} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, topClientsLimit: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Top Domains Limit" path="web.top_domains_limit" type="number" value={form.web.topDomainsLimit} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, topDomainsLimit: Number(v) || 0 } }))} />
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <I label="Error Threshold %" path="web.alert_error_threshold_pct" type="number" min={0.1} step={0.1} value={form.web.alertErrorThresholdPct} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, alertErrorThresholdPct: Number(v) || 0 } }))} />
-            <I label="Latency Threshold ms" path="web.alert_latency_threshold_ms" type="number" min={1} step={1} value={form.web.alertLatencyThresholdMs} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, alertLatencyThresholdMs: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Error Threshold %" path="web.alert_error_threshold_pct" type="number" min={0.1} step={0.1} value={form.web.alertErrorThresholdPct} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, alertErrorThresholdPct: Number(v) || 0 } }))} />
+            <FormInput disabled={readonly} label="Latency Threshold ms" path="web.alert_latency_threshold_ms" type="number" min={1} step={1} value={form.web.alertLatencyThresholdMs} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, alertLatencyThresholdMs: Number(v) || 0 } }))} />
           </div>
           <Toggle label="Auto Update" checked={form.web.autoUpdate} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, autoUpdate: v } }))} />
-          {form.web.autoUpdate && <I label="Update Check Interval" path="web.update_check_interval" value={form.web.updateCheckInterval} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, updateCheckInterval: v } }))} />}
+          {form.web.autoUpdate && <FormInput disabled={readonly} label="Update Check Interval" path="web.update_check_interval" value={form.web.updateCheckInterval} onChange={(v) => patch((p) => ({ ...p, web: { ...p.web, updateCheckInterval: v } }))} />}
         </Section>
 
         {/* ── ACL & Blocklist ────────────────────────────────── */}
@@ -692,9 +726,9 @@ export default function ConfigPage() {
             <Toggle label="Blocklist Enabled" checked={form.blocklist.enabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, blocklist: { ...p.blocklist, enabled: v } }))} />
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <I label="Blocking Mode" path="blocklist.blocking_mode" value={form.blocklist.mode} onChange={(v) => patch((p) => ({ ...p, blocklist: { ...p.blocklist, mode: v } }))} />
-            <I label="Custom IP" path="blocklist.custom_ip" value={form.blocklist.customIP} onChange={(v) => patch((p) => ({ ...p, blocklist: { ...p.blocklist, customIP: v } }))} />
-            <I label="Refresh Interval" path="blocklist.refresh_interval" value={form.blocklist.refresh} onChange={(v) => patch((p) => ({ ...p, blocklist: { ...p.blocklist, refresh: v } }))} />
+            <FormInput disabled={readonly} label="Blocking Mode" path="blocklist.blocking_mode" value={form.blocklist.mode} onChange={(v) => patch((p) => ({ ...p, blocklist: { ...p.blocklist, mode: v } }))} />
+            <FormInput disabled={readonly} label="Custom IP" path="blocklist.custom_ip" value={form.blocklist.customIP} onChange={(v) => patch((p) => ({ ...p, blocklist: { ...p.blocklist, customIP: v } }))} />
+            <FormInput disabled={readonly} label="Refresh Interval" path="blocklist.refresh_interval" value={form.blocklist.refresh} onChange={(v) => patch((p) => ({ ...p, blocklist: { ...p.blocklist, refresh: v } }))} />
           </div>
           <StringList title="Whitelist" path="blocklist.whitelist" values={form.blocklist.whitelist} onChange={(n) => patch((p) => ({ ...p, blocklist: { ...p.blocklist, whitelist: n } }))} disabled={readonly} placeholder="example.com" />
           <StringList title="Blocklist Sources" path="blocklist.lists (url|format)"
@@ -707,15 +741,15 @@ export default function ConfigPage() {
         <Section title="Cluster">
           <Toggle label="Cluster Enabled" checked={form.cluster.enabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, enabled: v } }))} />
           <div className="grid grid-cols-2 gap-2">
-            <I label="Role" path="cluster.role" value={form.cluster.role} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, role: v } }))} />
-            <I label="Node ID" path="cluster.node_id" value={form.cluster.nodeID} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, nodeID: v } }))} />
+            <FormInput disabled={readonly} label="Role" path="cluster.role" value={form.cluster.role} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, role: v } }))} />
+            <FormInput disabled={readonly} label="Node ID" path="cluster.node_id" value={form.cluster.nodeID} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, nodeID: v } }))} />
           </div>
           <StringList title="Shared Fields" path="cluster.shared_fields" values={form.cluster.sharedFields} onChange={(n) => patch((p) => ({ ...p, cluster: { ...p.cluster, sharedFields: n } }))} disabled={readonly} placeholder="access_control" />
           <Toggle label="Fanout Cache Flush" checked={form.cluster.fanoutCacheFlush} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, fanoutCacheFlush: v } }))} />
           <Toggle label="Fanout Blocklist Refresh" checked={form.cluster.fanoutBlocklistRefresh} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, fanoutBlocklistRefresh: v } }))} />
           <div className="grid grid-cols-2 gap-2">
-            <I label="Sync Mode" path="cluster.sync.mode" value={form.cluster.syncMode} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, syncMode: v } }))} />
-            <I label="Pull Interval" path="cluster.sync.pull_interval" value={form.cluster.pullInterval} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, pullInterval: v } }))} />
+            <FormInput disabled={readonly} label="Sync Mode" path="cluster.sync.mode" value={form.cluster.syncMode} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, syncMode: v } }))} />
+            <FormInput disabled={readonly} label="Pull Interval" path="cluster.sync.pull_interval" value={form.cluster.pullInterval} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, pullInterval: v } }))} />
           </div>
           <Toggle label="Push On Save" checked={form.cluster.pushOnSave} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, cluster: { ...p.cluster, pushOnSave: v } }))} />
           <StringList title="Peers (name|enabled|api_base|api_token|sync_fields_csv)" path="cluster.peers.*"
@@ -733,23 +767,23 @@ export default function ConfigPage() {
         {/* ── System (Logging, Daemon, Zabbix) ───────────────── */}
         <Section title="System">
           <div className="grid grid-cols-2 gap-2">
-            <I label="Log Level" path="logging.level" value={form.logging.level} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, level: v } }))} />
-            <I label="Log Format" path="logging.format" value={form.logging.format} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, format: v } }))} />
+            <FormInput disabled={readonly} label="Log Level" path="logging.level" value={form.logging.level} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, level: v } }))} />
+            <FormInput disabled={readonly} label="Log Format" path="logging.format" value={form.logging.format} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, format: v } }))} />
           </div>
           <div className="border-t border-slate-200 dark:border-slate-700 pt-3 mt-1 space-y-2">
             <Toggle label="Fallback Debug Log" checked={form.logging.fallbackDebug} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, fallbackDebug: v } }))} />
             {form.logging.fallbackDebug && (
-              <I label="Fallback Log Path" path="logging.fallback_log" value={form.logging.fallbackLog} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, fallbackLog: v } }))} />
+              <FormInput disabled={readonly} label="Fallback Log Path" path="logging.fallback_log" value={form.logging.fallbackLog} onChange={(v) => patch((p) => ({ ...p, logging: { ...p.logging, fallbackLog: v } }))} />
             )}
           </div>
           <div className="border-t border-slate-200 dark:border-slate-700 pt-3 mt-1">
             <Toggle label="Daemon Mode" checked={form.daemon.enabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, daemon: { ...p.daemon, enabled: v } }))} />
           </div>
-          {form.daemon.enabled && <I label="PID File" path="daemon.pid_file" value={form.daemon.pidFile} onChange={(v) => patch((p) => ({ ...p, daemon: { ...p.daemon, pidFile: v } }))} />}
+          {form.daemon.enabled && <FormInput disabled={readonly} label="PID File" path="daemon.pid_file" value={form.daemon.pidFile} onChange={(v) => patch((p) => ({ ...p, daemon: { ...p.daemon, pidFile: v } }))} />}
           <div className="border-t border-slate-200 dark:border-slate-700 pt-3 mt-1">
             <Toggle label="Zabbix Integration" checked={form.zabbix.enabled} disabled={readonly} onChange={(v) => patch((p) => ({ ...p, zabbix: { ...p.zabbix, enabled: v } }))} />
           </div>
-          {form.zabbix.enabled && <I label="Zabbix Address" path="zabbix.addr" value={form.zabbix.addr} onChange={(v) => patch((p) => ({ ...p, zabbix: { ...p.zabbix, addr: v } }))} />}
+          {form.zabbix.enabled && <FormInput disabled={readonly} label="Zabbix Address" path="zabbix.addr" value={form.zabbix.addr} onChange={(v) => patch((p) => ({ ...p, zabbix: { ...p.zabbix, addr: v } }))} />}
         </Section>
 
         {/* ── Password ───────────────────────────────────────── */}

@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"sync/atomic"
@@ -11,6 +12,8 @@ import (
 	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/metrics"
 )
+
+var errAllNSServFail = errors.New("all nameservers returned SERVFAIL")
 
 func TestShouldFallback_ServFail(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail}
@@ -64,6 +67,22 @@ func TestShouldFallback_NoReachableAuthority(t *testing.T) {
 	fb := shouldFallback(result, nil)
 	if fb.triggered {
 		t.Error("expected shouldFallback=false when every NS was already exhausted")
+	}
+}
+
+// TestShouldFallback_AllNSServFailTagged pins the fallback.jsonl regression:
+// Error="all nameservers returned SERVFAIL" used to win over an empty
+// FailureReason and fire public fallback. Once tagged, Error may still be
+// set for operators/logs, but shouldFallback must not trigger.
+func TestShouldFallback_AllNSServFailTagged(t *testing.T) {
+	result := &ResolveResult{
+		RCODE:         dns.RCodeServFail,
+		FailureReason: "no-reachable-authority",
+		Error:         errAllNSServFail,
+	}
+	fb := shouldFallback(result, nil)
+	if fb.triggered {
+		t.Fatalf("expected shouldFallback=false for tagged all-NS SERVFAIL, got reason %q", fb.reason)
 	}
 }
 
