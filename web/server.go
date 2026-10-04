@@ -137,6 +137,11 @@ type AdminServer struct {
 	// MaxClientQueryNumEntries entries. Zero means use the package
 	// constant; production paths never set this.
 	clientQueryNumCapOverride int
+	// querySampleEvery controls RecordQuery sampling for cached
+	// successful answers. 0 or 1 = record every query (tests/default);
+	// N>1 = fully record 1 in N cached successes (timeseries still
+	// updated for every query). Uncached / error / blocked always full.
+	querySampleEvery uint64
 	updateCache               *UpdateInfo
 	updateCheckedAt           time.Time
 	updateMu                  sync.RWMutex
@@ -554,9 +559,31 @@ func (s *AdminServer) evictOldestClientLocked() {
 	}
 }
 
+// SetQuerySampleEvery sets how often cached successful queries get a
+// full RecordQuery (top lists + query log + client counters). 0 or 1
+// records every query. Timeseries is always updated.
+func (s *AdminServer) SetQuerySampleEvery(n uint64) {
+	s.querySampleEvery = n
+}
+
 // RecordQuery is called from the DNS handler hook to log a query.
 func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached bool, durationMs float64) {
 	id := s.nextID.Add(1)
+
+	blocked := rcode == "BLOCKED"
+	isError := rcode == "SERVFAIL" || rcode == "FORMERR" || rcode == "REFUSED"
+
+	// Always keep the cheap timeseries path — dashboard latency/hit
+	// charts stay accurate even when we sample the heavier sinks.
+	s.timeSeries.Record(cached, durationMs, isError)
+
+	// Sample cached successes under load. Uncached resolutions, errors,
+	// and blocklist hits always take the full path so the query log and
+	// top lists still surface the operationally interesting events.
+	every := s.querySampleEvery
+	if every > 1 && cached && !isError && !blocked && id%every != 0 {
+		return
+	}
 
 	// Track top clients and domains
 	s.topClients.Inc(client)
@@ -582,8 +609,6 @@ func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached boo
 	s.clientNumMu.Unlock()
 	clientNum := clientEntry.count.Add(1)
 
-	blocked := rcode == "BLOCKED"
-
 	queryEntry := QueryEntry{
 		ID:         id,
 		GlobalNum:  id,
@@ -598,9 +623,6 @@ func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached boo
 		Blocked:    blocked,
 	}
 	s.queryLog.Record(queryEntry)
-
-	isError := rcode == "SERVFAIL" || rcode == "FORMERR" || rcode == "REFUSED"
-	s.timeSeries.Record(cached, durationMs, isError)
 }
 
 // startClientCleanup periodically removes stale client query entries to prevent memory leak.
@@ -668,6 +690,12 @@ func (s *AdminServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/livez", s.handleLivez)
 	mux.HandleFunc("/api/system/version", s.handleVersion)
 	mux.HandleFunc("/api/dns-guide", s.handleDNSGuide)
+	// Prometheus exposition — same handler as standalone metrics mode.
+	// Without this, enabling the web dashboard silently removes /metrics
+	// (web replaces the metrics server and SPA returns 404 for the path).
+	if s.metrics != nil {
+		mux.Handle("/metrics", s.metrics)
+	}
 	mux.HandleFunc("/api/system/profile", s.requireAuth(s.handleSystemProfile))
 	mux.HandleFunc("/api/dashboard/layout", s.requireAuth(s.handleDashboardLayout))
 

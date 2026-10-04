@@ -176,7 +176,13 @@ func TestRemoveNSByIPv6(t *testing.T) {
 		{hostname: "ns2.test.com", ipv6: "::2"},
 	}
 	result := removeNSByIP(entries, "::1")
-	if len(result) != 1 {
-		t.Errorf("expected 1, got %d", len(result))
+	if len(result) != 2 {
+		t.Errorf("expected 2 (hostname kept), got %d", len(result))
+	}
+	if result[0].ipv6 != "" {
+		t.Errorf("expected cleared ipv6, got %+v", result[0])
+	}
+	if result[1].ipv6 != "::2" {
+		t.Errorf("expected untouched ns2, got %+v", result[1])
 	}
 }

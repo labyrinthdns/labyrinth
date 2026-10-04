@@ -137,6 +137,11 @@ func (h *MainHandler) SetNSID(id string) {
 	h.nsid.Store(&b)
 }
 
+// Metrics returns the handler's metrics registry (may be nil in tests).
+func (h *MainHandler) Metrics() *metrics.Metrics {
+	return h.metrics
+}
+
 // SetPrivateFilter enables or disables private address filtering.
 // Called from the /api/config/raw hot-reload callback. The atomic store
 // publishes the new value to the DNS handler reader sites with the

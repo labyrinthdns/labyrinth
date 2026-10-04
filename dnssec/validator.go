@@ -2,6 +2,7 @@ package dnssec
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -577,8 +578,16 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	}
 	relevantRRsets := make(map[rrsetKey]bool)
 	for _, rr := range answerRRs {
-		// RRSIG pseudo-RRs were removed above; every remaining answer RRset is
-		// data the caller may consume and therefore must be authenticated.
+		// Only RRsets that answer this qname/qtype (or redirect it) must be
+		// authenticated here. Auths often append out-of-bailiwick follow-on
+		// data after a cross-zone CNAME (live: reverse PTR → unsigned
+		// mta.norwoodlight.com); those RRs are validated on the chase hop.
+		// Requiring them here falsely Bogus'es a Secure CNAME whenever any
+		// sibling RRSIG also failed (rollover algs), forcing public-resolver
+		// fallback.
+		if !answerRRsetRelevant(rr.Name, rr.Type, qname, qtype) {
+			continue
+		}
 		relevantRRsets[rrsetKey{
 			owner: strings.ToLower(strings.TrimSuffix(rr.Name, ".")),
 			typ:   rr.Type,
@@ -767,6 +776,11 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			step.Outcome = verdictToOutcome(result)
 			step.Detail = fmt.Sprintf("trust chain from %s to root: %s", signerZone, result)
 			push(step)
+			if result == Insecure {
+				// Cryptographically valid island signature under an
+				// insecure delegation — answer is Insecure (no AD).
+				return Insecure, steps, ReasonNone
+			}
 			if result == Bogus {
 				sawBogus = true
 				setBogusReason(ReasonOther)
@@ -817,6 +831,22 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		return Insecure, steps, reason
 	}
 
+	// Island of security / unsigned delegation: the answer carries local
+	// RRSIGs (often expired or otherwise unusable) but the signer zone is
+	// not secured by a DS chain from a trust anchor. RFC 4035 §5 requires
+	// Secure only when the chain exists; an authenticated insecure
+	// delegation must yield Insecure — not Bogus — even when the island's
+	// own signatures fail. Without this, public resolvers answer these
+	// names while Labyrinth SERVFAILs and leans on fallback.
+	if v.signersAuthenticatedInsecure(rrsigs, budget) {
+		push(ValidationStep{
+			Stage:   "insecure-delegation",
+			Outcome: "insecure",
+			Detail:  "signer zone(s) have authenticated no-DS; local RRSIG failures ignored",
+		})
+		return Insecure, steps, ReasonNone
+	}
+
 	// No RRSIG fully validated. Prefer Bogus over Indeterminate so a real
 	// signature forgery does not get downgraded to a soft-fail.
 	if sawBogus {
@@ -838,6 +868,46 @@ func verdictToOutcome(v ValidationResult) string {
 		return "bogus"
 	}
 	return "indeterminate"
+}
+
+// signersAuthenticatedInsecure reports whether every distinct RRSIG signer
+// zone in the list has an authenticated insecure delegation (no DS) from a
+// trust anchor. Used to downgrade island-of-security signature failures
+// (expired/broken local RRSIGs) to Insecure instead of Bogus — matching
+// public recursive resolvers. Returns false when the set is empty or any
+// signer cannot be proven Insecure (fail closed).
+func (v *Validator) signersAuthenticatedInsecure(rrsigs []rrsigWithOwner, budget *cryptoBudget) bool {
+	if len(rrsigs) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(rrsigs))
+	any := false
+	for _, rs := range rrsigs {
+		if rs.rrsig == nil {
+			continue
+		}
+		zone := normalizeName(rs.rrsig.SignerName)
+		if zone == "" || zone == "." {
+			// Root is never an "insecure island" relative to itself.
+			return false
+		}
+		if _, ok := seen[zone]; ok {
+			continue
+		}
+		seen[zone] = struct{}{}
+		any = true
+
+		dnskeys, dnskeySignatures, err := v.fetchDNSKEYRRSet(zone)
+		if err != nil {
+			// No keys — still walk the DS chain with an empty set so an
+			// authenticated no-DS at the cut can return Insecure.
+			dnskeys, dnskeySignatures = nil, nil
+		}
+		if v.validateTrustChainForKey(zone, dnskeys, dnskeySignatures, nil, budget) != Insecure {
+			return false
+		}
+	}
+	return any
 }
 
 // validateTrustChain validates the DNSKEY trust chain from the given zone
@@ -873,24 +943,29 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 		return Indeterminate
 	}
 
-	// parentKeys holds the previous chain element's verified DNSKEY RRset.
-	// Required for authenticating the parent's denial-of-DS (RFC 4035 §5.2 /
-	// RFC 5155 §10.4) on the empty-DS path — without it, an off-path
-	// attacker spoofing a NOERROR-empty DS reply downgrades a secure child
-	// to Insecure for the lifetime of the (legitimate) cache miss.
+	// parentKeys holds the previous *real* zone's verified DNSKEY RRset.
+	// lastZone is that zone's name. buildZoneChain enumerates every label
+	// between root and the signer, but many labels are empty non-terminals
+	// (ENTs) inside a parent zone — not zone cuts. Parent keys/name must
+	// stay pinned to the last authenticated zone cut so a deeper DS
+	// (e.g. cell.eu.nr-data.net DS published by nr-data.net while
+	// eu.nr-data.net is only an ENT) still verifies against the right keys.
 	var parentKeys []dns.ResourceRecord
+	var lastZone string
 
 	for i, chainZone := range chain {
-		zoneKeys, zoneSignatures, err := v.fetchDNSKEYRRSet(chainZone)
-		if err != nil {
-			v.logger.Debug("failed to fetch DNSKEYs for chain zone",
-				"zone", chainZone,
-				"error", err)
-			return Indeterminate
-		}
-
+		var zoneKeys, zoneSignatures []dns.ResourceRecord
 		var trustedKeys []dns.ResourceRecord
+
 		if i == 0 {
+			var err error
+			zoneKeys, zoneSignatures, err = v.fetchDNSKEYRRSet(chainZone)
+			if err != nil {
+				v.logger.Debug("failed to fetch DNSKEYs for chain zone",
+					"zone", chainZone,
+					"error", err)
+				return Indeterminate
+			}
 			// Root zone: select the DNSKEYs that match configured trust anchors.
 			trustedKeys = v.dnskeysMatchingTrustAnchors(chainZone, zoneKeys)
 			if len(trustedKeys) == 0 {
@@ -898,8 +973,10 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				return Bogus
 			}
 		} else {
-			// Non-root zone: fetch DS from parent and verify.
-			parentZone := chain[i-1]
+			// Non-root label: ask the last real parent whether this name is a
+			// signed cut (positive DS), an unsigned cut (authenticated DS
+			// denial with NS), or just an ENT inside the parent (skip).
+			parentZone := lastZone
 			dsRecords, dsAnswer, denialAuth, err := v.fetchDSRRSet(chainZone, parentZone)
 			if err != nil {
 				v.logger.Debug("failed to fetch DS records",
@@ -909,20 +986,59 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				return Indeterminate
 			}
 			if len(dsRecords) == 0 {
+				// Empty non-terminal: name exists in the parent with no NS/DS
+				// (typical NSEC bitmap = NSEC+RRSIG only). Not a zone cut —
+				// skip and keep walking toward a deeper label that may carry
+				// the real DS. Live trigger: eu.nr-data.net under nr-data.net
+				// while cell.eu.nr-data.net holds the signed delegation.
+				// Treating ENT as Bogus (old verifyDSDenial NS-required path)
+				// or Insecure (wrong downgrade) both break public validators'
+				// Secure answer for the child zone.
+				if v.isAuthenticatedEmptyNonTerminal(chainZone, parentZone, parentKeys, denialAuth, cb) {
+					if i == len(chain)-1 {
+						v.logger.Debug("signer zone DS denied as empty non-terminal — treating as Bogus",
+							"zone", chainZone, "parent", parentZone)
+						return Bogus
+					}
+					v.logger.Debug("skipping empty non-terminal in trust chain",
+						"name", chainZone, "parent", parentZone)
+					continue
+				}
 				// RFC 4035 §5.2 / RFC 5155 §10.4: a NOERROR-empty DS
 				// response must be authenticated as denial-of-DS before
 				// it can downgrade the chain to Insecure. Without this
 				// check, a spoofed empty DS reply downgrades any secure
 				// child to Insecure for the cache lifetime.
 				ok := v.verifyDSDenial(chainZone, parentZone, parentKeys, denialAuth, cb)
-				if !ok {
-					v.logger.Debug("empty DS response without authenticated denial — treating as Bogus",
+				if ok {
+					v.logger.Debug("authenticated insecure delegation",
 						"zone", chainZone, "parent", parentZone)
-					return Bogus
+					return Insecure
 				}
-				v.logger.Debug("authenticated insecure delegation",
+				// Multi-label reverse delegations (e.g. 8.222.154.in-addr.arpa
+				// cut published by 154.in-addr.arpa) leave intermediate names
+				// such as 222.154.in-addr.arpa inside an NSEC gap — proven
+				// nonexistent, not a zone cut. Skip toward the deeper label
+				// that carries the real NS/DS. Without this, island-of-
+				// security child signatures (larus.net PTR NXDOMAIN) collapse
+				// the whole chain to Bogus and force public-resolver fallback.
+				if i < len(chain)-1 && v.isAuthenticatedCoveredName(chainZone, parentZone, parentKeys, denialAuth, cb) {
+					v.logger.Debug("skipping covered intermediate in trust chain",
+						"name", chainZone, "parent", parentZone)
+					continue
+				}
+				v.logger.Debug("empty DS response without authenticated denial — treating as Bogus",
 					"zone", chainZone, "parent", parentZone)
-				return Insecure
+				return Bogus
+			}
+
+			// Positive DS — this label is a real zone cut. Fetch its DNSKEY.
+			zoneKeys, zoneSignatures, err = v.fetchDNSKEYRRSet(chainZone)
+			if err != nil {
+				v.logger.Debug("failed to fetch DNSKEYs for chain zone",
+					"zone", chainZone,
+					"error", err)
+				return Indeterminate
 			}
 
 			// A positive DS RRset is data from the parent zone. Authenticate the
@@ -964,6 +1080,17 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 		authenticatedKeys := trustedKeys
 		if len(zoneSignatures) > 0 {
 			if !v.verifyRRSetWithKeys(zoneKeys, zoneSignatures, trustedKeys, chainZone, dns.TypeDNSKEY, cb) {
+				// RFC 6840 §5.2: when the only signatures from DS-matched
+				// keys use algorithms we cannot (or will not) verify —
+				// live: 123.59.199.in-addr.arpa DS→alg-7 KSK, RRSIG(DNSKEY)
+				// alg 7 — treat the zone as unsigned, not Bogus. Public
+				// resolvers that support alg 7 Secure it; those that don't
+				// answer Insecure. Bogus here forced SERVFAIL→fallback.
+				if v.trustedKeySignaturesUnusable(zoneSignatures, trustedKeys, chainZone, dns.TypeDNSKEY) {
+					v.logger.Debug("DNSKEY RRset only signed with unsupported/weak algorithms; treating as insecure",
+						"zone", chainZone)
+					return Insecure
+				}
 				v.logger.Debug("DNSKEY RRset RRSIG did not validate",
 					"zone", chainZone)
 				return Bogus
@@ -979,9 +1106,239 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 		// Carry only authenticated keys forward. This prevents an injected
 		// sibling from signing a denial proof at the next delegation hop.
 		parentKeys = authenticatedKeys
+		lastZone = chainZone
 	}
 
 	return Secure
+}
+
+// isAuthenticatedEmptyNonTerminal reports whether authority carries a
+// parent-signed NSEC proving childZone is an empty non-terminal inside
+// the parent zone: the name exists, but owns neither NS nor DS (typical
+// bitmap is only NSEC+RRSIG). Such a label is NOT a zone cut — the trust
+// chain walker must skip it and keep looking for a deeper DS under the
+// same parent keys (RFC 4034 §4.1 / RFC 4035 §5.2 empty-non-terminal).
+//
+// Distinct from verifyDSDenial: that helper accepts NS-present DS-absent
+// NSEC as an insecure *delegation*. Accepting ENT there would wrongly
+// downgrade a still-signed deeper child to Insecure.
+func (v *Validator) isAuthenticatedEmptyNonTerminal(childZone, parentZone string, parentKeys []dns.ResourceRecord, authority []dns.ResourceRecord, budget ...*cryptoBudget) bool {
+	cb := budgetFrom(budget)
+	if len(parentKeys) == 0 || len(authority) == 0 {
+		return false
+	}
+
+	var rrsigs []rrsigWithOwner
+	var nsecWithOwners []NSECRecordWithOwner
+	for _, rr := range authority {
+		switch rr.Type {
+		case dns.TypeRRSIG:
+			parsed, err := dns.ParseRRSIG(rr.RData, 0)
+			if err != nil {
+				continue
+			}
+			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name, class: rr.Class})
+		case dns.TypeNSEC:
+			parsed, err := dns.ParseNSEC(rr.RData, 0)
+			if err != nil {
+				continue
+			}
+			nsecWithOwners = append(nsecWithOwners, NSECRecordWithOwner{
+				NSECRecord: *parsed,
+				OwnerName:  rr.Name,
+			})
+		}
+	}
+	if len(nsecWithOwners) == 0 || len(rrsigs) == 0 {
+		return false
+	}
+
+	type ownerTypeKey struct {
+		owner string
+		typ   uint16
+	}
+	authenticated := make(map[ownerTypeKey]bool)
+	skewI := int64(rrsigClockSkew / time.Second)
+	parent := strings.ToLower(strings.TrimSuffix(parentZone, "."))
+	for _, rs := range rrsigs {
+		rrsig := rs.rrsig
+		if rrsig.TypeCovered != dns.TypeNSEC {
+			continue
+		}
+		if v.isWeakRRSIGAlg(rrsig.Algorithm) || v.isUnsupportedRRSIGAlg(rrsig.Algorithm) {
+			continue
+		}
+		signer := strings.ToLower(strings.TrimSuffix(rrsig.SignerName, "."))
+		if signer != parent {
+			continue
+		}
+		rrset := filterRRSetByOwnerAndClass(authority, dns.TypeNSEC, rs.owner, rs.class)
+		if len(rrset) == 0 {
+			continue
+		}
+		nowI := time.Now().Unix()
+		if nowI+skewI < int64(rrsig.Inception) || nowI > int64(rrsig.Expiration)+skewI {
+			continue
+		}
+		dnskey, err := findMatchingDNSKEY(parentKeys, rrsig.KeyTag, rrsig.Algorithm)
+		if err != nil {
+			continue
+		}
+		if !cb.allow() {
+			break
+		}
+		if err := VerifyRRSIG(rrset, rrsig, dnskey); err == nil {
+			authenticated[ownerTypeKey{
+				owner: strings.ToLower(strings.TrimSuffix(rs.owner, ".")),
+				typ:   dns.TypeNSEC,
+			}] = true
+		}
+	}
+
+	want := strings.ToLower(strings.TrimSuffix(childZone, "."))
+	for _, n := range nsecWithOwners {
+		owner := strings.ToLower(strings.TrimSuffix(n.OwnerName, "."))
+		if owner != want {
+			continue
+		}
+		if !authenticated[ownerTypeKey{owner: owner, typ: dns.TypeNSEC}] {
+			continue
+		}
+		// ENT: name exists, no delegation (NS), no DS, no CNAME/SOA apex.
+		if nsecHasType(&n.NSECRecord, dns.TypeDS) ||
+			nsecHasType(&n.NSECRecord, dns.TypeNS) ||
+			nsecHasType(&n.NSECRecord, dns.TypeCNAME) ||
+			nsecHasType(&n.NSECRecord, dns.TypeSOA) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// isAuthenticatedCoveredName reports whether authority carries a parent-
+// signed NSEC/NSEC3 that COVERS childZone (name proven nonexistent at this
+// label). Used to skip intermediate labels in buildZoneChain that are not
+// zone cuts — common under in-addr.arpa reverse delegations where the
+// parent publishes NS for a multi-label child (8.222.154.in-addr.arpa)
+// while the single-label intermediate (222.154.in-addr.arpa) sits in an
+// NSEC gap.
+func (v *Validator) isAuthenticatedCoveredName(childZone, parentZone string, parentKeys []dns.ResourceRecord, authority []dns.ResourceRecord, budget ...*cryptoBudget) bool {
+	cb := budgetFrom(budget)
+	if len(parentKeys) == 0 || len(authority) == 0 {
+		return false
+	}
+	var rrsigs []rrsigWithOwner
+	var nsecWithOwners []NSECRecordWithOwner
+	var nsec3WithOwners []NSEC3RecordWithOwner
+	var nsec3RRNames []string
+	for _, rr := range authority {
+		switch rr.Type {
+		case dns.TypeRRSIG:
+			parsed, err := dns.ParseRRSIG(rr.RData, 0)
+			if err != nil {
+				continue
+			}
+			rrsigs = append(rrsigs, rrsigWithOwner{rrsig: parsed, owner: rr.Name, class: rr.Class})
+		case dns.TypeNSEC:
+			parsed, err := dns.ParseNSEC(rr.RData, 0)
+			if err != nil {
+				continue
+			}
+			nsecWithOwners = append(nsecWithOwners, NSECRecordWithOwner{NSECRecord: *parsed, OwnerName: rr.Name})
+		case dns.TypeNSEC3:
+			parsed, err := dns.ParseNSEC3(rr.RData)
+			if err != nil {
+				continue
+			}
+			ownerHash, err := nsec3OwnerHashFromName(rr.Name)
+			if err != nil {
+				continue
+			}
+			nsec3WithOwners = append(nsec3WithOwners, NSEC3RecordWithOwner{NSEC3Record: *parsed, OwnerHash: ownerHash})
+			nsec3RRNames = append(nsec3RRNames, rr.Name)
+		}
+	}
+	if len(rrsigs) == 0 {
+		return false
+	}
+
+	type ownerTypeKey struct {
+		owner string
+		typ   uint16
+	}
+	authenticated := make(map[ownerTypeKey]bool)
+	skewI := int64(rrsigClockSkew / time.Second)
+	parent := strings.ToLower(strings.TrimSuffix(parentZone, "."))
+	for _, rs := range rrsigs {
+		rrsig := rs.rrsig
+		if rrsig.TypeCovered != dns.TypeNSEC && rrsig.TypeCovered != dns.TypeNSEC3 {
+			continue
+		}
+		if v.isWeakRRSIGAlg(rrsig.Algorithm) || v.isUnsupportedRRSIGAlg(rrsig.Algorithm) {
+			continue
+		}
+		signer := strings.ToLower(strings.TrimSuffix(rrsig.SignerName, "."))
+		if signer != parent {
+			continue
+		}
+		rrset := filterRRSetByOwnerAndClass(authority, rrsig.TypeCovered, rs.owner, rs.class)
+		if len(rrset) == 0 {
+			continue
+		}
+		nowI := time.Now().Unix()
+		if nowI+skewI < int64(rrsig.Inception) || nowI > int64(rrsig.Expiration)+skewI {
+			continue
+		}
+		dnskey, err := findMatchingDNSKEY(parentKeys, rrsig.KeyTag, rrsig.Algorithm)
+		if err != nil {
+			continue
+		}
+		if !cb.allow() {
+			break
+		}
+		if err := VerifyRRSIG(rrset, rrsig, dnskey); err == nil {
+			authenticated[ownerTypeKey{
+				owner: strings.ToLower(strings.TrimSuffix(rs.owner, ".")),
+				typ:   rrsig.TypeCovered,
+			}] = true
+		}
+	}
+	if len(authenticated) == 0 {
+		return false
+	}
+
+	want := canonicalName(childZone)
+	for _, n := range nsecWithOwners {
+		owner := canonicalName(n.OwnerName)
+		if !authenticated[ownerTypeKey{owner: owner, typ: dns.TypeNSEC}] {
+			continue
+		}
+		next := canonicalName(n.NextDomainName)
+		if nsecCoversName(owner, next, want) {
+			return true
+		}
+	}
+	if len(nsec3WithOwners) == 0 {
+		return false
+	}
+	verified := make([]NSEC3RecordWithOwner, 0, len(nsec3WithOwners))
+	for i, n := range nsec3WithOwners {
+		if authenticated[ownerTypeKey{
+			owner: strings.ToLower(strings.TrimSuffix(nsec3RRNames[i], ".")),
+			typ:   dns.TypeNSEC3,
+		}] {
+			verified = append(verified, n)
+		}
+	}
+	if len(verified) == 0 {
+		return false
+	}
+	h, err := ComputeNSEC3Hash(want+".", verified[0].HashAlgorithm, verified[0].Iterations, verified[0].Salt)
+	if err != nil {
+		return false
+	}
+	return findNSEC3Cover(verified, h) != nil
 }
 
 // verifyDSDenial authenticates a NOERROR-empty DS response from the parent
@@ -1537,6 +1894,32 @@ func containsDNSKEY(rrs []dns.ResourceRecord, want *dns.DNSKEYRecord) bool {
 	return false
 }
 
+// trustedKeySignaturesUnusable reports whether every RRSIG over rrtype made
+// by a trusted key uses a weak or unsupported algorithm. In that case the
+// chain of trust is visible (DS matches a key that signed) but this
+// validator cannot authenticate it — RFC 6840 §5.2 requires Insecure, not
+// Bogus. Returns false when no trusted-key signature exists at all (missing
+// signature → Bogus) or when at least one trusted-key signature uses a
+// supported algorithm (crypto/time failure → Bogus).
+func (v *Validator) trustedKeySignaturesUnusable(signatureRRs, trustedKeys []dns.ResourceRecord, signerZone string, rrtype uint16) bool {
+	zone := normalizeName(signerZone)
+	sawTrustedSig := false
+	for _, rr := range signatureRRs {
+		rrsig, err := dns.ParseRRSIG(rr.RData, 0)
+		if err != nil || rrsig.TypeCovered != rrtype || normalizeName(rrsig.SignerName) != zone {
+			continue
+		}
+		if _, err := findMatchingDNSKEY(trustedKeys, rrsig.KeyTag, rrsig.Algorithm); err != nil {
+			continue
+		}
+		sawTrustedSig = true
+		if !v.isWeakRRSIGAlg(rrsig.Algorithm) && !v.isUnsupportedRRSIGAlg(rrsig.Algorithm) {
+			return false
+		}
+	}
+	return sawTrustedSig
+}
+
 // verifyRRSetWithKeys reports whether at least one in-policy, in-time RRSIG
 // over the requested RRset verifies with one of the already-authenticated
 // keys. It deliberately accepts raw RRSIG resource records so it can be used
@@ -1667,6 +2050,27 @@ func normalizeName(name string) string {
 	return name
 }
 
+// answerRRsetRelevant reports whether an answer RR must be authenticated for
+// ValidateResponse(qname, qtype).
+//
+// Same-owner positive RRsets always count — an unsigned TXT sibling next to a
+// signed A must not yield Secure. Different owners do not: auths often append
+// out-of-bailiwick follow-on data after a cross-zone CNAME (live reverse PTR →
+// unsigned mta.norwoodlight.com); those are validated on the chase hop.
+// Covering DNAME owners are parents of qname and always count (RFC 6672).
+func answerRRsetRelevant(owner string, rrType uint16, qname string, qtype uint16) bool {
+	owner = strings.ToLower(strings.TrimSuffix(owner, "."))
+	qname = strings.ToLower(strings.TrimSuffix(qname, "."))
+	if owner == qname {
+		return true
+	}
+	if rrType == dns.TypeDNAME && qname != "" && strings.HasSuffix(qname, "."+owner) {
+		return true
+	}
+	_ = qtype // reserved for future qtype-scoped same-owner filtering
+	return false
+}
+
 // isInBailiwick reports whether signer is an ancestor of (or equal to) qname.
 // Both inputs must be already normalized (lowercase, trailing dot). The root
 // "." is a valid signer for every qname.
@@ -1682,23 +2086,12 @@ func isInBailiwick(qname, signer string) bool {
 	return strings.HasSuffix(q, "."+s)
 }
 
-// validateDenialResponse validates NSEC3 proofs in NXDOMAIN/NODATA responses.
-// It first checks for RRSIG signatures in the authority section, then validates
-// NSEC3 records to prove the queried name does not exist or the type is absent.
-//
-// Unlike a positive answer, the absence of a verifiable NSEC/NSEC3 denial
-// proof is *not* a benign condition once RRSIGs are present in the authority
-// section: a signed-but-unverified denial response is treated as Bogus, not
-// Insecure, because the zone has clearly opted into DNSSEC.
-func (v *Validator) validateDenialResponse(response *dns.Message, qname string, qtype uint16, budget ...*cryptoBudget) ValidationResult {
-	return v.validateDenialResponseN(
-		response, qname, qtype, budget, nil,
-	)
-}
-
-// validateDenialResponseN is the internal implementation shared by
-// validateDenialResponse (no hash budget, for callers that don't need it)
-// and the full path (with nsec3 budget, from validateResponseImpl).
+// validateDenialResponseN validates NSEC/NSEC3 proofs in NXDOMAIN/NODATA
+// responses. Unlike a positive answer, the absence of a verifiable denial
+// proof is *not* benign once RRSIGs are present in the authority section: a
+// signed-but-unverified denial is Bogus, not Insecure, because the zone has
+// opted into DNSSEC. nsec3Budget may be nil when the caller does not need a
+// hash budget (tests); the hot path from validateResponseImpl always passes one.
 func (v *Validator) validateDenialResponseN(response *dns.Message, qname string, qtype uint16, budget []*cryptoBudget, nsec3Budget []*nsec3HashBudget) ValidationResult {
 	cb := budgetFrom(budget)
 	nsec3B := nsec3HashBudgetFrom(nsec3Budget)
@@ -1894,6 +2287,9 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 		if chainResult != Secure {
 			v.logger.Debug("denial proof signing key has no secure trust chain",
 				"zone", signerZone, "result", chainResult)
+			if chainResult == Insecure {
+				return Insecure
+			}
 			if chainResult == Bogus {
 				sawBogus = true
 			} else {
@@ -1926,7 +2322,15 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 	// it. Prefer Bogus when we saw a hard failure (forged signature, expired,
 	// out-of-bailiwick) and Indeterminate only when the failure was
 	// "couldn't reach the keys" (transient).
+	//
+	// Exception: authenticated insecure delegation at the signer — local
+	// island RRSIGs (expired SOA/NSEC) must not force Bogus/SERVFAIL.
 	if len(authenticRRsets) == 0 {
+		if v.signersAuthenticatedInsecure(rrsigs, cb) {
+			v.logger.Debug("denial response: signer insecure; ignoring local RRSIG failures",
+				"qname", qname, "qtype", qtype)
+			return Insecure
+		}
 		if sawBogus {
 			return Bogus
 		}
@@ -1955,6 +2359,14 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 	if len(verifiedNSEC3s) > 0 {
 		denied, err := VerifyNSEC3Denial5155(qname, qtype, response.Header.RCODE(), verifiedNSEC3s, nsec3B)
 		if err != nil {
+			if errors.Is(err, errNSEC3OptOutNameError) {
+				// Authenticated closest-encloser + opt-out next-closer
+				// cover: cannot set AD, but the denial is not forged.
+				// Match Unbound/BIND/1.1.1.1 — NXDOMAIN with AD=0.
+				v.logger.Debug("NSEC3 NXDOMAIN under opt-out span — insecure name error",
+					"qname", qname)
+				return Insecure
+			}
 			v.logger.Debug("NSEC3 denial verification error",
 				"qname", qname, "error", err)
 			return Indeterminate
@@ -2009,6 +2421,19 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 	if qtype == dns.TypeDS && len(verifiedNSEC3s) > 0 {
 		if proven, dsErr := VerifyNSEC3DenialDSAbsent(qname, verifiedNSEC3s, nsec3B); dsErr == nil && proven {
 			v.logger.Debug("DS NODATA is an authenticated insecure delegation (NSEC3 opt-out / DS-clear)",
+				"qname", qname)
+			return Insecure
+		}
+	}
+
+	// Same insecure-delegation / covered-intermediate signal for NSEC
+	// (common under in-addr.arpa). Without this, reverse DS queries for
+	// multi-label cuts (8.222.154 / 222.154 / 94.167) fall through to Bogus
+	// because VerifyNSECDenial rejects NS-without-SOA NODATA and covering
+	// proofs require NXDOMAIN — while RIR parents answer NOERROR.
+	if qtype == dns.TypeDS && len(verifiedNSECs) > 0 {
+		if proven, dsErr := VerifyNSECDenialDSAbsent(qname, verifiedNSECs); dsErr == nil && proven {
+			v.logger.Debug("DS NODATA is an authenticated insecure/absent DS (NSEC)",
 				"qname", qname)
 			return Insecure
 		}

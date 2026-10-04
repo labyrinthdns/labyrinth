@@ -203,7 +203,7 @@ func (r *Resolver) traceFinishWithFallback(
 			"reason":    fb.reason,
 			"resolvers": r.config.FallbackResolvers,
 		})
-		if fbResult := r.queryFallback(name, qtype, qclass, fb.reason); fbResult != nil {
+		if fbResult := r.queryFallbackWithPrimary(name, qtype, qclass, fb.reason, result); fbResult != nil {
 			t.emit("fallback", TraceStatusOK, "fallback resolver answered", map[string]any{
 				"rcode":         rcodeName(fbResult.RCODE),
 				"answers":       len(fbResult.Answers),

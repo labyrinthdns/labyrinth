@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createQueryWebSocket } from '@/api/client'
 import type { QueryEntry } from '@/api/types'
 
-export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
+export function useQueryStream(maxEntries = 200, flushIntervalMs = 200) {
   const [queries, setQueries] = useState<QueryEntry[]>([])
   const [connected, setConnected] = useState(false)
   const [paused, setPaused] = useState(false)
@@ -16,20 +16,11 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
 
   pausedRef.current = paused
 
-  const connect = useCallback(function connectImpl() {
-    if (unmountedRef.current) return
-    if (!visibleRef.current) return
-
-    // Cancel any pending reconnect timer — a new connect supersedes it.
+  const teardown = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
     }
-
-    // Tear down any existing socket. Do NOT trust readyState === OPEN as a
-    // signal that the connection is alive: after sleep/network drop the
-    // browser may keep the socket in OPEN state for minutes before noticing
-    // the peer is gone (zombie connection).
     const stale = wsRef.current
     if (stale) {
       stale.onopen = null
@@ -38,6 +29,15 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
       stale.onmessage = null
       try { stale.close() } catch { /* noop */ }
     }
+    wsRef.current = null
+  }, [])
+
+  const connect = useCallback(function connectImpl() {
+    if (unmountedRef.current) return
+    if (!visibleRef.current) return
+    if (pausedRef.current) return
+
+    teardown()
 
     const ws = createQueryWebSocket()
     wsRef.current = ws
@@ -53,7 +53,7 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
       wsRef.current = null
       if (unmountedRef.current) return
       setConnected(false)
-      if (!visibleRef.current) return
+      if (!visibleRef.current || pausedRef.current) return
       // Exponential backoff reconnect to avoid unnecessary load when backend is down.
       const attempt = reconnectAttemptRef.current
       const delay = Math.min(3000 * (2 ** attempt), 30000)
@@ -72,7 +72,7 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
         queueRef.current.push(entry)
       } catch { /* ignore parse errors */ }
     }
-  }, [])
+  }, [teardown])
 
   useEffect(() => {
     unmountedRef.current = false
@@ -83,19 +83,14 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
         // Reset backoff so the user-visible reconnect happens immediately,
         // not after a 30s exponential wait carried over from while-hidden.
         reconnectAttemptRef.current = 0
-        connect()
+        if (!pausedRef.current) connect()
         return
       }
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current)
-        reconnectTimerRef.current = null
-      }
-      wsRef.current?.close()
-      wsRef.current = null
+      teardown()
       setConnected(false)
     }
     const onOnline = () => {
-      if (!visibleRef.current) return
+      if (!visibleRef.current || pausedRef.current) return
       reconnectAttemptRef.current = 0
       connect()
     }
@@ -107,14 +102,24 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 2000) {
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('online', onOnline)
       window.removeEventListener('focus', onOnline)
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current)
-        reconnectTimerRef.current = null
-      }
-      wsRef.current?.close()
-      wsRef.current = null
+      teardown()
     }
-  }, [connect])
+  }, [connect, teardown])
+
+  // Pause = unsubscribe: tear down the socket so the server stops fan-out.
+  // Resume reconnects only when no socket is active (avoids double-connect on mount).
+  useEffect(() => {
+    if (paused) {
+      queueRef.current = []
+      teardown()
+      setConnected(false)
+      return
+    }
+    if (!wsRef.current && !unmountedRef.current && visibleRef.current) {
+      reconnectAttemptRef.current = 0
+      connect()
+    }
+  }, [paused, connect, teardown])
 
   // Flush strategy:
   // - flushIntervalMs === 0  → real-time: RAF loop flushes every animation frame (~16ms)
