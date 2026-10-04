@@ -103,8 +103,13 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=2048
         run: npm ci && npm run build
 
-      # Plain tests first — cheap, covers the full tree, no race compile storm.
+      # Plain tests first — serial packages (-p 1). Parallel compile of
+      # server/web/cache on ubuntu-latest was OOMing (go test exit 2).
       - name: Test
+        env:
+          GOMAXPROCS: "2"
+          GO_TEST_P: "1"
+          GOMEMLIMIT: "5GiB"
         run: make test
 
       # Race only on concurrency-critical packages, one at a time (-p 1).
@@ -113,4 +118,5 @@ jobs:
         env:
           GOMAXPROCS: "1"
           GO_RACE_P: "1"
+          GOMEMLIMIT: "5GiB"
         run: make test-race

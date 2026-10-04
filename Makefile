@@ -27,9 +27,11 @@ GO_PACKAGES := . \
 
 # Parallelism caps for ~8 GiB hosts and GitHub runners. Race builds roughly
 # double RSS; unrestricted package parallelism OOMs the box (exit 143 /
-# soft lockup). Override with e.g. `make test-race GO_RACE_P=2` if you have RAM.
+# soft lockup / go test exit 2 "build failed"). Plain tests at -p 2 still
+# peaked enough on ubuntu-latest to kill compile of server/web — keep -p 1.
+# Override with e.g. `make test GO_TEST_P=2` if you have RAM.
 GO_BUILD_P ?= 1
-GO_TEST_P  ?= 2
+GO_TEST_P  ?= 1
 GO_RACE_P  ?= 1
 GO_LINT_P  ?= 2
 
@@ -51,7 +53,7 @@ webui:
 	cd web/ui && npm ci --silent && npm run build
 
 test:
-	go test -p $(GO_TEST_P) $(GO_PACKAGES) -count=1 -timeout 120s
+	go test -p $(GO_TEST_P) $(GO_PACKAGES) -count=1 -timeout 10m
 
 test-race:
 	# Serial packages (-p 1) + low GOMAXPROCS: one race-instrumented compile
