@@ -112,6 +112,10 @@ security:
 logging:
   level: info
   format: json
+  # When true, append one JSONL line per fallback engagement to fallback_log
+  # (fields: reason, recovered, dnssec_status, fallback_addr, …). Off by default.
+  # fallback_debug: false
+  # fallback_log: "/var/lib/labyrinth/fallback.jsonl"
 
 web:
   enabled: true

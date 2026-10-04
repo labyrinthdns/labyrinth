@@ -358,14 +358,11 @@ The Docker build runs `npm ci --silent` inside the Go builder image, downloading
 | `docs/rfc-compliance-matrix.md` | Full RFC compliance table | ★★★★★ |
 | `docs/rfc-gap-analysis-2026-07.md` | Gaps in RFC coverage | ★★★★★ |
 | `docs/resolver-hardening-gap-analysis-2026-06.md` | Hardening gaps | ★★★★★ |
-| `CLAUDE.md` | Agent instructions for LLM-assisted development | ★★★★★ |
 | `PLAN.md` | Strategic development plan | ★★★★★ |
 | `SECURITY.md` | Vulnerability reporting policy | ★★★★★ |
 | `CONTRIBUTING.md` | Contributor guide | ★★★★★ |
 | `CODE_OF_CONDUCT.md` | Community standards | ★★★★★ |
 | `CHANGELOG.md` | Release notes | ★★★★★ |
-| `AGENTS.md` | Agent coordination | ★★★★★ |
-| `GEMINI.md` | Alternative provider instructions | ★★★★☆ |
 
 The documentation is exceptional — each doc is dated, cross-referenced to PLAN.md milestones, and clearly structured. The architecture deep-dive includes ASCII art diagrams. The threat model follows STRIDE methodology with specific threat agents and control mappings.
 

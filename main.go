@@ -212,6 +212,7 @@ func run() int {
 		DNSSECEnabled:           cfg.Resolver.DNSSECEnabled,
 		DNS64Enabled:            cfg.Resolver.DNS64Enabled,
 		FallbackResolvers:       cfg.Resolver.FallbackResolvers,
+		FallbackDebug:           cfg.Logging.FallbackDebug,
 		FallbackLogPath:         cfg.Logging.FallbackLog,
 		UpstreamUDPBufferSize:   cfg.Resolver.UpstreamUDPBufferSize,
 		MaxNSNamesPerDelegation: cfg.Resolver.MaxNSNamesPerDelegation,
@@ -227,6 +228,9 @@ func run() int {
 	}
 	if len(resCfg.FallbackResolvers) > 0 {
 		logger.Info("fallback resolvers configured", "addrs", resCfg.FallbackResolvers)
+	}
+	if cfg.Logging.FallbackDebug {
+		logger.Info("fallback debug log enabled", "path", cfg.Logging.FallbackLog)
 	}
 	res := resolver.NewResolver(c, resCfg, m, logger)
 

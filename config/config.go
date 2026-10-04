@@ -384,6 +384,9 @@ type LoggingConfig struct {
 	Level       string
 	Format      string
 	FallbackLog string
+	// FallbackDebug enables JSONL writes to FallbackLog for each
+	// public-resolver fallback engagement (reason + recovered).
+	FallbackDebug bool
 }
 
 // ACLConfig holds access control list settings.
@@ -602,6 +605,7 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setString(&cfg.Logging.Level, "logging.level")
 	setString(&cfg.Logging.Format, "logging.format")
 	setString(&cfg.Logging.FallbackLog, "logging.fallback_log")
+	setBool(&cfg.Logging.FallbackDebug, "logging.fallback_debug")
 
 	// Web
 	setBool(&cfg.Web.Enabled, "web.enabled")

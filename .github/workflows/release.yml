@@ -34,6 +34,12 @@ jobs:
       - name: Verify first-party Go package scope
         run: make check-go-package-scope
       - name: Test Go packages
+        env:
+          GOMAXPROCS: "2"
+          GO_TEST_P: "1"
+          GOMEMLIMIT: "5GiB"
+          # Match ci.yml — skip flaky public-Internet EndToEnd on runners.
+          SHORT: "1"
         run: make test
 
   build:
