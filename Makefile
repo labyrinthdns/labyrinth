@@ -52,14 +52,23 @@ build-go:
 webui:
 	cd web/ui && npm ci --silent && npm run build
 
+# SHORT=1 skips network EndToEnd tests (server/server_test.go). CI sets this
+# so ubuntu-latest outbound UDP flakes don't fail the suite. Local default is
+# full coverage; use `make test SHORT=1` for a fast offline run.
+SHORT ?=
+SHORT_FLAG := $(if $(SHORT),-short,)
+
 test:
-	go test -p $(GO_TEST_P) $(GO_PACKAGES) -count=1 -timeout 10m
+	go test -p $(GO_TEST_P) $(GO_PACKAGES) -count=1 -timeout 10m $(SHORT_FLAG)
+
+test-integration:
+	$(MAKE) test SHORT=
 
 test-race:
 	# Serial packages (-p 1) + low GOMAXPROCS: one race-instrumented compile
 	# at a time. Still covers the concurrency-critical packages.
 	GOMAXPROCS=$(GO_RACE_P) go test -p $(GO_RACE_P) -parallel $(GO_RACE_P) \
-		$(GO_RACE_PACKAGES) -count=1 -race -timeout 15m
+		$(GO_RACE_PACKAGES) -count=1 -race -timeout 15m $(SHORT_FLAG)
 
 soak:
 	go test -tags soak ./test/soak/ -run TestSoak -timeout 72h -v

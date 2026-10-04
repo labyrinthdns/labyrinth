@@ -112,6 +112,9 @@ jobs:
           GOMAXPROCS: "2"
           GO_TEST_P: "1"
           GOMEMLIMIT: "5GiB"
+          # Skip server EndToEnd tests that recurse over the public Internet —
+          # they flake on GitHub-hosted runners (UDP/root reachability).
+          SHORT: "1"
         run: |
           set -o pipefail
           make test 2>&1 | tee test-plain.log | awk '
@@ -138,6 +141,7 @@ jobs:
           GOMAXPROCS: "1"
           GO_RACE_P: "1"
           GOMEMLIMIT: "5GiB"
+          SHORT: "1"
         run: |
           set -o pipefail
           make test-race 2>&1 | tee test-race.log | awk '
