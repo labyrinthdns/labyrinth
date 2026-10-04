@@ -1082,9 +1082,14 @@ func (r *Resolver) resolveIterativeFromInner(
 			// just failed — that cannot recover and, before the nsAddrName
 			// guard, fanned out into a goroutine storm.
 			if !nsListHasAlternateAddress(nameservers, visited, r) {
-				// REFUSED/FORMERR ⇒ no reachable authority (EDE 22, no
-				// public-resolver fallback). Plain SERVFAIL keeps fallback
-				// eligible so stub/forward soft failures can recover.
+				// Every authoritative NS in the final delegation returned a
+				// hard failure (REFUSED/FORMERR) or soft SERVFAIL. Public
+				// recursive fallback cannot invent a better answer — they
+				// hit the same broken auth (live: reverse ip6.arpa zones
+				// that 1.1.1.1 also tags EDE 22). Tag no-reachable-authority
+				// so the server emits EDE 22 and shouldFallback stays off.
+				// Forward-zone soft SERVFAIL still falls through a different
+				// path and remains fallback-eligible.
 				if response != nil && response.Header.RCODE() != dns.RCodeServFail {
 					return &ResolveResult{
 						RCODE:         dns.RCodeServFail,
@@ -1093,8 +1098,9 @@ func (r *Resolver) resolveIterativeFromInner(
 					}, nil
 				}
 				return &ResolveResult{
-					RCODE: dns.RCodeServFail,
-					Error: errors.New("all nameservers returned SERVFAIL"),
+					RCODE:         dns.RCodeServFail,
+					FailureReason: "no-reachable-authority",
+					Error:         errors.New("all nameservers returned SERVFAIL"),
 				}, nil
 			}
 			continue
