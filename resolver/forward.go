@@ -72,7 +72,7 @@ func (ft *ForwardTable) Match(qname string) *ForwardZone {
 
 	for i := range ft.zones {
 		z := &ft.zones[i]
-		if z.Name == qname || (len(qname) > len(z.Name) && strings.HasSuffix(qname, "."+z.Name)) {
+		if z.Name == "" || z.Name == qname || (len(qname) > len(z.Name) && strings.HasSuffix(qname, "."+z.Name)) {
 			if len(z.Name) > bestLen {
 				best = z
 				bestLen = len(z.Name)
