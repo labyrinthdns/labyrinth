@@ -167,3 +167,119 @@ func TestIsAuthenticatedEmptyNonTerminal_RejectsDelegationNSEC(t *testing.T) {
 		t.Fatal("NS-present NSEC must not be classified as empty non-terminal")
 	}
 }
+
+// TestValidateTrustChain_SkipsNSEC3EmptyNonTerminal pins the as8758.net FTTH
+// shape: buildZoneChain emits 83.ftth… and 150.83.ftth… as intermediate labels
+// whose DS replies are matching NSEC3 with an empty type bitmap (ENT). Pre-fix
+// isAuthenticatedEmptyNonTerminal only understood NSEC, so those intermediates
+// fell through to Bogus and island children (43.43.150.83.ftth.as8758.net)
+// engaged public-resolver fallback. Post-fix the walker skips NSEC3 ENTs and
+// authenticates the insecure cut at the real zone.
+func TestValidateTrustChain_SkipsNSEC3EmptyNonTerminal(t *testing.T) {
+	ti := newTestInfra()
+	ti.setRootDNSKEYs()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kskR := encodeDNSKEYRData(257, 3, dns.AlgED25519, pub)
+	ksk, _ := dns.ParseDNSKEY(kskR)
+	ti.mq.responses["parent.|48"] = &dns.Message{
+		Answers: []dns.ResourceRecord{
+			{Name: "parent.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: kskR},
+		},
+	}
+	digest := sha256.Sum256(buildDSDigestInput("parent.", ksk))
+	dsRR := dns.ResourceRecord{
+		Name: "parent.", Type: dns.TypeDS, Class: dns.ClassIN, TTL: 3600,
+		RData: encodeDSRData(ksk.KeyTag(), dns.AlgED25519, dns.DigestSHA256, digest[:]),
+	}
+	dsSig := &dns.RRSIGRecord{
+		TypeCovered: dns.TypeDS, Algorithm: dns.AlgED25519, Labels: 1,
+		OrigTTL: 3600, Expiration: 0xFFFFFFFF, KeyTag: ti.rootKSK.KeyTag(), SignerName: ".",
+	}
+	dsSig.Signature = ed25519.Sign(ti.rootPrivKey, buildSignedData([]dns.ResourceRecord{dsRR}, dsSig))
+	ti.mq.responses["parent.|43"] = &dns.Message{
+		Answers: []dns.ResourceRecord{
+			dsRR,
+			{Name: "parent.", Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 3600, RData: buildRRSIGRData(dsSig)},
+		},
+	}
+
+	salt := []byte{}
+	entHash, err := ComputeNSEC3Hash("mid.parent.", 1, 0, salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entNext := make([]byte, len(entHash))
+	copy(entNext, entHash)
+	entNext[len(entNext)-1]++ // next hash > owner
+	entOwner := NSEC3HashToString(entHash) + ".parent."
+	entNSEC3 := dns.ResourceRecord{
+		Name: entOwner, Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 3600,
+		RData: buildNSEC3RData(1, 0, 0, salt, entNext, nil), // empty bitmap = ENT
+	}
+	entSig := &dns.RRSIGRecord{
+		TypeCovered: dns.TypeNSEC3, Algorithm: dns.AlgED25519, Labels: 2,
+		OrigTTL: 3600, Expiration: 0xFFFFFFFF, KeyTag: ksk.KeyTag(), SignerName: "parent.",
+	}
+	entSig.Signature = ed25519.Sign(priv, buildSignedData([]dns.ResourceRecord{entNSEC3}, entSig))
+	ti.mq.responses["mid.parent.|43"] = &dns.Message{
+		Authority: []dns.ResourceRecord{
+			entNSEC3,
+			{Name: entOwner, Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 3600, RData: buildRRSIGRData(entSig)},
+		},
+	}
+
+	cutHash, err := ComputeNSEC3Hash("cut.mid.parent.", 1, 0, salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutNext := make([]byte, len(cutHash))
+	copy(cutNext, cutHash)
+	cutNext[len(cutNext)-1]++
+	cutOwner := NSEC3HashToString(cutHash) + ".parent."
+	cutNSEC3 := dns.ResourceRecord{
+		Name: cutOwner, Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 3600,
+		RData: buildNSEC3RData(1, 0, 0, salt, cutNext, []uint16{dns.TypeNS}),
+	}
+	cutSig := &dns.RRSIGRecord{
+		TypeCovered: dns.TypeNSEC3, Algorithm: dns.AlgED25519, Labels: 2,
+		OrigTTL: 3600, Expiration: 0xFFFFFFFF, KeyTag: ksk.KeyTag(), SignerName: "parent.",
+	}
+	cutSig.Signature = ed25519.Sign(priv, buildSignedData([]dns.ResourceRecord{cutNSEC3}, cutSig))
+	ti.mq.responses["cut.mid.parent.|43"] = &dns.Message{
+		Authority: []dns.ResourceRecord{
+			cutNSEC3,
+			{Name: cutOwner, Type: dns.TypeRRSIG, Class: dns.ClassIN, TTL: 3600, RData: buildRRSIGRData(cutSig)},
+		},
+	}
+
+	childPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	childKeyR := encodeDNSKEYRData(257, 3, dns.AlgED25519, childPub)
+	ti.mq.responses["cut.mid.parent.|48"] = &dns.Message{
+		Answers: []dns.ResourceRecord{
+			{Name: "cut.mid.parent.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: childKeyR},
+		},
+	}
+	childKey, _ := dns.ParseDNSKEY(childKeyR)
+
+	parentKeys := []dns.ResourceRecord{
+		{Name: "parent.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: kskR},
+	}
+	if !ti.v.isAuthenticatedEmptyNonTerminal("mid.parent.", "parent.", parentKeys, ti.mq.responses["mid.parent.|43"].Authority) {
+		t.Fatal("matching empty-bitmap NSEC3 must classify as empty non-terminal")
+	}
+	if ti.v.isAuthenticatedEmptyNonTerminal("cut.mid.parent.", "parent.", parentKeys, ti.mq.responses["cut.mid.parent.|43"].Authority) {
+		t.Fatal("NS-present NSEC3 must not classify as empty non-terminal")
+	}
+
+	got := ti.v.validateTrustChainForKey("cut.mid.parent.",
+		[]dns.ResourceRecord{{Name: "cut.mid.parent.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: childKeyR}},
+		nil, childKey)
+	if got != Insecure {
+		t.Fatalf("validateTrustChainForKey(NSEC3 ENT intermediate) = %v, want Insecure", got)
+	}
+}
+

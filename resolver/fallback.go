@@ -46,6 +46,8 @@ func (r *Resolver) queryFallbackWithPrimary(name string, qtype uint16, qclass ui
 		msg, err := r.sendForwardQueryOnce(addr, name, qtype, qclass)
 		if err != nil {
 			event.Error = err.Error()
+			// Leave RCODE unset (0) out of the JSONL line — rcodeName(0) is
+			// "NOERROR" and would mislabel timeouts as successful answers.
 			lastEvent = event
 			r.logger.Debug("fallback resolver failed", "addr", addr, "error", err)
 			continue
@@ -112,7 +114,7 @@ func (r *Resolver) queryFallbackWithPrimary(name string, qtype uint16, qclass ui
 		PrimaryRCODE:  primaryRcode,
 		Recovered:     false,
 		FallbackAddr:  lastEvent.ResolverAddr,
-		FallbackRCODE: rcodeName(lastEvent.RCODE),
+		FallbackRCODE: rcodeNameForEvent(lastEvent.RCODE, lastEvent.Error),
 		FallbackError: lastEvent.Error,
 		FallbackTried: tried,
 	})

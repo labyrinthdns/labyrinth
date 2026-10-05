@@ -60,6 +60,10 @@ if command -v systemctl &>/dev/null; then
   ok "Service file removed"
 fi
 
+rm -f /etc/sysctl.d/99-labyrinth-dns.conf
+rm -f /etc/security/limits.d/99-labyrinth.conf
+ok "Kernel tunables and fd limits removed (reboot or sysctl --system to restore defaults)"
+
 # Remove binaries
 rm -f /usr/local/bin/labyrinth
 rm -f /usr/local/bin/labyrinth.bak

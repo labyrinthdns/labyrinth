@@ -102,3 +102,13 @@ func primaryFallbackFields(primary *ResolveResult) (status, reason, failReason, 
 	}
 	return primary.DNSSECStatus, primary.DNSSECReason, primary.FailureReason, rcodeName(primary.RCODE)
 }
+
+// rcodeNameForEvent formats an event RCODE for JSONL. Unlike rcodeName, a
+// zero value with a transport error is left empty so timeouts are not
+// mislabeled as NOERROR.
+func rcodeNameForEvent(rcode uint8, transportErr string) string {
+	if transportErr != "" && rcode == 0 {
+		return ""
+	}
+	return rcodeName(rcode)
+}
