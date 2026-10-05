@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/labyrinthdns/labyrinth/dns"
@@ -39,6 +40,9 @@ func ParseDNS64Prefix(cidr string) (net.IPNet, error) {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return net.IPNet{}, err
+	}
+	if ones, bits := ipNet.Mask.Size(); bits != 128 || ones != 96 {
+		return net.IPNet{}, fmt.Errorf("DNS64 prefix must be an IPv6 /96 network: %s", cidr)
 	}
 	return *ipNet, nil
 }
