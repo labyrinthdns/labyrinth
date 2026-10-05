@@ -17,10 +17,7 @@ func parseYAML(data []byte) (map[string]string, error) {
 		lines[0] = strings.TrimPrefix(lines[0], "\ufeff")
 	}
 	for _, line := range lines {
-		// Strip comments
-		if idx := strings.Index(line, "#"); idx >= 0 {
-			line = line[:idx]
-		}
+		line = stripYAMLComment(line)
 		trimmed := strings.TrimRight(line, " \t\r")
 		if trimmed == "" {
 			continue
@@ -84,4 +81,28 @@ func parseYAML(data []byte) (map[string]string, error) {
 	}
 
 	return result, nil
+}
+
+// Hashes inside quoted values or plain scalar tokens are literal text.
+func stripYAMLComment(line string) string {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if quote != 0 {
+			if quote == '"' && ch == '\\' {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if (ch == '\'' || ch == '"') && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t' || line[i-1] == ':') {
+			quote = ch
+		} else if ch == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') {
+			return line[:i]
+		}
+	}
+	return line
 }
