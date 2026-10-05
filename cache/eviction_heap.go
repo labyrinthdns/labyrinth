@@ -96,7 +96,7 @@ func (s *shard) nextEvictionKeyLocked() (cacheKey, bool) {
 
 	for k, e := range s.entries {
 		rem := e.RemainingTTL()
-		if rem < minRemaining {
+		if !found || rem < minRemaining {
 			minRemaining = rem
 			evictKey = k
 			found = true

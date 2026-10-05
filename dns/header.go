@@ -56,6 +56,7 @@ func NewFlagBuilder() *FlagBuilder {
 }
 
 func (fb *FlagBuilder) SetQR(v bool) *FlagBuilder {
+	fb.flags &^= 1 << 15
 	if v {
 		fb.flags |= 1 << 15
 	}
@@ -63,11 +64,13 @@ func (fb *FlagBuilder) SetQR(v bool) *FlagBuilder {
 }
 
 func (fb *FlagBuilder) SetOpcode(v uint8) *FlagBuilder {
+	fb.flags &^= 0xF << 11
 	fb.flags |= uint16(v&0xF) << 11
 	return fb
 }
 
 func (fb *FlagBuilder) SetAA(v bool) *FlagBuilder {
+	fb.flags &^= 1 << 10
 	if v {
 		fb.flags |= 1 << 10
 	}
@@ -75,6 +78,7 @@ func (fb *FlagBuilder) SetAA(v bool) *FlagBuilder {
 }
 
 func (fb *FlagBuilder) SetTC(v bool) *FlagBuilder {
+	fb.flags &^= 1 << 9
 	if v {
 		fb.flags |= 1 << 9
 	}
@@ -82,6 +86,7 @@ func (fb *FlagBuilder) SetTC(v bool) *FlagBuilder {
 }
 
 func (fb *FlagBuilder) SetRD(v bool) *FlagBuilder {
+	fb.flags &^= 1 << 8
 	if v {
 		fb.flags |= 1 << 8
 	}
@@ -89,6 +94,7 @@ func (fb *FlagBuilder) SetRD(v bool) *FlagBuilder {
 }
 
 func (fb *FlagBuilder) SetRA(v bool) *FlagBuilder {
+	fb.flags &^= 1 << 7
 	if v {
 		fb.flags |= 1 << 7
 	}
@@ -96,6 +102,7 @@ func (fb *FlagBuilder) SetRA(v bool) *FlagBuilder {
 }
 
 func (fb *FlagBuilder) SetAD(v bool) *FlagBuilder {
+	fb.flags &^= 1 << 5
 	if v {
 		fb.flags |= 1 << 5
 	}
@@ -103,6 +110,7 @@ func (fb *FlagBuilder) SetAD(v bool) *FlagBuilder {
 }
 
 func (fb *FlagBuilder) SetCD(v bool) *FlagBuilder {
+	fb.flags &^= 1 << 4
 	if v {
 		fb.flags |= 1 << 4
 	}
@@ -110,6 +118,7 @@ func (fb *FlagBuilder) SetCD(v bool) *FlagBuilder {
 }
 
 func (fb *FlagBuilder) SetRCODE(v uint8) *FlagBuilder {
+	fb.flags &^= 0xF
 	fb.flags |= uint16(v & 0xF)
 	return fb
 }
