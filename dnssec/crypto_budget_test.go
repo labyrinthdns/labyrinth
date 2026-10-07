@@ -42,3 +42,19 @@ func TestCryptoBudget(t *testing.T) {
 		t.Error("budgetFrom must return the passed budget")
 	}
 }
+
+// TestCryptoBudget_DeepReverseFloor pins the seznam.cz IPv6 reverse failure
+// mode: the signer trust chain alone (0.0.a.8.4.6…ip6.arpa) burns ~36
+// signature verifies across NSEC-covered RIPE intermediates + NSEC3 ENTs
+// under 8.9.5.0.2.0.a.2.ip6.arpa. Cap 32 collapsed that chain to Bogus and
+// engaged public-resolver fallback even though Cloudflare/Google Secure the
+// PTR. Leave headroom for the answer RRSIG and a mid-rollover extra sig.
+func TestCryptoBudget_DeepReverseFloor(t *testing.T) {
+	const seznamSignerChainVerifies = 36
+	const answerAndRolloverHeadroom = 4
+	floor := seznamSignerChainVerifies + answerAndRolloverHeadroom
+	if maxCryptoVerifyPerResponse < floor {
+		t.Fatalf("maxCryptoVerifyPerResponse=%d is below deep-reverse floor %d (seznam IPv6 PTR)",
+			maxCryptoVerifyPerResponse, floor)
+	}
+}

@@ -165,6 +165,57 @@ func TestVerifyNSECDenial_NODATAReturnsFalseForNonExistentName(t *testing.T) {
 	}
 }
 
+// TestVerifyNSECDenial_WildcardNODATA_MailjetShape pins the Mailjet/mjt.lu
+// NOERROR NODATA proof: a single `*.zone` NSEC both covers the queried
+// label and is the wildcard owner, with qtype absent from the bitmap.
+// Pre-fix VerifyNSECDenial early-returned on NOERROR and forced
+// Bogus → public-resolver fallback for NS queries at random labels.
+func TestVerifyNSECDenial_WildcardNODATA_MailjetShape(t *testing.T) {
+	// Live: *.mjt.lu. NSEC _dmarc.mjt.lu. A TXT RRSIG NSEC
+	// covers 0lhxn.mjt.lu / xrnsr.mjt.lu and denies NS.
+	records := []NSECRecordWithOwner{
+		nsecRec("*.mjt.lu.", "_dmarc.mjt.lu.",
+			dns.TypeA, dns.TypeTXT, dns.TypeRRSIG, dns.TypeNSEC),
+	}
+
+	t.Run("accepts_NS_NODATA", func(t *testing.T) {
+		ok, err := VerifyNSECDenial("0lhxn.mjt.lu", dns.TypeNS, dns.RCodeNoError, records)
+		if err != nil {
+			t.Fatalf("VerifyNSECDenial: %v", err)
+		}
+		if !ok {
+			t.Fatal("wildcard NODATA for NS must validate under NOERROR")
+		}
+	})
+
+	t.Run("rejects_when_qtype_in_bitmap", func(t *testing.T) {
+		ok, err := VerifyNSECDenial("0lhxn.mjt.lu", dns.TypeA, dns.RCodeNoError, records)
+		if err != nil {
+			t.Fatalf("VerifyNSECDenial: %v", err)
+		}
+		if ok {
+			t.Fatal("must not accept NODATA when wildcard bitmap includes qtype")
+		}
+	})
+
+	t.Run("two_nsec_cover_plus_wildcard_match", func(t *testing.T) {
+		// xrnsr shape: covering NSEC + separate *.CE match.
+		recs := []NSECRecordWithOwner{
+			nsecRec("google._domainkey.mjt.lu.", "mjt.lu.",
+				dns.TypeTXT, dns.TypeRRSIG, dns.TypeNSEC),
+			nsecRec("*.mjt.lu.", "_dmarc.mjt.lu.",
+				dns.TypeA, dns.TypeTXT, dns.TypeRRSIG, dns.TypeNSEC),
+		}
+		ok, err := VerifyNSECDenial("xrnsr.mjt.lu", dns.TypeNS, dns.RCodeNoError, recs)
+		if err != nil {
+			t.Fatalf("VerifyNSECDenial: %v", err)
+		}
+		if !ok {
+			t.Fatal("cover + wildcard-match NODATA must validate")
+		}
+	})
+}
+
 func TestCanonicalCompareName(t *testing.T) {
 	cases := []struct {
 		a, b string

@@ -20,12 +20,17 @@ type NSECRecordWithOwner struct {
 // VerifyNSECDenial verifies an NSEC denial proof for a NODATA or NXDOMAIN
 // response. Returns true if the records authenticate the negative answer.
 //
-// Three forms are accepted:
+// Three forms are accepted (four counting the NOERROR wildcard path):
 //
 //  1. NODATA (RFC 4035 §5.4) — an NSEC at owner == qname whose type bitmap
 //     does not include qtype or CNAME. A delegation-style NSEC (NS bit set
 //     without SOA) is rejected: it belongs to the parent zone and proves
 //     nothing about types served at the child.
+//
+//  1b. Wildcard NODATA (NOERROR) — covering NSEC for qname plus an NSEC at
+//     `*.closest_encloser` whose bitmap omits qtype/CNAME. Used by zones
+//     that publish a real `*.zone` NSEC (Mailjet mjt.lu) rather than
+//     synthesizing answers for every label.
 //
 //  2. NXDOMAIN — covering NSEC for qname plus covering NSEC for the wildcard
 //     `*.closest_encloser` derived from the qname-covering NSEC. This is the
@@ -61,6 +66,21 @@ func VerifyNSECDenial(qname string, qtype uint16, rcode uint8, records []NSECRec
 			continue
 		}
 		return true, nil
+	}
+
+	// 1b) Wildcard NODATA (RFC 4035 §5.4 / RFC 4592) — NOERROR only.
+	// Qname does not exist as an exact owner, but a wildcard at the closest
+	// encloser does and lacks qtype. Require both a covering NSEC for qname
+	// and an owner-match NSEC at *.CE whose bitmap omits qtype/CNAME.
+	// Mere cover of the wildcard is name-error territory and must not
+	// authenticate NODATA (see TestVerifyNSECDenial_NODATAReturnsFalse…).
+	// Live false-Bogus: Mailjet mjt.lu (`*.mjt.lu` → `_dmarc.mjt.lu` A TXT)
+	// for NS queries at random labels (0lhxn / xrnsr) → SERVFAIL → fallback.
+	if rcode == dns.RCodeNoError {
+		if verifyNSECWildcardNODATA(qname, qtype, records) {
+			return true, nil
+		}
+		return false, nil
 	}
 
 	if rcode != dns.RCodeNXDomain {
@@ -191,6 +211,49 @@ func VerifyNSECDenialDSAbsent(qname string, records []NSECRecordWithOwner) (bool
 		}
 	}
 	return false, nil
+}
+
+// verifyNSECWildcardNODATA reports whether records prove NOERROR NODATA via
+// wildcard expansion: covering NSEC for qname plus *.CE owner-match denying
+// qtype/CNAME. The covering NSEC and the wildcard NSEC may be the same RR
+// (Mailjet: *.mjt.lu covers the label and is itself the wildcard owner).
+func verifyNSECWildcardNODATA(qname string, qtype uint16, records []NSECRecordWithOwner) bool {
+	var coveringOwner, coveringNext string
+	covered := false
+	for _, n := range records {
+		owner := canonicalName(n.OwnerName)
+		next := canonicalName(n.NextDomainName)
+		if nsecCoversName(owner, next, qname) {
+			coveringOwner = owner
+			coveringNext = next
+			covered = true
+			break
+		}
+	}
+	if !covered {
+		return false
+	}
+
+	ce := closestEncloser(qname, coveringOwner, coveringNext)
+	wildcard := "*"
+	if ce != "" {
+		wildcard = "*." + ce
+	}
+
+	for _, n := range records {
+		owner := canonicalName(n.OwnerName)
+		if owner != wildcard {
+			continue
+		}
+		if nsecHasType(&n.NSECRecord, qtype) {
+			continue
+		}
+		if nsecHasType(&n.NSECRecord, dns.TypeCNAME) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // nsecCoversName reports whether qname falls in the open canonical interval
