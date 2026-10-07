@@ -13,22 +13,22 @@ import (
 // SHAPE of the cookie option in two distinct cases that look superficially
 // like errors but are actually valid protocol states:
 //
-//   1. **Bootstrap query** — client sends only an 8-byte client cookie
-//      and no server cookie. This is the very first query in a new
-//      client/server session before the client has been issued one.
-//      The handler MUST NOT FORMERR; it should proceed with resolution
-//      and (in a separate code path, server/handler.go:1012) attach a
-//      fresh server-cookie to the success response so the client can
-//      use it on the next query. A FORMERR here would prevent every
-//      cookie-aware client from EVER exchanging a first cookie.
+//  1. **Bootstrap query** — client sends only an 8-byte client cookie
+//     and no server cookie. This is the very first query in a new
+//     client/server session before the client has been issued one.
+//     The handler MUST NOT FORMERR; it should proceed with resolution
+//     and (in a separate code path, server/handler.go:1012) attach a
+//     fresh server-cookie to the success response so the client can
+//     use it on the next query. A FORMERR here would prevent every
+//     cookie-aware client from EVER exchanging a first cookie.
 //
-//   2. **Non-16-byte server cookie** — some legacy clients (and the
-//      original RFC 7873 spec before RFC 9018 fixed the length at 16)
-//      issue server cookies of 8 bytes. RFC 9018 §4 allows 8–32 byte
-//      server cookies; only 16 is current spec. The validation gate
-//      at server/handler.go:649 only triggers BADCOOKIE when client
-//      cookie is 8 AND server cookie is 16. Lengths outside [16] fall
-//      through silently — must not FORMERR.
+//  2. **Non-16-byte server cookie** — some legacy clients (and the
+//     original RFC 7873 spec before RFC 9018 fixed the length at 16)
+//     issue server cookies of 8 bytes. RFC 9018 §4 allows 8–32 byte
+//     server cookies; only 16 is current spec. The validation gate
+//     at server/handler.go:649 only triggers BADCOOKIE when client
+//     cookie is 8 AND server cookie is 16. Lengths outside [16] fall
+//     through silently — must not FORMERR.
 //
 // A regression that tightened either gate would silently break interop
 // with millions of cookie-aware stubs (Knot resolver < 5.3, BIND

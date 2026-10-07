@@ -18,8 +18,8 @@ import (
 // pass the unit test and leak .onion names to upstream resolvers — a
 // Tor de-anonymisation hazard explicitly called out in RFC 7686 §2:
 //
-//   "Name resolution requests for .onion names MUST NOT be performed
-//    by recursive resolvers, to avoid privacy leaks."
+//	"Name resolution requests for .onion names MUST NOT be performed
+//	 by recursive resolvers, to avoid privacy leaks."
 //
 // The pin drives one query per special-use name through the handler
 // pipeline and asserts NXDOMAIN comes back. The resolver passed in is
@@ -86,10 +86,10 @@ func TestSpecialUseNames_DoNotShortCircuitPublicNames(t *testing.T) {
 	h := NewMainHandler(res, ca, nil, nil, nil, handlerMetrics, discardLogger())
 
 	cases := []string{
-		"myonion.example.com",    // "onion" inside a label
-		"protest.example.com",    // "test" as substring
-		"vocally.example.com",    // "local" as substring
-		"home.arpa.example.com",  // home.arpa as INTERIOR labels, not suffix
+		"myonion.example.com",   // "onion" inside a label
+		"protest.example.com",   // "test" as substring
+		"vocally.example.com",   // "local" as substring
+		"home.arpa.example.com", // home.arpa as INTERIOR labels, not suffix
 	}
 	for _, qname := range cases {
 		t.Run(qname, func(t *testing.T) {

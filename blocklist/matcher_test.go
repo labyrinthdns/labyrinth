@@ -147,12 +147,12 @@ func TestTrailingDot(t *testing.T) {
 		domain string
 		want   bool
 	}{
-		{"example.com.", true},      // trailing dot query matches exact entry
-		{"example.com", true},       // no trailing dot also matches
-		{"tracker.net", true},       // entry was added with dot, matches without
-		{"tracker.net.", true},      // both have dots
-		{"sub.tracker.net.", true},  // wildcard + trailing dot
-		{"sub.tracker.net", true},   // wildcard without trailing dot
+		{"example.com.", true},     // trailing dot query matches exact entry
+		{"example.com", true},      // no trailing dot also matches
+		{"tracker.net", true},      // entry was added with dot, matches without
+		{"tracker.net.", true},     // both have dots
+		{"sub.tracker.net.", true}, // wildcard + trailing dot
+		{"sub.tracker.net", true},  // wildcard without trailing dot
 	}
 	for _, tc := range tests {
 		got := m.Match(tc.domain)

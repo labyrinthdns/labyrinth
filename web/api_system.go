@@ -42,8 +42,8 @@ func (s *AdminServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 // a single TCP segment. The body-less shape is the conventional
 // k8s.io/component-base/healthz signal.
 //
-//   200 OK              — resolver primed and serving
-//   503 Service Unavail — resolver not ready (still priming)
+//	200 OK              — resolver primed and serving
+//	503 Service Unavail — resolver not ready (still priming)
 func (s *AdminServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)

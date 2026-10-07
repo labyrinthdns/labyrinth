@@ -49,10 +49,10 @@ func buildSOAForStaleTest(t *testing.T) []byte {
 // verifies BOTH the §4.3 and §4.19 code paths.
 func TestServeStale_EmitsEDEByRCODE(t *testing.T) {
 	for _, c := range []struct {
-		name      string
+		name       string
 		cacheRCODE uint8
-		wantEDE   uint16
-		wantText  string
+		wantEDE    uint16
+		wantText   string
 	}{
 		{"positive stale => EDE 3 Stale Answer", dns.RCodeNoError, dns.EDECodeStaleAnswer, "serve-stale"},
 		{"stale NXDOMAIN => EDE 19 Stale NXDOMAIN Answer", dns.RCodeNXDomain, dns.EDECodeStaleNXDOMAINAnswer, "serve-stale-nxdomain"},

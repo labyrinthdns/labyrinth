@@ -41,4 +41,3 @@ func TestUpsertDashboardLayoutBlock(t *testing.T) {
 		t.Fatalf("expected a single begin marker after upsert replacement")
 	}
 }
-

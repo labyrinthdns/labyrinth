@@ -11,8 +11,8 @@ import (
 // .com/.net opt-out NXDOMAIN shape that previously forced every nonexistent
 // name under those TLDs through SERVFAIL → public-resolver fallback:
 //
-//   closest-encloser match + next-closer COVER with opt-out flag +
-//   (optional) wildcard cover.
+//	closest-encloser match + next-closer COVER with opt-out flag +
+//	(optional) wildcard cover.
 //
 // RFC 5155 §6 forbids AD=1 for that proof, but it is not a forgery —
 // Unbound/BIND/1.1.1.1 return NXDOMAIN with AD=0 (Insecure). Pre-fix the

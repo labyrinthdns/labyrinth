@@ -145,8 +145,8 @@ func (s *AdminServer) handleBlocklistDomains(w http.ResponseWriter, r *http.Requ
 	}
 	if s.blocklist == nil {
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"blocked_domains":  []string{},
-			"allowed_domains":  []string{},
+			"blocked_domains": []string{},
+			"allowed_domains": []string{},
 		})
 		return
 	}

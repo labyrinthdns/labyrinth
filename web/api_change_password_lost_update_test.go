@@ -15,13 +15,13 @@ import (
 // password_hash with the previous value AFTER the in-memory hash
 // has already rotated. Without the lock the sequence is:
 //
-//   1. change-password rotates s.config.Web.Auth.PasswordHash in memory
-//   2. config-raw PUT (started concurrently) finishes its on-disk
-//      write carrying the OLD hash that ensurePasswordHashUnchanged
-//      compared against before step 1 landed
-//   3. on-disk YAML now has the OLD hash, in-memory has the NEW hash
-//   4. operator restarts — the new password is silently lost,
-//      authentication reverts to the old password
+//  1. change-password rotates s.config.Web.Auth.PasswordHash in memory
+//  2. config-raw PUT (started concurrently) finishes its on-disk
+//     write carrying the OLD hash that ensurePasswordHashUnchanged
+//     compared against before step 1 landed
+//  3. on-disk YAML now has the OLD hash, in-memory has the NEW hash
+//  4. operator restarts — the new password is silently lost,
+//     authentication reverts to the old password
 //
 // The pin runs change-password and config-raw PUT concurrently and
 // verifies the on-disk password_hash matches the in-memory hash

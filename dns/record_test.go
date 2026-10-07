@@ -14,12 +14,12 @@ func buildMsgWithAnswer(rrType uint16, rdataBytes []byte) ([]byte, int) {
 
 	// -- Header (12 bytes) --
 	header := make([]byte, 12)
-	binary.BigEndian.PutUint16(header[0:], 0x1234)  // ID
-	binary.BigEndian.PutUint16(header[2:], 0x8180)  // Flags: QR=1, RD=1, RA=1
-	binary.BigEndian.PutUint16(header[4:], 1)        // QDCount
-	binary.BigEndian.PutUint16(header[6:], 1)        // ANCount
-	binary.BigEndian.PutUint16(header[8:], 0)        // NSCount
-	binary.BigEndian.PutUint16(header[10:], 0)       // ARCount
+	binary.BigEndian.PutUint16(header[0:], 0x1234) // ID
+	binary.BigEndian.PutUint16(header[2:], 0x8180) // Flags: QR=1, RD=1, RA=1
+	binary.BigEndian.PutUint16(header[4:], 1)      // QDCount
+	binary.BigEndian.PutUint16(header[6:], 1)      // ANCount
+	binary.BigEndian.PutUint16(header[8:], 0)      // NSCount
+	binary.BigEndian.PutUint16(header[10:], 0)     // ARCount
 	buf = append(buf, header...)
 
 	// -- Question: "example.com" A IN --
@@ -296,9 +296,9 @@ func TestUnpackRR_SOA_BadRName(t *testing.T) {
 func TestUnpackRR_SOA_SerialsTruncated(t *testing.T) {
 	// Valid mname and rname, but not enough bytes for 20 serial bytes
 	var rdata []byte
-	rdata = append(rdata, 0x02, 'n', 's', 0x00)       // mname "ns"
+	rdata = append(rdata, 0x02, 'n', 's', 0x00)                // mname "ns"
 	rdata = append(rdata, 0x05, 'a', 'd', 'm', 'i', 'n', 0x00) // rname "admin"
-	rdata = append(rdata, make([]byte, 10)...)          // only 10 bytes, need 20
+	rdata = append(rdata, make([]byte, 10)...)                 // only 10 bytes, need 20
 	msg, off := buildMsgWithAnswer(TypeSOA, rdata)
 
 	rr, _, err := UnpackRR(msg, off)
@@ -404,7 +404,7 @@ func TestUnpackRR_TruncatedAtClass(t *testing.T) {
 	// Valid name + type, but missing class
 	var buf []byte
 	buf = append(buf, 0x03, 'c', 'o', 'm', 0x00) // name "com"
-	buf = append(buf, 0x00, 0x01)                   // type A
+	buf = append(buf, 0x00, 0x01)                // type A
 	// no class
 	_, _, err := UnpackRR(buf, 0)
 	if err != errTruncated {
@@ -416,8 +416,8 @@ func TestUnpackRR_TruncatedAtTTL(t *testing.T) {
 	// Valid name + type + class, but missing TTL
 	var buf []byte
 	buf = append(buf, 0x03, 'c', 'o', 'm', 0x00) // name
-	buf = append(buf, 0x00, 0x01)                   // type A
-	buf = append(buf, 0x00, 0x01)                   // class IN
+	buf = append(buf, 0x00, 0x01)                // type A
+	buf = append(buf, 0x00, 0x01)                // class IN
 	// no TTL
 	_, _, err := UnpackRR(buf, 0)
 	if err != errTruncated {
@@ -429,9 +429,9 @@ func TestUnpackRR_TruncatedAtRDLength(t *testing.T) {
 	// Valid name + type + class + TTL, but missing RDLength
 	var buf []byte
 	buf = append(buf, 0x03, 'c', 'o', 'm', 0x00) // name
-	buf = append(buf, 0x00, 0x01)                   // type A
-	buf = append(buf, 0x00, 0x01)                   // class IN
-	buf = append(buf, 0x00, 0x00, 0x01, 0x2C)       // TTL 300
+	buf = append(buf, 0x00, 0x01)                // type A
+	buf = append(buf, 0x00, 0x01)                // class IN
+	buf = append(buf, 0x00, 0x00, 0x01, 0x2C)    // TTL 300
 	// no RDLength
 	_, _, err := UnpackRR(buf, 0)
 	if err != errTruncated {
@@ -443,10 +443,10 @@ func TestUnpackRR_RDataBeyondMessage(t *testing.T) {
 	// Valid name + type + class + ttl + rdlength that exceeds remaining bytes
 	var buf []byte
 	buf = append(buf, 0x03, 'c', 'o', 'm', 0x00) // name
-	buf = append(buf, 0x00, 0x01)                   // type A
-	buf = append(buf, 0x00, 0x01)                   // class IN
-	buf = append(buf, 0x00, 0x00, 0x01, 0x2C)       // TTL 300
-	buf = append(buf, 0x00, 0x10)                   // rdlength=16, but no data follows
+	buf = append(buf, 0x00, 0x01)                // type A
+	buf = append(buf, 0x00, 0x01)                // class IN
+	buf = append(buf, 0x00, 0x00, 0x01, 0x2C)    // TTL 300
+	buf = append(buf, 0x00, 0x10)                // rdlength=16, but no data follows
 	_, _, err := UnpackRR(buf, 0)
 	if err != errTruncated {
 		t.Fatalf("expected errTruncated for RData overflow, got %v", err)

@@ -9,17 +9,17 @@ import (
 // skipDomains contains hostnames that should be ignored when parsing hosts
 // files because they are local machine entries, not advertising domains.
 var skipDomains = map[string]struct{}{
-	"localhost":              {},
-	"localhost.localdomain":  {},
-	"local":                  {},
-	"broadcasthost":          {},
-	"ip6-localhost":          {},
-	"ip6-loopback":           {},
-	"ip6-localnet":           {},
-	"ip6-mcastprefix":        {},
-	"ip6-allnodes":           {},
-	"ip6-allrouters":         {},
-	"ip6-allhosts":           {},
+	"localhost":             {},
+	"localhost.localdomain": {},
+	"local":                 {},
+	"broadcasthost":         {},
+	"ip6-localhost":         {},
+	"ip6-loopback":          {},
+	"ip6-localnet":          {},
+	"ip6-mcastprefix":       {},
+	"ip6-allnodes":          {},
+	"ip6-allrouters":        {},
+	"ip6-allhosts":          {},
 }
 
 // ParseHostsFile parses a hosts-format blocklist where each line maps an

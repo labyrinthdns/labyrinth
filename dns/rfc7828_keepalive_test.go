@@ -12,7 +12,7 @@ import (
 // units (RFC 7828 §3.1).
 func TestAddTCPKeepaliveToRawResponse_AppendsOption(t *testing.T) {
 	msg := &Message{
-		Header: Header{ID: 0xabcd, Flags: 0x8180, QDCount: 1, ANCount: 1},
+		Header:    Header{ID: 0xabcd, Flags: 0x8180, QDCount: 1, ANCount: 1},
 		Questions: []Question{{Name: "example.com", Type: TypeA, Class: ClassIN}},
 		Answers: []ResourceRecord{{
 			Name: "example.com", Type: TypeA, Class: ClassIN, TTL: 60,
@@ -57,7 +57,7 @@ func TestAddTCPKeepaliveToRawResponse_AppendsOption(t *testing.T) {
 // against a future code path that might add it independently.
 func TestAddTCPKeepaliveToRawResponse_IdempotentOnExisting(t *testing.T) {
 	msg := &Message{
-		Header: Header{ID: 1, QDCount: 1},
+		Header:    Header{ID: 1, QDCount: 1},
 		Questions: []Question{{Name: ".", Type: TypeA, Class: ClassIN}},
 		Additional: []ResourceRecord{BuildOPTWithOptions(1232, false, []EDNSOption{
 			BuildTCPKeepaliveOption(50),

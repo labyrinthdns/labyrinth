@@ -147,7 +147,7 @@ func testMessages() []testCase {
 		{
 			label: "A record",
 			msg: &Message{
-				Header: Header{ID: 1, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 1, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeA, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeA, Class: ClassIN, TTL: 300,
@@ -158,7 +158,7 @@ func testMessages() []testCase {
 		{
 			label: "AAAA record",
 			msg: &Message{
-				Header: Header{ID: 2, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 2, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeAAAA, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeAAAA, Class: ClassIN, TTL: 300,
@@ -169,7 +169,7 @@ func testMessages() []testCase {
 		{
 			label: "NS record",
 			msg: &Message{
-				Header: Header{ID: 3, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 3, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeNS, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeNS, Class: ClassIN, TTL: 86400,
@@ -180,7 +180,7 @@ func testMessages() []testCase {
 		{
 			label: "CNAME record",
 			msg: &Message{
-				Header: Header{ID: 4, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 4, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "www.example.com.", Type: TypeCNAME, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "www.example.com.", Type: TypeCNAME, Class: ClassIN, TTL: 300,
@@ -191,7 +191,7 @@ func testMessages() []testCase {
 		{
 			label: "MX record",
 			msg: &Message{
-				Header: Header{ID: 5, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 5, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeMX, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeMX, Class: ClassIN, TTL: 300,
@@ -206,7 +206,7 @@ func testMessages() []testCase {
 		{
 			label: "SOA record",
 			msg: &Message{
-				Header: Header{ID: 6, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 6, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeSOA, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeSOA, Class: ClassIN, TTL: 86400,
@@ -232,7 +232,7 @@ func testMessages() []testCase {
 		{
 			label: "TXT record",
 			msg: &Message{
-				Header: Header{ID: 7, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 7, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeTXT, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeTXT, Class: ClassIN, TTL: 300,
@@ -249,14 +249,14 @@ func testMessages() []testCase {
 		{
 			label: "SRV record",
 			msg: &Message{
-				Header: Header{ID: 8, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 8, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "_sip._tcp.example.com.", Type: TypeSRV, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "_sip._tcp.example.com.", Type: TypeSRV, Class: ClassIN, TTL: 300,
 					RData: func() []byte {
 						header := make([]byte, 6)
-						binary.BigEndian.PutUint16(header[0:2], 10)  // priority
-						binary.BigEndian.PutUint16(header[2:4], 20)  // weight
+						binary.BigEndian.PutUint16(header[0:2], 10)   // priority
+						binary.BigEndian.PutUint16(header[2:4], 20)   // weight
 						binary.BigEndian.PutUint16(header[4:6], 5060) // port
 						name := BuildPlainName("sip.example.com.")
 						return append(header, name...)
@@ -267,7 +267,7 @@ func testMessages() []testCase {
 		{
 			label: "PTR record",
 			msg: &Message{
-				Header: Header{ID: 9, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 9, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "1.0.168.192.in-addr.arpa.", Type: TypePTR, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "1.0.168.192.in-addr.arpa.", Type: TypePTR, Class: ClassIN, TTL: 300,
@@ -278,7 +278,7 @@ func testMessages() []testCase {
 		{
 			label: "DNAME record",
 			msg: &Message{
-				Header: Header{ID: 10, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 10, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "sub.example.com.", Type: TypeDNAME, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "sub.example.com.", Type: TypeDNAME, Class: ClassIN, TTL: 300,
@@ -289,7 +289,7 @@ func testMessages() []testCase {
 		{
 			label: "OPT pseudo-record (EDNS0)",
 			msg: &Message{
-				Header: Header{ID: 11, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 11, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeA, Class: ClassIN}},
 				Additional: []ResourceRecord{{
 					Name: "", Type: TypeOPT, Class: 4096, TTL: 0,
@@ -300,21 +300,21 @@ func testMessages() []testCase {
 		{
 			label: "RRSIG record",
 			msg: &Message{
-				Header: Header{ID: 12, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 12, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeRRSIG, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeRRSIG, Class: ClassIN, TTL: 86400,
 					RData: func() []byte {
 						fixed := make([]byte, 18)
-						binary.BigEndian.PutUint16(fixed[0:2], TypeA)    // type covered
-						fixed[2] = 8   // algorithm (ECDSA-P256)
-						fixed[3] = 1   // labels (example.com → 1 label)
+						binary.BigEndian.PutUint16(fixed[0:2], TypeA) // type covered
+						fixed[2] = 8                                  // algorithm (ECDSA-P256)
+						fixed[3] = 1                                  // labels (example.com → 1 label)
 						// Note: labels field counts only the non-zone labels
 						// but any reasonable value keeps the round-trip valid.
-						binary.BigEndian.PutUint32(fixed[4:8], 86400)     // original TTL
-						binary.BigEndian.PutUint32(fixed[8:12], 2026071501) // signature expiration
+						binary.BigEndian.PutUint32(fixed[4:8], 86400)        // original TTL
+						binary.BigEndian.PutUint32(fixed[8:12], 2026071501)  // signature expiration
 						binary.BigEndian.PutUint32(fixed[12:16], 2026070101) // signature inception
-						binary.BigEndian.PutUint16(fixed[16:18], 12345)    // key tag
+						binary.BigEndian.PutUint16(fixed[16:18], 12345)      // key tag
 						signer := BuildPlainName("example.com.")
 						sig := make([]byte, 64) // 64 bytes of fake signature
 						out := make([]byte, 18+len(signer)+len(sig))
@@ -329,7 +329,7 @@ func testMessages() []testCase {
 		{
 			label: "NSEC record",
 			msg: &Message{
-				Header: Header{ID: 13, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 13, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeNSEC, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeNSEC, Class: ClassIN, TTL: 86400,
@@ -344,7 +344,7 @@ func testMessages() []testCase {
 		{
 			label: "Multiple sections (answer + authority + additional)",
 			msg: &Message{
-				Header: Header{ID: 14, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+				Header:    Header{ID: 14, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 				Questions: []Question{{Name: "example.com.", Type: TypeA, Class: ClassIN}},
 				Answers: []ResourceRecord{{
 					Name: "example.com.", Type: TypeA, Class: ClassIN, TTL: 300,
@@ -521,7 +521,7 @@ func TestProperty_WireRoundTrip_AllTypes(t *testing.T) {
 // decompressed name doesn't re-compress to the same wire bytes.
 func TestProperty_NameCompressionStable(t *testing.T) {
 	msg := &Message{
-		Header: Header{ID: 100, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+		Header:    Header{ID: 100, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 		Questions: []Question{{Name: "example.com.", Type: TypeA, Class: ClassIN}},
 		Answers: []ResourceRecord{
 			{Name: "example.com.", Type: TypeA, Class: ClassIN, TTL: 300, RData: []byte{1, 2, 3, 4}},
@@ -572,7 +572,7 @@ func TestProperty_NameCompressionStable(t *testing.T) {
 
 func TestProperty_PackBufferBounds(t *testing.T) {
 	msg := &Message{
-		Header: Header{ID: 1, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
+		Header:    Header{ID: 1, Flags: NewFlagBuilder().SetQR(true).SetRA(true).Build()},
 		Questions: []Question{{Name: "example.com.", Type: TypeA, Class: ClassIN}},
 		Answers: []ResourceRecord{
 			{Name: "example.com.", Type: TypeA, Class: ClassIN, TTL: 300, RData: []byte{10, 0, 0, 1}},

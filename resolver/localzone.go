@@ -137,7 +137,6 @@ func (t *LocalZoneTable) findZone(name string) *LocalZone {
 // This is the public counterpart to findZone: it powers the
 // `/api/zones/:name/export` endpoint, which needs to materialise the
 // records of one specific zone in BIND master-file form.
-//
 func (t *LocalZoneTable) FindZone(name string) *LocalZone {
 	if t == nil {
 		return nil
@@ -157,7 +156,6 @@ func (t *LocalZoneTable) FindZone(name string) *LocalZone {
 // order; the slice is stable for the lifetime of the table because
 // Go map and slice memory is not shared with the table's internal
 // storage once the copy is made.
-//
 func (t *LocalZoneTable) Zones() []LocalZone {
 	if t == nil {
 		return nil

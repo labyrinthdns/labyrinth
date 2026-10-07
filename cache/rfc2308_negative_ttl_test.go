@@ -23,10 +23,10 @@ import (
 // clamp does not interfere with the §5 minimum-of-two semantics.
 func TestExtractNegativeTTL_TakesMinimumOfRRTTLAndSOAMinimum(t *testing.T) {
 	for _, c := range []struct {
-		name      string
-		rrTTL     uint32
-		soaMin    uint32
-		wantTTL   uint32
+		name    string
+		rrTTL   uint32
+		soaMin  uint32
+		wantTTL uint32
 	}{
 		{"SOA.Minimum < RR TTL — Minimum wins", 3600, 600, 600},
 		{"RR TTL < SOA.Minimum — RR TTL wins", 100, 1800, 100},

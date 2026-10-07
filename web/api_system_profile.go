@@ -61,9 +61,9 @@ func (s *AdminServer) handleSystemProfile(w http.ResponseWriter, r *http.Request
 		},
 		"cpu": map[string]interface{}{
 			"process_cpu_seconds_total": cpuSeconds,
-			"load_avg_1m":              load1,
-			"load_avg_5m":              load5,
-			"load_avg_15m":             load15,
+			"load_avg_1m":               load1,
+			"load_avg_5m":               load5,
+			"load_avg_15m":              load15,
 		},
 		"memory": memStats,
 		"disk":   disk,

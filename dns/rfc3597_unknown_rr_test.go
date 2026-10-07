@@ -12,12 +12,12 @@ import (
 // for (TypeSPF=99 — once defined, now deprecated, perfectly suited as
 // a "known-but-unhandled" specimen) and MUST:
 //
-//   1. Preserve the RDATA bytes verbatim on pack→unpack→pack roundtrip.
-//   2. Preserve Type, Class, TTL, and Name across the same cycle.
-//   3. NOT attempt to interpret the bytes as a domain name and
-//      recompress them — a buggy parser that fell through to the NS/
-//      CNAME/PTR handler would corrupt the RDATA on any byte sequence
-//      that happened to start with a valid label-length prefix.
+//  1. Preserve the RDATA bytes verbatim on pack→unpack→pack roundtrip.
+//  2. Preserve Type, Class, TTL, and Name across the same cycle.
+//  3. NOT attempt to interpret the bytes as a domain name and
+//     recompress them — a buggy parser that fell through to the NS/
+//     CNAME/PTR handler would corrupt the RDATA on any byte sequence
+//     that happened to start with a valid label-length prefix.
 //
 // Without this invariant, the cache could not safely store RR types
 // the resolver does not natively understand — and the entire RFC 3597
@@ -33,7 +33,7 @@ func TestUnknownRRType_OpaqueRoundtrip(t *testing.T) {
 	rdata := []byte{
 		0x07, // first byte resembles label-length — bait for a "treat as name" bug
 		'r', 'f', 'c', '3', '5', '9', '7',
-		0x00, // pseudo-NUL terminator — second decoy
+		0x00,                   // pseudo-NUL terminator — second decoy
 		0xDE, 0xAD, 0xBE, 0xEF, // arbitrary binary
 	}
 

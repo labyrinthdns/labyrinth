@@ -22,11 +22,11 @@ import (
 //
 // The pin drives four steps:
 //
-//   1. Issue a cookie under secret A.
-//   2. Rotate to secret B → old cookie still validates (grace path).
-//   3. Verify a freshly issued cookie under B also validates.
-//   4. Rotate to secret C → cookie issued under A no longer validates
-//      (only ONE previous secret is retained, not a chain).
+//  1. Issue a cookie under secret A.
+//  2. Rotate to secret B → old cookie still validates (grace path).
+//  3. Verify a freshly issued cookie under B also validates.
+//  4. Rotate to secret C → cookie issued under A no longer validates
+//     (only ONE previous secret is retained, not a chain).
 //
 // Step 4 is the security invariant: an unbounded chain of previous
 // secrets would mean a single historical-secret leak compromises the

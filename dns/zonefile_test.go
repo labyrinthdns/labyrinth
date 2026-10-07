@@ -10,7 +10,6 @@ import (
 // the ones a RFC 1035 reader would produce; the actual TTL numbers
 // are not part of the assertion because the writer picks the smallest
 // TTL in the zone for the $TTL directive by design (see FormatZone).
-//
 func TestFormatZone_Basic(t *testing.T) {
 	apex := "example.com."
 
@@ -53,7 +52,6 @@ func TestFormatZone_Basic(t *testing.T) {
 // bytes out, no information loss. The TYPE column carries the numeric
 // type and the RDATA portion is just the length-prefixed hex: this is
 // the form a parser can recover verbatim.
-//
 func TestFormatZone_GenericUnknown(t *testing.T) {
 	// TYPE999 with a 4-byte RDATA payload.
 	rdata := []byte{0xDE, 0xAD, 0xBE, 0xEF}
@@ -74,7 +72,6 @@ func TestFormatZone_GenericUnknown(t *testing.T) {
 // TestFormatZone_EmptyRData confirms that an empty-RDATA record emits
 // `\# 0` rather than omitting the RDATA, so a parser reading the file
 // back produces the same zero-length opaque block.
-//
 func TestFormatZone_EmptyRData(t *testing.T) {
 	records := []ResourceRecord{
 		{Name: "example.com.", Type: TypeSOA, Class: ClassIN, TTL: 86400, RData: []byte{}},
@@ -95,7 +92,6 @@ func TestFormatZone_EmptyRData(t *testing.T) {
 // the smallest TTL in the records, and records are written without
 // the parenthesised header). This is the path for a partial zone
 // dump — uncommon but useful for round-tripping a single RRset.
-//
 func TestFormatZone_NoSOA(t *testing.T) {
 	records := []ResourceRecord{
 		{Name: "example.com.", Type: TypeNS, Class: ClassIN, TTL: 86400, RData: buildName(t, "ns.example.com.")},
@@ -117,13 +113,12 @@ func TestFormatZone_NoSOA(t *testing.T) {
 // backslash-escaped quotes intact. The wire form stores an embedded
 // quote as a literal 0x22 byte, and the master-file form must escape
 // it so the parser does not terminate the quoted string early.
-//
 func TestFormatZone_TXTStringEscape(t *testing.T) {
 	// Two character-strings: one with an embedded quote, one normal.
 	// Wire form: 1-byte length prefix, then that many bytes of content.
 	rdata := []byte{
-		5, '"', 'a', '"', 'b', 'X',  // 5-byte string: "a"bX
-		4, 't', 'e', 'x', 't',       // 4-byte string: text
+		5, '"', 'a', '"', 'b', 'X', // 5-byte string: "a"bX
+		4, 't', 'e', 'x', 't', // 4-byte string: text
 	}
 	records := []ResourceRecord{
 		{Name: "example.com.", Type: TypeSOA, Class: ClassIN, TTL: 86400, RData: []byte{}},
@@ -143,7 +138,6 @@ func TestFormatZone_TXTStringEscape(t *testing.T) {
 // characters and the literal pass-through for the safe set. The empty
 // string and the all-dot edge cases are included because a caller
 // might pass "" or "." in error and the writer must not panic.
-//
 func TestEscapeName(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -176,7 +170,6 @@ func TestEscapeName(t *testing.T) {
 // tools (and the resolver's negative-cache TTL clamp) treat 0 as "no
 // TTL", which is not what an operator exporting a zone expects. So
 // the writer substitutes the BIND default.
-//
 func TestFormatZone_TTLDefaultZero(t *testing.T) {
 	records := []ResourceRecord{
 		{Name: "example.com.", Type: TypeSOA, Class: ClassIN, TTL: 86400, RData: []byte{}},
@@ -202,7 +195,6 @@ func mustContain(t *testing.T, haystack, needle string) {
 
 // buildSOA packs an SOA's RDATA in wire format. The five timers MUST be
 // in the order serial, refresh, retry, expire, minimum (RFC 1035 §3.3.13).
-//
 func buildSOA(t *testing.T, mname, rname string, serial, refresh, retry, expire, minimum uint32) []byte {
 	t.Helper()
 	out := []byte{}
@@ -215,7 +207,6 @@ func buildSOA(t *testing.T, mname, rname string, serial, refresh, retry, expire,
 }
 
 // buildName packs a single domain-name in wire format (no compression).
-//
 func buildName(t *testing.T, name string) []byte {
 	t.Helper()
 	out, err := EncodeNameToBytes(name)
@@ -228,7 +219,6 @@ func buildName(t *testing.T, name string) []byte {
 // buildMX packs a 16-bit preference plus a single name. The caller
 // supplies the preference and the exchange name; the helper is a
 // thin wrapper that does the byte layout.
-//
 func buildMX(t *testing.T, pref uint16, exchange string) []byte {
 	t.Helper()
 	out := []byte{byte(pref >> 8), byte(pref)}

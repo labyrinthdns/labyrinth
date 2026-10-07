@@ -130,7 +130,7 @@ func TestUnpack_BadQuestion(t *testing.T) {
 	header := make([]byte, 12)
 	binary.BigEndian.PutUint16(header[0:], 0x1234) // ID
 	binary.BigEndian.PutUint16(header[2:], 0x0100) // Flags: RD=1
-	binary.BigEndian.PutUint16(header[4:], 1)       // QDCount = 1
+	binary.BigEndian.PutUint16(header[4:], 1)      // QDCount = 1
 	// No question data follows the header
 
 	_, err := Unpack(header)

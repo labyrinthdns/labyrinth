@@ -126,7 +126,7 @@ func TestParseNSEC3_TruncatedAtHashLength(t *testing.T) {
 		0x01,       // HashAlgorithm
 		0x00,       // Flags
 		0x00, 0x0A, // Iterations=10
-		0x00,       // SaltLength=0
+		0x00, // SaltLength=0
 		// no hash length byte follows
 	}
 	_, err := ParseNSEC3(rdata)
@@ -153,13 +153,13 @@ func TestParseNSEC3_NextHashOverflow(t *testing.T) {
 
 func TestParseNSEC3_ValidWithSaltAndHash(t *testing.T) {
 	var rdata []byte
-	rdata = append(rdata, 0x01)       // HashAlgorithm
-	rdata = append(rdata, 0x01)       // Flags (opt-out)
-	rdata = append(rdata, 0x00, 0x0A) // Iterations=10
-	rdata = append(rdata, 0x04)       // SaltLength=4
+	rdata = append(rdata, 0x01)                   // HashAlgorithm
+	rdata = append(rdata, 0x01)                   // Flags (opt-out)
+	rdata = append(rdata, 0x00, 0x0A)             // Iterations=10
+	rdata = append(rdata, 0x04)                   // SaltLength=4
 	rdata = append(rdata, 0xAA, 0xBB, 0xCC, 0xDD) // Salt
-	rdata = append(rdata, 0x03)       // HashLength=3
-	rdata = append(rdata, 0x11, 0x22, 0x33)        // NextHash
+	rdata = append(rdata, 0x03)                   // HashLength=3
+	rdata = append(rdata, 0x11, 0x22, 0x33)       // NextHash
 	// Type bitmap: window=0, length=1, bitmap=0x40 (type A=1)
 	rdata = append(rdata, 0x00, 0x01, 0x40)
 
@@ -221,14 +221,14 @@ func TestUnpackRR_RRSIG_Compressed(t *testing.T) {
 	var rdata []byte
 	fixed := make([]byte, 18)
 	binary.BigEndian.PutUint16(fixed[0:], TypeA) // TypeCovered
-	fixed[2] = 8                                  // Algorithm
-	fixed[3] = 2                                  // Labels
-	binary.BigEndian.PutUint32(fixed[4:], 300)    // OrigTTL
+	fixed[2] = 8                                 // Algorithm
+	fixed[3] = 2                                 // Labels
+	binary.BigEndian.PutUint32(fixed[4:], 300)   // OrigTTL
 	binary.BigEndian.PutUint32(fixed[8:], 1700000000)
 	binary.BigEndian.PutUint32(fixed[12:], 1699000000)
 	binary.BigEndian.PutUint16(fixed[16:], 54321) // KeyTag
 	rdata = append(rdata, fixed...)
-	rdata = append(rdata, 0xC0, 0x0C) // compressed pointer to "example.com" at offset 12
+	rdata = append(rdata, 0xC0, 0x0C)       // compressed pointer to "example.com" at offset 12
 	rdata = append(rdata, 0xAA, 0xBB, 0xCC) // signature bytes
 
 	msg, off := buildMsgWithAnswer(TypeRRSIG, rdata)
@@ -395,8 +395,8 @@ func TestPackRData_RRSIG(t *testing.T) {
 	var rdata []byte
 	fixed := make([]byte, 18)
 	binary.BigEndian.PutUint16(fixed[0:], TypeA) // TypeCovered
-	fixed[2] = 8                                  // Algorithm
-	fixed[3] = 2                                  // Labels
+	fixed[2] = 8                                 // Algorithm
+	fixed[3] = 2                                 // Labels
 	binary.BigEndian.PutUint32(fixed[4:], 300)
 	binary.BigEndian.PutUint32(fixed[8:], 1700000000)
 	binary.BigEndian.PutUint32(fixed[12:], 1699000000)

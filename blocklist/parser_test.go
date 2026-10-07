@@ -65,9 +65,9 @@ func TestParseHostsFileEdgeCases(t *testing.T) {
 		"  0.0.0.0   spaced.com  \r\n" +
 		"! ABP-style comment\r\n" +
 		"192.168.1.1 internal.local\r\n" + // non-blocking IP, should be skipped
-		"0.0.0.0\r\n" +                    // no domain field, should be skipped
-		"just-a-domain.com\r\n" +          // no IP prefix, should be skipped
-		"0.0.0.0 UPPERCASE.COM\r\n"        // should be lowercased
+		"0.0.0.0\r\n" + // no domain field, should be skipped
+		"just-a-domain.com\r\n" + // no IP prefix, should be skipped
+		"0.0.0.0 UPPERCASE.COM\r\n" // should be lowercased
 
 	domains := ParseHostsFile(strings.NewReader(input))
 

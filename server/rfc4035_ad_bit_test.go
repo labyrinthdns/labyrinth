@@ -23,10 +23,10 @@ import (
 // after validating, we mark a clean answer as untrusted.
 func TestBuildCacheResponse_ADBitGating(t *testing.T) {
 	for _, c := range []struct {
-		name     string
-		status   string
-		queryCD  bool
-		wantAD   bool
+		name    string
+		status  string
+		queryCD bool
+		wantAD  bool
 	}{
 		{"secure + CD=0 => AD=1", "secure", false, true},
 		{"secure + CD=1 => AD=0 (client opted out)", "secure", true, false},

@@ -64,9 +64,9 @@ func TestInfo_WithCert(t *testing.T) {
 
 	// Inject a fake certificate
 	leaf := &x509.Certificate{
-		Subject:  pkix.Name{CommonName: "example.com"},
-		Issuer:   pkix.Name{CommonName: "Fake CA", Organization: []string{"FakeOrg"}},
-		DNSNames: []string{"example.com", "*.example.com"},
+		Subject:   pkix.Name{CommonName: "example.com"},
+		Issuer:    pkix.Name{CommonName: "Fake CA", Organization: []string{"FakeOrg"}},
+		DNSNames:  []string{"example.com", "*.example.com"},
 		NotBefore: time.Now().Add(-24 * time.Hour),
 		NotAfter:  time.Now().Add(90 * 24 * time.Hour),
 	}

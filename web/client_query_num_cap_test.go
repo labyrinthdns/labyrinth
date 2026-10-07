@@ -19,9 +19,10 @@ import (
 // reachable in microseconds. It seeds the map to capacity with
 // monotonically-increasing lastAccess, calls RecordQuery for a
 // fresh client, and asserts:
-//   (1) the map stayed at the cap,
-//   (2) the new client is now tracked,
-//   (3) the OLDEST seeded client was evicted.
+//
+//	(1) the map stayed at the cap,
+//	(2) the new client is now tracked,
+//	(3) the OLDEST seeded client was evicted.
 func TestRecordQuery_ClientQueryNumCapWithLRU(t *testing.T) {
 	srv := testAdminServer(t)
 	srv.clientQueryNumCapOverride = 4

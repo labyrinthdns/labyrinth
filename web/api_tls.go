@@ -22,8 +22,8 @@ func (s *AdminServer) handleTLSStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type tlsResponse struct {
-		Enabled bool                 `json:"enabled"`
-		AutoTLS bool                 `json:"auto_tls"`
+		Enabled bool                  `json:"enabled"`
+		AutoTLS bool                  `json:"auto_tls"`
 		Cert    *certmanager.CertInfo `json:"cert,omitempty"`
 	}
 

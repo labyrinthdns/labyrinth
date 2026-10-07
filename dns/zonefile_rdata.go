@@ -36,7 +36,6 @@ import (
 //
 // The "(..." continuation is what `dnsview` and friends display by
 // default. The writer emits exactly that layout.
-//
 func FormatRData(r ResourceRecord) (string, error) {
 	switch r.Type {
 	case TypeSOA:
@@ -84,7 +83,6 @@ func FormatRData(r ResourceRecord) (string, error) {
 // for a type it does not understand. The TYPE column on the line
 // already carries the numeric type; the RDATA portion here is just
 // the length-prefixed hex.
-//
 func formatGenericUnknown(r ResourceRecord) (string, error) {
 	if len(r.RData) == 0 {
 		// BIND writes the empty form as `\# 0` — explicit zero length.
@@ -99,7 +97,6 @@ func formatGenericUnknown(r ResourceRecord) (string, error) {
 // DNAME). The single name is wire-format-encoded with no compression. RFC
 // 1035 §5.1 says the name must end in a dot in master-file form (relative
 // to $ORIGIN), so we add it here rather than leaving it to the caller.
-//
 func formatSingleName(rdata []byte) (string, error) {
 	name, err := ParseNS(rdata, 0)
 	if err != nil {
@@ -204,7 +201,6 @@ func formatCAA(rdata []byte) (string, error) {
 // field of the SOA is wrapped in parentheses for clarity, matching
 // `dnsview` and `dig +nocmd` operator-facing tools. RFC 1035 §5.1
 // explicitly permits the parenthesised continuation.
-//
 func formatSOA(rdata []byte) (string, error) {
 	rec, err := ParseSOA(rdata, 0)
 	if err != nil {
@@ -219,7 +215,6 @@ func formatSOA(rdata []byte) (string, error) {
 // FormatSOARecord is the public entry point for callers that already have
 // a parsed SOARecord (e.g. from a transfer response) and want to render
 // it without going through wire RDATA. Same output format as formatSOA.
-//
 func FormatSOARecord(rec *SOARecord) string {
 	return fmt.Sprintf("%s. %s. (\n\t\t%d\t; serial\n\t\t%d\t; refresh\n\t\t%d\t; retry\n\t\t%d\t; expire\n\t\t%d\t; minimum\n\t\t)",
 		escapeName(rec.MName), escapeName(rec.RName),
@@ -232,7 +227,6 @@ func FormatSOARecord(rec *SOARecord) string {
 // guarantees. Kept for operator convenience when re-pasting a record
 // someone gave them as `<base64>`. Provided here so the writer can
 // pick: hex (default, RFC 3597 §5) or base64 (operator preference).
-//
 func FormatRDataBase64(r ResourceRecord) string {
 	return fmt.Sprintf("TYPE%d \\# %d %s",
 		r.Type, len(r.RData),

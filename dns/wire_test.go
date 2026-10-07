@@ -860,9 +860,9 @@ func TestPackRData_SOA_BrokenMName(t *testing.T) {
 // Cover packRData: SOA with broken rname (mname decodes OK, rname fails)
 func TestPackRData_SOA_BrokenRName(t *testing.T) {
 	var rdata []byte
-	rdata = append(rdata, 0x02, 'n', 's', 0x00)  // valid mname "ns"
-	rdata = append(rdata, 0x3F, 'x', 'y')         // broken rname: label says 63 but only 2 bytes
-	rdata = append(rdata, make([]byte, 20)...)     // pad
+	rdata = append(rdata, 0x02, 'n', 's', 0x00) // valid mname "ns"
+	rdata = append(rdata, 0x3F, 'x', 'y')       // broken rname: label says 63 but only 2 bytes
+	rdata = append(rdata, make([]byte, 20)...)  // pad
 
 	rr := ResourceRecord{
 		Name:     "example.com",
@@ -986,9 +986,9 @@ func TestUnpackBadAnswer(t *testing.T) {
 	binary.BigEndian.PutUint16(header[6:], 1) // ANCount=1
 	buf = append(buf, header...)
 	// Question: root name, Type A, Class IN
-	buf = append(buf, 0x00)           // root name
-	buf = append(buf, 0x00, 0x01)     // Type A
-	buf = append(buf, 0x00, 0x01)     // Class IN
+	buf = append(buf, 0x00)       // root name
+	buf = append(buf, 0x00, 0x01) // Type A
+	buf = append(buf, 0x00, 0x01) // Class IN
 	// No answer data (but header says ANCount=1)
 	_, err := Unpack(buf)
 	if err != errTruncated {

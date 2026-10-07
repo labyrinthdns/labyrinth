@@ -30,8 +30,8 @@ func TestDNSKEYKeyTag_FixtureValues(t *testing.T) {
 		wantTag uint16
 	}{
 		{
-			name:   "all-zero key — only header bytes contribute",
-			flags:  0, proto: 0, alg: 0,
+			name:  "all-zero key — only header bytes contribute",
+			flags: 0, proto: 0, alg: 0,
 			pubKey:  []byte{},
 			wantTag: 0,
 		},
@@ -43,8 +43,8 @@ func TestDNSKEYKeyTag_FixtureValues(t *testing.T) {
 			// ac = 2063
 			// ac >> 16 = 0
 			// ac & 0xFFFF = 2063
-			name:   "KSK alg=8 PublicKey=[01,02,03,04] → 2063 (manual)",
-			flags:  257, proto: 3, alg: 8,
+			name:  "KSK alg=8 PublicKey=[01,02,03,04] → 2063 (manual)",
+			flags: 257, proto: 3, alg: 8,
 			pubKey:  []byte{0x01, 0x02, 0x03, 0x04},
 			wantTag: 2063,
 		},
@@ -60,8 +60,8 @@ func TestDNSKEYKeyTag_FixtureValues(t *testing.T) {
 			// ac >> 16 = 4
 			// ac += 4 = 263177 = 0x40409
 			// ac & 0xFFFF = 0x0409 = 1033
-			name:   "fold-back forces overflow handling",
-			flags:  257, proto: 3, alg: 8,
+			name:  "fold-back forces overflow handling",
+			flags: 257, proto: 3, alg: 8,
 			pubKey:  []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
 			wantTag: 1033,
 		},

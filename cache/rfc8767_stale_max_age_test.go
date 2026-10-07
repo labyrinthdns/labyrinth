@@ -22,9 +22,9 @@ import (
 //
 // The pin drives three scenarios on a cache with `staleMaxAge=2`:
 //
-//   1. Entry expired-for 0s past TTL → served (within window).
-//   2. Entry expired-for 3s past TTL (> staleMaxAge) → NOT served.
-//   3. Bound-test: staleMaxAge=0 means "no ceiling" → always served.
+//  1. Entry expired-for 0s past TTL → served (within window).
+//  2. Entry expired-for 3s past TTL (> staleMaxAge) → NOT served.
+//  3. Bound-test: staleMaxAge=0 means "no ceiling" → always served.
 //
 // A refactor that swapped the inequality direction or replaced
 // `> staleMaxAge` with `>=` would change case-2's behaviour at a

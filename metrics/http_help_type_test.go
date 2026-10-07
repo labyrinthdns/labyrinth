@@ -33,8 +33,8 @@ func TestPrometheusExport_HasHelpAndTypeForEverySeries(t *testing.T) {
 	body := w.Body.String()
 
 	families := []struct {
-		name    string
-		mtype   string // counter | gauge | histogram
+		name  string
+		mtype string // counter | gauge | histogram
 	}{
 		{"labyrinth_queries_total", "counter"},
 		{"labyrinth_responses_total", "counter"},

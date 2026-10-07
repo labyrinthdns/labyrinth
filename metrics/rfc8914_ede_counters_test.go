@@ -15,7 +15,7 @@ func TestEDECounters_IncrementsPerCode(t *testing.T) {
 	m := NewMetrics()
 
 	// Emit a representative spread of codes.
-	m.IncEDE(6)  // DNSSEC Bogus
+	m.IncEDE(6) // DNSSEC Bogus
 	m.IncEDE(6)
 	m.IncEDE(6)
 	m.IncEDE(17) // Filtered

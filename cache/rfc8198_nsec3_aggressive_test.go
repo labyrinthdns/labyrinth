@@ -22,10 +22,10 @@ func newFakeNSEC3Authority(t *testing.T, flags uint8) []dns.ResourceRecord {
 	// NSEC3 RDATA = hashAlg(1) | flags(1) | iters(2) | saltLen(1) | salt(0)
 	// | hashLen(1) | nextHash(4) | typeBitmaps(0)
 	rdata := []byte{
-		1,           // hashAlg = SHA-1
-		flags,       // flags (opt-out bit if set by caller)
-		0x00, 0x00,  // iterations = 0
-		0x00,        // salt length = 0
+		1,          // hashAlg = SHA-1
+		flags,      // flags (opt-out bit if set by caller)
+		0x00, 0x00, // iterations = 0
+		0x00, // salt length = 0
 		byte(len(next)),
 	}
 	rdata = append(rdata, next...)

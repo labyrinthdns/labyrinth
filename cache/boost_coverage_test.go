@@ -201,7 +201,7 @@ func TestGet_PrefetchThresholdZero(t *testing.T) {
 			TTL: 5, RDLength: 4, RData: []byte{1, 2, 3, 4},
 		}},
 		InsertedAt: time.Now().Add(-4 * time.Second), // remaining = ~1
-		OrigTTL:    5,                                 // 5/10 = 0, threshold becomes 1
+		OrigTTL:    5,                                // 5/10 = 0, threshold becomes 1
 	}
 	name := "thresh.com"
 	idx := c.shardIndex(name)

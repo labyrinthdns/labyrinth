@@ -27,9 +27,9 @@ import (
 //
 // We pin both polarities to lock the behaviour:
 //
-//   1. Delegation NSEC (NS, no SOA) at qname → MUST NOT synthesise.
-//   2. Authoritative NSEC (NS + SOA OR no NS) at qname → MAY
-//      synthesise normally.
+//  1. Delegation NSEC (NS, no SOA) at qname → MUST NOT synthesise.
+//  2. Authoritative NSEC (NS + SOA OR no NS) at qname → MAY
+//     synthesise normally.
 func TestLookupNSEC_DelegationNSECRejectedAsNODATA(t *testing.T) {
 	t.Run("delegation NSEC (NS, no SOA) → rejected", func(t *testing.T) {
 		c := NewCache(1024, 60, 86400, 3600, nil)

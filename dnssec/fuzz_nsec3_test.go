@@ -13,8 +13,8 @@ func FuzzComputeNSEC3Hash(f *testing.F) {
 	f.Add("test.example.com", uint8(1), uint16(0), []byte(""))
 	f.Add(".", uint8(1), uint16(0), []byte("salt"))
 	f.Add("", uint8(1), uint16(0), []byte(nil))
-	f.Add("example.com", uint8(255), uint16(0), []byte(nil))  // unsupported algorithm
-	f.Add("example.com", uint8(1), uint16(200), []byte(nil))   // over max iterations
+	f.Add("example.com", uint8(255), uint16(0), []byte(nil)) // unsupported algorithm
+	f.Add("example.com", uint8(1), uint16(200), []byte(nil)) // over max iterations
 
 	f.Fuzz(func(t *testing.T, name string, algorithm uint8, iterations uint16, salt []byte) {
 		// ComputeNSEC3Hash must never panic, even on pathological inputs.

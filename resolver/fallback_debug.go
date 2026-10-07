@@ -16,20 +16,20 @@ const fallbackLogMaxBytes = 32 << 20 // 32 MiB then rotate to .1
 // the public-resolver fallback path. Independent of logging.level so
 // operators can debug SERVFAIL→fallback with logging: error.
 type fallbackLogRecord struct {
-	Time            string `json:"time"`
-	Name            string `json:"name"`
-	QType           uint16 `json:"qtype"`
-	QTypeName       string `json:"qtype_name"`
-	Reason          string `json:"reason"`
-	DNSSECStatus    string `json:"dnssec_status,omitempty"`
-	DNSSECReason    string `json:"dnssec_reason,omitempty"`
-	FailureReason   string `json:"failure_reason,omitempty"`
-	PrimaryRCODE    string `json:"primary_rcode,omitempty"`
-	Recovered       bool   `json:"recovered"`
-	FallbackAddr    string `json:"fallback_addr,omitempty"`
-	FallbackRCODE   string `json:"fallback_rcode,omitempty"`
-	FallbackError   string `json:"fallback_error,omitempty"`
-	FallbackTried   int    `json:"fallback_tried"`
+	Time          string `json:"time"`
+	Name          string `json:"name"`
+	QType         uint16 `json:"qtype"`
+	QTypeName     string `json:"qtype_name"`
+	Reason        string `json:"reason"`
+	DNSSECStatus  string `json:"dnssec_status,omitempty"`
+	DNSSECReason  string `json:"dnssec_reason,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+	PrimaryRCODE  string `json:"primary_rcode,omitempty"`
+	Recovered     bool   `json:"recovered"`
+	FallbackAddr  string `json:"fallback_addr,omitempty"`
+	FallbackRCODE string `json:"fallback_rcode,omitempty"`
+	FallbackError string `json:"fallback_error,omitempty"`
+	FallbackTried int    `json:"fallback_tried"`
 }
 
 type fallbackFileLog struct {

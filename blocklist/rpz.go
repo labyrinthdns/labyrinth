@@ -188,10 +188,10 @@ func isClass(s string) bool {
 // domain matches and wildcard (subdomain) matches. Passthru (whitelist)
 // rules are checked first.
 type RPZMatcher struct {
-	mu              sync.RWMutex
-	exact           map[string]RPZAction
-	wildcards       map[string]RPZAction
-	exactPassthru   map[string]struct{}
+	mu               sync.RWMutex
+	exact            map[string]RPZAction
+	wildcards        map[string]RPZAction
+	exactPassthru    map[string]struct{}
 	wildcardPassthru map[string]struct{}
 }
 

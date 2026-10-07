@@ -22,8 +22,8 @@ import (
 // We pin BOTH sides of the gate to make the regression target
 // unambiguous:
 //
-//   1. Opt-out flag SET (0x01) → interval NOT cached → no synth.
-//   2. Opt-out flag CLEAR (0x00) → interval IS cached → synth fires.
+//  1. Opt-out flag SET (0x01) → interval NOT cached → no synth.
+//  2. Opt-out flag CLEAR (0x00) → interval IS cached → synth fires.
 //
 // A regression that flipped the conditional (`!= 0` → `== 0`, or
 // the entire guard removed) would either drop all NSEC3s and break

@@ -126,4 +126,3 @@ func TestStartUpdateChecker_EarlyExitPaths(t *testing.T) {
 	cancel()
 	srv.StartUpdateChecker(ctx)
 }
-

@@ -55,16 +55,16 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		// aggressive NSEC/NSEC3 synth, BADCOOKIE retry, stale-while-refresh)
 		// are no longer a blind spot in the UI. The same numbers are
 		// available on /metrics for Prometheus scrapers.
-		"failure_cache_hits":           snap.FailureCacheHits,
-		"failure_cache_misses":         snap.FailureCacheMisses,
-		"server_cookie_cache_hits":     snap.ServerCookieCacheHits,
-		"server_cookie_cache_misses":   snap.ServerCookieCacheMisses,
-		"nsec_aggressive_synth_nx":     snap.NSECAggressiveSynthNX,
-		"nsec_aggressive_synth_nodata": snap.NSECAggressiveSynthNoData,
-		"nsec3_aggressive_synth_nx":    snap.NSEC3AggressiveSynthNX,
+		"failure_cache_hits":            snap.FailureCacheHits,
+		"failure_cache_misses":          snap.FailureCacheMisses,
+		"server_cookie_cache_hits":      snap.ServerCookieCacheHits,
+		"server_cookie_cache_misses":    snap.ServerCookieCacheMisses,
+		"nsec_aggressive_synth_nx":      snap.NSECAggressiveSynthNX,
+		"nsec_aggressive_synth_nodata":  snap.NSECAggressiveSynthNoData,
+		"nsec3_aggressive_synth_nx":     snap.NSEC3AggressiveSynthNX,
 		"nsec3_aggressive_synth_nodata": snap.NSEC3AggressiveSynthND,
-		"outbound_badcookie_retries":   snap.OutboundBadCookieRetries,
-		"stale_while_refresh":          snap.StaleWhileRefreshTriggers,
+		"outbound_badcookie_retries":    snap.OutboundBadCookieRetries,
+		"stale_while_refresh":           snap.StaleWhileRefreshTriggers,
 	})
 }
 
@@ -146,15 +146,15 @@ func (s *AdminServer) handleFallbackEvents(w http.ResponseWriter, r *http.Reques
 
 	events := s.metrics.FallbackEventRing().Events()
 	type jsonEvent struct {
-		Timestamp             string `json:"timestamp"`
-		QueryName             string `json:"query_name"`
-		QType                 uint16 `json:"qtype"`
-		QClass                uint16 `json:"qclass"`
-		PrimaryFailureReason  string `json:"primary_failure_reason"`
-		ResolverAddr          string `json:"resolver_addr"`
-		Recovered             bool   `json:"recovered"`
-		RCODE                 uint8  `json:"rcode"`
-		Error                 string `json:"error,omitempty"`
+		Timestamp            string `json:"timestamp"`
+		QueryName            string `json:"query_name"`
+		QType                uint16 `json:"qtype"`
+		QClass               uint16 `json:"qclass"`
+		PrimaryFailureReason string `json:"primary_failure_reason"`
+		ResolverAddr         string `json:"resolver_addr"`
+		Recovered            bool   `json:"recovered"`
+		RCODE                uint8  `json:"rcode"`
+		Error                string `json:"error,omitempty"`
 	}
 	out := make([]jsonEvent, len(events))
 	for i, e := range events {

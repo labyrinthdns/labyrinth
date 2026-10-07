@@ -25,8 +25,8 @@ const MaxNTAReasonBytes = 1024
 // runtime values rather than hard-coding them in the frontend.
 func dnssecSafetyNet() map[string]int {
 	return map[string]int{
-		"max_rrsig_verify_attempts":    dnssec.MaxRRSIGVerifyAttempts(),
-		"max_trust_chain_depth":        dnssec.MaxTrustChainDepth(),
+		"max_rrsig_verify_attempts":      dnssec.MaxRRSIGVerifyAttempts(),
+		"max_trust_chain_depth":          dnssec.MaxTrustChainDepth(),
 		"max_crypto_verify_per_response": dnssec.MaxCryptoVerifyPerResponse(),
 	}
 }
@@ -91,11 +91,11 @@ func (s *AdminServer) handleDNSSEC(w http.ResponseWriter, r *http.Request) {
 			state = "expired"
 		}
 		ntas = append(ntas, map[string]interface{}{
-			"zone":             nta.Zone,
-			"expires_at":       nta.Expiry.Format(time.RFC3339),
+			"zone":               nta.Zone,
+			"expires_at":         nta.Expiry.Format(time.RFC3339),
 			"expires_in_seconds": int64(nta.Expiry.Sub(now).Seconds()),
-			"reason":           nta.Reason,
-			"state":            state,
+			"reason":             nta.Reason,
+			"state":              state,
 		})
 	}
 	resp["nta_count"] = len(ntas)
@@ -108,10 +108,10 @@ func (s *AdminServer) handleDNSSEC(w http.ResponseWriter, r *http.Request) {
 // timestamps so a typo cannot accidentally install a permanently-
 // inactive entry that the operator thinks is doing work.
 type addNTARequest struct {
-	Zone           string `json:"zone"`
-	ExpiresAt      string `json:"expires_at,omitempty"`
-	DurationHours  int    `json:"duration_hours,omitempty"`
-	Reason         string `json:"reason"`
+	Zone          string `json:"zone"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
+	DurationHours int    `json:"duration_hours,omitempty"`
+	Reason        string `json:"reason"`
 }
 
 // handleNTAAdd handles POST /api/dnssec/nta — installs a single NTA

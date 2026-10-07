@@ -277,9 +277,9 @@ func TestParseSOATruncatedRName(t *testing.T) {
 func TestParseSOATruncatedSerials(t *testing.T) {
 	// Valid mname and rname, but missing serial fields
 	buf := []byte{
-		0x02, 'n', 's', 0x00,                         // mname
-		0x05, 'a', 'd', 'm', 'i', 'n', 0x00,          // rname
-		0x00, 0x00, 0x00, 0x01,                         // serial (only 1 of 5 uint32s)
+		0x02, 'n', 's', 0x00, // mname
+		0x05, 'a', 'd', 'm', 'i', 'n', 0x00, // rname
+		0x00, 0x00, 0x00, 0x01, // serial (only 1 of 5 uint32s)
 	}
 	_, err := ParseSOA(buf, 0)
 	if err != errTruncated {
@@ -290,8 +290,8 @@ func TestParseSOATruncatedSerials(t *testing.T) {
 func TestParseSOATruncatedSerial(t *testing.T) {
 	// Valid mname and rname, but NO serial bytes at all
 	var buf []byte
-	buf = append(buf, 0x02, 'n', 's', 0x00)                         // mname
-	buf = append(buf, 0x05, 'a', 'd', 'm', 'i', 'n', 0x00)          // rname
+	buf = append(buf, 0x02, 'n', 's', 0x00)                // mname
+	buf = append(buf, 0x05, 'a', 'd', 'm', 'i', 'n', 0x00) // rname
 	// No serial bytes
 	_, err := ParseSOA(buf, 0)
 	if err != errTruncated {
@@ -302,10 +302,10 @@ func TestParseSOATruncatedSerial(t *testing.T) {
 func TestParseSOATruncatedRefresh(t *testing.T) {
 	// Valid mname, rname, and serial, but Refresh truncated
 	var buf []byte
-	buf = append(buf, 0x02, 'n', 's', 0x00)                         // mname
-	buf = append(buf, 0x05, 'a', 'd', 'm', 'i', 'n', 0x00)          // rname
-	buf = append(buf, 0x00, 0x00, 0x00, 0x01)                         // serial (4 bytes)
-	buf = append(buf, 0x00, 0x00)                                      // only 2 bytes for refresh, need 4
+	buf = append(buf, 0x02, 'n', 's', 0x00)                // mname
+	buf = append(buf, 0x05, 'a', 'd', 'm', 'i', 'n', 0x00) // rname
+	buf = append(buf, 0x00, 0x00, 0x00, 0x01)              // serial (4 bytes)
+	buf = append(buf, 0x00, 0x00)                          // only 2 bytes for refresh, need 4
 	_, err := ParseSOA(buf, 0)
 	if err != errTruncated {
 		t.Fatalf("expected errTruncated for Refresh, got %v", err)
@@ -318,7 +318,7 @@ func TestParseSOATruncatedRetry(t *testing.T) {
 	buf = append(buf, 0x05, 'a', 'd', 'm', 'i', 'n', 0x00)
 	buf = append(buf, 0x00, 0x00, 0x00, 0x01) // serial
 	buf = append(buf, 0x00, 0x00, 0x00, 0x02) // refresh
-	buf = append(buf, 0x00, 0x00)              // only 2 bytes for retry
+	buf = append(buf, 0x00, 0x00)             // only 2 bytes for retry
 	_, err := ParseSOA(buf, 0)
 	if err != errTruncated {
 		t.Fatalf("expected errTruncated for Retry, got %v", err)
@@ -332,7 +332,7 @@ func TestParseSOATruncatedExpire(t *testing.T) {
 	buf = append(buf, 0x00, 0x00, 0x00, 0x01) // serial
 	buf = append(buf, 0x00, 0x00, 0x00, 0x02) // refresh
 	buf = append(buf, 0x00, 0x00, 0x00, 0x03) // retry
-	buf = append(buf, 0x00, 0x00)              // only 2 bytes for expire
+	buf = append(buf, 0x00, 0x00)             // only 2 bytes for expire
 	_, err := ParseSOA(buf, 0)
 	if err != errTruncated {
 		t.Fatalf("expected errTruncated for Expire, got %v", err)
@@ -347,7 +347,7 @@ func TestParseSOATruncatedMinimum(t *testing.T) {
 	buf = append(buf, 0x00, 0x00, 0x00, 0x02) // refresh
 	buf = append(buf, 0x00, 0x00, 0x00, 0x03) // retry
 	buf = append(buf, 0x00, 0x00, 0x00, 0x04) // expire
-	buf = append(buf, 0x00, 0x00)              // only 2 bytes for minimum
+	buf = append(buf, 0x00, 0x00)             // only 2 bytes for minimum
 	_, err := ParseSOA(buf, 0)
 	if err != errTruncated {
 		t.Fatalf("expected errTruncated for Minimum, got %v", err)
@@ -414,7 +414,7 @@ func TestParseSRVTruncatedTarget(t *testing.T) {
 		0x00, 0x0A, // priority
 		0x00, 0x14, // weight
 		0x00, 0x50, // port
-		0x05, 'a',  // label says 5, only 1 data byte
+		0x05, 'a', // label says 5, only 1 data byte
 	}
 	_, err := ParseSRV(buf, 0)
 	if err != errTruncated {

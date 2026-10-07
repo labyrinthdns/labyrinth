@@ -13,7 +13,7 @@ import (
 func TestPadRawResponse_PadsToBlock(t *testing.T) {
 	// Build a tiny response: header + 1 question + 1 A answer + OPT.
 	msg := &Message{
-		Header: Header{ID: 0x1234, Flags: 0x8180, QDCount: 1, ANCount: 1, ARCount: 1},
+		Header:    Header{ID: 0x1234, Flags: 0x8180, QDCount: 1, ANCount: 1, ARCount: 1},
 		Questions: []Question{{Name: "example.com", Type: TypeA, Class: ClassIN}},
 		Answers: []ResourceRecord{{
 			Name: "example.com", Type: TypeA, Class: ClassIN, TTL: 300,

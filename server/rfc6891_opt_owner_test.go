@@ -57,4 +57,3 @@ func TestHandle_NonRootOPTOwnerIsFormErr(t *testing.T) {
 		t.Errorf("rcode: want FORMERR(%d), got %d", dns.RCodeFormErr, rcode)
 	}
 }
-

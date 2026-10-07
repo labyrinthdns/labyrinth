@@ -11,18 +11,18 @@ import (
 
 // FallbackEvent records a single fallback query attempt.
 type FallbackEvent struct {
-	Timestamp    time.Time
-	QueryName    string
-	QType        uint16
-	QClass       uint16
+	Timestamp time.Time
+	QueryName string
+	QType     uint16
+	QClass    uint16
 	// PrimaryFailureReason describes why the primary resolver failed:
 	// e.g. "SERVFAIL", "connection refused", "timeout", "nil result".
 	PrimaryFailureReason string
 	// ResolverAddr is the fallback resolver address that handled this query.
 	ResolverAddr string
-	Recovered   bool
-	RCODE       uint8
-	Error       string
+	Recovered    bool
+	RCODE        uint8
+	Error        string
 }
 
 // FallbackEventRing is a thread-safe, bounded ring buffer of FallbackEvents.
@@ -67,26 +67,26 @@ func (r *FallbackEventRing) Events() []FallbackEvent {
 
 // Metrics holds all application metrics using lock-free atomic counters.
 type Metrics struct {
-	queriesTotal   map[string]*atomic.Int64
-	responsesTotal map[string]*atomic.Int64
-	cacheHits      atomic.Int64
-	cacheMisses    atomic.Int64
-	cacheEvictions atomic.Int64
+	queriesTotal    map[string]*atomic.Int64
+	responsesTotal  map[string]*atomic.Int64
+	cacheHits       atomic.Int64
+	cacheMisses     atomic.Int64
+	cacheEvictions  atomic.Int64
 	upstreamQueries atomic.Int64
 	upstreamErrors  atomic.Int64
-	rateLimited    atomic.Int64
-	dnssecSecure   atomic.Int64
-	dnssecInsecure atomic.Int64
-	dnssecBogus    atomic.Int64
+	rateLimited     atomic.Int64
+	dnssecSecure    atomic.Int64
+	dnssecInsecure  atomic.Int64
+	dnssecBogus     atomic.Int64
 
 	// dnssecRolloverValidates is set by the resolver from the DNSSEC
 	// validator's rollover counter. It counts validations where at
 	// least one prior RRSIG candidate failed but a later one succeeded —
 	// characteristic of zone algorithm rollovers (RFC 4035 §4.6).
 	dnssecRolloverValidates atomic.Int64
-	blockedQueries    atomic.Int64
-	fallbackQueries   atomic.Int64
-	fallbackRecoveries atomic.Int64
+	blockedQueries          atomic.Int64
+	fallbackQueries         atomic.Int64
+	fallbackRecoveries      atomic.Int64
 
 	// Y34: failure-cache (RFC 9520) hit/miss counters. A high hit ratio
 	// means the resolver is absorbing repeat queries against broken
@@ -164,11 +164,11 @@ type Metrics struct {
 // NewMetrics creates a new Metrics instance.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		queriesTotal:   make(map[string]*atomic.Int64),
-		responsesTotal: make(map[string]*atomic.Int64),
-		edeCounts:      make(map[uint16]*atomic.Int64),
-		startTime:      time.Now(),
-		queryDurations: newHistogram([]float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0}),
+		queriesTotal:      make(map[string]*atomic.Int64),
+		responsesTotal:    make(map[string]*atomic.Int64),
+		edeCounts:         make(map[uint16]*atomic.Int64),
+		startTime:         time.Now(),
+		queryDurations:    newHistogram([]float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0}),
 		fallbackEventRing: NewFallbackEventRing(),
 	}
 }
@@ -181,8 +181,8 @@ func (m *Metrics) IncResponses(rcode string) {
 	m.getOrCreate(m.responsesTotal, rcode).Add(1)
 }
 
-func (m *Metrics) IncCacheHits()    { m.cacheHits.Add(1) }
-func (m *Metrics) IncCacheMisses()  { m.cacheMisses.Add(1) }
+func (m *Metrics) IncCacheHits()       { m.cacheHits.Add(1) }
+func (m *Metrics) IncCacheMisses()     { m.cacheMisses.Add(1) }
 func (m *Metrics) IncUpstreamQueries() { m.upstreamQueries.Add(1) }
 func (m *Metrics) IncUpstreamErrors()  { m.upstreamErrors.Add(1) }
 func (m *Metrics) IncRateLimited()     { m.rateLimited.Add(1) }
@@ -194,9 +194,9 @@ func (m *Metrics) IncDNSSECBogus()     { m.dnssecBogus.Add(1) }
 // from the validator's cumulative count. Called periodically by the
 // resolver to expose zone algorithm rollover activity.
 func (m *Metrics) SetDNSSECRolloverValidates(n int64) { m.dnssecRolloverValidates.Store(n) }
-func (m *Metrics) IncBlockedQueries()     { m.blockedQueries.Add(1) }
-func (m *Metrics) IncFallbackQueries()    { m.fallbackQueries.Add(1) }
-func (m *Metrics) IncFallbackRecoveries() { m.fallbackRecoveries.Add(1) }
+func (m *Metrics) IncBlockedQueries()                 { m.blockedQueries.Add(1) }
+func (m *Metrics) IncFallbackQueries()                { m.fallbackQueries.Add(1) }
+func (m *Metrics) IncFallbackRecoveries()             { m.fallbackRecoveries.Add(1) }
 
 // Y34 — failure cache & server-cookie cache.
 func (m *Metrics) IncFailureCacheHits()        { m.failureCacheHits.Add(1) }

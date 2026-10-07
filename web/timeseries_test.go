@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/metrics"
-	"github.com/coder/websocket"
 )
 
 // ===========================================================================

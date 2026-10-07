@@ -88,8 +88,8 @@ func FuzzUnpackMessage(f *testing.F) {
 		0x03, 'w', 'w', 'w', 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00,
 		0x00, 0x01, 0x00, 0x01}) // www.example.com A IN
 	f.Add([]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}) // minimal empty
-	f.Add(make([]byte, 12))                                                                // header-only zeros
-	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF})  // all-ones header
+	f.Add(make([]byte, 12))                                                               // header-only zeros
+	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}) // all-ones header
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Invariant: no panic regardless of input.
@@ -103,9 +103,9 @@ func FuzzUnpackMessage(f *testing.F) {
 // length-field boundary.
 func FuzzParseDNSKEY(f *testing.F) {
 	f.Add([]byte{})
-	f.Add([]byte{0, 0, 0, 0})           // minimum: 4-byte fixed header, no key bytes
-	f.Add([]byte{0x01, 0x00, 3, 8})     // flags=256, proto=3, alg=8, no key bytes
-	f.Add(append([]byte{0x01, 0x00, 3, 8}, make([]byte, 64)...))  // with key bytes
+	f.Add([]byte{0, 0, 0, 0})                                      // minimum: 4-byte fixed header, no key bytes
+	f.Add([]byte{0x01, 0x00, 3, 8})                                // flags=256, proto=3, alg=8, no key bytes
+	f.Add(append([]byte{0x01, 0x00, 3, 8}, make([]byte, 64)...))   // with key bytes
 	f.Add(append([]byte{0x01, 0x00, 3, 8}, make([]byte, 4096)...)) // pathological huge key
 
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -136,8 +136,8 @@ func FuzzParseDNSKEY(f *testing.F) {
 // safety invariant; same length-field arithmetic gate.
 func FuzzParseDS(f *testing.F) {
 	f.Add([]byte{})
-	f.Add([]byte{0, 0, 0, 0})             // minimum
-	f.Add([]byte{0x12, 0x34, 8, 2})       // key tag=0x1234, alg=8, digest type=SHA256, no digest
+	f.Add([]byte{0, 0, 0, 0})                                    // minimum
+	f.Add([]byte{0x12, 0x34, 8, 2})                              // key tag=0x1234, alg=8, digest type=SHA256, no digest
 	f.Add(append([]byte{0x12, 0x34, 8, 2}, make([]byte, 32)...)) // with SHA-256 digest
 
 	f.Fuzz(func(t *testing.T, data []byte) {

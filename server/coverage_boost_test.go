@@ -37,8 +37,8 @@ type mockBlocklist struct {
 }
 
 func (b *mockBlocklist) IsBlocked(name string) bool { return b.blocked[name] }
-func (b *mockBlocklist) BlockingMode() string        { return b.blockingMode }
-func (b *mockBlocklist) CustomIP() string            { return b.customIP }
+func (b *mockBlocklist) BlockingMode() string       { return b.blockingMode }
+func (b *mockBlocklist) CustomIP() string           { return b.customIP }
 
 // slowHandler delays before returning the echo response.
 type slowHandler struct {

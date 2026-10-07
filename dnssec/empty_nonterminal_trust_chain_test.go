@@ -282,4 +282,3 @@ func TestValidateTrustChain_SkipsNSEC3EmptyNonTerminal(t *testing.T) {
 		t.Fatalf("validateTrustChainForKey(NSEC3 ENT intermediate) = %v, want Insecure", got)
 	}
 }
-

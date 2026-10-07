@@ -19,8 +19,8 @@ import (
 // and confusing strict stubs that reject unknown RR types in answers.
 //
 // We seed a cache entry with mixed A + RRSIG records and check that:
-//  - non-DO client (no EDNS, or EDNS without DO) gets ONLY the A
-//  - DO=1 client gets BOTH
+//   - non-DO client (no EDNS, or EDNS without DO) gets ONLY the A
+//   - DO=1 client gets BOTH
 func TestBuildCacheResponse_StripsDNSSECForNonDOClient(t *testing.T) {
 	for _, c := range []struct {
 		name          string

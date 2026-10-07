@@ -64,7 +64,7 @@ func TestErrorSentinels(t *testing.T) {
 func TestMessageStructLayout(t *testing.T) {
 	// Verify struct fields exist and are usable
 	msg := Message{
-		Header: Header{ID: 1, Flags: 2, QDCount: 3, ANCount: 4, NSCount: 5, ARCount: 6},
+		Header:    Header{ID: 1, Flags: 2, QDCount: 3, ANCount: 4, NSCount: 5, ARCount: 6},
 		Questions: []Question{{Name: "test", Type: TypeA, Class: ClassIN}},
 		Answers:   []ResourceRecord{{Name: "test", Type: TypeA, TTL: 300}},
 	}

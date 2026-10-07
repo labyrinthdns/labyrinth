@@ -51,4 +51,3 @@ func readNetworkIOCounters() (rxBytes uint64, txBytes uint64, rxPackets uint64, 
 	_ = interfaces
 	return 0, 0, 0, 0
 }
-

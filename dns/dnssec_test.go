@@ -14,8 +14,8 @@ func TestParseDNSKEY_Valid(t *testing.T) {
 	pubkey := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
 	rdata := make([]byte, 4+len(pubkey))
 	binary.BigEndian.PutUint16(rdata[0:2], 257) // flags (KSK)
-	rdata[2] = 3                                 // protocol
-	rdata[3] = 8                                 // algorithm (RSASHA256)
+	rdata[2] = 3                                // protocol
+	rdata[3] = 8                                // algorithm (RSASHA256)
 	copy(rdata[4:], pubkey)
 
 	rec, err := ParseDNSKEY(rdata)
@@ -127,8 +127,8 @@ func TestParseDS_Valid(t *testing.T) {
 	digest := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
 	rdata := make([]byte, 4+len(digest))
 	binary.BigEndian.PutUint16(rdata[0:2], 12345) // key tag
-	rdata[2] = 8                                   // algorithm
-	rdata[3] = 2                                   // digest type (SHA-256)
+	rdata[2] = 8                                  // algorithm
+	rdata[3] = 2                                  // digest type (SHA-256)
 	copy(rdata[4:], digest)
 
 	rec, err := ParseDS(rdata)
@@ -165,7 +165,7 @@ func TestParseRRSIG_Valid(t *testing.T) {
 	sigBytes := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
 
 	rdata := make([]byte, 18+len(signerName)+len(sigBytes))
-	binary.BigEndian.PutUint16(rdata[0:2], TypeA)       // type covered
+	binary.BigEndian.PutUint16(rdata[0:2], TypeA)        // type covered
 	rdata[2] = 8                                         // algorithm
 	rdata[3] = 2                                         // labels
 	binary.BigEndian.PutUint32(rdata[4:8], 3600)         // original TTL
@@ -277,8 +277,8 @@ func TestParseNSEC3_Valid(t *testing.T) {
 	}
 
 	rdata := make([]byte, 0, 5+len(salt)+1+len(nextHash)+len(bitmap))
-	rdata = append(rdata, 1)    // hash algorithm (SHA-1)
-	rdata = append(rdata, 0)    // flags
+	rdata = append(rdata, 1)     // hash algorithm (SHA-1)
+	rdata = append(rdata, 0)     // flags
 	rdata = append(rdata, 0, 10) // iterations = 10
 	rdata = append(rdata, byte(len(salt)))
 	rdata = append(rdata, salt...)

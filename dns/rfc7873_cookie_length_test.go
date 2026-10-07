@@ -8,7 +8,7 @@ import (
 // TestParseCookieOption_LengthSemantics pins RFC 7873 §5.2.1 + RFC
 // 9018 §4: the DNS Cookie option's wire layout is
 //
-//   client_cookie (8 bytes, mandatory)  ||  server_cookie (8..32 bytes, optional)
+//	client_cookie (8 bytes, mandatory)  ||  server_cookie (8..32 bytes, optional)
 //
 // The 8-byte client cookie is REQUIRED by §5.2.1 — anything shorter
 // is malformed. The server cookie is 0 bytes (client-only / bootstrap

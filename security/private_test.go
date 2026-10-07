@@ -64,11 +64,11 @@ func TestFilterPrivateAddresses_LinkLocal(t *testing.T) {
 
 func TestFilterPrivateAddresses_IPv6(t *testing.T) {
 	answers := []dns.ResourceRecord{
-		makeAAAA(net.ParseIP("::1")),         // loopback
-		makeAAAA(net.ParseIP("fe80::1")),     // link-local
-		makeAAAA(net.ParseIP("fc00::1")),     // ULA
-		makeAAAA(net.ParseIP("fd00::1")),     // ULA
-		makeAAAA(net.ParseIP("2001:db8::1")), // RFC 3849 documentation -- must be filtered
+		makeAAAA(net.ParseIP("::1")),                  // loopback
+		makeAAAA(net.ParseIP("fe80::1")),              // link-local
+		makeAAAA(net.ParseIP("fc00::1")),              // ULA
+		makeAAAA(net.ParseIP("fd00::1")),              // ULA
+		makeAAAA(net.ParseIP("2001:db8::1")),          // RFC 3849 documentation -- must be filtered
 		makeAAAA(net.ParseIP("2606:4700:4700::1111")), // public (Cloudflare)
 	}
 	filtered := FilterPrivateAddresses(answers)

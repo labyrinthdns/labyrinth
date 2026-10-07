@@ -18,9 +18,9 @@ import (
 // RFC 4034 §6.2).
 //
 // We pin three concrete invariants the cache must satisfy:
-//   1. Store(lower) then Get(MIXED) → hits
-//   2. Store(MIXED) then Get(lower) → hits
-//   3. Both forms map to ONE entry, not two
+//  1. Store(lower) then Get(MIXED) → hits
+//  2. Store(MIXED) then Get(lower) → hits
+//  3. Both forms map to ONE entry, not two
 //
 // The store/get path internally lower-cases the key, but pinning at
 // the public surface guards against a refactor that lifted the lower

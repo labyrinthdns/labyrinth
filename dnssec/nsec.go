@@ -27,7 +27,7 @@ type NSECRecordWithOwner struct {
 //     without SOA) is rejected: it belongs to the parent zone and proves
 //     nothing about types served at the child.
 //
-//  1b. Wildcard NODATA (NOERROR) — covering NSEC for qname plus an NSEC at
+//     1b. Wildcard NODATA (NOERROR) — covering NSEC for qname plus an NSEC at
 //     `*.closest_encloser` whose bitmap omits qtype/CNAME. Used by zones
 //     that publish a real `*.zone` NSEC (Mailjet mjt.lu) rather than
 //     synthesizing answers for every label.

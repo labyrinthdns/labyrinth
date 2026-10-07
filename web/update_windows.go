@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	restartExecutable  = os.Executable
+	restartExecutable   = os.Executable
 	restartEvalSymlinks = filepath.EvalSymlinks
-	restartCommand     = func(name string, args ...string) *exec.Cmd {
+	restartCommand      = func(name string, args ...string) *exec.Cmd {
 		return exec.Command(name, args...)
 	}
 	restartExit = os.Exit

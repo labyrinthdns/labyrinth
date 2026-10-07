@@ -10,7 +10,6 @@ import (
 // one SOA, no records. The parser must produce a slice with the same
 // RDATA bytes the writer emitted. The parser is built against the writer
 // on purpose so that the assertion is "the round-trip is identity".
-//
 func TestParseZone_SOAOnly(t *testing.T) {
 	apex := "example.com."
 	soaRData := buildSOA(t, "ns.example.com.", "hostmaster.example.com.",
@@ -50,8 +49,6 @@ func TestParseZone_SOAOnly(t *testing.T) {
 // writer groups records by owner (NS first, then SOA, then DNSSEC, then
 // everything else), so the comparison is keyed by (Name, Type) rather
 // than by index.
-//
-//
 func TestParseZone_BasicRoundTrip(t *testing.T) {
 	apex := "example.com."
 	soaRData := buildSOA(t, "ns.example.com.", "hostmaster.example.com.",
@@ -120,7 +117,6 @@ func TestParseZone_BasicRoundTrip(t *testing.T) {
 // form is parsed back to the same wire bytes. The writer emits this
 // form for any type the dns package does not model as a struct (TLSA,
 // NAPTR, …); the parser must round-trip it byte-for-byte.
-//
 func TestParseZone_GenericUnknown(t *testing.T) {
 	apex := "example.com."
 	soaRData := buildSOA(t, "ns.example.com.", "hostmaster.example.com.",
@@ -154,7 +150,6 @@ func TestParseZone_GenericUnknown(t *testing.T) {
 // The writer does not emit a $TTL directive when every record carries
 // its own TTL, so a hand-written file that omits per-record TTLs is the
 // only way to exercise this path through the round-trip.
-//
 func TestParseZone_TTLDirective(t *testing.T) {
 	apex := "example.com."
 	text := `$TTL 1800
@@ -185,7 +180,6 @@ www	IN	A	1.2.3.4
 // TestParseZone_NoSOA returns an error for a file with no SOA — a
 // parser that silently accepted such a file would let a misconfigured
 // zone load through.
-//
 func TestParseZone_NoSOA(t *testing.T) {
 	text := "@	IN	NS	ns.example.com.\n"
 	_, err := ParseZone("example.com.", []byte(text))
@@ -200,7 +194,6 @@ func TestParseZone_NoSOA(t *testing.T) {
 // TestParseZone_RejectInclude asserts that $INCLUDE is rejected. The
 // parser is round-trip-only; allowing $INCLUDE would broaden the trust
 // boundary past what the writer can produce.
-//
 func TestParseZone_RejectInclude(t *testing.T) {
 	text := "$INCLUDE /etc/bind/some-other-zone\n@	IN	SOA	ns.example.com. hostmaster.example.com. 1 7200 3600 1209600 3600\n"
 	_, err := ParseZone("example.com.", []byte(text))

@@ -17,13 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/labyrinthdns/labyrinth/blocklist"
 	"github.com/labyrinthdns/labyrinth/cache"
 	"github.com/labyrinthdns/labyrinth/config"
 	"github.com/labyrinthdns/labyrinth/dns"
 	"github.com/labyrinthdns/labyrinth/metrics"
 	"github.com/labyrinthdns/labyrinth/resolver"
-	"github.com/coder/websocket"
 )
 
 // ===========================================================================
@@ -1876,8 +1876,8 @@ func TestHandleCheckUpdate_StaleCacheFallback(t *testing.T) {
 		LatestVersion:   "1.1.0",
 		UpdateAvailable: true,
 	}
-	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour) // stale
-	srv.config.Load().Web.UpdateCheckInterval = time.Minute     // short interval
+	srv.updateCheckedAt = time.Now().Add(-2 * time.Hour)    // stale
+	srv.config.Load().Web.UpdateCheckInterval = time.Minute // short interval
 	srv.updateMu.Unlock()
 
 	// This will try to fetch fresh from GitHub (which may fail), then return stale

@@ -13,11 +13,11 @@ import (
 // tsSubscription holds the current subscription parameters for a time-series WS client.
 type tsSubscription struct {
 	Mode      string        `json:"mode"`     // "live" or "history"
-	Window    time.Duration `json:"-"`         // 60s for live; 15m/1h/24h for history
-	Interval  time.Duration `json:"-"`         // 2s for live; 1m/2m/5m/15m/30m/1h for history
-	PushEvery time.Duration `json:"-"`         // 2s for live; 10s for history
-	WindowStr string        `json:"window"`    // original string
-	InterStr  string        `json:"interval"`  // original string
+	Window    time.Duration `json:"-"`        // 60s for live; 15m/1h/24h for history
+	Interval  time.Duration `json:"-"`        // 2s for live; 1m/2m/5m/15m/30m/1h for history
+	PushEvery time.Duration `json:"-"`        // 2s for live; 10s for history
+	WindowStr string        `json:"window"`   // original string
+	InterStr  string        `json:"interval"` // original string
 }
 
 // tsMessage is the JSON envelope pushed to the client.

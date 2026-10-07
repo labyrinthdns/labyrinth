@@ -161,7 +161,6 @@ func (z CatalogZoneConfig) Validate() error {
 // If both are set, ZoneFile wins and Data is ignored. An empty
 // ZoneFile is treated as "no file"; the loader does not error on
 // an unconfigured field.
-//
 type LocalZoneConfig struct {
 	Name     string
 	Type     string

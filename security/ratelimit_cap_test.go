@@ -17,9 +17,10 @@ import (
 // reachable without allocating the production 1M default. It
 // seeds the cache to capacity with monotonically-increasing
 // lastTime, then calls Allow() for a brand-new IP and asserts:
-//   (1) the map size stayed at the cap,
-//   (2) the brand-new IP is now tracked,
-//   (3) the OLDEST seeded IP was the one evicted.
+//
+//	(1) the map size stayed at the cap,
+//	(2) the brand-new IP is now tracked,
+//	(3) the OLDEST seeded IP was the one evicted.
 func TestRateLimiter_ClientsCapWithLRUEviction(t *testing.T) {
 	const cap = 4
 	rl := &RateLimiter{

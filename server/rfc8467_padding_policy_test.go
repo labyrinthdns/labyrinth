@@ -34,7 +34,7 @@ func buildQueryWithPadding(t *testing.T) []byte {
 func buildResponseUnpadded(t *testing.T) []byte {
 	t.Helper()
 	r := &dns.Message{
-		Header: dns.Header{ID: 0x1234, Flags: 0x8180, QDCount: 1, ANCount: 1, ARCount: 1},
+		Header:    dns.Header{ID: 0x1234, Flags: 0x8180, QDCount: 1, ANCount: 1, ARCount: 1},
 		Questions: []dns.Question{{Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN}},
 		Answers: []dns.ResourceRecord{{
 			Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN, TTL: 300,
@@ -51,8 +51,8 @@ func buildResponseUnpadded(t *testing.T) []byte {
 
 // TestApplyTCPTransportPolicies_PaddingGate pins RFC 8467 §6:
 //
-//   "The PADDING option MUST NOT be used on a transport where the
-//    response can already be observed in cleartext."
+//	"The PADDING option MUST NOT be used on a transport where the
+//	 response can already be observed in cleartext."
 //
 // Concretely: a client that sends a PADDING option over plaintext TCP
 // (port 53/tcp) MUST NOT receive a padded response. Pad-on-plaintext
@@ -62,17 +62,17 @@ func buildResponseUnpadded(t *testing.T) []byte {
 //
 // Truth table:
 //
-//   encrypted = true,  padding signalled  → pad (DoT / DoH path)
-//   encrypted = true,  no padding option  → no pad (client opt-in)
-//   encrypted = false, padding signalled  → no pad (RFC 8467 §6 hard rule)
-//   encrypted = false, no padding option  → no pad
+//	encrypted = true,  padding signalled  → pad (DoT / DoH path)
+//	encrypted = true,  no padding option  → no pad (client opt-in)
+//	encrypted = false, padding signalled  → no pad (RFC 8467 §6 hard rule)
+//	encrypted = false, no padding option  → no pad
 func TestApplyTCPTransportPolicies_PaddingGate(t *testing.T) {
 	queryPadded := buildQueryWithPadding(t)
 	queryNoPad := func() []byte {
 		t.Helper()
 		q := &dns.Message{
-			Header:    dns.Header{ID: 0x5678, Flags: 0x0100, QDCount: 1, ARCount: 1},
-			Questions: []dns.Question{{Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN}},
+			Header:     dns.Header{ID: 0x5678, Flags: 0x0100, QDCount: 1, ARCount: 1},
+			Questions:  []dns.Question{{Name: "example.com", Type: dns.TypeA, Class: dns.ClassIN}},
 			Additional: []dns.ResourceRecord{dns.BuildOPT(1232, false)},
 		}
 		raw, err := dns.Pack(q, make([]byte, 512))
