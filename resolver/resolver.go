@@ -184,6 +184,10 @@ type Resolver struct {
 	// dial-per-query.
 	tcpPool     *tcpConnPool
 	fallbackLog *fallbackFileLog
+	// noEDNSServers remembers upstream IPs whose EDNS FORMERR was
+	// confirmed by a second query, so they are queried without OPT
+	// instead of paying the confirmation round-trip on every query.
+	noEDNSServers *noEDNSCache
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -223,6 +227,9 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	// usual long-tail of broken delegations a busy resolver
 	// encounters in a given hour; ttl 5s is the RFC §4 upper bound.
 	r.failureCache = newFailureCache(4096, 5*time.Second)
+	// EDNS-intolerant upstreams. 15 minutes lets a server that fixes its
+	// EDNS handling get EDNS (and DNSSEC) back without a restart.
+	r.noEDNSServers = newNoEDNSCache(1024, 15*time.Minute)
 	if cfg.FallbackDebug {
 		r.fallbackLog = newFallbackFileLog(cfg.FallbackLogPath)
 	}
