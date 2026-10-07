@@ -32,23 +32,23 @@ jobs:
       - name: Verify first-party Go package scope
         run: make check-go-package-scope
 
-      - name: golangci-lint
-        run: make lint
-
-      # v2 moved formatter checks out of `golangci-lint run`, so `make lint`
-      # above does NOT gate on formatting — it would pass on unformatted code
-      # even with `formatters.enable: [gofmt]` set in .golangci.yml.
+      # Runs BEFORE `make lint` on purpose. With `formatters.enable: [gofmt]`
+      # set in .golangci.yml, `golangci-lint run` DOES report formatting
+      # violations too, so `make lint` would fail first and Actions would
+      # skip this step — leaving its richer annotation unused. Running gofmt
+      # first means a formatting drift is reported with the diff and the
+      # explicit "Go files are not gofmt-clean" message below.
       #
-      # This step fails on DIFF OUTPUT, deliberately NOT on golangci-lint's
-      # exit code: whether `fmt --diff` exits non-zero on drift was never
-      # established (v2.14.0 exposes no --exit-code flag), so trusting it
-      # risks a silently-green gate that never blocks anything. The diff text
-      # is the signal we actually rely on.
+      # Fails on DIFF OUTPUT, deliberately not on golangci-lint's exit code:
+      # whether `fmt --diff` exits non-zero on drift was never established
+      # (v2.14.0 exposes no --exit-code flag), so trusting it risks a
+      # silently-green gate that never blocks anything. The diff text is the
+      # signal we rely on.
       #
       # Fail-closed by construction:
       #   - non-empty diff output  -> fail and print the diff
-      #   - non-zero exit, no diff -> fail, treating it as a tool error rather
-      #                              than silently reading it as success
+      #   - non-zero exit, no diff -> fail, read as a tool error rather than
+      #                             silently accepted as success
       # `set +e` guards the capture so a non-zero status is inspected rather
       # than aborting the step under Actions' default `bash -e`.
       - name: gofmt
@@ -70,6 +70,9 @@ jobs:
           fi
 
           echo "gofmt: no formatting diff; all checked Go files are gofmt-clean."
+
+      - name: golangci-lint
+        run: make lint
 
   typecheck:
     runs-on: ubuntu-latest
