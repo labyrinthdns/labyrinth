@@ -142,10 +142,31 @@ func (z CatalogZoneConfig) Validate() error {
 }
 
 // LocalZoneConfig holds a local zone's definition from the config file.
+//
+// A local zone is served from the local zone table rather than resolved
+// iteratively. The records may come from one of two places, in this
+// order of preference:
+//
+//  1. ZoneFile: a path to a BIND master-file (RFC 1035 §5). The file
+//     is parsed by dns.ParseZone at startup, and the records are
+//     added to the local zone table as if they had been typed
+//     inline. This is the round-trip partner of the export endpoint:
+//     an operator can write a zone file, point Labyrinth at it, and
+//     rely on the parser's strict (round-trip-only) grammar to surface
+//     mistakes.
+//  2. Data: a list of "name TYPE rdata" lines, parsed by
+//     resolver.ParseLocalRecord. Used when the zone is small enough
+//     that an inline list is more readable than a separate file.
+//
+// If both are set, ZoneFile wins and Data is ignored. An empty
+// ZoneFile is treated as "no file"; the loader does not error on
+// an unconfigured field.
+//
 type LocalZoneConfig struct {
-	Name string
-	Type string
-	Data []string
+	Name     string
+	Type     string
+	Data     []string
+	ZoneFile string // path to a BIND master-file; empty when unused
 }
 
 // BlocklistConfig holds blocklist filtering settings.
@@ -1237,6 +1258,8 @@ func parseLocalZones(values map[string]string) []LocalZoneConfig {
 					}
 				}
 			}
+		case "zone_file":
+			zc.ZoneFile = strings.TrimSpace(val)
 		}
 	}
 

@@ -66,7 +66,9 @@ func (l *fallbackFileLog) write(rec fallbackLogRecord) {
 	if st, err := l.f.Stat(); err == nil && st.Size()+int64(len(line)) > fallbackLogMaxBytes {
 		_ = l.f.Close()
 		l.f = nil
-		_ = os.Rename(l.path, l.path+".1")
+		if err := os.Rename(l.path, l.path+".1"); err != nil {
+			return
+		}
 		if err := l.ensureOpenLocked(); err != nil {
 			return
 		}

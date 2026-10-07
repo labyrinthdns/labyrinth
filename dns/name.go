@@ -98,6 +98,10 @@ func EncodeName(w *wireWriter, name string) error {
 	if name == "" || name == "." {
 		return w.writeBytes([]byte{0x00})
 	}
+	// Compression does not change the limit on the expanded name.
+	if len(strings.TrimSuffix(name, "."))+2 > maxNameLength {
+		return errNameTooLong
+	}
 
 	// DNS names are case-insensitive (RFC 1035 §2.3.3, §3.1) and a compression
 	// pointer may target an earlier occurrence of a name regardless of its

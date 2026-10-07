@@ -77,6 +77,15 @@ func buildRunConfig(target string, qps int, durationStr string, workers int, dom
 	if err != nil {
 		return RunConfig{}, fmt.Errorf("invalid duration %q: %w", durationStr, err)
 	}
+	if dur <= 0 {
+		return RunConfig{}, fmt.Errorf("duration must be positive")
+	}
+	if qps <= 0 || qps > int(time.Second) {
+		return RunConfig{}, fmt.Errorf("qps must be between 1 and %d", int(time.Second))
+	}
+	if workers <= 0 {
+		return RunConfig{}, fmt.Errorf("workers must be positive")
+	}
 
 	domainList, err := loadDomains(domainsStr)
 	if err != nil {

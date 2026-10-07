@@ -25,9 +25,6 @@ func applyTCPTransportPolicies(query, response []byte, idleTimeout time.Duration
 	if err != nil || qmsg.EDNS0 == nil {
 		return response
 	}
-	if encrypted && dns.HasPaddingOption(qmsg.EDNS0) {
-		response = dns.PadRawResponse(response, dns.PaddingBlockSize)
-	}
 	if dns.HasTCPKeepaliveOption(qmsg.EDNS0) {
 		units := uint16(idleTimeout / (100 * time.Millisecond))
 		if units == 0 {
@@ -37,6 +34,10 @@ func applyTCPTransportPolicies(query, response []byte, idleTimeout time.Duration
 			units = 1
 		}
 		response = dns.AddTCPKeepaliveToRawResponse(response, units)
+	}
+	// Pad last so the block length includes the keepalive option.
+	if encrypted && dns.HasPaddingOption(qmsg.EDNS0) {
+		response = dns.PadRawResponse(response, dns.PaddingBlockSize)
 	}
 	return response
 }

@@ -39,6 +39,9 @@ func ReadPID(path string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid PID file: %w", err)
 	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid PID file: PID must be positive")
+	}
 	return pid, nil
 }
 

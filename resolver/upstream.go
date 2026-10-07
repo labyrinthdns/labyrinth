@@ -534,8 +534,8 @@ func validateResponseQuestion(msg *dns.Message, name string, qtype uint16, qclas
 // validateResponseQuestionEx validates the response question section.
 // When caseSensitive is true (0x20 encoding), the name comparison preserves case.
 func validateResponseQuestionEx(msg *dns.Message, name string, qtype uint16, qclass uint16, caseSensitive bool) error {
-	if len(msg.Questions) == 0 {
-		return errors.New("response has no question section")
+	if len(msg.Questions) != 1 {
+		return errors.New("response must contain exactly one question")
 	}
 	q := msg.Questions[0]
 	// Normalize root zone: "." and "" are equivalent after wire decode.

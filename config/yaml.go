@@ -38,7 +38,7 @@ func parseYAML(data []byte) (map[string]string, error) {
 		// Array item: "- value"
 		if strings.HasPrefix(content, "- ") {
 			value := strings.TrimSpace(strings.TrimPrefix(content, "- "))
-			value = strings.Trim(value, "\"'")
+			value = trimYAMLQuotes(value)
 			if lastKey != "" && value != "" {
 				if existing, ok := result[lastKey]; ok && existing != "" {
 					result[lastKey] = existing + "," + value
@@ -56,7 +56,7 @@ func parseYAML(data []byte) (map[string]string, error) {
 			value := ""
 			if len(parts) == 2 {
 				value = strings.TrimSpace(parts[1])
-				value = strings.Trim(value, "\"'")
+				value = trimYAMLQuotes(value)
 			}
 
 			// Build full key from section stack
@@ -81,6 +81,13 @@ func parseYAML(data []byte) (map[string]string, error) {
 	}
 
 	return result, nil
+}
+
+func trimYAMLQuotes(value string) string {
+	if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') && value[len(value)-1] == value[0] {
+		return value[1 : len(value)-1]
+	}
+	return value
 }
 
 // Hashes inside quoted values or plain scalar tokens are literal text.

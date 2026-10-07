@@ -162,6 +162,10 @@ func Unpack(buf []byte) (*Message, error) {
 
 // Pack serializes a DNS message to wire format.
 func Pack(msg *Message, buf []byte) ([]byte, error) {
+	// Reject counts that would wrap when written to the 16-bit header fields.
+	if len(msg.Questions) > 0xFFFF || len(msg.Answers) > 0xFFFF || len(msg.Authority) > 0xFFFF || len(msg.Additional) > 0xFFFF {
+		return nil, errInvalidMessage
+	}
 	w := newWireWriter(buf)
 
 	// Update counts
@@ -379,6 +383,9 @@ func packRData(w *wireWriter, rr ResourceRecord) error {
 
 	// Patch RDLENGTH with actual bytes written
 	rdLen := w.offset - rdStart
+	if rdLen > 0xFFFF {
+		return errInvalidMessage
+	}
 	binary.BigEndian.PutUint16(w.buf[rdLenOffset:], uint16(rdLen))
 	return nil
 }

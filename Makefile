@@ -18,8 +18,10 @@ GO_PACKAGES := . \
 	./log/... \
 	./metrics/... \
 	./resolver/... \
+	./secondary/... \
 	./security/... \
 	./server/... \
+	./test/... \
 	./web \
 	./xfr/...
 
@@ -74,7 +76,7 @@ soak:
 	go test -tags soak ./test/soak/ -run TestSoak -timeout 72h -v
 
 bench:
-	go test -p $(GO_TEST_P) $(GO_PACKAGES) -bench=. -benchmem -run='^$' -timeout 120s
+	go test -p $(GO_TEST_P) $(GO_PACKAGES) -bench=. -benchmem -run='^$$' -timeout 120s
 
 fuzz:
 	go test ./dns/ -fuzz=FuzzUnpack -fuzztime=60s
@@ -92,7 +94,7 @@ vet:
 	go vet -p $(GO_BUILD_P) $(GO_PACKAGES)
 
 check-go-package-scope:
-	@packages="$$(go list $(GO_PACKAGES))"; \
+	@packages="$$(go list $(GO_PACKAGES))" || exit 1; \
 	! printf '%s\n' "$$packages" | grep -F '/node_modules/' || { \
 		echo "first-party Go package selection included node_modules" >&2; \
 		exit 1; \

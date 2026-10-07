@@ -131,6 +131,15 @@ func (c *Cache) RegisterNSECInterval(zone string, negTTL uint32, authority []dns
 		return
 	}
 
+	// Replayed authority records must not outlive their original TTLs.
+	for _, rr := range authority {
+		if rr.TTL < negTTL {
+			negTTL = rr.TTL
+		}
+	}
+	if negTTL == 0 {
+		return
+	}
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(negTTL) * time.Second)
 	authCopy := cloneRRs(authority)

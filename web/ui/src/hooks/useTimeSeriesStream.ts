@@ -115,6 +115,7 @@ export function useTimeSeriesStream(params: TSStreamParams) {
     }
 
     ws.onmessage = (event) => {
+      if (unmountedRef.current || wsRef.current !== ws) return
       lastMsgAtRef.current = Date.now()
       try {
         const msg = JSON.parse(event.data) as TimeSeriesWSMessage

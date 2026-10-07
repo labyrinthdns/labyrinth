@@ -128,6 +128,7 @@ func (ic *InfraCache) RecordFailure(nsIP string) {
 // distinct lame zones are dropped silently — see the cap's docstring
 // for the threat model. RTT / FailCount continue to track as normal.
 func (ic *InfraCache) RecordLame(nsIP string, zone string) {
+	zone = normalizeName(zone)
 	ic.mu.Lock()
 	defer ic.mu.Unlock()
 
@@ -141,6 +142,7 @@ func (ic *InfraCache) RecordLame(nsIP string, zone string) {
 
 // IsLame returns true if the nameserver is known to be lame for the given zone.
 func (ic *InfraCache) IsLame(nsIP string, zone string) bool {
+	zone = normalizeName(zone)
 	ic.mu.RLock()
 	defer ic.mu.RUnlock()
 

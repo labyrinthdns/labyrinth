@@ -119,6 +119,11 @@ func formatAAAA(rdata []byte) (string, error) {
 	if len(rdata) != 16 {
 		return "", fmt.Errorf("AAAA RDATA length %d, want 16", len(rdata))
 	}
+	// net.IP.String renders mapped addresses as IPv4, but AAAA records
+	// need IPv6 text so their master-file representation can be read back.
+	if net.IP(rdata).To4() != nil {
+		return fmt.Sprintf("::ffff:%x:%x", binaryBigEndianUint16(rdata[12:14]), binaryBigEndianUint16(rdata[14:16])), nil
+	}
 	return net.IP(rdata).String(), nil
 }
 

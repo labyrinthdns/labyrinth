@@ -16,6 +16,10 @@ func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16, fbRea
 }
 
 func (r *Resolver) queryFallbackWithPrimary(name string, qtype uint16, qclass uint16, fbReason string, primary *ResolveResult) *ResolveResult {
+	return r.queryFallbackWithContext(name, qtype, qclass, fbReason, primary, nil, false)
+}
+
+func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass uint16, fbReason string, primary *ResolveResult, clientECS *dns.ECSOption, cd bool) *ResolveResult {
 	if len(r.config.FallbackResolvers) == 0 {
 		return nil
 	}
@@ -43,7 +47,7 @@ func (r *Resolver) queryFallbackWithPrimary(name string, qtype uint16, qclass ui
 			ResolverAddr:         addr,
 		}
 
-		msg, err := r.sendForwardQueryOnce(addr, name, qtype, qclass)
+		msg, err := r.sendForwardQueryOnceECSCD(addr, name, qtype, qclass, clientECS, cd, nil)
 		if err != nil {
 			event.Error = err.Error()
 			lastEvent = event
@@ -55,7 +59,7 @@ func (r *Resolver) queryFallbackWithPrimary(name string, qtype uint16, qclass ui
 		// SERVFAIL from fallback means try the next backup; if all fail
 		// the domain genuinely has issues (or all backups are down).
 		rcode := msg.Header.RCODE()
-		if rcode == dns.RCodeServFail {
+		if rcode != dns.RCodeNoError && rcode != dns.RCodeNXDomain {
 			event.RCODE = rcode
 			lastEvent = event
 			continue
@@ -97,10 +101,15 @@ func (r *Resolver) queryFallbackWithPrimary(name string, qtype uint16, qclass ui
 			Additional:   msg.Additional,
 			RCODE:        rcode,
 			DNSSECStatus: status,
+			UpstreamECS:  extractResponseECS(msg),
 		}
 	}
 
 	r.metrics.FallbackEventRing().Add(lastEvent)
+	fallbackRCODE := ""
+	if lastEvent.Error == "" {
+		fallbackRCODE = rcodeName(lastEvent.RCODE)
+	}
 	r.fallbackLog.write(fallbackLogRecord{
 		Name:          name,
 		QType:         qtype,
@@ -112,7 +121,7 @@ func (r *Resolver) queryFallbackWithPrimary(name string, qtype uint16, qclass ui
 		PrimaryRCODE:  primaryRcode,
 		Recovered:     false,
 		FallbackAddr:  lastEvent.ResolverAddr,
-		FallbackRCODE: rcodeName(lastEvent.RCODE),
+		FallbackRCODE: fallbackRCODE,
 		FallbackError: lastEvent.Error,
 		FallbackTried: tried,
 	})

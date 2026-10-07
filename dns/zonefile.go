@@ -115,8 +115,8 @@ func FormatZone(apex string, records []ResourceRecord) ([]byte, error) {
 		soaRec := firstSOA(records)
 		if soaRec != nil && len(soaRec.RData) > 0 {
 			mname, rname := parseSOANames(soaRec.RData)
-			fmt.Fprintf(&sb, "@\tIN\tSOA\t%s. %s. (\n",
-				escapeName(mname), escapeName(rname))
+			fmt.Fprintf(&sb, "@\t%s\tSOA\t%s. %s. (\n",
+				zoneClassText(soaRec.Class), escapeName(mname), escapeName(rname))
 			if err := emitSOAMiddle(&sb, *soaRec); err != nil {
 				return nil, err
 			}
@@ -175,6 +175,23 @@ func FormatZone(apex string, records []ResourceRecord) ([]byte, error) {
 	return []byte(sb.String()), nil
 }
 
+func zoneClassText(class uint16) string {
+	switch class {
+	case ClassIN:
+		return "IN"
+	case 3:
+		return "CH"
+	case 4:
+		return "HS"
+	case 254:
+		return "NONE"
+	case 255:
+		return "ANY"
+	default:
+		return fmt.Sprintf("CLASS%d", class)
+	}
+}
+
 // emitOwner writes one owner block.
 func emitOwner(sb *strings.Builder, name string, records []ResourceRecord) error {
 	// Per-owner ordering: NS first (because every delegation needs them
@@ -216,11 +233,11 @@ func emitOwner(sb *strings.Builder, name string, records []ResourceRecord) error
 		if ttl == 0 {
 			ttl = 86400
 		}
-		// Owner | TTL | IN | TYPE | RDATA
+		// Owner | TTL | CLASS | TYPE | RDATA
 		// The class column is unconditional so the file is unambiguous
 		// even if a future record carries a non-IN class.
-		fmt.Fprintf(sb, "%s\t%d\tIN\t%s\t%s\n",
-			name, ttl, TypeName(r.Type), rdata)
+		fmt.Fprintf(sb, "%s\t%d\t%s\t%s\t%s\n",
+			name, ttl, zoneClassText(r.Class), TypeName(r.Type), rdata)
 	}
 	return nil
 }

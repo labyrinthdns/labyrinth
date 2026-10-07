@@ -66,7 +66,7 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 200) {
       try { ws.close() } catch { /* noop */ }
     }
     ws.onmessage = (event) => {
-      if (pausedRef.current) return
+      if (wsRef.current !== ws || unmountedRef.current || pausedRef.current) return
       try {
         const entry = JSON.parse(event.data) as QueryEntry
         queueRef.current.push(entry)
@@ -149,7 +149,10 @@ export function useQueryStream(maxEntries = 200, flushIntervalMs = 200) {
     return () => clearInterval(timer)
   }, [flushIntervalMs, maxEntries])
 
-  const clear = useCallback(() => setQueries([]), [])
+  const clear = useCallback(() => {
+    queueRef.current = []
+    setQueries([])
+  }, [])
 
   return { queries, connected, paused, setPaused, clear }
 }

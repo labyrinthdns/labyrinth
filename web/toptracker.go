@@ -48,6 +48,9 @@ func (t *TopTracker) prune() {
 		entries = append(entries, TopEntry{Key: k, Count: v})
 	}
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Count == entries[j].Count {
+			return entries[i].Key < entries[j].Key
+		}
 		return entries[i].Count > entries[j].Count
 	})
 
@@ -86,6 +89,9 @@ func (t *TopTracker) TopPage(limit, offset int) ([]TopEntry, int) {
 	t.mu.RUnlock()
 
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Count == entries[j].Count {
+			return entries[i].Key < entries[j].Key
+		}
 		return entries[i].Count > entries[j].Count
 	})
 

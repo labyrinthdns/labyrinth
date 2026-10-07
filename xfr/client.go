@@ -250,21 +250,12 @@ func readStream(conn net.Conn, cfg ClientConfig, txID uint16, qtype uint16, aske
 		soaSeen  int
 		priorMAC = requestMAC
 		firstMsg = true
+		complete = false
 	)
 
 	for msgCount := 0; msgCount < maxXFRMessages; msgCount++ {
 		wire, err := readMessage(conn, cfg.timeout())
 		if err != nil {
-			// A primary that closes the connection after a complete
-			// response has ended the transfer, not failed it. RFC 9103
-			// encourages connection reuse so this is not the usual path,
-			// but plain-TCP primaries commonly hang up.
-			if errors.Is(err, io.EOF) && soaSeen >= 2 {
-				break
-			}
-			if errors.Is(err, io.EOF) && qtype == dns.TypeIXFR && soaSeen == 1 {
-				break // single-SOA "up to date", server hung up
-			}
 			return nil, fmt.Errorf("xfr: read message %d: %w", msgCount, err)
 		}
 
@@ -331,6 +322,33 @@ func readStream(conn net.Conn, cfg ClientConfig, txID uint16, qtype uint16, aske
 		}
 
 		if soaSeen >= 2 {
+			if qtype == dns.TypeIXFR && records[1].Type == dns.TypeSOA {
+				finalSerial, err := soaSerial(records[0])
+				if err != nil {
+					return nil, err
+				}
+				fromSerial, err := soaSerial(records[1])
+				if err != nil {
+					return nil, err
+				}
+				if fromSerial != finalSerial {
+					// IXFR's second SOA opens the delete section. Completion
+					// requires paired from/to SOAs and the final SOA after
+					// the last add section, even across message boundaries.
+					last := records[len(records)-1]
+					if soaSeen < 4 || soaSeen%2 != 0 || last.Type != dns.TypeSOA {
+						continue
+					}
+					closingSerial, err := soaSerial(last)
+					if err != nil {
+						return nil, err
+					}
+					if closingSerial != finalSerial {
+						continue
+					}
+				}
+			}
+			complete = true
 			break
 		}
 		// "Already up to date" (RFC 1995 §2): a lone SOA whose serial is the
@@ -340,6 +358,7 @@ func readStream(conn net.Conn, cfg ClientConfig, txID uint16, qtype uint16, aske
 		// server has no intention of sending.
 		if qtype == dns.TypeIXFR && soaSeen == 1 && len(records) == 1 {
 			if s, serr := soaSerial(records[0]); serr == nil && s == askedSerial {
+				complete = true
 				break
 			}
 		}
@@ -347,6 +366,9 @@ func readStream(conn net.Conn, cfg ClientConfig, txID uint16, qtype uint16, aske
 
 	if soaSeen == 0 {
 		return nil, ErrNoSOA
+	}
+	if !complete {
+		return nil, errors.New("xfr: transfer exceeded the message limit before completion")
 	}
 	if qtype == dns.TypeIXFR {
 		return parseIXFR(records)
@@ -392,6 +414,17 @@ func parseIXFR(records []dns.ResourceRecord) (*Result, error) {
 
 	if len(records) == 1 {
 		return &Result{UpToDate: true, Serial: finalSerial}, nil
+	}
+	// A full fallback containing only the SOA still has opening and closing
+	// markers. Their equal serial distinguishes it from a delta's old SOA.
+	if len(records) == 2 && records[1].Type == dns.TypeSOA {
+		closingSerial, err := soaSerial(records[1])
+		if err != nil {
+			return nil, err
+		}
+		if closingSerial == finalSerial {
+			return parseAXFR(records)
+		}
 	}
 
 	// A second record that is not an SOA means the server could not answer

@@ -497,16 +497,17 @@ func (c *Cache) StoreNegativeWithStatus(name string, qtype uint16, class uint16,
 
 	ttl := c.clampNegativeTTL(rawTTL)
 
+	clonedAuthority := cloneRRs(authority)
 	var soa *dns.ResourceRecord
-	for i, rr := range authority {
+	for i, rr := range clonedAuthority {
 		if rr.Type == dns.TypeSOA {
-			soa = &authority[i]
+			soa = &clonedAuthority[i]
 			break
 		}
 	}
 
 	entry := &Entry{
-		Authority:    cloneRRs(authority),
+		Authority:    clonedAuthority,
 		InsertedAt:   time.Now(),
 		OrigTTL:      ttl,
 		Negative:     true,

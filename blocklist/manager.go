@@ -516,6 +516,9 @@ func (mgr *Manager) UnblockDomain(domain string) error {
 // CheckDomain returns whether a domain is blocked without incrementing
 // the blocked-query counter.
 func (mgr *Manager) CheckDomain(domain string) bool {
+	if rpz := mgr.rpzMatcher.Load(); rpz != nil && rpz.Match(domain) != nil {
+		return true
+	}
 	m := mgr.matcher.Load()
 	return m != nil && m.Match(domain)
 }

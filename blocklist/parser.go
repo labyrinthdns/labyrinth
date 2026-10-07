@@ -53,12 +53,13 @@ func ParseHostsFile(r io.Reader) []string {
 			continue
 		}
 
-		domain := strings.ToLower(fields[1])
-		if _, skip := skipDomains[domain]; skip {
-			continue
+		for _, field := range fields[1:] {
+			domain := strings.ToLower(field)
+			if _, skip := skipDomains[domain]; skip {
+				continue
+			}
+			domains = append(domains, domain)
 		}
-
-		domains = append(domains, domain)
 	}
 	return domains
 }

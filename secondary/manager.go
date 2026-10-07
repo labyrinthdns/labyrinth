@@ -34,6 +34,7 @@ package secondary
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"strings"
@@ -417,9 +418,28 @@ func (m *Manager) applyIXFR(z *zoneState, res *xfr.Result) time.Duration {
 
 	default:
 		m.mu.Lock()
-		for _, d := range res.Deltas {
-			z.records = applyDelta(z.records, d)
+		// IXFR deltas carry SOA serials separately from ordinary records.
+		// Copy before updating so previously published tables stay immutable.
+		records := append([]dns.ResourceRecord(nil), z.records...)
+		soa := findSOA(records)
+		if soa == nil {
+			m.mu.Unlock()
+			return m.onFailure(z, errNoSOA{zone: z.cfg.Name})
 		}
+		_, offset, err := dns.DecodeName(soa.RData, 0)
+		if err == nil {
+			_, offset, err = dns.DecodeName(soa.RData, offset)
+		}
+		if err != nil || len(soa.RData)-offset < 20 {
+			m.mu.Unlock()
+			return m.onFailure(z, errNoSOA{zone: z.cfg.Name})
+		}
+		soa.RData = append([]byte(nil), soa.RData...)
+		binary.BigEndian.PutUint32(soa.RData[offset:offset+4], res.Serial)
+		for _, d := range res.Deltas {
+			records = applyDelta(records, d)
+		}
+		z.records = records
 		z.serial = res.Serial
 		z.lastSuccess = time.Now()
 		wait := z.refresh
@@ -448,6 +468,7 @@ func (m *Manager) applyFull(z *zoneState, records []dns.ResourceRecord) time.Dur
 	z.serial = parsed.Serial
 	z.refresh = clampRefresh(time.Duration(parsed.Refresh) * time.Second)
 	z.retry = clampRetry(time.Duration(parsed.Retry) * time.Second)
+	z.expire = defaultExpire
 	if parsed.Expire > 0 {
 		z.expire = time.Duration(parsed.Expire) * time.Second
 	}

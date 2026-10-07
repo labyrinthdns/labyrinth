@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -121,7 +122,7 @@ func (m *Manager) Info() *CertInfo {
 		Subject:   leaf.Subject.CommonName,
 		NotBefore: leaf.NotBefore,
 		NotAfter:  leaf.NotAfter,
-		DNSNames:  leaf.DNSNames,
+		DNSNames:  slices.Clone(leaf.DNSNames),
 		AutoTLS:   true,
 		ACME:      true,
 	}
@@ -138,9 +139,11 @@ func (m *Manager) ForceRenew(ctx context.Context) error {
 	cache := m.acm.Cache
 
 	// autocert caches certs under the domain name and domain+rsa keys.
-	_ = cache.Delete(ctx, m.domain)
-	_ = cache.Delete(ctx, m.domain+"+rsa")
-	_ = cache.Delete(ctx, m.domain+"+token")
+	for _, key := range []string{m.domain, m.domain + "+rsa", m.domain + "+token"} {
+		if err := cache.Delete(ctx, key); err != nil {
+			return fmt.Errorf("delete cached certificate %q: %w", key, err)
+		}
+	}
 
 	m.mu.Lock()
 	m.lastCert = nil

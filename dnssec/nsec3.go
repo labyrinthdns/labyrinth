@@ -513,6 +513,11 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 		}
 		if m := findNSEC3Match(records, qnameHash); m != nil {
 			if !HasType(&m.NSEC3Record, qtype) && !HasType(&m.NSEC3Record, dns.TypeCNAME) {
+				// A parent delegation cannot deny data served by the child.
+				// DS absence is handled by the dedicated delegation proof.
+				if HasType(&m.NSEC3Record, dns.TypeNS) && !HasType(&m.NSEC3Record, dns.TypeSOA) {
+					return false, nil
+				}
 				return true, nil
 			}
 			// Owner-match with qtype present means the type DOES exist —

@@ -62,6 +62,16 @@ func (c *Cache) Flush() {
 		s.resetEntries()
 		s.mu.Unlock()
 	}
+	if c.nsecIdx != nil {
+		c.nsecIdx.mu.Lock()
+		clear(c.nsecIdx.byZone)
+		c.nsecIdx.mu.Unlock()
+	}
+	if c.nsec3Idx != nil {
+		c.nsec3Idx.mu.Lock()
+		clear(c.nsec3Idx.byZone)
+		c.nsec3Idx.mu.Unlock()
+	}
 }
 
 // CacheStats holds cache statistics.

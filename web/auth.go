@@ -292,7 +292,7 @@ func (s *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	passMatch := checkPassword(req.Password, hashToCheck)
 
-	if !userMatch || !passMatch {
+	if !userMatch || !passMatch || cfgHash == "" {
 		if s.loginLimiter != nil {
 			s.loginLimiter.recordFailure(clientIP)
 		}

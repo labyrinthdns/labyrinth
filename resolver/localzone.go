@@ -143,7 +143,12 @@ func (t *LocalZoneTable) FindZone(name string) *LocalZone {
 		return nil
 	}
 	name = normalizeName(name)
-	return t.findZone(name)
+	for i := range t.zones {
+		if t.zones[i].Name == name {
+			return &t.zones[i]
+		}
+	}
+	return nil
 }
 
 // Zones returns a snapshot of the local zones in the table. The slice

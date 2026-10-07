@@ -88,25 +88,27 @@ func (e *Entry) Expired() bool {
 // WithDecayedTTL returns a deep copy of the entry with TTL adjusted.
 func (e *Entry) WithDecayedTTL(remaining uint32) *Entry {
 	decayed := &Entry{
-		Records:      make([]dns.ResourceRecord, len(e.Records)),
-		Authority:    make([]dns.ResourceRecord, len(e.Authority)),
+		Records:      cloneRRs(e.Records),
+		Authority:    cloneRRs(e.Authority),
 		InsertedAt:   e.InsertedAt,
 		OrigTTL:      e.OrigTTL,
 		Negative:     e.Negative,
 		NegType:      e.NegType,
-		SOA:          e.SOA,
 		RCODE:        e.RCODE,
 		DNSSECStatus: e.DNSSECStatus,
 		ECSScope:     e.ECSScope,
 		Synthesized:  e.Synthesized,
 	}
 
-	copy(decayed.Records, e.Records)
+	if e.SOA != nil {
+		soa := cloneRRs([]dns.ResourceRecord{*e.SOA})[0]
+		decayed.SOA = &soa
+	}
+
 	for i := range decayed.Records {
 		decayed.Records[i].TTL = remaining
 	}
 
-	copy(decayed.Authority, e.Authority)
 	for i := range decayed.Authority {
 		decayed.Authority[i].TTL = remaining
 	}

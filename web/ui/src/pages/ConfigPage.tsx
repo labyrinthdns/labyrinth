@@ -6,7 +6,7 @@ type Mode = 'view' | 'edit'
 type EditorMode = 'form' | 'raw'
 type StatusType = 'success' | 'error' | 'info'
 type BlocklistSource = { url: string; format: string }
-type NamedCSV = { name: string; csv: string }
+type NamedCSV = { name: string; csv: string; type?: string; draft?: string }
 
 type FormState = {
   server: {
@@ -96,7 +96,7 @@ function mapForm(cfg: Record<string, unknown>, authHash: string): FormState {
   const clusterActions = obj(cluster.actions)
   const clusterSync = obj(cluster.sync)
   const mapNamed = (v: unknown, key = 'addrs'): NamedCSV[] =>
-    Array.isArray(v) ? v.map((x) => obj(x)).map((x) => ({ name: str(x.name), csv: csv(arr(x[key])) })).filter((x) => x.name) : []
+    Array.isArray(v) ? v.map((x) => obj(x)).map((x) => ({ name: str(x.name), csv: csv(arr(x[key])), ...(key === 'data' ? { type: str(x.type, 'static') } : {}) })).filter((x) => x.name) : []
 
   return {
     server: {
@@ -366,7 +366,7 @@ function buildYAML(f: FormState): string {
   if (f.localZones.length) {
     L.push(''); L.push('local_zones:')
     f.localZones.filter((z) => z.name).forEach((z) => {
-      L.push(`  ${y(z.name)}:`); L.push('    type: static')
+      L.push(`  ${y(z.name)}:`); L.push(`    type: ${y(z.type || 'static')}`)
       if (z.csv) L.push(`    data: ${y(z.csv)}`)
     })
   }
@@ -759,9 +759,9 @@ export default function ConfigPage() {
 
         {/* ── Zones ──────────────────────────────────────────── */}
         <Section title="Zones">
-          <StringList title="Local Zones (name=records CSV)" path="local_zones" values={form.localZones.map((z) => `${z.name}=${z.csv}`)} onChange={(n) => patch((p) => ({ ...p, localZones: n.map((v) => { const [name, ...rest] = v.split('='); return { name: name.trim(), csv: rest.join('=').trim() } }) }))} disabled={readonly} placeholder="corp.local=host1 A 10.0.0.1" />
-          <StringList title="Forward Zones (name=addr CSV)" path="forward_zones" values={form.forwardZones.map((z) => `${z.name}=${z.csv}`)} onChange={(n) => patch((p) => ({ ...p, forwardZones: n.map((v) => { const [name, ...rest] = v.split('='); return { name: name.trim(), csv: rest.join('=').trim() } }) }))} disabled={readonly} placeholder="example.com=1.1.1.1, 9.9.9.9" />
-          <StringList title="Stub Zones (name=addr CSV)" path="stub_zones" values={form.stubZones.map((z) => `${z.name}=${z.csv}`)} onChange={(n) => patch((p) => ({ ...p, stubZones: n.map((v) => { const [name, ...rest] = v.split('='); return { name: name.trim(), csv: rest.join('=').trim() } }) }))} disabled={readonly} placeholder="internal=10.0.0.53" />
+          <StringList title="Local Zones (name=records CSV)" path="local_zones" values={form.localZones.map((z) => z.draft ?? `${z.name}=${z.csv}`)} onChange={(n) => patch((p) => ({ ...p, localZones: n.map((v, i) => { const [name, ...rest] = v.split('='); return { name: name.trim(), csv: rest.join('=').trim(), draft: v, type: p.localZones.find((z) => z.name === name.trim())?.type ?? p.localZones[i]?.type ?? 'static' } }) }))} disabled={readonly} placeholder="corp.local=host1 A 10.0.0.1" />
+          <StringList title="Forward Zones (name=addr CSV)" path="forward_zones" values={form.forwardZones.map((z) => z.draft ?? `${z.name}=${z.csv}`)} onChange={(n) => patch((p) => ({ ...p, forwardZones: n.map((v) => { const [name, ...rest] = v.split('='); return { name: name.trim(), csv: rest.join('=').trim(), draft: v } }) }))} disabled={readonly} placeholder="example.com=1.1.1.1, 9.9.9.9" />
+          <StringList title="Stub Zones (name=addr CSV)" path="stub_zones" values={form.stubZones.map((z) => z.draft ?? `${z.name}=${z.csv}`)} onChange={(n) => patch((p) => ({ ...p, stubZones: n.map((v) => { const [name, ...rest] = v.split('='); return { name: name.trim(), csv: rest.join('=').trim(), draft: v } }) }))} disabled={readonly} placeholder="internal=10.0.0.53" />
         </Section>
 
         {/* ── System (Logging, Daemon, Zabbix) ───────────────── */}

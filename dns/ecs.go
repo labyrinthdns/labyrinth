@@ -116,6 +116,10 @@ func (ecs *ECSOption) CacheKey() string {
 		return ""
 	}
 	truncated := TruncateIP(ecs.Address, ecs.SourcePrefixLen)
+	// ECS Family, rather than To4, determines the width of mapped addresses.
+	if v6 := ecs.Address.To16(); ecs.Family == 2 && v6 != nil && ecs.SourcePrefixLen <= 128 {
+		truncated = v6.Mask(net.CIDRMask(int(ecs.SourcePrefixLen), 128))
+	}
 	return truncated.String() + "/" + itoaECS(int(ecs.SourcePrefixLen))
 }
 

@@ -998,9 +998,9 @@ func TestBuildResponseTruncation_QuestionTooBig(t *testing.T) {
 	res := newTestResolver(c, m)
 	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
 
-	// Very long domain name that makes the question section large
+	// A long, valid domain name that makes the question section large.
 	longName := "a"
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 10; i++ {
 		longName += ".very-long-subdomain"
 	}
 	longName += ".example.com"

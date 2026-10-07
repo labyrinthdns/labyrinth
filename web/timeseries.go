@@ -290,7 +290,7 @@ func (ts *TimeSeriesAggregator) Snapshot(window time.Duration) []Bucket {
 	}
 
 	// Include current hot bucket
-	if ts.current != nil && ts.current.queries > 0 {
+	if ts.current != nil && (ts.current.queries > 0 || ts.current.fallbackQueries != 0 || ts.current.fallbackRecoveries != 0) {
 		avgLatency := float64(0)
 		if ts.current.queries > 0 {
 			avgLatency = ts.current.totalLatency / float64(ts.current.queries)

@@ -93,12 +93,14 @@ async function requestCached<T>(cacheKey: string, ttlMs: number, path: string, o
 
   const promise = request<T>(path, options)
     .then((value) => {
-      responseCache.set(cacheKey, { expiresAt: Date.now() + ttlMs, value })
-      inflightCache.delete(cacheKey)
+      if (inflightCache.get(cacheKey) === promise) {
+        responseCache.set(cacheKey, { expiresAt: Date.now() + ttlMs, value })
+        inflightCache.delete(cacheKey)
+      }
       return value
     })
     .catch((err) => {
-      inflightCache.delete(cacheKey)
+      if (inflightCache.get(cacheKey) === promise) inflightCache.delete(cacheKey)
       throw err
     })
 

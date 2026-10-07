@@ -109,6 +109,9 @@ type zoneParser struct {
 	// explicit TTL column.
 	ttl uint32
 
+	// currentTTLSet distinguishes an inherited zero TTL from no prior record.
+	currentTTLSet bool
+
 	// Convention class (from the $CLASS directive or `IN` default).
 	// We currently only parse IN; CH/HS are accepted but stored.
 	class uint16
@@ -206,17 +209,25 @@ func (p *zoneParser) parseFile() ([]ResourceRecord, error) {
 }
 
 // stripComment removes an inline comment from a line. The semicolon is a
-// master-file comment delimiter (RFC 1035 §5.1); stripping is character-
-// class naive (semicolons inside quoted strings are rare). A more careful
-// implementation would track string state, but the cost of getting it
-// wrong for a parser that mostly reads pipes-and-backslashes is small —
-// the writer does not emit semicolons in TXT data, and operators editing
-// a zone file by hand would not produce them either.
+// master-file comment delimiter (RFC 1035 §5.1). Quoted and escaped
+// semicolons are data and must survive for the RDATA parser.
 //
 func stripComment(line string) string {
+	inQuote, escape := false, false
 	for i := 0; i < len(line); i++ {
-		if line[i] == ';' {
-			return strings.TrimRight(line[:i], " \t")
+		if escape {
+			escape = false
+			continue
+		}
+		switch line[i] {
+		case '\\':
+			escape = true
+		case '"':
+			inQuote = !inQuote
+		case ';':
+			if !inQuote {
+				return strings.TrimRight(line[:i], " \t")
+			}
 		}
 	}
 	return strings.TrimRight(line, " \r")
@@ -287,7 +298,6 @@ func (p *zoneParser) parseRecord(lines []string) (ResourceRecord, error) {
 	// counters inside the block remain; the parens themselves are the
 	// only delimiters the operator types.
 	joined := strings.Join(append([]string{first}, lines[1:]...), " ")
-	joined = strings.ReplaceAll(joined, "\t", " ")
 	// Collapse runs of spaces but keep the parenthesised contents
 	// intact for the SOA/MX/TXT parsers to deal with.
 	joined = collapseSpaces(joined)
@@ -310,7 +320,10 @@ func (p *zoneParser) parseRecord(lines []string) (ResourceRecord, error) {
 
 	// Optional TTL column, optional class column, then TYPE.
 	idx := 0
-	ttl := p.currentTTL
+	ttl := p.ttl
+	if p.currentTTLSet {
+		ttl = p.currentTTL
+	}
 	if idx < len(fields) && isNumber(fields[idx]) {
 		v, err := parseTTLField(fields[idx])
 		if err != nil {
@@ -328,10 +341,8 @@ func (p *zoneParser) parseRecord(lines []string) (ResourceRecord, error) {
 		class = c
 		idx++
 	}
-	if ttl == 0 {
-		ttl = p.ttl
-	}
 	p.currentTTL = ttl
+	p.currentTTLSet = true
 	p.currentCls = class
 
 	if idx >= len(fields) {
@@ -449,15 +460,31 @@ func tokeniseFields(s string) []string {
 	return out
 }
 
-// collapseSpaces replaces runs of whitespace with a single space. Used
-// to flatten the parenthesised continuation before tokenisation.
+// collapseSpaces replaces unquoted runs of whitespace with a single space.
+// Quoted and escaped whitespace remains part of the record's literal data.
 //
 func collapseSpaces(s string) string {
 	var sb strings.Builder
 	prevSpace := false
+	inQuote, escape := false, false
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c == ' ' || c == '\t' {
+		if escape {
+			sb.WriteByte(c)
+			escape = false
+			prevSpace = false
+			continue
+		}
+		if c == '\\' {
+			sb.WriteByte(c)
+			escape = true
+			prevSpace = false
+			continue
+		}
+		if c == '"' {
+			inQuote = !inQuote
+		}
+		if (c == ' ' || c == '\t') && !inQuote {
 			if !prevSpace {
 				sb.WriteByte(' ')
 			}

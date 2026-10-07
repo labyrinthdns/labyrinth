@@ -314,6 +314,9 @@ func (s *TrustAnchorStore) TrackRefresh(owner string, dnskeys []*dns.DNSKEYRecor
 
 	// Phase 2 — process every candidate NOT in this refresh.
 	for key, existing := range s.candidates {
+		if key.owner != owner {
+			continue
+		}
 		if _, seen := observed[key]; seen {
 			continue
 		}

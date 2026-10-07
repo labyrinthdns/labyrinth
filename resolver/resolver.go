@@ -609,7 +609,7 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	if fb := shouldFallback(result, err); fb.triggered {
 		r.logger.Info("primary resolver failed, trying fallback",
 			"name", name, "qtype", qtype, "reason", fb.reason)
-		if fbResult := r.queryFallbackWithPrimary(name, qtype, qclass, fb.reason, result); fbResult != nil {
+		if fbResult := r.queryFallbackWithContext(name, qtype, qclass, fb.reason, result, clientECS, cd); fbResult != nil {
 			return fbResult, nil
 		}
 	}

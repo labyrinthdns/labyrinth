@@ -108,6 +108,16 @@ func edeCodeName(code uint16) string {
 		return "Network Error"
 	case dns.EDECodeInvalidData:
 		return "Invalid Data"
+	case dns.EDECodeSignatureExpiredBeforeValid:
+		return "Signature Expired Before Valid"
+	case dns.EDECodeTooEarly:
+		return "Too Early"
+	case dns.EDECodeUnsupportedNSEC3IterationsValue:
+		return "Unsupported NSEC3 Iterations"
+	case dns.EDECodeUnableToConformToPolicy:
+		return "Unable to Conform to Policy"
+	case dns.EDECodeSynthesized:
+		return "Synthesized"
 	}
 	return fmt.Sprintf("EDE%d", code)
 }

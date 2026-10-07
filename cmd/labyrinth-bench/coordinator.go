@@ -124,8 +124,7 @@ func (c *Coordinator) handleReport(w http.ResponseWriter, r *http.Request) {
 
 func (c *Coordinator) buildAggregatedSnapshotLocked() AggregatedSnapshot {
 	snap := AggregatedSnapshot{
-		Timestamp:   time.Now().Unix(),
-		RunnerCount: len(c.runners),
+		Timestamp: time.Now().Unix(),
 	}
 
 	if len(c.runners) == 0 {
@@ -151,12 +150,12 @@ func (c *Coordinator) buildAggregatedSnapshotLocked() AggregatedSnapshot {
 		totalSuccess += rs.LastResult.SuccessCount
 	}
 
+	snap.RunnerCount = activeCount
 	if activeCount > 0 {
 		snap.AvgLatencyMs = totalLatency / float64(activeCount)
 		snap.P50LatencyMs = totalP50 / float64(activeCount)
 		snap.P95LatencyMs = totalP95 / float64(activeCount)
 		snap.P99LatencyMs = totalP99 / float64(activeCount)
-		snap.RunnerCount = activeCount
 	}
 	if totalQueries > 0 {
 		snap.SuccessRate = float64(totalSuccess) / float64(totalQueries) * 100

@@ -224,6 +224,7 @@ func (m *RPZMatcher) AddRule(rule RPZRule) {
 		return
 	}
 
+	rule.Action.IP = append(net.IP(nil), rule.Action.IP...)
 	if rule.IsWildcard {
 		m.wildcards[name] = rule.Action
 	} else {
@@ -261,6 +262,7 @@ func (m *RPZMatcher) Match(qname string) *RPZAction {
 
 	// Check exact match.
 	if action, ok := m.exact[qname]; ok {
+		action.IP = append(net.IP(nil), action.IP...)
 		return &action
 	}
 
@@ -268,6 +270,7 @@ func (m *RPZMatcher) Match(qname string) *RPZAction {
 	d = qname
 	for {
 		if action, ok := m.wildcards[d]; ok {
+			action.IP = append(net.IP(nil), action.IP...)
 			return &action
 		}
 		idx := strings.IndexByte(d, '.')
