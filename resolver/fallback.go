@@ -50,6 +50,8 @@ func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass ui
 		msg, err := r.sendForwardQueryOnceECSCD(addr, name, qtype, qclass, clientECS, cd, nil)
 		if err != nil {
 			event.Error = err.Error()
+			// Leave RCODE unset (0) out of the JSONL line — rcodeName(0) is
+			// "NOERROR" and would mislabel timeouts as successful answers.
 			lastEvent = event
 			r.logger.Debug("fallback resolver failed", "addr", addr, "error", err)
 			continue
@@ -106,10 +108,6 @@ func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass ui
 	}
 
 	r.metrics.FallbackEventRing().Add(lastEvent)
-	fallbackRCODE := ""
-	if lastEvent.Error == "" {
-		fallbackRCODE = rcodeName(lastEvent.RCODE)
-	}
 	r.fallbackLog.write(fallbackLogRecord{
 		Name:          name,
 		QType:         qtype,
@@ -121,7 +119,7 @@ func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass ui
 		PrimaryRCODE:  primaryRcode,
 		Recovered:     false,
 		FallbackAddr:  lastEvent.ResolverAddr,
-		FallbackRCODE: fallbackRCODE,
+		FallbackRCODE: rcodeNameForEvent(lastEvent.RCODE, lastEvent.Error),
 		FallbackError: lastEvent.Error,
 		FallbackTried: tried,
 	})

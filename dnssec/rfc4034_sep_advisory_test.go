@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"testing"
 
@@ -71,4 +72,44 @@ func TestSEPBit_DoesNotGateValidation(t *testing.T) {
 			t.Errorf("ZSK returned without Zone Key bit set — RFC 4034 §2.1.1 violation; this fixture was built with flag=256 which IS Zone Key")
 		}
 	})
+}
+
+// TestDNSKeysMatchingDS_AcceptsCSKWithoutSEP pins the phpmyadmin.net shape:
+// a Combined Signing Key published as flags=256 (Zone Key, SEP clear) that
+// the parent DS still points at. Pre-fix dnskeysMatchingDS required IsKSK()
+// and returned no match → Bogus → public-resolver fallback.
+func TestDNSKeysMatchingDS_AcceptsCSKWithoutSEP(t *testing.T) {
+	v := &Validator{}
+	pub := []byte{
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+	}
+	rdata := make([]byte, 4+len(pub))
+	binary.BigEndian.PutUint16(rdata[0:2], 256) // Zone Key, SEP=0
+	rdata[2] = 3
+	rdata[3] = dns.AlgECDSAP256
+	copy(rdata[4:], pub)
+	key, err := dns.ParseDNSKEY(rdata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256SumForTest(buildDSDigestInput("phpmyadmin.net.", key))
+	ds := &dns.DSRecord{
+		KeyTag: key.KeyTag(), Algorithm: dns.AlgECDSAP256,
+		DigestType: dns.DigestSHA256, Digest: digest,
+	}
+	keys := []dns.ResourceRecord{{
+		Name: "phpmyadmin.net.", Type: dns.TypeDNSKEY, Class: dns.ClassIN, TTL: 3600, RData: rdata,
+	}}
+	got := v.dnskeysMatchingDS(keys, []*dns.DSRecord{ds}, "phpmyadmin.net.")
+	if len(got) != 1 {
+		t.Fatalf("CSK (flags=256) must match parent DS: got %d matches", len(got))
+	}
+}
+
+func sha256SumForTest(in []byte) []byte {
+	h := sha256.Sum256(in)
+	return h[:]
 }

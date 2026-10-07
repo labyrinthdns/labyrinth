@@ -274,6 +274,66 @@ else
   warn "Config already exists at ${CONFIG_FILE}, not overwriting"
 fi
 
+# Kernel tunables for recursive DNS (UDP floods, TCP reuse, neighbor cache).
+SYSCTL_FILE="/etc/sysctl.d/99-labyrinth-dns.conf"
+cat > "$SYSCTL_FILE" << 'SYSCTL'
+# Labyrinth recursive DNS — kernel tunables
+net.core.rmem_default = 4194304
+net.core.rmem_max = 16777216
+net.core.wmem_default = 4194304
+net.core.wmem_max = 16777216
+net.core.optmem_max = 262144
+net.core.netdev_max_backlog = 16384
+net.core.somaxconn = 16384
+net.core.netdev_budget = 600
+net.ipv4.udp_rmem_min = 8192
+net.ipv4.udp_wmem_min = 8192
+net.ipv4.tcp_rmem = 4096 87380 262144
+net.ipv4.tcp_wmem = 4096 16384 262144
+net.ipv4.tcp_max_syn_backlog = 16384
+net.ipv4.tcp_max_tw_buckets = 262144
+net.ipv4.tcp_max_orphans = 262144
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_rfc1337 = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_thin_linear_timeouts = 1
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_syn_retries = 3
+net.ipv4.tcp_synack_retries = 3
+net.ipv4.tcp_retries2 = 8
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 5
+net.ipv4.ip_local_port_range = 10240 65535
+net.ipv4.neigh.default.gc_thresh1 = 4096
+net.ipv4.neigh.default.gc_thresh2 = 8192
+net.ipv4.neigh.default.gc_thresh3 = 16384
+net.ipv6.neigh.default.gc_thresh1 = 4096
+net.ipv6.neigh.default.gc_thresh2 = 8192
+net.ipv6.neigh.default.gc_thresh3 = 16384
+fs.nr_open = 1048576
+SYSCTL
+if sysctl --system >/dev/null 2>&1 || sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1; then
+  ok "Applied kernel tunables: ${SYSCTL_FILE}"
+else
+  warn "Could not apply ${SYSCTL_FILE} (settings persist on reboot)"
+fi
+
+LIMITS_FILE="/etc/security/limits.d/99-labyrinth.conf"
+cat > "$LIMITS_FILE" << 'LIMITS'
+# Labyrinth recursive DNS — open file descriptors
+labyrinth soft nofile 1048576
+labyrinth hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+* soft nofile 1048576
+* hard nofile 1048576
+LIMITS
+ok "Installed fd limits: ${LIMITS_FILE}"
+
 # Service installation
 if [[ "$NO_SERVICE" == true ]]; then
   info "Skipping service installation (--no-service)"
@@ -307,7 +367,8 @@ ExecStart=/opt/labyrinth/bin/labyrinth -config /etc/labyrinth/labyrinth.yaml
 ExecReload=/bin/kill -SIGUSR1 $MAINPID
 Restart=on-failure
 RestartSec=5s
-LimitNOFILE=65535
+# Recursive DNS holds many UDP/TCP sockets (clients + outbound auths).
+LimitNOFILE=1048576
 
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -315,7 +376,9 @@ ProtectSystem=strict
 ProtectHome=true
 # /etc/labyrinth: live config reload writes labyrinth.yaml from the admin API.
 # /opt/labyrinth/bin: self-update rename target (also writable by service user).
-ReadWritePaths=/etc/labyrinth /opt/labyrinth/bin
+# /var/lib/labyrinth: fallback_debug JSONL + runtime state.
+ReadWritePaths=/etc/labyrinth /opt/labyrinth/bin /var/lib/labyrinth
+StateDirectory=labyrinth
 PrivateTmp=true
 PrivateDevices=true
 

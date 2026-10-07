@@ -378,8 +378,10 @@ func (v *Validator) isUnsupportedRRSIGAlg(alg uint8) bool {
 //     publishes ONLY digest-type-0 DS records the delegation has no
 //     usable DS and falls to Insecure (RFC 4035 §5.2).
 //
-// Algorithms outside these two ranges are accepted; the verify-switch
-// in verify.go is the final arbiter for crypto support.
+// Prefer isSupportedDSDigest when selecting among multiple DS digests:
+// GOST R 34.11-94 (type 3) is neither "weak" nor implementable here, and
+// treating it as a candidate for RFC 4509 "strongest" selection caused
+// SHA-256 DS siblings to be ignored (live: as8758.net → Bogus → fallback).
 func (v *Validator) isWeakDSDigest(d uint8) bool {
 	if d == dns.DigestReserved {
 		return true
@@ -388,6 +390,22 @@ func (v *Validator) isWeakDSDigest(d uint8) bool {
 		return false
 	}
 	return d == dns.DigestSHA1
+}
+
+// isSupportedDSDigest reports whether VerifyDS can compute this digest
+// type under the current policy. Used by strongest-DS selection so an
+// unimplemented digest (GOST type 3, private/experimental numbers) cannot
+// outrank SHA-256/SHA-384 and leave the chain with zero usable DS matches.
+func (v *Validator) isSupportedDSDigest(d uint8) bool {
+	if v.isWeakDSDigest(d) {
+		return false
+	}
+	switch d {
+	case dns.DigestSHA1, dns.DigestSHA256, dns.DigestSHA384:
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidationStep captures one RRSIG-attempt outcome inside a validation pass.
@@ -1051,18 +1069,19 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				return Bogus
 			}
 
-			// If every published DS uses a digest type we reject (e.g. SHA1),
-			// treat the chain as insecure rather than bogus: the parent has
-			// authorized the child but only with primitives we don't trust.
+			// If every published DS uses a digest type we reject (e.g. SHA1)
+			// or cannot compute (e.g. GOST type 3), treat the chain as
+			// insecure rather than bogus: the parent has authorized the
+			// child but only with primitives we don't trust/implement.
 			usableDS := false
 			for _, ds := range dsRecords {
-				if !v.isWeakDSDigest(ds.DigestType) {
+				if v.isSupportedDSDigest(ds.DigestType) {
 					usableDS = true
 					break
 				}
 			}
 			if !usableDS {
-				v.logger.Debug("all DS records use weak digest types; treating as insecure",
+				v.logger.Debug("all DS records use unsupported/weak digest types; treating as insecure",
 					"zone", chainZone, "parent", parentZone)
 				return Insecure
 			}
@@ -1130,6 +1149,8 @@ func (v *Validator) isAuthenticatedEmptyNonTerminal(childZone, parentZone string
 
 	var rrsigs []rrsigWithOwner
 	var nsecWithOwners []NSECRecordWithOwner
+	var nsec3WithOwners []NSEC3RecordWithOwner
+	var nsec3RRNames []string
 	for _, rr := range authority {
 		switch rr.Type {
 		case dns.TypeRRSIG:
@@ -1147,9 +1168,23 @@ func (v *Validator) isAuthenticatedEmptyNonTerminal(childZone, parentZone string
 				NSECRecord: *parsed,
 				OwnerName:  rr.Name,
 			})
+		case dns.TypeNSEC3:
+			parsed, err := dns.ParseNSEC3(rr.RData)
+			if err != nil {
+				continue
+			}
+			ownerHash, err := nsec3OwnerHashFromName(rr.Name)
+			if err != nil {
+				continue
+			}
+			nsec3WithOwners = append(nsec3WithOwners, NSEC3RecordWithOwner{
+				NSEC3Record: *parsed,
+				OwnerHash:   ownerHash,
+			})
+			nsec3RRNames = append(nsec3RRNames, rr.Name)
 		}
 	}
-	if len(nsecWithOwners) == 0 || len(rrsigs) == 0 {
+	if len(rrsigs) == 0 || (len(nsecWithOwners) == 0 && len(nsec3WithOwners) == 0) {
 		return false
 	}
 
@@ -1162,7 +1197,7 @@ func (v *Validator) isAuthenticatedEmptyNonTerminal(childZone, parentZone string
 	parent := strings.ToLower(strings.TrimSuffix(parentZone, "."))
 	for _, rs := range rrsigs {
 		rrsig := rs.rrsig
-		if rrsig.TypeCovered != dns.TypeNSEC {
+		if rrsig.TypeCovered != dns.TypeNSEC && rrsig.TypeCovered != dns.TypeNSEC3 {
 			continue
 		}
 		if v.isWeakRRSIGAlg(rrsig.Algorithm) || v.isUnsupportedRRSIGAlg(rrsig.Algorithm) {
@@ -1172,7 +1207,7 @@ func (v *Validator) isAuthenticatedEmptyNonTerminal(childZone, parentZone string
 		if signer != parent {
 			continue
 		}
-		rrset := filterRRSetByOwnerAndClass(authority, dns.TypeNSEC, rs.owner, rs.class)
+		rrset := filterRRSetByOwnerAndClass(authority, rrsig.TypeCovered, rs.owner, rs.class)
 		if len(rrset) == 0 {
 			continue
 		}
@@ -1190,7 +1225,7 @@ func (v *Validator) isAuthenticatedEmptyNonTerminal(childZone, parentZone string
 		if err := VerifyRRSIG(rrset, rrsig, dnskey); err == nil {
 			authenticated[ownerTypeKey{
 				owner: strings.ToLower(strings.TrimSuffix(rs.owner, ".")),
-				typ:   dns.TypeNSEC,
+				typ:   rrsig.TypeCovered,
 			}] = true
 		}
 	}
@@ -1213,7 +1248,43 @@ func (v *Validator) isAuthenticatedEmptyNonTerminal(childZone, parentZone string
 		}
 		return true
 	}
-	return false
+
+	// NSEC3 ENT (live: as8758.net reverse-style FTTH labels under
+	// ftth.as8758.net). Matching NSEC3 with an empty / NS-less bitmap
+	// proves the label exists inside the parent but is not a zone cut.
+	// Without this branch, buildZoneChain intermediates fall through to
+	// Bogus and force public-resolver fallback on island-of-security
+	// children (e.g. 43.43.150.83.ftth.as8758.net).
+	if len(nsec3WithOwners) == 0 {
+		return false
+	}
+	verified := make([]NSEC3RecordWithOwner, 0, len(nsec3WithOwners))
+	for i, n := range nsec3WithOwners {
+		if authenticated[ownerTypeKey{
+			owner: strings.ToLower(strings.TrimSuffix(nsec3RRNames[i], ".")),
+			typ:   dns.TypeNSEC3,
+		}] {
+			verified = append(verified, n)
+		}
+	}
+	if len(verified) == 0 {
+		return false
+	}
+	h, err := ComputeNSEC3Hash(want+".", verified[0].HashAlgorithm, verified[0].Iterations, verified[0].Salt)
+	if err != nil {
+		return false
+	}
+	m := findNSEC3Match(verified, h)
+	if m == nil {
+		return false
+	}
+	if HasType(&m.NSEC3Record, dns.TypeDS) ||
+		HasType(&m.NSEC3Record, dns.TypeNS) ||
+		HasType(&m.NSEC3Record, dns.TypeCNAME) ||
+		HasType(&m.NSEC3Record, dns.TypeSOA) {
+		return false
+	}
+	return true
 }
 
 // isAuthenticatedCoveredName reports whether authority carries a parent-
@@ -1540,12 +1611,13 @@ func (v *Validator) dnskeysMatchingTrustAnchors(zone string, dnskeys []dns.Resou
 	var matches []dns.ResourceRecord
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
-		if err != nil || !dnskey.IsKSK() || dnskey.IsRevoked() {
+		// SEP is advisory (RFC 4034 §2.1.2); require Zone Key only.
+		if err != nil || !dnskey.IsZoneKey() || dnskey.IsRevoked() {
 			continue
 		}
 		strongest := strongestDSDigestForKey(anchorPtrs, dnskey.KeyTag(), dnskey.Algorithm, v)
 		for _, anchor := range v.trustAnchors {
-			if v.isWeakDSDigest(anchor.DigestType) {
+			if !v.isSupportedDSDigest(anchor.DigestType) {
 				continue
 			}
 			if anchor.KeyTag == dnskey.KeyTag() && anchor.Algorithm == dnskey.Algorithm &&
@@ -1577,7 +1649,10 @@ func strongestDSDigestForKey(dsRecords []*dns.DSRecord, keyTag uint16, algorithm
 		if ds.KeyTag != keyTag || ds.Algorithm != algorithm {
 			continue
 		}
-		if v.isWeakDSDigest(ds.DigestType) {
+		// Only digests VerifyDS can actually compute. Max over raw
+		// DigestType numbers would pick GOST (3) over SHA-256 (2) even
+		// though GOST is unimplemented — leaving the key with no match.
+		if !v.isSupportedDSDigest(ds.DigestType) {
 			continue
 		}
 		if ds.DigestType > best {
@@ -1610,7 +1685,12 @@ func (v *Validator) dnskeysMatchingDS(dnskeys []dns.ResourceRecord, dsRecords []
 		if err != nil {
 			continue
 		}
-		if !dnskey.IsKSK() {
+		// RFC 4034 §2.1.1: the SEP bit is only a signing-tool hint.
+		// Validators MUST NOT refuse a chain because SEP is clear — CSK
+		// deployments publish a single Zone Key (flags=256) that the
+		// parent DS points at (live: phpmyadmin.net). Require Zone Key
+		// so SIG(0)/other non-zone keys never enter the DS match set.
+		if !dnskey.IsZoneKey() {
 			continue
 		}
 		// RFC 5011 §3: revoked KSKs MUST NOT chain to a DS record.
@@ -1623,7 +1703,7 @@ func (v *Validator) dnskeysMatchingDS(dnskeys []dns.ResourceRecord, dsRecords []
 		}
 		strongest := strongestDSDigestForKey(dsRecords, dnskey.KeyTag(), dnskey.Algorithm, v)
 		for _, ds := range dsRecords {
-			if v.isWeakDSDigest(ds.DigestType) {
+			if !v.isSupportedDSDigest(ds.DigestType) {
 				continue
 			}
 			// RFC 4509 §3: among the DS RRs that target this key, only

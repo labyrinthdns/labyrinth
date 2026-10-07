@@ -30,6 +30,25 @@ func TestStrongestDSDigestForKey_SHA256BeatsSHA1(t *testing.T) {
 
 // TestStrongestDSDigestForKey_SHA384BeatsSHA256 confirms the ordering
 // continues to favour the higher digest-type number (SHA-384=4 > SHA-256=2).
+// TestStrongestDSDigestForKey_IgnoresUnsupportedGOST pins the as8758.net
+// failure mode: parent .net publishes DS digest types 1+2+3 (SHA-1, SHA-256,
+// GOST R 34.11-94). Max-over-raw-type picked GOST (3) over SHA-256 (2),
+// VerifyDS cannot compute GOST, and the zone fell to Bogus→fallback even
+// though a perfectly good SHA-256 DS was present.
+func TestStrongestDSDigestForKey_IgnoresUnsupportedGOST(t *testing.T) {
+	v := &Validator{}
+	const digestGOST uint8 = 3
+	dsList := []*dns.DSRecord{
+		{KeyTag: 20492, Algorithm: dns.AlgRSASHA256, DigestType: dns.DigestSHA1, Digest: []byte{0x01}},
+		{KeyTag: 20492, Algorithm: dns.AlgRSASHA256, DigestType: dns.DigestSHA256, Digest: []byte{0x02}},
+		{KeyTag: 20492, Algorithm: dns.AlgRSASHA256, DigestType: digestGOST, Digest: []byte{0x03}},
+	}
+	got := strongestDSDigestForKey(dsList, 20492, dns.AlgRSASHA256, v)
+	if got != dns.DigestSHA256 {
+		t.Errorf("GOST must not outrank SHA-256: want %d, got %d", dns.DigestSHA256, got)
+	}
+}
+
 func TestStrongestDSDigestForKey_SHA384BeatsSHA256(t *testing.T) {
 	v := &Validator{}
 	dsList := []*dns.DSRecord{

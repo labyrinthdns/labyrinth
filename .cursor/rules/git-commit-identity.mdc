@@ -1,0 +1,12 @@
+---
+description: Git commits must use the repo owner's identity — never Cursor
+alwaysApply: true
+---
+
+# Git commit identity
+
+- **Author / committer**: always `Ersin KOÇ <ersinkoc@gmail.com>`.
+- Pass identity via one-shot env vars (`GIT_AUTHOR_*` / `GIT_COMMITTER_*`) for the commit. Do **not** run `git config` unless the owner explicitly asks.
+- **Never** set author, committer, or any trailer to Cursor, `cursoragent@cursor.com`, Composer, Auto, or other AI identities.
+- **Never** add `Co-authored-by: Cursor` (or similar) to commit messages. If the environment injects it, strip it before finishing the commit (amend the unpushed HEAD you just created).
+- Push with the owner's GitHub credentials / remote as usual; do not attribute work to Cursor in git history.

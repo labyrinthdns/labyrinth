@@ -248,6 +248,9 @@ if [[ -f "$SERVICE_FILE" ]]; then
   if ! has_path "$SERVICE_FILE" "/opt/labyrinth/bin"; then
     NEEDS_UNIT_PATCH=true
   fi
+  if ! has_path "$SERVICE_FILE" "/var/lib/labyrinth"; then
+    NEEDS_UNIT_PATCH=true
+  fi
   # Legacy units used ReadOnlyPaths=/etc/labyrinth, which blocks the live
   # config reload that PUT /api/config/raw needs. Replace with ReadWritePaths.
   if grep -qE '^ReadOnlyPaths=/etc/labyrinth' "$SERVICE_FILE"; then
@@ -270,9 +273,15 @@ if [[ -f "$SERVICE_FILE" ]]; then
       if ! has_path "$SERVICE_FILE" "/etc/labyrinth"; then
         sed -i 's|^ReadWritePaths=\(.*\)$|ReadWritePaths=\1 /etc/labyrinth|' "$SERVICE_FILE"
       fi
+      if ! has_path "$SERVICE_FILE" "/var/lib/labyrinth"; then
+        sed -i 's|^ReadWritePaths=\(.*\)$|ReadWritePaths=\1 /var/lib/labyrinth|' "$SERVICE_FILE"
+      fi
     else
       # Insert before [Install] section.
-      sed -i '/^\[Install\]/i ReadWritePaths=/etc/labyrinth /opt/labyrinth/bin' "$SERVICE_FILE"
+      sed -i '/^\[Install\]/i ReadWritePaths=/etc/labyrinth /opt/labyrinth/bin /var/lib/labyrinth' "$SERVICE_FILE"
+    fi
+    if ! grep -qE '^StateDirectory=' "$SERVICE_FILE"; then
+      sed -i '/^ReadWritePaths=/a StateDirectory=labyrinth' "$SERVICE_FILE"
     fi
     systemctl daemon-reload
     ok "Service unit patched (backup: ${SERVICE_FILE}.bak)"
