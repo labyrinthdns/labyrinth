@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 
 	"github.com/labyrinthdns/labyrinth/blocklist"
@@ -68,6 +69,30 @@ func buildStaticLocalZones(cfg *config.Config, logger *slog.Logger) []resolver.L
 			Name: zc.Name,
 			Type: zt,
 		}
+
+		// zone_file takes precedence over inline data, as LocalZoneConfig
+		// documents. It is the round-trip partner of the export endpoint: an
+		// operator writes a BIND master-file, points Labyrinth at it, and the
+		// parser's strict (round-trip-only) grammar surfaces their mistakes at
+		// startup rather than as silently wrong answers later.
+		if zc.ZoneFile != "" {
+			records, err := loadZoneFileRecords(zc.Name, zc.ZoneFile)
+			if err != nil {
+				// A bad zone file is skipped with a loud error rather than
+				// aborting startup, matching buildSecondaryZones: a resolver
+				// that refuses to boot over one malformed internal zone is
+				// worse than one that resolves everything else, and the
+				// absence is visible in the logs and in queries for that zone.
+				logger.Error("local zone file rejected", "zone", zc.Name, "file", zc.ZoneFile, "error", err)
+				continue
+			}
+			zone.Records = records
+			logger.Info("local zone loaded from file",
+				"zone", zc.Name, "file", zc.ZoneFile, "records", len(records))
+			zones = append(zones, zone)
+			continue
+		}
+
 		for _, s := range zc.Data {
 			rec, err := resolver.ParseLocalRecord(s)
 			if err != nil {
@@ -80,6 +105,42 @@ func buildStaticLocalZones(cfg *config.Config, logger *slog.Logger) []resolver.L
 	}
 
 	return zones
+}
+
+// loadZoneFileRecords parses a BIND master-file (RFC 1035 §5) into local-zone
+// records.
+//
+// An empty result is an error rather than an empty zone: a zone with no records
+// would answer NXDOMAIN for everything under it, which is a very different — and
+// much more confusing — thing to discover than a startup log line saying the
+// file was empty.
+func loadZoneFileRecords(zone, path string) ([]resolver.LocalRecord, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open zone file: %w", err)
+	}
+	defer f.Close()
+
+	rrs, err := dns.ReadZone(zone, f)
+	if err != nil {
+		return nil, err
+	}
+	if len(rrs) == 0 {
+		return nil, fmt.Errorf("zone file %q contains no records", path)
+	}
+
+	records := make([]resolver.LocalRecord, 0, len(rrs))
+	for _, rr := range rrs {
+		// The table normalises owner names (lowercase, no trailing dot) when it
+		// is built, so the name here is only used for that normalisation.
+		records = append(records, resolver.LocalRecord{
+			Name:  rr.Name,
+			Type:  rr.Type,
+			RData: rr.RData,
+			TTL:   rr.TTL,
+		})
+	}
+	return records, nil
 }
 
 func buildForwardTable(cfg *config.Config, logger *slog.Logger) *resolver.ForwardTable {
