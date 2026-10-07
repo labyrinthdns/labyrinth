@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"bytes"
 	"net"
 	"testing"
 )
@@ -36,7 +35,7 @@ func TestECS_CacheKeyFamilyRoundTrip(t *testing.T) {
 		if got := parsed.CacheKey(); got != tc.want {
 			t.Errorf("wire round trip: key=%q, want %q", got, tc.want)
 		}
-		if !bytes.Equal(before, ecs.Address) {
+		if !before.Equal(ecs.Address) || len(before) != len(ecs.Address) {
 			t.Error("cache key or encoding changed the input address")
 		}
 	}
