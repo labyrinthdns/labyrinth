@@ -89,9 +89,21 @@ formatters:
   # The tree was made gofmt-clean in 0ee5336 (68 files, tracked sources
   # only; .temp_files/ is gitignored and holds no tracked files).
   #
-  # Note: v2 removed formatter checks from `golangci-lint run`. Enabling
-  # gofmt here makes `golangci-lint fmt` the enforcing command, so CI
-  # needs an explicit `golangci-lint fmt --diff` step to gate on it.
+  # Enabling gofmt here also makes `golangci-lint run` — and therefore
+  # `make lint` — report formatting violations. Verified on probe PR #3:
+  #
+  #     ##[error]log/gofmt_gate_probe.go:7:1: File is not properly formatted (gofmt)
+  #
+  # An earlier version of this comment claimed the opposite ("v2 removed
+  # formatter checks from `golangci-lint run`"). That was wrong: it was an
+  # unverified premise, and PR #3 disproved it.
+  #
+  # Both paths fail the build on drift, so the `enable:` line above is what
+  # actually enforces gofmt. The dedicated `golangci-lint fmt --diff` step
+  # in .github/workflows/ci.yml is ordered BEFORE `make lint` so the
+  # actionable "Go files are not gofmt-clean" message is the one reported
+  # rather than the generic formatter finding, and so formatting stays
+  # gated even if `enable:` above is ever removed.
   enable:
     - gofmt
   exclusions:
