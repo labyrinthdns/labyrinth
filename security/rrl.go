@@ -83,7 +83,8 @@ func (h rrlEntryHeap) Swap(i, j int) {
 }
 
 func (h *rrlEntryHeap) Push(value any) {
-	entry := value.(*rrlEntry)
+	// The heap only ever holds *rrlEntry; comma-ok documents that.
+	entry, _ := value.(*rrlEntry)
 	entry.heapIndex = len(*h)
 	*h = append(*h, entry)
 }
@@ -166,12 +167,35 @@ func (r *RRL) sourcePrefix(ipStr string) string {
 	}
 
 	if ip4 := ip.To4(); ip4 != nil {
-		mask := net.CIDRMask(r.ipv4Prefix, 32)
+		mask := rrlCIDRMask(r.ipv4Prefix, 32)
 		return ip4.Mask(mask).String()
 	}
 
-	mask := net.CIDRMask(r.ipv6Prefix, 128)
+	mask := rrlCIDRMask(r.ipv6Prefix, 128)
 	return ip.Mask(mask).String()
+}
+
+// rrlCIDRMask builds the source-prefix mask, keeping ones inside [0, bits].
+//
+// A prefix length outside that range — reachable straight from YAML
+// (`security.rrl.ipv4_prefix: 33`) or a raw config PUT, neither of which
+// validates the field — makes net.CIDRMask return nil. ip.Mask(nil) then
+// returns nil, and nil.String() is the literal "<nil>", so every source
+// of that address family keys onto the SAME rrlKey: RRL degenerates from
+// a per-prefix budget into one global budget per (qname, responseType)
+// and a single abusive client silently drops every other client's
+// answers. Clamping to the nearest representable prefix keeps the key a
+// real subnet: wider than asked (/0 for a negative length, which is what
+// "group the whole family" means) or narrower than asked (/32 for a
+// length past the family width, which no address can split further).
+func rrlCIDRMask(ones, bits int) net.IPMask {
+	if ones < 0 {
+		ones = 0
+	}
+	if ones > bits {
+		ones = bits
+	}
+	return net.CIDRMask(ones, bits)
 }
 
 func normalizeRRLKeyPart(value string, maxLen int, lower bool) string {
@@ -200,7 +224,7 @@ func (r *RRL) evictOldestLocked() {
 	if len(r.evictionHeap) == 0 {
 		return
 	}
-	oldest := heap.Pop(&r.evictionHeap).(*rrlEntry)
+	oldest, _ := heap.Pop(&r.evictionHeap).(*rrlEntry)
 	delete(r.entries, oldest.key)
 }
 
@@ -221,7 +245,7 @@ func (r *RRL) StartCleanup(ctx interface{ Done() <-chan struct{} }) {
 			r.mu.Lock()
 			cutoff := time.Now().Add(-interval)
 			for len(r.evictionHeap) > 0 && r.evictionHeap[0].lastTime.Before(cutoff) {
-				stale := heap.Pop(&r.evictionHeap).(*rrlEntry)
+				stale, _ := heap.Pop(&r.evictionHeap).(*rrlEntry)
 				delete(r.entries, stale.key)
 			}
 			r.mu.Unlock()

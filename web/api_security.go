@@ -54,7 +54,7 @@ func (s *AdminServer) handleSecurity(w http.ResponseWriter, r *http.Request) {
 			"ipv4_prefix":          0,
 			"ipv6_prefix":          0,
 		},
-		"acl_refused_total":      int64(0),
+		"acl_refused_total":       int64(0),
 		"blocklist_blocked_total": int64(0),
 		// UI-M6.3 — per-EDE-code emission counters (RFC 8914 §4).
 		// Map of "code" → emission count. Empty when no EDE has been
@@ -64,13 +64,19 @@ func (s *AdminServer) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		"ede_counts": map[string]int64{},
 	}
 
+	// resp is built by this function, so these sub-maps are always present;
+	// hoisting the comma-ok lookup keeps that guaranteed without asserting.
+	rateLimitMap, _ := resp["rate_limit"].(map[string]interface{})
+	rrlMap, _ := resp["rrl"].(map[string]interface{})
+	cookiesMap, _ := resp["cookies"].(map[string]interface{})
+
 	if s.config.Load() != nil {
-		resp["rate_limit"].(map[string]interface{})["rate_per_second"] = s.config.Load().Security.RateLimit.Rate
-		resp["rate_limit"].(map[string]interface{})["burst"] = s.config.Load().Security.RateLimit.Burst
-		resp["rrl"].(map[string]interface{})["responses_per_second"] = s.config.Load().Security.RRL.ResponsesPerSecond
-		resp["rrl"].(map[string]interface{})["slip_ratio"] = s.config.Load().Security.RRL.SlipRatio
-		resp["rrl"].(map[string]interface{})["ipv4_prefix"] = s.config.Load().Security.RRL.IPv4Prefix
-		resp["rrl"].(map[string]interface{})["ipv6_prefix"] = s.config.Load().Security.RRL.IPv6Prefix
+		rateLimitMap["rate_per_second"] = s.config.Load().Security.RateLimit.Rate
+		rateLimitMap["burst"] = s.config.Load().Security.RateLimit.Burst
+		rrlMap["responses_per_second"] = s.config.Load().Security.RRL.ResponsesPerSecond
+		rrlMap["slip_ratio"] = s.config.Load().Security.RRL.SlipRatio
+		rrlMap["ipv4_prefix"] = s.config.Load().Security.RRL.IPv4Prefix
+		rrlMap["ipv6_prefix"] = s.config.Load().Security.RRL.IPv6Prefix
 	}
 
 	if s.metrics != nil {
@@ -93,9 +99,9 @@ func (s *AdminServer) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		// "how much is my cookie defence doing" — both reasons
 		// fire the same downstream consequence (client retries).
 		if v, ok := snap.ResponsesByRCode["BADCOOKIE"]; ok {
-			resp["cookies"].(map[string]interface{})["badcookie_responses"] = v
+			cookiesMap["badcookie_responses"] = v
 		}
-		resp["rate_limit"].(map[string]interface{})["rate_limited_total"] = snap.RateLimited
+		rateLimitMap["rate_limited_total"] = snap.RateLimited
 		resp["blocklist_blocked_total"] = snap.BlockedQueries
 		if v, ok := snap.ResponsesByRCode["REFUSED"]; ok {
 			resp["acl_refused_total"] = v

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"container/heap"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -37,6 +38,49 @@ var (
 type clientQueryEntry struct {
 	count      atomic.Uint64
 	lastAccess time.Time
+	// key is the client IP this entry was created for, so a heap node whose
+	// map entry has already been reaped by TTL cleanup can be recognised and
+	// skipped instead of evicting a live client.
+	key string
+	// heapIndex is this entry's slot in AdminServer.clientNumHeap. The bucket
+	// and its heap node are the same object here, so container/heap keeps this
+	// current and refreshClientNumHeapLocked can re-sink the entry in O(log n).
+	heapIndex int
+}
+
+// clientNumHeap is a min-heap of client entries ordered by lastAccess, so the
+// capped eviction in evictOldestClientLocked runs in O(log n) instead of
+// scanning the whole clientQueryNum map while holding clientNumMu. Same
+// rationale as security/rrl.go's rrlEntryHeap and security/ratelimit.go's
+// evictHeap: the map is attacker-inflatable via UDP source spoofing, so a
+// cap-triggered eviction must never walk it.
+type clientNumHeap []*clientQueryEntry
+
+func (h clientNumHeap) Len() int { return len(h) }
+func (h clientNumHeap) Less(i, j int) bool {
+	return h[i].lastAccess.Before(h[j].lastAccess)
+}
+func (h clientNumHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+
+func (h *clientNumHeap) Push(x any) {
+	// The heap only ever holds *clientQueryEntry; comma-ok documents that.
+	e, _ := x.(*clientQueryEntry)
+	e.heapIndex = len(*h)
+	*h = append(*h, e)
+}
+
+func (h *clientNumHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	e := old[last]
+	old[last] = nil
+	e.heapIndex = -1
+	*h = old[:last]
+	return e
 }
 
 // AdminServer provides the admin dashboard HTTP backend.
@@ -132,6 +176,16 @@ type AdminServer struct {
 	clientQueryNum        map[string]*clientQueryEntry
 	clientNumMu           sync.Mutex
 	clientCleanupInterval time.Duration
+	// clientNumHeap is a min-heap over the same entries, ordered by
+	// lastAccess, so a capped eviction costs O(log n) rather than a scan of
+	// the whole attacker-inflatable map. It may hold nodes whose map entry
+	// TTL cleanup already reaped; evictOldestClientLocked skips those.
+	clientNumHeap clientNumHeap
+	// clientNumHeapLive counts how many of the live map entries the heap
+	// currently accounts for. A mismatch means something wrote clientQueryNum
+	// outside RecordQuery, and evictOldestClientLocked rebuilds from the map
+	// rather than trust a minimum drawn from an incomplete index.
+	clientNumHeapLive int
 	// clientQueryNumCapOverride lets tests use a smaller cap so the
 	// over-cap LRU eviction path can be exercised without inserting
 	// MaxClientQueryNumEntries entries. Zero means use the package
@@ -142,15 +196,15 @@ type AdminServer struct {
 	// N>1 = fully record 1 in N cached successes (timeseries still
 	// updated for every query). Uncached / error / blocked always full.
 	querySampleEvery uint64
-	updateCache               *UpdateInfo
-	updateCheckedAt           time.Time
-	updateMu                  sync.RWMutex
-	blocklist                 *blocklist.Manager
-	dohEnabled                bool
-	dohHandler                server.Handler
-	certMgr                   *certmanager.Manager
-	loginLimiter              *loginLimiter
-	runtimeApplier            func(*config.Config)
+	updateCache      *UpdateInfo
+	updateCheckedAt  time.Time
+	updateMu         sync.RWMutex
+	blocklist        *blocklist.Manager
+	dohEnabled       bool
+	dohHandler       server.Handler
+	certMgr          *certmanager.Manager
+	loginLimiter     *loginLimiter
+	runtimeApplier   func(*config.Config)
 }
 
 // NewAdminServer creates a new AdminServer. The bl parameter is optional and
@@ -541,22 +595,59 @@ func (s *AdminServer) clientQueryNumCap() int {
 	return MaxClientQueryNumEntries
 }
 
-// evictOldestClientLocked drops the clientQueryNum entry with the
-// oldest lastAccess timestamp. Caller holds s.clientNumMu.
+// evictOldestClientLocked drops the clientQueryNum entry with the oldest
+// lastAccess, in O(log n) through clientNumHeap rather than by scanning the
+// whole attacker-inflatable map while holding clientNumMu.
+// Caller holds s.clientNumMu.
 func (s *AdminServer) evictOldestClientLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for k, v := range s.clientQueryNum {
-		if first || v.lastAccess.Before(oldestTime) {
-			oldestKey = k
-			oldestTime = v.lastAccess
-			first = false
+	// The heap is an accelerator, never a second source of truth. If it no
+	// longer accounts for exactly the live map entries, something wrote the
+	// map outside RecordQuery and the heap's minimum cannot be trusted to be
+	// the map's minimum — a partially-populated heap would evict a fresher
+	// tracked entry while an older untracked one survived. Rebuilding first
+	// keeps the oldest-lastAccess guarantee unconditional. Production only
+	// reaches the map through RecordQuery, so the counts always agree there
+	// and this never runs.
+	if s.clientNumHeapLive != len(s.clientQueryNum) {
+		s.rebuildClientNumHeapLocked()
+	}
+
+	for s.clientNumHeap.Len() > 0 {
+		e, _ := heap.Pop(&s.clientNumHeap).(*clientQueryEntry)
+		// Skip nodes whose map entry TTL cleanup already reaped, and nodes
+		// whose key has since been re-registered with a fresher entry.
+		if cur, ok := s.clientQueryNum[e.key]; ok && cur == e {
+			delete(s.clientQueryNum, e.key)
+			s.clientNumHeapLive--
+			return
 		}
 	}
-	if oldestKey != "" {
-		delete(s.clientQueryNum, oldestKey)
+}
+
+// rebuildClientNumHeapLocked reseeds the eviction heap from the live map,
+// which also stamps each entry's key. Caller holds s.clientNumMu.
+func (s *AdminServer) rebuildClientNumHeapLocked() {
+	h := make(clientNumHeap, 0, len(s.clientQueryNum))
+	for ip, e := range s.clientQueryNum {
+		e.key = ip
+		e.heapIndex = -1
+		heap.Push(&h, e)
 	}
+	s.clientNumHeap = h
+	s.clientNumHeapLive = len(s.clientQueryNum)
+}
+
+// refreshClientNumHeapLocked re-sinks an entry whose lastAccess has just
+// advanced, so the oldest-lastAccess guarantee survives a client that keeps
+// querying. The identity check degrades a desynchronised entry to a no-op
+// rather than letting heap.Fix panic on the query path.
+// Caller holds s.clientNumMu.
+func (s *AdminServer) refreshClientNumHeapLocked(e *clientQueryEntry) {
+	idx := e.heapIndex
+	if idx < 0 || idx >= s.clientNumHeap.Len() || s.clientNumHeap[idx] != e {
+		return
+	}
+	heap.Fix(&s.clientNumHeap, idx)
 }
 
 // SetQuerySampleEvery sets how often cached successful queries get a
@@ -601,11 +692,17 @@ func (s *AdminServer) RecordQuery(client, qname, qtype, rcode string, cached boo
 		if len(s.clientQueryNum) >= s.clientQueryNumCap() {
 			s.evictOldestClientLocked()
 		}
-		clientEntry = &clientQueryEntry{lastAccess: time.Now()}
+		clientEntry = &clientQueryEntry{lastAccess: time.Now(), key: client, heapIndex: -1}
 		s.clientQueryNum[client] = clientEntry
+		heap.Push(&s.clientNumHeap, clientEntry)
+		s.clientNumHeapLive++
 	}
 	// Update last access time
 	clientEntry.lastAccess = time.Now()
+	// The entry just became the most recently used client, so its heap
+	// position must follow — otherwise eviction silently degrades to
+	// first-seen order, the same drift the RRL heap avoids.
+	s.refreshClientNumHeapLocked(clientEntry)
 	s.clientNumMu.Unlock()
 	clientNum := clientEntry.count.Add(1)
 
@@ -655,6 +752,14 @@ func (s *AdminServer) cleanupStaleClients() {
 			delete(s.clientQueryNum, ip)
 			removed++
 		}
+	}
+	// Keep the heap's live accounting in step so evictOldestClientLocked does
+	// not mistake ordinary TTL reaping for an out-of-band map write. Clamped
+	// at zero: entries written straight into the map were never counted.
+	if n := s.clientNumHeapLive - removed; n > 0 {
+		s.clientNumHeapLive = n
+	} else {
+		s.clientNumHeapLive = 0
 	}
 
 	if removed > 0 && s.logger != nil {

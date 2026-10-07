@@ -12,7 +12,11 @@ var BufferPool = sync.Pool{
 
 // GetBuffer retrieves a buffer from the pool.
 func GetBuffer() *[]byte {
-	return BufferPool.Get().(*[]byte)
+	buf, ok := BufferPool.Get().(*[]byte)
+	if !ok {
+		panic("pool: BufferPool returned a non-*[]byte value")
+	}
+	return buf
 }
 
 // PutBuffer returns a buffer to the pool.

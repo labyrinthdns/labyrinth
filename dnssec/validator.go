@@ -2,6 +2,7 @@ package dnssec
 
 import (
 	"bytes"
+	"container/heap"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -146,6 +147,57 @@ type dnskeyCache struct {
 	signatures []dns.ResourceRecord
 	fetchedAt  time.Time
 	ttl        time.Duration
+	// node is this entry's eviction-heap node. storeDNSKEY replaces the
+	// cached pointer on every insert, including a plain refresh of an
+	// existing zone, so an index kept on the entry itself would be thrown
+	// away with it; a node reached through this field survives for as long
+	// as the map and the heap agree about it.
+	node *dnskeyHeapNode
+}
+
+// dnskeyHeapNode is the eviction-heap node for one keyCache entry. It is a
+// separate struct from the *dnskeyCache it indexes precisely because that
+// pointer is reallocated on every refresh — this is the same separate-node
+// arrangement security/ratelimit.go uses for its tokenBucket/evictHeapEntry
+// pair.
+type dnskeyHeapNode struct {
+	key       string
+	fetchedAt time.Time
+	index     int
+}
+
+// dnskeyHeap is a min-heap of DNSKEY cache nodes ordered by fetchedAt, so the
+// capped eviction costs O(log n) instead of scanning the whole attacker-
+// inflatable keyCache while holding v.mu. Same rationale as security/rrl.go's
+// rrlEntryHeap, security/ratelimit.go's evictHeap and resolver/infracache.go's
+// infraHeap.
+type dnskeyHeap []*dnskeyHeapNode
+
+func (h dnskeyHeap) Len() int { return len(h) }
+func (h dnskeyHeap) Less(i, j int) bool {
+	return h[i].fetchedAt.Before(h[j].fetchedAt)
+}
+func (h dnskeyHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+
+func (h *dnskeyHeap) Push(x interface{}) {
+	// The heap only ever holds *dnskeyHeapNode; comma-ok documents that.
+	n, _ := x.(*dnskeyHeapNode)
+	n.index = len(*h)
+	*h = append(*h, n)
+}
+
+func (h *dnskeyHeap) Pop() interface{} {
+	old := *h
+	last := len(old) - 1
+	n := old[last]
+	old[last] = nil
+	n.index = -1
+	*h = old[:last]
+	return n
 }
 
 // MaxDNSKEYCacheEntries caps the validator's keyCache to bound the
@@ -164,23 +216,76 @@ type dnskeyCache struct {
 // DNSKEY query to re-populate.
 const MaxDNSKEYCacheEntries = 50_000
 
-// evictOldestDNSKEYLocked drops the keyCache entry with the oldest
-// fetchedAt timestamp. Caller holds v.mu in write mode. O(n) over
-// the map; only runs on insert after the cap is reached.
+// storeDNSKEY caches a fetched DNSKEY RRset for a zone, enforcing the entry
+// cap with LRU eviction on insert past MaxDNSKEYCacheEntries. Existing-zone
+// refreshes are exempt from the cap because they replace in place and don't
+// grow the map.
+func (v *Validator) storeDNSKEY(zone string, keys, signatures []dns.ResourceRecord, ttl time.Duration) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if _, exists := v.keyCache[zone]; !exists && len(v.keyCache) >= MaxDNSKEYCacheEntries {
+		v.evictOldestDNSKEYLocked()
+	}
+	entry := &dnskeyCache{
+		keys:       keys,
+		signatures: signatures,
+		fetchedAt:  time.Now(),
+		ttl:        ttl,
+	}
+	// The cached pointer is replaced on every insert, refresh included, so
+	// the heap node is a separate object reached from the entry rather than
+	// an index stored on it. The previous node for this zone is left in the
+	// heap as a stale one; the identity check in evictOldestDNSKEYLocked
+	// skips it.
+	node := &dnskeyHeapNode{key: zone, fetchedAt: entry.fetchedAt}
+	entry.node = node
+	v.keyCache[zone] = entry
+	heap.Push(&v.keyHeap, node)
+}
+
+// evictOldestDNSKEYLocked drops the keyCache entry with the oldest fetchedAt
+// timestamp, in O(log n) through keyHeap rather than by scanning the whole
+// attacker-inflatable keyCache while holding v.mu. Caller holds v.mu in write
+// mode; only runs on insert after the cap is reached.
 func (v *Validator) evictOldestDNSKEYLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for k, e := range v.keyCache {
-		if first || e.fetchedAt.Before(oldestTime) {
-			oldestKey = k
-			oldestTime = e.fetchedAt
-			first = false
+	// A refresh replaces the cached pointer and leaves the previous node in
+	// the heap, so the heap legitimately carries more nodes than the map has
+	// entries. Compact once stale nodes dominate, which keeps the heap from
+	// outgrowing the map across repeated refreshes.
+	if len(v.keyHeap) > len(v.keyCache)*2+1 {
+		v.rebuildDNSKEYHeapLocked()
+	}
+
+	for v.keyHeap.Len() > 0 {
+		n, _ := heap.Pop(&v.keyHeap).(*dnskeyHeapNode)
+		// Skip stale nodes: one whose entry was already evicted or replaced
+		// by a later fetch of the same zone.
+		if cur, ok := v.keyCache[n.key]; ok && cur.node == n {
+			delete(v.keyCache, n.key)
+			return
 		}
 	}
-	if oldestKey != "" {
-		delete(v.keyCache, oldestKey)
+
+	// The heap drained without yielding a live node, so it no longer covers
+	// the map. Rebuild from the map and evict from that, so the cap always
+	// holds even if some caller populated keyCache directly.
+	if len(v.keyCache) > 0 {
+		v.rebuildDNSKEYHeapLocked()
+		n, _ := heap.Pop(&v.keyHeap).(*dnskeyHeapNode)
+		delete(v.keyCache, n.key)
 	}
+}
+
+// rebuildDNSKEYHeapLocked reseeds the eviction heap from the live map, which
+// also links each entry to its node. Caller holds v.mu in write mode.
+func (v *Validator) rebuildDNSKEYHeapLocked() {
+	h := make(dnskeyHeap, 0, len(v.keyCache))
+	for zone, e := range v.keyCache {
+		n := &dnskeyHeapNode{key: zone, fetchedAt: e.fetchedAt}
+		e.node = n
+		heap.Push(&h, n)
+	}
+	v.keyHeap = h
 }
 
 // inflightFetch coordinates concurrent fetchers for the same key, so that
@@ -231,6 +336,13 @@ type Validator struct {
 
 	mu       sync.RWMutex
 	keyCache map[string]*dnskeyCache
+	// keyHeap is a min-heap over the same entries, ordered by fetchedAt, so
+	// a capped eviction costs O(log n) rather than scanning the whole
+	// attacker-inflatable keyCache while holding v.mu. A refresh replaces the
+	// cached pointer and leaves the previous node behind as a stale one;
+	// evictOldestDNSKEYLocked skips those and compacts the heap when they
+	// accumulate.
+	keyHeap dnskeyHeap
 
 	// inflight coalesces concurrent DNSKEY/DS fetches. Without this, a cold
 	// validator cache hit by N parallel queries would launch N identical
@@ -1836,20 +1948,8 @@ func (v *Validator) fetchDNSKEYRRSet(zone string) ([]dns.ResourceRecord, []dns.R
 		ttl = negativeDNSKEYCacheTTL
 	}
 
-	// Cache the result. Enforce the cap with LRU eviction on insert
-	// past MaxDNSKEYCacheEntries; existing-zone refreshes are exempt
-	// because they replace in place and don't grow the map.
-	v.mu.Lock()
-	if _, exists := v.keyCache[normalized]; !exists && len(v.keyCache) >= MaxDNSKEYCacheEntries {
-		v.evictOldestDNSKEYLocked()
-	}
-	v.keyCache[normalized] = &dnskeyCache{
-		keys:       keys,
-		signatures: signatures,
-		fetchedAt:  time.Now(),
-		ttl:        ttl,
-	}
-	v.mu.Unlock()
+	// Cache the result.
+	v.storeDNSKEY(normalized, keys, signatures, ttl)
 
 	inf.keys = keys
 	inf.signatures = signatures

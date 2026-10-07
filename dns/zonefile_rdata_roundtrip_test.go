@@ -28,7 +28,7 @@ func TestFormatRData_MappedAAAARoundTrip(t *testing.T) {
 			if err != nil || !strings.Contains(text, ":") {
 				t.Fatalf("AAAA presentation = %q, err=%v; want IPv6 text", text, err)
 			}
-			if !bytes.Equal(net.ParseIP(text).To16(), data) {
+			if !net.ParseIP(text).To16().Equal(data) {
 				t.Fatalf("presentation %q changed address bytes %x", text, data)
 			}
 			zone, err := FormatZone("example.", []ResourceRecord{

@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"bytes"
 	"net"
 	"testing"
 )
@@ -36,7 +35,12 @@ func TestECS_CacheKeyFamilyRoundTrip(t *testing.T) {
 		if got := parsed.CacheKey(); got != tc.want {
 			t.Errorf("wire round trip: key=%q, want %q", got, tc.want)
 		}
-		if !bytes.Equal(before, ecs.Address) {
+		// net.IP.Equal, not bytes.Equal: the same address can be held as a
+		// 4-byte or a 16-byte slice, so a byte comparison reports a false
+		// difference for equal addresses. The ECS fixtures here parse
+		// IPv4-mapped inputs like "::ffff:192.0.2.1", which is exactly where
+		// the two representations diverge.
+		if !before.Equal(ecs.Address) {
 			t.Error("cache key or encoding changed the input address")
 		}
 	}

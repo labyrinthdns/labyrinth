@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"container/heap"
 	"context"
 	"sort"
 	"sync"
@@ -13,6 +14,49 @@ type NSInfo struct {
 	FailCount int
 	LameZones map[string]struct{}
 	LastUsed  time.Time
+	// key is the nameserver IP this entry is filed under, so a heap node
+	// whose map entry has already been reaped by CleanStale or by eviction
+	// can be recognised and skipped instead of evicting a live entry.
+	key string
+	// heapIndex is this entry's slot in InfraCache.evictHeap. The entry and
+	// its heap node are the same object here, so container/heap keeps this
+	// current and refreshInfraHeapLocked can re-sink it in O(log n).
+	heapIndex int
+}
+
+// infraHeap is a min-heap of nameserver entries ordered by LastUsed, so a
+// capped eviction costs O(log n) instead of scanning the whole entries map
+// while holding ic.mu. Same rationale as security/rrl.go's rrlEntryHeap and
+// security/ratelimit.go's evictHeap: the map is attacker-inflatable through
+// unique upstream NS addresses, and a cap-triggered eviction must never walk
+// it on the resolver's request path.
+type infraHeap []*NSInfo
+
+func (h infraHeap) Len() int { return len(h) }
+func (h infraHeap) Less(i, j int) bool {
+	return h[i].LastUsed.Before(h[j].LastUsed)
+}
+func (h infraHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+
+func (h *infraHeap) Push(x interface{}) {
+	// The heap only ever holds *NSInfo; comma-ok documents that.
+	e, _ := x.(*NSInfo)
+	e.heapIndex = len(*h)
+	*h = append(*h, e)
+}
+
+func (h *infraHeap) Pop() interface{} {
+	old := *h
+	last := len(old) - 1
+	e := old[last]
+	old[last] = nil
+	e.heapIndex = -1
+	*h = old[:last]
+	return e
 }
 
 // MaxInfraCacheEntries caps the number of distinct nameserver IPs the
@@ -49,6 +93,17 @@ const MaxLameZonesPerNS = 10_000
 type InfraCache struct {
 	mu      sync.RWMutex
 	entries map[string]*NSInfo
+	// evictHeap is a min-heap over the same entries, ordered by LastUsed, so
+	// a capped eviction costs O(log n) rather than a scan of the whole
+	// attacker-inflatable map while holding ic.mu. It may still hold nodes
+	// whose map entry CleanStale already reaped; evictOldestLocked skips
+	// those.
+	evictHeap infraHeap
+	// heapLive counts how many of the live map entries the heap currently
+	// accounts for. A mismatch means something wrote entries outside
+	// getOrCreate, and evictOldestLocked rebuilds from the map rather than
+	// trust a minimum drawn from an incomplete index.
+	heapLive int
 }
 
 // NewInfraCache creates a new infrastructure cache.
@@ -74,28 +129,67 @@ func (ic *InfraCache) getOrCreate(nsIP string) *NSInfo {
 		info = &NSInfo{
 			LameZones: make(map[string]struct{}),
 			LastUsed:  time.Now(),
+			key:       nsIP,
+			heapIndex: -1,
 		}
 		ic.entries[nsIP] = info
+		heap.Push(&ic.evictHeap, info)
+		ic.heapLive++
 	}
 	return info
 }
 
 // evictOldestLocked drops the entry with the oldest LastUsed timestamp
-// to make room for a new insert. Caller holds ic.mu in write mode.
+// to make room for a new insert, in O(log n) through evictHeap rather than by
+// scanning the whole attacker-inflatable map while holding ic.mu.
+// Caller holds ic.mu in write mode.
 func (ic *InfraCache) evictOldestLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for k, v := range ic.entries {
-		if first || v.LastUsed.Before(oldestTime) {
-			oldestKey = k
-			oldestTime = v.LastUsed
-			first = false
+	// The heap is an accelerator, never a second source of truth. If it no
+	// longer accounts for exactly the live map entries, something wrote the
+	// map outside getOrCreate and the heap's minimum cannot be trusted to be
+	// the map's minimum. Rebuilding first keeps the oldest-LastUsed guarantee
+	// unconditional. Production only reaches the map through getOrCreate, so
+	// the counts agree there and this never runs.
+	if ic.heapLive != len(ic.entries) {
+		ic.rebuildEvictHeapLocked()
+	}
+
+	for ic.evictHeap.Len() > 0 {
+		e, _ := heap.Pop(&ic.evictHeap).(*NSInfo)
+		// Skip nodes whose map entry CleanStale already reaped, and nodes
+		// whose key has since been re-registered with a fresher entry.
+		if cur, ok := ic.entries[e.key]; ok && cur == e {
+			delete(ic.entries, e.key)
+			ic.heapLive--
+			return
 		}
 	}
-	if oldestKey != "" {
-		delete(ic.entries, oldestKey)
+}
+
+// rebuildEvictHeapLocked reseeds the eviction heap from the live map, which
+// also stamps each entry's key. Caller holds ic.mu in write mode.
+func (ic *InfraCache) rebuildEvictHeapLocked() {
+	h := make(infraHeap, 0, len(ic.entries))
+	for ip, e := range ic.entries {
+		e.key = ip
+		e.heapIndex = -1
+		heap.Push(&h, e)
 	}
+	ic.evictHeap = h
+	ic.heapLive = len(ic.entries)
+}
+
+// refreshInfraHeapLocked re-sinks an entry whose LastUsed has just advanced,
+// so the oldest-LastUsed guarantee survives a nameserver that keeps being
+// queried. The identity check degrades a desynchronised entry to a no-op
+// rather than letting heap.Fix panic on the request path.
+// Caller holds ic.mu in write mode.
+func (ic *InfraCache) refreshInfraHeapLocked(e *NSInfo) {
+	idx := e.heapIndex
+	if idx < 0 || idx >= ic.evictHeap.Len() || ic.evictHeap[idx] != e {
+		return
+	}
+	heap.Fix(&ic.evictHeap, idx)
 }
 
 // RecordRTT records a successful query RTT using EWMA (0.7*old + 0.3*sample).
@@ -105,6 +199,10 @@ func (ic *InfraCache) RecordRTT(nsIP string, rtt time.Duration) {
 
 	info := ic.getOrCreate(nsIP)
 	info.LastUsed = time.Now()
+	// The entry just became the most recently used nameserver, so its heap
+	// position must follow — otherwise eviction silently degrades to
+	// first-seen order.
+	ic.refreshInfraHeapLocked(info)
 	if info.RTT == 0 {
 		info.RTT = rtt
 	} else {
@@ -120,6 +218,7 @@ func (ic *InfraCache) RecordFailure(nsIP string) {
 
 	info := ic.getOrCreate(nsIP)
 	info.LastUsed = time.Now()
+	ic.refreshInfraHeapLocked(info)
 	info.FailCount++
 }
 
@@ -134,6 +233,7 @@ func (ic *InfraCache) RecordLame(nsIP string, zone string) {
 
 	info := ic.getOrCreate(nsIP)
 	info.LastUsed = time.Now()
+	ic.refreshInfraHeapLocked(info)
 	if _, exists := info.LameZones[zone]; !exists && len(info.LameZones) >= MaxLameZonesPerNS {
 		return
 	}
@@ -198,10 +298,25 @@ func (ic *InfraCache) CleanStale(maxIdle time.Duration) {
 	defer ic.mu.Unlock()
 
 	cutoff := time.Now().Add(-maxIdle)
+	removed := 0
 	for ip, info := range ic.entries {
 		if info.LastUsed.Before(cutoff) {
 			delete(ic.entries, ip)
+			removed++
 		}
+	}
+	// Keep the heap's live accounting in step so evictOldestLocked does not
+	// mistake ordinary TTL reaping for an out-of-band map write. Clamped at
+	// zero: entries written straight into the map were never counted.
+	if n := ic.heapLive - removed; n > 0 {
+		ic.heapLive = n
+	} else {
+		ic.heapLive = 0
+	}
+	// The heap keeps nodes for entries just reaped; drop them so it cannot
+	// outgrow the map without bound between cleanup ticks.
+	if len(ic.evictHeap) > len(ic.entries)*2+1 {
+		ic.rebuildEvictHeapLocked()
 	}
 }
 

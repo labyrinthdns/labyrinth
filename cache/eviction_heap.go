@@ -25,7 +25,9 @@ func (q evictionQueue) Less(i, j int) bool { return q[i].expiresAt.Before(q[j].e
 func (q evictionQueue) Swap(i, j int) { q[i], q[j] = q[j], q[i] }
 
 func (q *evictionQueue) Push(x any) {
-	*q = append(*q, x.(evictionItem))
+	// The queue only ever holds evictionItem; comma-ok documents that.
+	item, _ := x.(evictionItem)
+	*q = append(*q, item)
 }
 
 func (q *evictionQueue) Pop() any {
@@ -81,7 +83,7 @@ func (s *shard) maybeCompactEvictionQueueLocked() {
 
 func (s *shard) nextEvictionKeyLocked() (cacheKey, bool) {
 	for s.evictQ.Len() > 0 {
-		item := heap.Pop(&s.evictQ).(evictionItem)
+		item, _ := heap.Pop(&s.evictQ).(evictionItem)
 		current, ok := s.entries[item.key]
 		if !ok || current != item.entry {
 			continue
@@ -114,7 +116,7 @@ func (s *shard) evictExpiredLocked(now time.Time) int {
 			break
 		}
 
-		item = heap.Pop(&s.evictQ).(evictionItem)
+		item, _ = heap.Pop(&s.evictQ).(evictionItem)
 		current, ok := s.entries[item.key]
 		if !ok || current != item.entry {
 			continue

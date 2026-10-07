@@ -117,7 +117,7 @@ func RunBenchmark(cfg RunConfig, onSnapshot func(RunResult)) RunResult {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for { //nolint:gosimple // for-range ticker.C won't work here due to nested select
+		for { //nolint:staticcheck // S1000: for-range ticker.C won't work due to nested select
 			select {
 			case <-ticker.C:
 				if time.Now().After(deadline) {
