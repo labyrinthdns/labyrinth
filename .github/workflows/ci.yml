@@ -35,6 +35,42 @@ jobs:
       - name: golangci-lint
         run: make lint
 
+      # v2 moved formatter checks out of `golangci-lint run`, so `make lint`
+      # above does NOT gate on formatting — it would pass on unformatted code
+      # even with `formatters.enable: [gofmt]` set in .golangci.yml.
+      #
+      # This step fails on DIFF OUTPUT, deliberately NOT on golangci-lint's
+      # exit code: whether `fmt --diff` exits non-zero on drift was never
+      # established (v2.14.0 exposes no --exit-code flag), so trusting it
+      # risks a silently-green gate that never blocks anything. The diff text
+      # is the signal we actually rely on.
+      #
+      # Fail-closed by construction:
+      #   - non-empty diff output  -> fail and print the diff
+      #   - non-zero exit, no diff -> fail, treating it as a tool error rather
+      #                              than silently reading it as success
+      # `set +e` guards the capture so a non-zero status is inspected rather
+      # than aborting the step under Actions' default `bash -e`.
+      - name: gofmt
+        run: |
+          set +e
+          diff_out="$(golangci-lint fmt --diff)"
+          status=$?
+          set -e
+
+          if [ -n "$diff_out" ]; then
+            printf '%s\n' "$diff_out"
+            echo "::error::Go files are not gofmt-clean. Run 'golangci-lint fmt' locally and commit the result."
+            exit 1
+          fi
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::golangci-lint fmt --diff exited ${status} with no diff output; refusing to treat that as a pass."
+            exit 1
+          fi
+
+          echo "gofmt: no formatting diff; all checked Go files are gofmt-clean."
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

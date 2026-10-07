@@ -82,6 +82,18 @@ linters:
       - builtin$
       - examples$
 formatters:
+  # gofmt is the canonical formatter for this repo. Without an `enable:`
+  # list golangci-lint v2 runs no formatters at all, so this block used to
+  # carry only inert exclusions.
+  #
+  # The tree was made gofmt-clean in 0ee5336 (68 files, tracked sources
+  # only; .temp_files/ is gitignored and holds no tracked files).
+  #
+  # Note: v2 removed formatter checks from `golangci-lint run`. Enabling
+  # gofmt here makes `golangci-lint fmt` the enforcing command, so CI
+  # needs an explicit `golangci-lint fmt --diff` step to gate on it.
+  enable:
+    - gofmt
   exclusions:
     generated: lax
     paths:
