@@ -22,8 +22,12 @@ jobs:
           go-version: '1.26.5'
           check-latest: true
 
+      # The /v2 module path is required: .golangci.yml is on the v2 schema, and
+      # @latest on the v1 path resolves to v1.x, which aborts with "you are
+      # using a configuration file for golangci-lint v2 with golangci-lint v1".
+      # Keep the config schema and this path in step.
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 
       - name: Verify first-party Go package scope
         run: make check-go-package-scope
