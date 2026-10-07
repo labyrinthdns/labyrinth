@@ -67,7 +67,6 @@ import (
 // RDATA the writer recognises as structurally broken (e.g. an SOA with
 // fewer than five space-separated fields). Unknown RR types are emitted
 // in RFC 3597 §5 generic form; the parser is responsible for round-trip.
-//
 func FormatZone(apex string, records []ResourceRecord) ([]byte, error) {
 	// Group records by owner. The map keyed by lowercased name with the
 	// trailing dot stripped — `$ORIGIN` is the canonical way to glue a
@@ -123,11 +122,22 @@ func FormatZone(apex string, records []ResourceRecord) ([]byte, error) {
 		} else {
 			// No SOA present or the SOA record has no RDATA (some
 			// operator-configured local zones strip the SOA). Emit a
-			// placeholder so the file is still valid BIND; the parser
-			// will see the literal "SOA" keyword and reject the zone
-			// for lack of a serial. A real operator-facing tool would
-			// warn here.
-			fmt.Fprintf(&sb, "@\tIN\tSOA\t%s invalid. invalid. (\n", escapeName(apexDot))
+			// placeholder so the file is still valid BIND and the operator
+			// can load the export back. The synthesised marker name makes it
+			// obvious the SOA is not authoritative; a real operator-facing
+			// tool would warn here.
+			//
+			// The whole record has to be well formed, exactly as emitSOAMiddle
+			// writes a real one: two names, then the five timers, then the
+			// closing paren. Emitting only the opener left an unbalanced "("
+			// and no timers, and it also wrote a THIRD name, which the parser
+			// then read as timer 0. Every local-zone export lands here, because
+			// resolver.ParseLocalRecord rejects the SOA type and so a LocalZone
+			// can never carry one — the endpoint was serving a file the
+			// project's own parser refused.
+			fmt.Fprintf(&sb, "@\tIN\tSOA\t%s invalid. (\n", escapeName(apexDot))
+			fmt.Fprintf(&sb, "\t\t%d\t; serial\n\t\t%d\t; refresh\n\t\t%d\t; retry\n\t\t%d\t; expire\n\t\t%d\t; minimum\n\t\t)\n",
+				1, 3600, 600, 86400, minTTL)
 		}
 	}
 
@@ -246,7 +256,6 @@ func emitOwner(sb *strings.Builder, name string, records []ResourceRecord) error
 // closing paren, in the parenthesised form the FormatZone header opened.
 // Each timer gets a BIND-style inline comment so the file is human-
 // readable without losing the structured parseability.
-//
 func emitSOAMiddle(sb *strings.Builder, r ResourceRecord) error {
 	rec, err := ParseSOA(r.RData, 0)
 	if err != nil {
@@ -260,7 +269,6 @@ func emitSOAMiddle(sb *strings.Builder, r ResourceRecord) error {
 // parseSOANames extracts the two name fields from a wire-format SOA RDATA.
 // The rest of the record is laid out by emitSOAMiddle;
 // this helper is only used to produce the header opener.
-//
 func parseSOANames(rdata []byte) (mname, rname string) {
 	// SOA RDATA: mname, rname, serial, refresh, retry, expire, minimum.
 	// mname and rname are wire-format names; we parse them with the
@@ -284,7 +292,6 @@ func parseSOANames(rdata []byte) (mname, rname string) {
 // helpers in the dns package assume an offset-relative parse and
 // currently do not report the consumed length; this thin wrapper
 // does it locally so parseSOANames can step through two names.
-//
 func nameLen(b []byte, off int) (adv, olen int) {
 	// Loop through labels until the zero terminator.
 	for off < len(b) {
@@ -306,7 +313,6 @@ func nameLen(b []byte, off int) (adv, olen int) {
 // firstSOA returns the first SOA record from a slice, or nil if there
 // are none. The lookup is O(n) in the caller's slice; the records are
 // typically few at the apex so this is fine.
-//
 func firstSOA(records []ResourceRecord) *ResourceRecord {
 	for i := range records {
 		if records[i].Type == TypeSOA {

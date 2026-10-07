@@ -73,7 +73,6 @@ import (
 //
 // The returned slice has records in file order. Owner names are absolute
 // (with trailing dot) and lowercased.
-//
 func ParseZone(name string, text []byte) ([]ResourceRecord, error) {
 	p := &zoneParser{
 		scanner:     bufio.NewScanner(strings.NewReader(string(text))),
@@ -165,7 +164,7 @@ func (p *zoneParser) parseFile() ([]ResourceRecord, error) {
 		// so we update it on continuation lines as well.
 		if len(pending) > 0 && p.isContinuation(stripped) {
 			pending = append(pending, stripped)
-			p.parenDepth += strings.Count(stripped, "(") - strings.Count(stripped, ")")
+			p.parenDepth += parenDelta(stripped)
 			continue
 		}
 		// A new line not preceded by whitespace closes the previous
@@ -191,7 +190,7 @@ func (p *zoneParser) parseFile() ([]ResourceRecord, error) {
 		// Track paren depth so the next-line continuation check knows
 		// whether the parenthesised block is open. The count is a net
 		// figure (open minus close) seen since the record started.
-		p.parenDepth += strings.Count(stripped, "(") - strings.Count(stripped, ")")
+		p.parenDepth += parenDelta(stripped)
 	}
 	if err := p.scanner.Err(); err != nil {
 		return nil, fmt.Errorf("line %d: read: %w", p.lineNum, err)
@@ -211,7 +210,6 @@ func (p *zoneParser) parseFile() ([]ResourceRecord, error) {
 // stripComment removes an inline comment from a line. The semicolon is a
 // master-file comment delimiter (RFC 1035 §5.1). Quoted and escaped
 // semicolons are data and must survive for the RDATA parser.
-//
 func stripComment(line string) string {
 	inQuote, escape := false, false
 	for i := 0; i < len(line); i++ {
@@ -233,15 +231,52 @@ func stripComment(line string) string {
 	return strings.TrimRight(line, " \r")
 }
 
+// parenDelta returns the net "(" minus ")" in line, ignoring any that fall
+// inside a quoted string or are backslash-escaped.
+//
+// BIND master-file grammar lexes a quoted string as a unit, so a paren between
+// quotes is character data and must neither open nor close a parenthesised
+// continuation block. Counting them with strings.Count — as this parser used to
+// do — let a TXT value such as "note ) here" drive parenDepth negative, after
+// which isContinuation treats every following indented line as a continuation
+// and silently swallows those records into the TXT.
+//
+// The quote and escape handling deliberately mirrors stripComment above, so
+// both delimiters agree on where a quoted string begins and ends.
+func parenDelta(line string) int {
+	delta := 0
+	inQuote, escape := false, false
+	for i := 0; i < len(line); i++ {
+		if escape {
+			escape = false
+			continue
+		}
+		switch line[i] {
+		case '\\':
+			escape = true
+		case '"':
+			inQuote = !inQuote
+		case '(':
+			if !inQuote {
+				delta++
+			}
+		case ')':
+			if !inQuote {
+				delta--
+			}
+		}
+	}
+	return delta
+}
+
 // isContinuation reports whether a line is the next line of a
 // parenthesised continuation. The rule is "the line starts with
 // whitespace *and* the current record buffer has an unclosed paren".
 // A line that starts with whitespace but the previous record has no
 // open paren is a new record with an inherited owner (BIND master-file
 // grammar).
-//
 func (p *zoneParser) isContinuation(line string) bool {
-	if p.parenDepth == 0 {
+	if p.parenDepth <= 0 {
 		return false
 	}
 	if line == "" {
@@ -254,7 +289,6 @@ func (p *zoneParser) isContinuation(line string) bool {
 // recognised directives are $TTL and $ORIGIN; $INCLUDE and $GENERATE
 // are rejected with a clear error because the parser is round-trip-
 // only.
-//
 func (p *zoneParser) applyDirective(line string) error {
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
@@ -287,7 +321,6 @@ func (p *zoneParser) applyDirective(line string) error {
 // The first line carries the owner/TTL/class/Type/RData; subsequent lines
 // (if any) are the parenthesised continuation, which is appended with
 // whitespace stripped.
-//
 func (p *zoneParser) parseRecord(lines []string) (ResourceRecord, error) {
 	// Join the lines with a single space, then walk through. The first
 	// line's whitespace is significant (column separators); the
@@ -382,7 +415,6 @@ func (p *zoneParser) parseRecord(lines []string) (ResourceRecord, error) {
 // the bare owner name (with no trailing dot) and the remainder of the
 // line after the first whitespace. Returns ok=false if the line is
 // empty (no owner column, inherit previous).
-//
 func splitOwner(line string) (owner, rest string, ok bool) {
 	// Owner column ends at the first whitespace, unless the line begins
 	// with a parenthesised token (no owner).
@@ -405,7 +437,6 @@ func splitOwner(line string) (owner, rest string, ok bool) {
 // absolutiseOwner turns a possibly-relative owner name into the absolute
 // form. Per RFC 1035 §5, an owner without a trailing dot is relative to
 // $ORIGIN; an owner with a trailing dot is absolute.
-//
 func absolutiseOwner(owner, origin string) string {
 	if owner == "" {
 		return origin
@@ -427,7 +458,6 @@ func absolutiseOwner(owner, origin string) string {
 // tokeniseFields splits a record line into whitespace-separated tokens,
 // but keeps quoted strings ("...") as a single token. The field set
 // returned is what the caller iterates over for TTL/class/TYPE/RDATA.
-//
 func tokeniseFields(s string) []string {
 	var out []string
 	var cur strings.Builder
@@ -462,7 +492,6 @@ func tokeniseFields(s string) []string {
 
 // collapseSpaces replaces unquoted runs of whitespace with a single space.
 // Quoted and escaped whitespace remains part of the record's literal data.
-//
 func collapseSpaces(s string) string {
 	var sb strings.Builder
 	prevSpace := false
@@ -499,7 +528,6 @@ func collapseSpaces(s string) string {
 
 // isNumber reports whether a token looks like a digit (possibly with a
 // trailing unit letter); the TTL parser handles the unit conversion.
-//
 func isNumber(s string) bool {
 	if s == "" {
 		return false
@@ -521,7 +549,6 @@ func isNumber(s string) bool {
 }
 
 // isClass reports whether a token is a DNS class mnemonic.
-//
 func isClass(s string) bool {
 	switch s {
 	case "IN", "CH", "HS", "CLASS1", "CLASS2", "CLASS3", "CLASS4", "NONE", "ANY":
@@ -535,7 +562,6 @@ func isClass(s string) bool {
 // hand-written zone file using them is unusual; the parser accepts them
 // for round-trip-friendliness against the writer (which always emits
 // unadorned seconds).
-//
 func parseTTLField(s string) (uint32, error) {
 	if s == "" {
 		return 0, fmt.Errorf("empty TTL")
@@ -564,7 +590,6 @@ func parseTTLField(s string) (uint32, error) {
 }
 
 // parseClassField maps a class mnemonic to its numeric value.
-//
 func parseClassField(s string) (uint16, error) {
 	switch s {
 	case "IN":
@@ -589,7 +614,6 @@ func parseClassField(s string) (uint16, error) {
 // parseTypeField maps a type mnemonic (or `TYPE<n>`) to the numeric
 // type. The mnemonic set is whatever dns.TypeName accepts; the numeric
 // form is the RFC 3597 §5 generic escape.
-//
 func parseTypeField(s string) (uint16, error) {
 	if strings.HasPrefix(s, "TYPE") {
 		v, err := strconv.ParseUint(s[4:], 10, 16)
@@ -608,7 +632,6 @@ func parseTypeField(s string) (uint16, error) {
 // parseRData dispatches on the numeric type to the per-type RDATA
 // parser. Each branch returns wire-format RDATA bytes that match the
 // writer's output.
-//
 func parseRData(rtype uint16, fields []string, fullLine string) ([]byte, error) {
 	switch rtype {
 	case TypeSOA:
@@ -640,7 +663,6 @@ func parseRData(rtype uint16, fields []string, fullLine string) ([]byte, error) 
 //
 // The fields list passes everything after the SOA keyword; the helper
 // joins the parenthesised block first.
-//
 func parseRDataSOA(fields []string) ([]byte, error) {
 	if len(fields) < 2 {
 		return nil, fmt.Errorf("SOA requires mname and rname")
@@ -680,7 +702,6 @@ func parseRDataSOA(fields []string) ([]byte, error) {
 
 // parseRDataSingleName handles the single-name RDATA types: NS, CNAME,
 // PTR, DNAME. The fields list has exactly one entry, the owner name.
-//
 func parseRDataSingleName(fields []string) ([]byte, error) {
 	if len(fields) != 1 {
 		return nil, fmt.Errorf("single-name type requires exactly 1 field, got %d", len(fields))
@@ -746,7 +767,6 @@ func parseRDataSRV(fields []string) ([]byte, error) {
 // parseRDataTXT consumes one or more quoted strings. The fields list has
 // already been tokenised but the quoted-string whitespace collapsing
 // means the input is best re-tokenised from the original line.
-//
 func parseRDataTXT(fields []string, fullLine string) ([]byte, error) {
 	// Walk the original line and pull every quoted string out, in order.
 	// If a quoted string spans parens, the parenthesised block has
@@ -820,7 +840,6 @@ func parseRDataCAA(fields []string) ([]byte, error) {
 //
 // The literal backslash is the first byte of the field. The numeric
 // length is the second field, and the hex string is the third.
-//
 func parseRDataGeneric(fields []string) ([]byte, error) {
 	if len(fields) < 3 {
 		return nil, fmt.Errorf("generic form requires '\\# <rdlength> <hex>'")
@@ -846,7 +865,6 @@ func parseRDataGeneric(fields []string) ([]byte, error) {
 // appendName concatenates a wire-format name to a byte slice. Encoded
 // out-of-place because the parser needs to build RDATA byte-for-byte
 // the same way the wire-format parsers consume it.
-//
 func appendName(dst []byte, name string) []byte {
 	encoded, err := EncodeNameToBytes(name)
 	if err != nil {
@@ -862,7 +880,6 @@ func appendName(dst []byte, name string) []byte {
 // parseIPv4 parses a dotted-decimal IPv4 address without importing the
 // net package (the parser is small enough that the stdlib net.IP
 // indirection is wasted).
-//
 func parseIPv4(s string) []byte {
 	var out []byte
 	num := 0
@@ -897,9 +914,54 @@ func parseIPv4(s string) []byte {
 // double-colon shorthand is supported: a single `::` expands to one
 // or more groups of zeros such that the total number of groups is
 // eight. The shorthand is allowed at most once per address.
+// expandIPv4Suffix rewrites a trailing IPv4 dotted-quad into the two hex
+// groups it stands for, per RFC 4291 §2.2 — e.g. "::ffff:192.0.2.1" becomes
+// "::ffff:c0a8:201". The dotted-quad may only be the final element of an
+// address, so only the text after the last ':' is examined.
 //
+// It reports false when that tail contains a '.' but is not a valid IPv4
+// literal, so the caller rejects the address instead of silently dropping the
+// part it could not read — the failure mode this replaces.
+func expandIPv4Suffix(s string) (string, bool) {
+	i := strings.LastIndexByte(s, ':')
+	if i < 0 {
+		// No ':' at all, so there is no group for the dotted-quad to sit
+		// in. Leave it to the caller, which will reject the bare literal.
+		return s, true
+	}
+	tail := s[i+1:]
+	if !strings.Contains(tail, ".") {
+		return s, true
+	}
+	octets := strings.Split(tail, ".")
+	if len(octets) != 4 {
+		return s, false
+	}
+	var v [4]uint64
+	for j, o := range octets {
+		n, err := strconv.ParseUint(o, 10, 8)
+		if err != nil {
+			return s, false
+		}
+		v[j] = n
+	}
+	return s[:i+1] +
+		strconv.FormatUint(v[0]<<8|v[1], 16) + ":" +
+		strconv.FormatUint(v[2]<<8|v[3], 16), true
+}
+
 func parseIPv6(s string) []byte {
 	if len(s) == 0 {
+		return nil
+	}
+	// RFC 4291 §2.2: an address may end with an embedded IPv4 dotted-quad,
+	// which stands for the final 32 bits. Rewrite it into two hex groups so
+	// the group logic below handles it uniformly. Without this the dotted
+	// field fails ParseUint, splitIPv6Groups discards the entire half it was
+	// part of, and the address silently became :: — or a truncated prefix —
+	// instead of what the zone file declared.
+	s, ok := expandIPv4Suffix(s)
+	if !ok {
 		return nil
 	}
 	// Split on `::` first. The shorthand may appear at most once;
@@ -908,7 +970,10 @@ func parseIPv6(s string) []byte {
 	if len(parts) > 2 {
 		return nil
 	}
-	left := splitIPv6Groups(parts[0])
+	left, ok := splitIPv6Groups(parts[0])
+	if !ok {
+		return nil
+	}
 	if len(parts[0]) == 0 {
 		// s starts with `::`; left is empty.
 		left = nil
@@ -918,7 +983,10 @@ func parseIPv6(s string) []byte {
 		if len(parts[1]) == 0 {
 			// s ends with `::`; right is empty.
 		} else {
-			right = splitIPv6Groups(parts[1])
+			right, ok = splitIPv6Groups(parts[1])
+			if !ok {
+				return nil
+			}
 		}
 	}
 	full := append(append([]uint16{}, left...), right...)
@@ -946,32 +1014,37 @@ func parseIPv6(s string) []byte {
 }
 
 // splitIPv6Groups splits a non-empty IPv6 group string on `:`, returning
-// the parsed 16-bit groups. An empty input returns nil.
+// the parsed 16-bit groups. An empty input is not an error and returns nil.
 //
-func splitIPv6Groups(s string) []uint16 {
+// ok is false when any group is not a valid 16-bit hex value. That must stay
+// distinct from the empty-input case: returning a bare nil for both let
+// parseIPv6 zero-pad past the unreadable text and return a DIFFERENT address
+// with no error — "::zzz" silently became "::", and "2001:db8::zzz" became
+// "2001:db8::". Garbage in an address has to be an error, not a silent
+// truncation.
+func splitIPv6Groups(s string) ([]uint16, bool) {
 	if s == "" {
-		return nil
+		return nil, true
 	}
 	fields := strings.Split(s, ":")
 	out := make([]uint16, len(fields))
 	for i, f := range fields {
 		if f == "" {
-			return nil
+			return nil, false
 		}
 		v, err := strconv.ParseUint(f, 16, 16)
 		if err != nil {
-			return nil
+			return nil, false
 		}
 		out[i] = uint16(v)
 	}
-	return out
+	return out, true
 }
 
 // nameToType is the inverse of dns.TypeName. The dns package does not
 // expose this directly; we build a small map from the same constants the
 // writer uses for mnemonic lookup. The keys are the IANA mnemonics and
 // the values are the numeric types.
-//
 func nameToType(s string) (uint16, bool) {
 	// Reuse the same dictionary the writer uses. We rebuild it once.
 	mnemonic, ok := typeMnemonic()
@@ -985,7 +1058,6 @@ func nameToType(s string) (uint16, bool) {
 // typeMnemonic returns a map from IANA mnemonic to numeric type. The
 // underlying constants in dns/types.go are not exposed as a map, so we
 // build one lazily.
-//
 func typeMnemonic() (map[string]uint16, bool) {
 	// A static registry would be cheaper; this is the smallest version
 	// that covers the types the writer knows about plus the common
@@ -1047,7 +1119,6 @@ func typeMnemonic() (map[string]uint16, bool) {
 // ReadZone reads a BIND master-file from an io.Reader and returns the
 // records it contains. Convenience wrapper around ParseZone for the
 // common case where the file is on disk or being piped in.
-//
 func ReadZone(name string, r io.Reader) ([]ResourceRecord, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -1060,7 +1131,6 @@ func ReadZone(name string, r io.Reader) ([]ResourceRecord, error) {
 // internal representation uses absolute names everywhere, and the parser
 // prefers to normalise rather than chase every call site that may or
 // may not have appended the dot.
-//
 func ensureDot(s string) string {
 	if s == "" {
 		return "."

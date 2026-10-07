@@ -1,6 +1,7 @@
 package web
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,7 +17,6 @@ import (
 // shipped in `dns/zonefile_parser.go`, and verify the records come
 // back identically. This is the same round-trip oracle used for the
 // writer and parser, applied end-to-end through the HTTP handler.
-//
 func TestZoneExport_RoundTrip(t *testing.T) {
 	srv := testAdminServerWithResolver(t)
 
@@ -77,10 +77,86 @@ func TestZoneExport_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestZoneExport_SOALessZoneRoundTrips pins the placeholder-SOA path at the
+// HTTP layer.
+//
+// TestZoneExport_RoundTrip builds its zone with a hand-assembled SOA, which is
+// the one shape a real local zone cannot have: resolver.ParseLocalRecord
+// rejects the SOA type, so an operator can neither inline one via `data:` nor
+// supply one via `zone_file:`. Every real local zone is therefore SOA-less, and
+// dns.FormatZone substitutes a placeholder SOA for the missing record.
+//
+// That placeholder must itself be valid BIND: two names, the five timers, and
+// the closing paren. When it was only the opener (`@ IN SOA <apex> invalid.
+// invalid. (`) the endpoint happily served 200 with a body the project's own
+// parser rejected, so an operator's exported zone could not be re-imported.
+// Asserting on the HTTP response is what makes that visible at the layer the
+// operator actually uses.
+func TestZoneExport_SOALessZoneRoundTrips(t *testing.T) {
+	srv := testAdminServerWithResolver(t)
+
+	lz := resolver.NewLocalZoneTable([]resolver.LocalZone{
+		{
+			Name: "no-soa.test",
+			Type: resolver.LocalStatic,
+			Records: []resolver.LocalRecord{
+				{Name: "no-soa.test", Type: dns.TypeNS, TTL: 86400, RData: buildName(t, "ns.no-soa.test.")},
+				{Name: "www.no-soa.test", Type: dns.TypeA, TTL: 300, RData: []byte{1, 2, 3, 4}},
+				{Name: "v6.no-soa.test", Type: dns.TypeAAAA, TTL: 300, RData: net.ParseIP("2001:db8::1").To16()},
+			},
+		},
+	})
+	srv.resolver.SetLocalZones(lz)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/zones/no-soa.test/export", nil)
+	rr := httptest.NewRecorder()
+	srv.handleZoneExport(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+
+	// The contract: the exported body must parse with the project's own parser.
+	got, err := dns.ParseZone("no-soa.test.", []byte(body))
+	if err != nil {
+		t.Fatalf("ParseZone on an SOA-less zone export failed: %v\nbody:\n%s", err, body)
+	}
+
+	// The placeholder SOA must be present, and carry exactly two names plus the
+	// five timers — a third name would make the parser read it as timer 0.
+	var sawSOA, sawA, sawNS bool
+	for i := range got {
+		rec := &got[i]
+		switch rec.Type {
+		case dns.TypeSOA:
+			sawSOA = true
+		case dns.TypeA:
+			if rec.Name == "www.no-soa.test." && len(rec.RData) == 4 &&
+				rec.RData[0] == 1 && rec.RData[1] == 2 && rec.RData[2] == 3 && rec.RData[3] == 4 {
+				sawA = true
+			}
+		case dns.TypeNS:
+			if rec.Name == "no-soa.test." {
+				sawNS = true
+			}
+		}
+	}
+
+	if !sawSOA {
+		t.Errorf("no SOA in the export; a zone file without an SOA is not loadable\nbody:\n%s", body)
+	}
+	if !sawA {
+		t.Error("the A record did not survive the export")
+	}
+	if !sawNS {
+		t.Error("the NS record did not survive the export")
+	}
+}
+
 // TestZoneExport_NotFound returns 404 for a zone that does not exist
 // in the local-zone table. The handler must not 500 or return an empty
 // body that the operator might mistake for a valid zone.
-//
 func TestZoneExport_NotFound(t *testing.T) {
 	srv := testAdminServerWithResolver(t)
 	srv.resolver.SetLocalZones(resolver.NewLocalZoneTable(nil))
@@ -100,7 +176,6 @@ func TestZoneExport_NotFound(t *testing.T) {
 // TestZoneExport_BadMethod rejects POST, PUT, DELETE on the export
 // endpoint — it is a read-only view. The handler must not accept
 // mutating methods silently.
-//
 func TestZoneExport_BadMethod(t *testing.T) {
 	srv := testAdminServerWithResolver(t)
 	srv.resolver.SetLocalZones(resolver.NewLocalZoneTable([]resolver.LocalZone{
@@ -125,7 +200,6 @@ func TestZoneExport_BadMethod(t *testing.T) {
 // the metadata the operator expects to see in the dashboard. The
 // "kind" field is "local" for everything this endpoint emits; a
 // future iteration can include forward/stub zones from config.
-//
 func TestZoneList_HappyPath(t *testing.T) {
 	srv := testAdminServerWithResolver(t)
 	srv.resolver.SetLocalZones(resolver.NewLocalZoneTable([]resolver.LocalZone{

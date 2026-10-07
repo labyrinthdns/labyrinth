@@ -20,7 +20,6 @@ import (
 // The list is for the operator's dashboard; it is not authoritative
 // for any DNS protocol question. The endpoint is rate-limited via
 // the same auth gate as the rest of the admin API.
-//
 func (s *AdminServer) handleZoneList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -29,10 +28,10 @@ func (s *AdminServer) handleZoneList(w http.ResponseWriter, r *http.Request) {
 
 	type zoneInfo struct {
 		Name   string `json:"name"`
-		Kind   string `json:"kind"`              // "local", "forward", "stub"
-		Type   string `json:"type,omitempty"`    // local zone type (static/redirect/...)
+		Kind   string `json:"kind"`           // "local", "forward", "stub"
+		Type   string `json:"type,omitempty"` // local zone type (static/redirect/...)
 		Count  int    `json:"record_count"`
-		Source string `json:"source,omitempty"`  // "static" or "secondary"
+		Source string `json:"source,omitempty"` // "static" or "secondary"
 	}
 
 	var out []zoneInfo
@@ -65,7 +64,6 @@ func (s *AdminServer) handleZoneList(w http.ResponseWriter, r *http.Request) {
 // localZoneTypeName returns the operator-facing string for a
 // resolver.LocalZoneType. The numeric constants are not stable across
 // versions, so the API surface keeps the textual form.
-//
 func localZoneTypeName(t resolver.LocalZoneType) string {
 	switch t {
 	case resolver.LocalStatic:
@@ -90,7 +88,6 @@ func localZoneTypeName(t resolver.LocalZoneType) string {
 // depending on the operator's configuration. The signal we use is
 // the presence of an SOA record, which is the canonical "this is a
 // real zone, not a static-records block" marker.
-//
 func sourceFromRecords(z resolver.LocalZone) string {
 	for _, r := range z.Records {
 		if r.Type == dns.TypeSOA {
@@ -110,11 +107,12 @@ func sourceFromRecords(z resolver.LocalZone) string {
 // trailing dot. The lookup is case-insensitive and matches the
 // local-zone table's normalisation rules.
 //
-// A zone with no SOA is still exported (the writer emits a
-// placeholder header) so the operator can see what is served. The
-// BIND parsers will reject a zone with no SOA at the import side
-// and that is the intended feedback.
-//
+// A zone with no SOA is still exported, with the writer's placeholder SOA
+// header, so the operator can see exactly what is served. That placeholder is
+// deliberately well-formed BIND — two names, five timers, closing paren — so
+// the export re-parses with dns.ParseZone and can be handed straight back to
+// Labyrinth via `zone_file:`. A zone file with no SOA at all is not loadable,
+// which is why the placeholder exists rather than being omitted.
 func (s *AdminServer) handleZoneExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -168,7 +166,6 @@ func (s *AdminServer) handleZoneExport(w http.ResponseWriter, r *http.Request) {
 // the resolver uses internally; the writer adds the trailing dot
 // in the SOA header and the absolute-name emission for the rest
 // of the records via ownerRelative.
-//
 func localZoneToRecords(zone *resolver.LocalZone) []dns.ResourceRecord {
 	out := make([]dns.ResourceRecord, len(zone.Records))
 	for i, r := range zone.Records {
