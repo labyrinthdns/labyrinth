@@ -53,6 +53,12 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 }
 
 func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
+	// A server already confirmed to reject EDNS is queried directly
+	// without OPT — see confirmEDNSFormErr.
+	if r.noEDNSServers.Has(nsIP) {
+		return r.sendQuery(nsIP, name, qtype, qclass, false, nil, nil)
+	}
+
 	// RFC 7873 §5.3 — pre-load the server cookie cached from a prior
 	// exchange with this auth (if any) so the FIRST query already
 	// carries client||server cookie. Saves the BADCOOKIE round-trip on
@@ -97,6 +103,10 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 		r.serverCookieCache.Put(nsIP, sc)
 	}
 
+	if isEDNSFormErr(msg) {
+		return r.confirmEDNSFormErr(nsIP, name, qtype, qclass, clientECS, msg)
+	}
+
 	// RFC 5452 §6.1 hardening: a FORMERR from an EDNS-bearing query was
 	// historically interpreted (per RFC 6891 §7) as "this server hates EDNS,
 	// retry without OPT." Modern reality is the opposite — DNS Flag Day
@@ -109,9 +119,60 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 	// DNSSEC validation. We surface the FORMERR as a server failure
 	// instead; the iterative loop's classifyResponse moves to a sibling
 	// NS, and no spoofed FORMERR can strip the DO bit off subsequent
-	// queries. If an operator ever encounters a legitimately broken EDNS
-	// server they should bypass it via the forward-zone configuration
-	// rather than have the resolver silently strip protocol features.
+	// queries. The one exception is an OPT-less FORMERR that an
+	// independent re-query confirms (see confirmEDNSFormErr).
+	return msg, nil
+}
+
+// isEDNSFormErr reports whether msg is the RFC 6891 §7 signature of a server
+// that does not understand EDNS: FORMERR with no OPT record in the reply.
+func isEDNSFormErr(msg *dns.Message) bool {
+	return msg != nil && msg.Header.RCODE() == dns.RCodeFormErr && msg.EDNS0 == nil
+}
+
+// confirmEDNSFormErr handles an OPT-less FORMERR received for an EDNS
+// query. Such servers still exist — the Microsoft 365
+// mail.protection.outlook.com auths at times reject every EDNS query and do
+// not answer over TCP at all — and refusing to talk to them makes their
+// zones unresolvable.
+//
+// To keep the RFC 5452 §6.1 protection against a single spoofed FORMERR,
+// the downgrade happens only after a second, independent EDNS query (fresh
+// TXID, source port and 0x20 pattern) draws the same FORMERR: an off-path
+// attacker would have to win two blind races back to back. The plain query
+// that follows is validated as usual (TXID, 0x20 question echo, TC→TCP),
+// and the server is remembered so later queries skip the confirmation.
+//
+// The downgrade cannot weaken DNSSEC: a non-EDNS answer carries no RRSIGs,
+// so for a signed zone the validator returns Bogus, never Insecure.
+func (r *Resolver) confirmEDNSFormErr(nsIP, name string, qtype, qclass uint16, clientECS *dns.ECSOption, first *dns.Message) (*dns.Message, error) {
+	confirm, err := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, r.serverCookieCache.Get(nsIP))
+	if err != nil {
+		return formErrResult(first)
+	}
+	if !isEDNSFormErr(confirm) {
+		// The first FORMERR was transient or forged; this answer stands.
+		return confirm, nil
+	}
+	plain, err := r.sendQuery(nsIP, name, qtype, qclass, false, nil, nil)
+	if err != nil {
+		return formErrResult(confirm)
+	}
+	r.noEDNSServers.Put(nsIP)
+	if r.logger != nil {
+		r.logger.Debug("upstream rejects EDNS; querying it without OPT", "server", nsIP, "name", name)
+	}
+	return plain, nil
+}
+
+// formErrResult surfaces an unresolved EDNS FORMERR to the iterative loop,
+// which classifies it as a server failure and moves on to a sibling NS.
+// A question-less FORMERR would trip callers that read Questions[0], so it
+// is reported as an error instead.
+func formErrResult(msg *dns.Message) (*dns.Message, error) {
+	if len(msg.Questions) == 0 {
+		return nil, errors.New("upstream returned FORMERR to EDNS query")
+	}
 	return msg, nil
 }
 
@@ -266,6 +327,15 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 	// Validate transaction ID
 	if msg.Header.ID != txID {
 		return nil, errTXIDMismatch
+	}
+	// An EDNS-intolerant server answers FORMERR without an OPT record and,
+	// commonly, without echoing the question (RFC 1035 lets a server that
+	// could not parse the query return an empty question section). Hand
+	// that back to queryUpstreamOnceECS, which confirms it with a second
+	// independent query before acting on it, instead of turning it into a
+	// transport error.
+	if withEDNS0 && len(msg.Questions) == 0 && isEDNSFormErr(msg) {
+		return msg, nil
 	}
 	// Validate question section matches what we asked.
 	// When 0x20 is active, compare case-sensitively against the randomized name.

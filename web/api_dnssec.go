@@ -25,8 +25,9 @@ const MaxNTAReasonBytes = 1024
 // runtime values rather than hard-coding them in the frontend.
 func dnssecSafetyNet() map[string]int {
 	return map[string]int{
-		"max_rrsig_verify_attempts": dnssec.MaxRRSIGVerifyAttempts(),
-		"max_trust_chain_depth":     dnssec.MaxTrustChainDepth(),
+		"max_rrsig_verify_attempts":    dnssec.MaxRRSIGVerifyAttempts(),
+		"max_trust_chain_depth":        dnssec.MaxTrustChainDepth(),
+		"max_crypto_verify_per_response": dnssec.MaxCryptoVerifyPerResponse(),
 	}
 }
 

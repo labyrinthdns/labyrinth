@@ -47,10 +47,20 @@ func MaxRRSIGVerifyAttempts() int { return maxRRSIGVerifyAttempts }
 // denial/insecure-delegation proof), so the per-RRset cap alone leaks. This
 // response-wide counter is the global backstop every patched resolver added
 // (PowerDNS max-signature-validations-per-query=30, Unbound 16 global
-// suspensions). 32 covers the most elaborate legitimate validation — answer +
-// DNSKEY chain + denial across a couple of zones, each mid algorithm-rollover —
-// while bounding an attacker's crypto amplification to a small constant.
-const maxCryptoVerifyPerResponse = 32
+// suspensions).
+//
+// The floor is set by legitimate deep reverse zones: seznam.cz IPv6 PTR under
+// 0.0.a.8.4.6.0.0.8.9.5.0.2.0.a.2.ip6.arpa walks ~13 NSEC3 ENTs + several
+// NSEC-covered intermediates between RIPE and the signed cut, and alone burns
+// ~36 verifies before the answer RRSIG. Cap 32 forced Bogus→public fallback
+// on names Cloudflare/Google Secure. 64 clears that chain with rollover
+// headroom while still bounding KeyTrap amplification to a small constant
+// (maxTrustChainDepth already caps how many ENT skips an attacker can force).
+const maxCryptoVerifyPerResponse = 64
+
+// MaxCryptoVerifyPerResponse exposes the per-response crypto budget for the
+// observability UI.
+func MaxCryptoVerifyPerResponse() int { return maxCryptoVerifyPerResponse }
 
 // cryptoBudget is a per-response signature-verification counter, created once
 // per top-level ValidateResponse* call and threaded (variadically, so existing
@@ -1200,6 +1210,21 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 
 			trustedKeys = v.dnskeysMatchingDS(zoneKeys, dsRecords, chainZone)
 			if len(trustedKeys) == 0 {
+				// Orphan supported-digest DS (e.g. leftover SHA-256 for a
+				// retired keytag) keeps usableDS=true above, while the live
+				// KSK may only be published with a weak digest (SHA-1). With
+				// allow_sha1=false that used to be Bogus→SERVFAIL→fallback
+				// even though public resolvers Secure the zone via SHA-1 DS.
+				// Live: access.net.id (DS 2771 SHA-256 orphan + DS 28914
+				// SHA-1 for the current KSK) → svrmail.access.net.id.
+				// If a published DNSKEY would authenticate under weak-digest
+				// policy alone, treat as Insecure (unsupported primitive),
+				// not Bogus — same posture as alg-7 / GOST-only paths.
+				if len(v.dnskeysMatchingDSAllowingWeak(zoneKeys, dsRecords, chainZone)) > 0 {
+					v.logger.Debug("DNSKEY matches only weak/unsupported DS digests; treating as insecure",
+						"zone", chainZone)
+					return Insecure
+				}
 				v.logger.Debug("DNSKEY does not match DS",
 					"zone", chainZone)
 				return Bogus
@@ -1753,6 +1778,10 @@ func (v *Validator) dnskeysMatchingTrustAnchors(zone string, dnskeys []dns.Resou
 // 0 when no DS for this key has a supported digest — caller should leave
 // the (now empty) supported set alone and the verify loop falls through.
 func strongestDSDigestForKey(dsRecords []*dns.DSRecord, keyTag uint16, algorithm uint8, v *Validator) uint8 {
+	return strongestDSDigestForKeyWith(dsRecords, keyTag, algorithm, v, false)
+}
+
+func strongestDSDigestForKeyWith(dsRecords []*dns.DSRecord, keyTag uint16, algorithm uint8, v *Validator, allowWeak bool) uint8 {
 	var best uint8
 	for _, ds := range dsRecords {
 		if ds == nil {
@@ -1764,7 +1793,7 @@ func strongestDSDigestForKey(dsRecords []*dns.DSRecord, keyTag uint16, algorithm
 		// Only digests VerifyDS can actually compute. Max over raw
 		// DigestType numbers would pick GOST (3) over SHA-256 (2) even
 		// though GOST is unimplemented — leaving the key with no match.
-		if !v.isSupportedDSDigest(ds.DigestType) {
+		if !v.dsDigestAccepted(ds.DigestType, allowWeak) {
 			continue
 		}
 		if ds.DigestType > best {
@@ -1791,6 +1820,18 @@ func (v *Validator) verifyDNSKEYWithDS(dnskeys []dns.ResourceRecord, dsRecords [
 // parent's DS RRset. Other keys in the fetched DNSKEY RRset are not trusted
 // until an RRSIG(DNSKEY) made by one of these records verifies the full set.
 func (v *Validator) dnskeysMatchingDS(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord, ownerName string) []dns.ResourceRecord {
+	return v.dnskeysMatchingDSWith(dnskeys, dsRecords, ownerName, false)
+}
+
+// dnskeysMatchingDSAllowingWeak is the diagnostic twin of dnskeysMatchingDS
+// that treats SHA-1 DS digests as usable even when allowSHA1 is false. Used
+// solely to distinguish true Bogus (no DS digests a published key) from
+// policy-Insecure (chain only via digests we refuse).
+func (v *Validator) dnskeysMatchingDSAllowingWeak(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord, ownerName string) []dns.ResourceRecord {
+	return v.dnskeysMatchingDSWith(dnskeys, dsRecords, ownerName, true)
+}
+
+func (v *Validator) dnskeysMatchingDSWith(dnskeys []dns.ResourceRecord, dsRecords []*dns.DSRecord, ownerName string, allowWeak bool) []dns.ResourceRecord {
 	var matches []dns.ResourceRecord
 	for _, rr := range dnskeys {
 		dnskey, err := dns.ParseDNSKEY(rr.RData)
@@ -1813,9 +1854,9 @@ func (v *Validator) dnskeysMatchingDS(dnskeys []dns.ResourceRecord, dsRecords []
 		if dnskey.IsRevoked() {
 			continue
 		}
-		strongest := strongestDSDigestForKey(dsRecords, dnskey.KeyTag(), dnskey.Algorithm, v)
+		strongest := strongestDSDigestForKeyWith(dsRecords, dnskey.KeyTag(), dnskey.Algorithm, v, allowWeak)
 		for _, ds := range dsRecords {
-			if !v.isSupportedDSDigest(ds.DigestType) {
+			if !v.dsDigestAccepted(ds.DigestType, allowWeak) {
 				continue
 			}
 			// RFC 4509 §3: among the DS RRs that target this key, only
@@ -1832,6 +1873,21 @@ func (v *Validator) dnskeysMatchingDS(dnskeys []dns.ResourceRecord, dsRecords []
 		}
 	}
 	return matches
+}
+
+// dsDigestAccepted reports whether a DS digest type may be used for matching
+// under the current policy. allowWeak=true temporarily admits SHA-1 so the
+// caller can detect "would match if we accepted weak digests".
+func (v *Validator) dsDigestAccepted(d uint8, allowWeak bool) bool {
+	if allowWeak {
+		switch d {
+		case dns.DigestSHA1, dns.DigestSHA256, dns.DigestSHA384:
+			return true
+		default:
+			return false
+		}
+	}
+	return v.isSupportedDSDigest(d)
 }
 
 // negativeDNSKEYCacheTTL bounds how long an empty DNSKEY fetch result stays

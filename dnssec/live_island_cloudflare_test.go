@@ -3,6 +3,8 @@
 package dnssec
 
 import (
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -15,7 +17,20 @@ import (
 type udpRecurseQuerier struct{ addr string }
 
 func (q udpRecurseQuerier) QueryDNSSEC(name string, qtype uint16, qclass uint16) (*dns.Message, error) {
-	conn, err := net.DialTimeout("udp", q.addr, 3*time.Second)
+	msg, err := q.exchange(name, qtype, qclass, "udp")
+	if err != nil {
+		return nil, err
+	}
+	// Root DNSKEY and other large RRsets truncate over UDP; follow TC with TCP
+	// so live trust-chain probes match production's iterative resolver.
+	if msg.Header.TC() {
+		return q.exchange(name, qtype, qclass, "tcp")
+	}
+	return msg, nil
+}
+
+func (q udpRecurseQuerier) exchange(name string, qtype uint16, qclass uint16, network string) (*dns.Message, error) {
+	conn, err := net.DialTimeout(network, q.addr, 3*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -27,20 +42,45 @@ func (q udpRecurseQuerier) QueryDNSSEC(name string, qtype uint16, qclass uint16)
 			Name: ".", Type: dns.TypeOPT, Class: 1232, TTL: 1 << 15,
 		}},
 	}
-	raw, err := dns.Pack(msg, nil)
+	raw, err := dns.Pack(msg, make([]byte, 4096))
 	if err != nil {
 		return nil, err
 	}
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+	if network == "tcp" {
+		var hdr [2]byte
+		hdr[0] = byte(len(raw) >> 8)
+		hdr[1] = byte(len(raw))
+		if _, err := conn.Write(hdr[:]); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := conn.Write(raw); err != nil {
 		return nil, err
 	}
 	buf := make([]byte, 65535)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return nil, err
+	var payload []byte
+	if network == "tcp" {
+		var hdr [2]byte
+		if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+			return nil, err
+		}
+		n := int(hdr[0])<<8 | int(hdr[1])
+		if n > len(buf) {
+			return nil, fmt.Errorf("tcp response too large: %d", n)
+		}
+		if _, err := io.ReadFull(conn, buf[:n]); err != nil {
+			return nil, err
+		}
+		payload = buf[:n]
+	} else {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		payload = buf[:n]
 	}
-	return dns.Unpack(buf[:n])
+	return dns.Unpack(payload)
 }
 
 func fetchAuth(name string, qtype uint16) (*dns.Message, error) {

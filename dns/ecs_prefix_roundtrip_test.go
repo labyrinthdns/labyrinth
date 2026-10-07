@@ -39,8 +39,11 @@ func TestECS_CacheKeyFamilyRoundTrip(t *testing.T) {
 		// 4-byte or a 16-byte slice, so a byte comparison reports a false
 		// difference for equal addresses. The ECS fixtures here parse
 		// IPv4-mapped inputs like "::ffff:192.0.2.1", which is exactly where
-		// the two representations diverge.
-		if !before.Equal(ecs.Address) {
+		// the two representations diverge. The length check alongside it
+		// keeps the original intent of the bytes.Equal assertion, namely that
+		// cache-key computation and wire encoding must not rewrite the
+		// caller's address in place.
+		if !before.Equal(ecs.Address) || len(before) != len(ecs.Address) {
 			t.Error("cache key or encoding changed the input address")
 		}
 	}
