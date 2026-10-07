@@ -1254,11 +1254,11 @@ func TestHandleSetupComplete(t *testing.T) {
 	srv := testAdminServer(t)
 
 	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(origDir)
+	// An absolute config path keeps this test independent of the process CWD.
+	// configFilePath() otherwise falls back to a bare relative "labyrinth.yaml"
+	// and would write into whatever directory the test happens to run in --
+	// including the repository's own tracked config.
+	srv.SetConfigPath(filepath.Join(tmpDir, "labyrinth.yaml"))
 
 	reqBody := `{
 		"listen_addr": ":5353",
@@ -1328,9 +1328,11 @@ func TestHandleSetupComplete_InvalidBody(t *testing.T) {
 	srv := testAdminServer(t)
 
 	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	// An absolute config path keeps this test independent of the process CWD.
+	// configFilePath() otherwise falls back to a bare relative "labyrinth.yaml"
+	// and would write into whatever directory the test happens to run in --
+	// including the repository's own tracked config.
+	srv.SetConfigPath(filepath.Join(tmpDir, "labyrinth.yaml"))
 
 	req := httptest.NewRequest("POST", "/api/setup/complete", strings.NewReader("not json"))
 	w := httptest.NewRecorder()
@@ -1345,9 +1347,11 @@ func TestHandleSetupComplete_Defaults(t *testing.T) {
 	srv := testAdminServer(t)
 
 	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	// An absolute config path keeps this test independent of the process CWD.
+	// configFilePath() otherwise falls back to a bare relative "labyrinth.yaml"
+	// and would write into whatever directory the test happens to run in --
+	// including the repository's own tracked config.
+	srv.SetConfigPath(filepath.Join(tmpDir, "labyrinth.yaml"))
 
 	req := httptest.NewRequest("POST", "/api/setup/complete", strings.NewReader(`{"username":"admin","password":"validpwd123"}`))
 	w := httptest.NewRecorder()

@@ -952,15 +952,16 @@ func TestHashPassword_TooShort(t *testing.T) {
 func TestHandleChangePassword_Success(t *testing.T) {
 	srv, password := testAdminServerWithAuth(t)
 
-	// Write a config file for updatePasswordInConfig to find
-	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	// Point the server at a config inside t.TempDir(). Previously this test
+	// relied on os.Chdir + the relative "labyrinth.yaml" default, so if the
+	// Chdir failed (its error was discarded) the handler would read and rewrite
+	// the repository's real config and leave a .bak beside it.
+	cfgPath := filepath.Join(t.TempDir(), "labyrinth.yaml")
+	srv.SetConfigPath(cfgPath)
 
 	// Write a config file with a password_hash line
 	cfgContent := "web:\n  auth:\n    username: admin\n    password_hash: " + srv.config.Load().Web.Auth.PasswordHash + "\n"
-	os.WriteFile(filepath.Join(tmpDir, "labyrinth.yaml"), []byte(cfgContent), 0644)
+	os.WriteFile(cfgPath, []byte(cfgContent), 0644)
 
 	reqBody := fmt.Sprintf(`{"current_password":"%s","new_password":"newSecurePass123"}`, password)
 	req := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(reqBody))
@@ -1030,9 +1031,11 @@ func TestHandleChangePassword_ConfigFileNotFound(t *testing.T) {
 
 	// Chdir to a temp dir without a config file
 	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	// An absolute config path keeps this test independent of the process CWD.
+	// configFilePath() otherwise falls back to a bare relative "labyrinth.yaml"
+	// and would write into whatever directory the test happens to run in --
+	// including the repository's own tracked config.
+	srv.SetConfigPath(filepath.Join(tmpDir, "labyrinth.yaml"))
 
 	reqBody := fmt.Sprintf(`{"current_password":"%s","new_password":"newSecurePass123"}`, password)
 	req := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(reqBody))
@@ -1050,36 +1053,32 @@ func TestHandleChangePassword_ConfigFileNotFound(t *testing.T) {
 }
 
 // ===========================================================================
-// updatePasswordInConfig (auth.go) — all 0% covered
+// updatePasswordInConfigAtPath (auth.go) — all 0% covered
 // ===========================================================================
 
-func TestUpdatePasswordInConfig_Success(t *testing.T) {
-	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
-
+// updatePasswordInConfigAtPath is path-aware, so each of these passes an
+// absolute path inside t.TempDir(). Previously they called a CWD-relative
+// helper and needed an os.Chdir to stay off the repository's real config.
+func TestUpdatePasswordInConfigAtPath_Success(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "labyrinth.yaml")
 	cfgContent := "web:\n  auth:\n    username: admin\n    password_hash: oldhash\n"
-	os.WriteFile(filepath.Join(tmpDir, "labyrinth.yaml"), []byte(cfgContent), 0644)
+	os.WriteFile(cfgPath, []byte(cfgContent), 0644)
 
-	err := updatePasswordInConfig("newhash123")
-	if err != nil {
-		t.Fatalf("updatePasswordInConfig: %v", err)
+	if err := updatePasswordInConfigAtPath(cfgPath, "newhash123"); err != nil {
+		t.Fatalf("updatePasswordInConfigAtPath: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Join(tmpDir, "labyrinth.yaml"))
+	data, _ := os.ReadFile(cfgPath)
 	if !strings.Contains(string(data), "newhash123") {
 		t.Fatalf("expected new hash in config, got: %s", string(data))
 	}
 }
 
-func TestUpdatePasswordInConfig_FileNotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+func TestUpdatePasswordInConfigAtPath_FileNotFound(t *testing.T) {
+	// Nothing is written, so the path must be reported missing.
+	cfgPath := filepath.Join(t.TempDir(), "labyrinth.yaml")
 
-	err := updatePasswordInConfig("newhash")
+	err := updatePasswordInConfigAtPath(cfgPath, "newhash")
 	if err == nil {
 		t.Fatal("expected error when config not found")
 	}
@@ -1088,16 +1087,12 @@ func TestUpdatePasswordInConfig_FileNotFound(t *testing.T) {
 	}
 }
 
-func TestUpdatePasswordInConfig_NoPasswordHashField(t *testing.T) {
-	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
-
+func TestUpdatePasswordInConfigAtPath_NoPasswordHashField(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "labyrinth.yaml")
 	cfgContent := "web:\n  auth:\n    username: admin\n"
-	os.WriteFile(filepath.Join(tmpDir, "labyrinth.yaml"), []byte(cfgContent), 0644)
+	os.WriteFile(cfgPath, []byte(cfgContent), 0644)
 
-	err := updatePasswordInConfig("newhash")
+	err := updatePasswordInConfigAtPath(cfgPath, "newhash")
 	if err == nil {
 		t.Fatal("expected error when password_hash field missing")
 	}
@@ -1648,9 +1643,11 @@ func TestHandleSetupComplete_WithRateLimit(t *testing.T) {
 	srv := testAdminServer(t)
 
 	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	// An absolute config path keeps this test independent of the process CWD.
+	// configFilePath() otherwise falls back to a bare relative "labyrinth.yaml"
+	// and would write into whatever directory the test happens to run in --
+	// including the repository's own tracked config.
+	srv.SetConfigPath(filepath.Join(tmpDir, "labyrinth.yaml"))
 
 	reqBody := `{
 		"listen_addr": ":5353",
@@ -1688,10 +1685,11 @@ func TestHandleSetupComplete_WriteError(t *testing.T) {
 
 	// Chdir to a non-existent directory to trigger write error
 	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	// Create a read-only dir or use an invalid path
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	// An absolute config path keeps this test independent of the process CWD.
+	// configFilePath() otherwise falls back to a bare relative "labyrinth.yaml"
+	// and would write into whatever directory the test happens to run in --
+	// including the repository's own tracked config.
+	srv.SetConfigPath(filepath.Join(tmpDir, "labyrinth.yaml"))
 
 	// Remove the dir so writing fails
 	os.RemoveAll(tmpDir)
@@ -2120,9 +2118,11 @@ func TestHandleSetupComplete_WriteConfigError(t *testing.T) {
 
 	// Create a tmpDir and then make 'labyrinth.yaml' a directory so Create fails
 	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	// An absolute config path keeps this test independent of the process CWD.
+	// configFilePath() otherwise falls back to a bare relative "labyrinth.yaml"
+	// and would write into whatever directory the test happens to run in --
+	// including the repository's own tracked config.
+	srv.SetConfigPath(filepath.Join(tmpDir, "labyrinth.yaml"))
 
 	// Create a directory named labyrinth.yaml so os.Create fails
 	os.Mkdir(filepath.Join(tmpDir, "labyrinth.yaml"), 0755)
@@ -2158,9 +2158,11 @@ func TestHandleSetupComplete_ShortPassword(t *testing.T) {
 	srv := testAdminServer(t)
 
 	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	// An absolute config path keeps this test independent of the process CWD.
+	// configFilePath() otherwise falls back to a bare relative "labyrinth.yaml"
+	// and would write into whatever directory the test happens to run in --
+	// including the repository's own tracked config.
+	srv.SetConfigPath(filepath.Join(tmpDir, "labyrinth.yaml"))
 
 	// Password is non-empty but too short.
 	reqBody := `{"username":"admin","password":"short"}`

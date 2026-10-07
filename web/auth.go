@@ -474,17 +474,6 @@ func (s *AdminServer) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// updatePasswordInConfig updates password_hash in ./labyrinth.yaml only.
-// Production password changes must use updatePasswordInConfigAtPath with the
-// server's configured path — never probe /etc here (tests running on a live
-// host have previously clobbered /etc/labyrinth/labyrinth.yaml).
-func updatePasswordInConfig(newHash string) error {
-	if _, err := os.Stat("labyrinth.yaml"); err != nil {
-		return fmt.Errorf("config file not found")
-	}
-	return updatePasswordInConfigAtPath("labyrinth.yaml", newHash)
-}
-
 // updatePasswordInConfigAtPath reads the YAML config at path, updates the
 // password_hash line, and writes it back atomically.
 func updatePasswordInConfigAtPath(configPath, newHash string) error {
