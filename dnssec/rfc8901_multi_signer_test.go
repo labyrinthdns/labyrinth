@@ -56,11 +56,15 @@ func TestValidateResponse_MultiSigner_RFC8901(t *testing.T) {
 	if err != nil {
 		t.Fatalf("operator B keygen: %v", err)
 	}
+	// ECDH().Bytes() is the SEC1 uncompressed point (0x04 || X || Y); dropping
+	// the tag leaves the raw X||Y the DNSKEY carries. Reading .X/.Y directly
+	// is deprecated as of Go 1.26.
+	opBEcdh, err := opBPriv.PublicKey.ECDH()
+	if err != nil {
+		t.Fatalf("operator B ECDH conversion: %v", err)
+	}
 	opBWireKey := make([]byte, 64)
-	xB := opBPriv.PublicKey.X.Bytes()
-	yB := opBPriv.PublicKey.Y.Bytes()
-	copy(opBWireKey[32-len(xB):32], xB)
-	copy(opBWireKey[64-len(yB):64], yB)
+	copy(opBWireKey, opBEcdh.Bytes()[1:])
 	opBKSKRData := encodeDNSKEYRData(257, 3, dns.AlgECDSAP256, opBWireKey) // 257 = SEP+ZONE → KSK
 	opBKSK, err := dns.ParseDNSKEY(opBKSKRData)
 	if err != nil {

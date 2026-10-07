@@ -459,6 +459,13 @@ func parseRSAPublicKey(keyData []byte) (*rsa.PublicKey, error) {
 
 // parseECDSAPublicKey parses an ECDSA public key from DNSKEY wire format.
 // The key data contains raw x and y coordinates concatenated (no 0x04 prefix).
+//
+// ecdsa.ParseUncompressedPublicKey is used rather than building the
+// ecdsa.PublicKey by hand: it performs the on-curve validation that the
+// explicit elliptic.Curve.IsOnCurve call used to do, without reading the
+// deprecated ecdsa.PublicKey.X/Y fields. The coordinate length is checked
+// against the algorithm first, so the curve ParseUncompressedPublicKey infers
+// from the point size is necessarily the one this algorithm mandates.
 func parseECDSAPublicKey(keyData []byte, algorithm uint8) (*ecdsa.PublicKey, error) {
 	var curve elliptic.Curve
 	var coordLen int
@@ -478,20 +485,17 @@ func parseECDSAPublicKey(keyData []byte, algorithm uint8) (*ecdsa.PublicKey, err
 		return nil, errInvalidECDSAKey
 	}
 
-	x := new(big.Int).SetBytes(keyData[:coordLen])
-	y := new(big.Int).SetBytes(keyData[coordLen:])
+	// SEC1 uncompressed form: a 0x04 tag followed by the same x||y bytes the
+	// DNSKEY carries. ParseUncompressedPublicKey performs the on-curve check
+	// the explicit IsOnCurve call used to do.
+	uncompressed := make([]byte, 0, 1+len(keyData))
+	uncompressed = append(uncompressed, 4)
+	uncompressed = append(uncompressed, keyData...)
 
-	key := &ecdsa.PublicKey{
-		Curve: curve,
-		X:     x,
-		Y:     y,
-	}
-
-	// Validate the point is on the curve.
-	if !curve.IsOnCurve(x, y) {
+	key, err := ecdsa.ParseUncompressedPublicKey(curve, uncompressed)
+	if err != nil {
 		return nil, errInvalidECDSAKey
 	}
-
 	return key, nil
 }
 

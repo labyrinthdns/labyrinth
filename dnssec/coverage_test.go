@@ -93,11 +93,16 @@ func rsaWireKey(pubKey *rsa.PublicKey) []byte {
 
 // ecdsaWireKey encodes an ECDSA public key in DNSKEY wire format.
 func ecdsaWireKey(pubKey *ecdsa.PublicKey, coordLen int) []byte {
+	// ECDH().Bytes() yields the SEC1 uncompressed point (0x04 || X || Y);
+	// dropping the tag leaves exactly the raw X||Y the DNSKEY carries.
+	// Reading pubKey.X/.Y directly is deprecated as of Go 1.26.
+	ecdhKey, err := pubKey.ECDH()
+	if err != nil {
+		panic("ecdsaWireKey: " + err.Error())
+	}
+	uncompressed := ecdhKey.Bytes()
 	wireKey := make([]byte, coordLen*2)
-	xBytes := pubKey.X.Bytes()
-	yBytes := pubKey.Y.Bytes()
-	copy(wireKey[coordLen-len(xBytes):coordLen], xBytes)
-	copy(wireKey[2*coordLen-len(yBytes):2*coordLen], yBytes)
+	copy(wireKey, uncompressed[1:])
 	return wireKey
 }
 

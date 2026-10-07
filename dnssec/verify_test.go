@@ -157,23 +157,22 @@ func TestParseECDSAPublicKey_P256(t *testing.T) {
 	pubKey := &privKey.PublicKey
 
 	// Encode as DNSKEY wire format: raw x || y coordinates, 32 bytes each for P-256.
-	xBytes := pubKey.X.Bytes()
-	yBytes := pubKey.Y.Bytes()
-	// Pad to 32 bytes each.
+	// ECDH().Bytes() is the SEC1 uncompressed point (0x04 || X || Y); dropping the
+	// tag leaves exactly the raw X||Y. Reading .X/.Y is deprecated as of Go 1.26.
+	pubEcdh, err := pubKey.ECDH()
+	if err != nil {
+		t.Fatalf("ECDH conversion: %v", err)
+	}
 	wireKey := make([]byte, 64)
-	copy(wireKey[32-len(xBytes):32], xBytes)
-	copy(wireKey[64-len(yBytes):64], yBytes)
+	copy(wireKey, pubEcdh.Bytes()[1:])
 
 	parsed, err := parseECDSAPublicKey(wireKey, dns.AlgECDSAP256)
 	if err != nil {
 		t.Fatalf("parseECDSAPublicKey failed: %v", err)
 	}
 
-	if parsed.X.Cmp(pubKey.X) != 0 {
-		t.Error("X coordinate mismatch")
-	}
-	if parsed.Y.Cmp(pubKey.Y) != 0 {
-		t.Error("Y coordinate mismatch")
+	if !parsed.Equal(pubKey) {
+		t.Error("public key mismatch")
 	}
 	if parsed.Curve != elliptic.P256() {
 		t.Error("curve mismatch")
@@ -188,22 +187,20 @@ func TestParseECDSAPublicKey_P384(t *testing.T) {
 	pubKey := &privKey.PublicKey
 
 	// 48 bytes each for P-384.
+	pubEcdh, err := pubKey.ECDH()
+	if err != nil {
+		t.Fatalf("ECDH conversion: %v", err)
+	}
 	wireKey := make([]byte, 96)
-	xBytes := pubKey.X.Bytes()
-	yBytes := pubKey.Y.Bytes()
-	copy(wireKey[48-len(xBytes):48], xBytes)
-	copy(wireKey[96-len(yBytes):96], yBytes)
+	copy(wireKey, pubEcdh.Bytes()[1:])
 
 	parsed, err := parseECDSAPublicKey(wireKey, dns.AlgECDSAP384)
 	if err != nil {
 		t.Fatalf("parseECDSAPublicKey failed: %v", err)
 	}
 
-	if parsed.X.Cmp(pubKey.X) != 0 {
-		t.Error("X coordinate mismatch")
-	}
-	if parsed.Y.Cmp(pubKey.Y) != 0 {
-		t.Error("Y coordinate mismatch")
+	if !parsed.Equal(pubKey) {
+		t.Error("public key mismatch")
 	}
 	if parsed.Curve != elliptic.P384() {
 		t.Error("curve mismatch")
@@ -552,11 +549,14 @@ func TestVerifyRRSIG_ECDSA_P256(t *testing.T) {
 	pubKey := &privKey.PublicKey
 
 	// Encode public key in DNSKEY wire format: raw x || y, each 32 bytes for P-256.
+	// ECDH().Bytes() is the SEC1 uncompressed point (0x04 || X || Y); dropping the
+	// tag leaves exactly the raw X||Y. Reading .X/.Y is deprecated as of Go 1.26.
+	pubEcdh, err := pubKey.ECDH()
+	if err != nil {
+		t.Fatalf("ECDH conversion: %v", err)
+	}
 	wireKey := make([]byte, 64)
-	xBytes := pubKey.X.Bytes()
-	yBytes := pubKey.Y.Bytes()
-	copy(wireKey[32-len(xBytes):32], xBytes)
-	copy(wireKey[64-len(yBytes):64], yBytes)
+	copy(wireKey, pubEcdh.Bytes()[1:])
 
 	dnskey := &dns.DNSKEYRecord{
 		Flags:     256,

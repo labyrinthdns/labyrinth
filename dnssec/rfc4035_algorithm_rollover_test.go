@@ -200,10 +200,15 @@ func TestValidateResponse_AlgorithmRollover_DualSig(t *testing.T) {
 // depend on the test-only helper in coverage_test.go (which uses a
 // different signature shape).
 func encodeECDSAWireKey(pub *ecdsa.PublicKey, coordLen int) []byte {
+	// ECDH().Bytes() yields the SEC1 uncompressed point (0x04 || X || Y);
+	// dropping the tag leaves exactly the raw X||Y the DNSKEY carries.
+	// Reading pub.X/.Y directly is deprecated as of Go 1.26.
+	ecdhKey, err := pub.ECDH()
+	if err != nil {
+		panic("encodeECDSAWireKey: " + err.Error())
+	}
+	uncompressed := ecdhKey.Bytes()
 	wire := make([]byte, coordLen*2)
-	x := pub.X.Bytes()
-	y := pub.Y.Bytes()
-	copy(wire[coordLen-len(x):coordLen], x)
-	copy(wire[2*coordLen-len(y):2*coordLen], y)
+	copy(wire, uncompressed[1:])
 	return wire
 }
