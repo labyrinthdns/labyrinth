@@ -212,11 +212,11 @@ func (r *Resolver) cacheDelegationGlue(del []DelegationNS) {
 				if ttl == 0 {
 					ttl = 3600
 				}
-				r.cache.Store(delNS.Hostname, dns.TypeA, dns.ClassIN,
+				r.cache.StoreGlue(delNS.Hostname, dns.TypeA, dns.ClassIN,
 					[]dns.ResourceRecord{{
 						Name: delNS.Hostname, Type: dns.TypeA, Class: dns.ClassIN,
 						TTL: ttl, RDLength: 4, RData: ip,
-					}}, nil)
+					}})
 			}
 		}
 		if delNS.IPv6 != "" {
@@ -227,11 +227,11 @@ func (r *Resolver) cacheDelegationGlue(del []DelegationNS) {
 				if ttl == 0 {
 					ttl = 3600
 				}
-				r.cache.Store(delNS.Hostname, dns.TypeAAAA, dns.ClassIN,
+				r.cache.StoreGlue(delNS.Hostname, dns.TypeAAAA, dns.ClassIN,
 					[]dns.ResourceRecord{{
 						Name: delNS.Hostname, Type: dns.TypeAAAA, Class: dns.ClassIN,
 						TTL: ttl, RDLength: 16, RData: ipBytes,
-					}}, nil)
+					}})
 			}
 		}
 	}
@@ -266,11 +266,11 @@ func (r *Resolver) cacheOutOfBailiwickNSGlue(resp *dns.Message, del []Delegation
 				if ttl == 0 {
 					ttl = 172800
 				}
-				r.cache.Store(owner, dns.TypeA, dns.ClassIN,
+				r.cache.StoreGlue(owner, dns.TypeA, dns.ClassIN,
 					[]dns.ResourceRecord{{
 						Name: owner, Type: dns.TypeA, Class: dns.ClassIN,
 						TTL: ttl, RDLength: 4, RData: append([]byte(nil), rr.RData...),
-					}}, nil)
+					}})
 			}
 		case dns.TypeAAAA:
 			if len(rr.RData) == 16 {
@@ -278,11 +278,11 @@ func (r *Resolver) cacheOutOfBailiwickNSGlue(resp *dns.Message, del []Delegation
 				if ttl == 0 {
 					ttl = 172800
 				}
-				r.cache.Store(owner, dns.TypeAAAA, dns.ClassIN,
+				r.cache.StoreGlue(owner, dns.TypeAAAA, dns.ClassIN,
 					[]dns.ResourceRecord{{
 						Name: owner, Type: dns.TypeAAAA, Class: dns.ClassIN,
 						TTL: ttl, RDLength: 16, RData: append([]byte(nil), rr.RData...),
-					}}, nil)
+					}})
 			}
 		}
 	}

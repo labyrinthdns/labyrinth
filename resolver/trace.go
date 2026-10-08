@@ -134,7 +134,7 @@ func (r *Resolver) Trace(
 
 	// 2. Cache short-circuit (unless bypassed).
 	if !opts.BypassCache {
-		if entry, ok := r.cache.Get(name, qtype, qclass); ok {
+		if entry, ok := r.cache.Get(name, qtype, qclass); ok && !entry.Glue {
 			t.emit("cache", TraceStatusOK, "answer cache hit", map[string]any{
 				"rcode":   rcodeName(entry.RCODE),
 				"records": len(entry.Records),

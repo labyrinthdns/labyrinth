@@ -405,6 +405,39 @@ func (c *Cache) StoreWithStatus(name string, qtype uint16, class uint16, answers
 	s.mu.Unlock()
 }
 
+// StoreGlue caches a referral glue A/AAAA RRset for nameserver address
+// lookups. The entry is flagged Glue so client-facing paths treat it as a
+// miss, and it never replaces a live authoritative entry (RFC 2181 §5.4.1).
+func (c *Cache) StoreGlue(name string, qtype uint16, class uint16, answers []dns.ResourceRecord) {
+	if c.extractTTL(answers) == 0 {
+		return
+	}
+	name = strings.ToLower(name)
+	key := cacheKey{name: name, qtype: qtype, class: class}
+	idx := c.shardIndex(name)
+
+	clonedAnswers := cloneRRs(answers)
+	normalizeRRSetTTLs(clonedAnswers)
+
+	entry := &Entry{
+		Records:    clonedAnswers,
+		InsertedAt: time.Now(),
+		OrigTTL:    c.clampTTL(c.extractTTL(answers)),
+		Glue:       true,
+	}
+
+	s := &c.shards[idx]
+	s.mu.Lock()
+	if old, ok := s.entries[key]; ok && !old.Glue && !old.Expired() {
+		s.mu.Unlock()
+		return
+	}
+	s.entries[key] = entry
+	s.pushEvictionEntry(key, entry)
+	c.enforceMaxEntriesLocked(s)
+	s.mu.Unlock()
+}
+
 // StoreWithECSStatus caches a positive DNS result keyed by ECS source prefix
 // along with the DNSSEC validator's verdict and the authoritative server's
 // returned ECS SCOPE PREFIX-LENGTH (echoed to the client per RFC 7871 §7.2.1).

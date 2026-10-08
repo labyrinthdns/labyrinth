@@ -56,6 +56,12 @@ type Entry struct {
 	// authenticated denial records, not a direct authoritative response.
 	Synthesized bool
 
+	// Glue marks an A/AAAA RRset copied from a referral's additional
+	// section. RFC 2181 §5.4.1 ranks glue below authoritative data: the
+	// resolver may use it to reach a nameserver, but it is unvalidated
+	// (never covered by an RRSIG) and must not be served as an answer.
+	Glue bool
+
 	// prefetched is set atomically to 1 the first time a proactive prefetch is
 	// triggered for this entry, preventing duplicate background fetches.
 	prefetched atomic.Int32
@@ -98,6 +104,7 @@ func (e *Entry) WithDecayedTTL(remaining uint32) *Entry {
 		DNSSECStatus: e.DNSSECStatus,
 		ECSScope:     e.ECSScope,
 		Synthesized:  e.Synthesized,
+		Glue:         e.Glue,
 	}
 
 	if e.SOA != nil {

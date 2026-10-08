@@ -1009,6 +1009,14 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			ok = false
 			entry = nil
 		}
+		// Referral glue (RFC 2181 §5.4.1) is only a path to a nameserver:
+		// never validated, so serving it would answer signed names (e.g.
+		// a0.nic.istanbul) without AD and bypass DNSSEC. Resolve instead;
+		// the authoritative answer then replaces the glue entry.
+		if ok && entry.Glue {
+			ok = false
+			entry = nil
+		}
 		// RFC 8198 aggressive NSEC caching: if no direct hit, see whether
 		// a previously cached Secure NSEC interval proves qname does not
 		// exist. Synthesising NXDOMAIN here drops the auth-server load for
@@ -1098,7 +1106,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 	// try serving expired cache entry before giving up.
 	resolveOK := err == nil && result != nil && result.RCODE != dns.RCodeServFail
 	if !resolveOK {
-		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok {
+		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok && !staleEntry.Glue {
 			h.logger.Info("serving stale cache", "qname", q.Name, "qtype", qtypeStr)
 			resp, buildErr := h.buildCacheResponse(msg, staleEntry, isStream)
 			if buildErr == nil {
