@@ -131,7 +131,7 @@ func TestVerifyDS_SHA384(t *testing.T) {
 	}
 }
 
-// --- parseRSAPublicKey tests ---
+// --- parseRSAKeyParts tests ---
 
 func TestParseRSAPublicKey_LongExponentFormat(t *testing.T) {
 	// Build a key with the 3-byte exponent length prefix (first byte = 0).
@@ -149,19 +149,19 @@ func TestParseRSAPublicKey_LongExponentFormat(t *testing.T) {
 	wireKey = append(wireKey, expBytes...)
 	wireKey = append(wireKey, modBytes...)
 
-	parsed, err := parseRSAPublicKey(wireKey)
+	_, e, err := parseRSAKeyParts(wireKey)
 	if err != nil {
-		t.Fatalf("parseRSAPublicKey (long exponent) failed: %v", err)
+		t.Fatalf("parseRSAKeyParts (long exponent) failed: %v", err)
 	}
-	if parsed.E != 65537 {
-		t.Errorf("exponent: got %d, want 65537", parsed.E)
+	if e.Int64() != 65537 {
+		t.Errorf("exponent: got %d, want 65537", e.Int64())
 	}
 }
 
 func TestParseRSAPublicKey_ExponentTooLarge(t *testing.T) {
-	// Build a key where the exponent value exceeds 2^31-1.
-	// Use a 5-byte exponent = 0x0100000000 = 4294967296 which is > maxInt32.
-	expBytes := []byte{0x01, 0x00, 0x00, 0x00, 0x00}
+	// Build a key whose exponent exceeds maxRSAExponentBits (64).
+	// 9-byte exponent = 2^64 + 1.
+	expBytes := []byte{0x01, 0, 0, 0, 0, 0, 0, 0, 0x01}
 	modBytes := []byte{0x01}
 
 	var wireKey []byte
@@ -169,7 +169,7 @@ func TestParseRSAPublicKey_ExponentTooLarge(t *testing.T) {
 	wireKey = append(wireKey, expBytes...)
 	wireKey = append(wireKey, modBytes...)
 
-	_, err := parseRSAPublicKey(wireKey)
+	_, _, err := parseRSAKeyParts(wireKey)
 	if err == nil {
 		t.Error("expected error for exponent too large")
 	}
@@ -188,7 +188,7 @@ func TestParseRSAPublicKey_EmptyModulusLongHeader(t *testing.T) {
 	wireKey = append(wireKey, lenBuf...)
 	wireKey = append(wireKey, expBytes...) // no modulus bytes after
 
-	_, err := parseRSAPublicKey(wireKey)
+	_, _, err := parseRSAKeyParts(wireKey)
 	if err == nil {
 		t.Error("expected error for empty modulus with long exponent header")
 	}
@@ -196,7 +196,7 @@ func TestParseRSAPublicKey_EmptyModulusLongHeader(t *testing.T) {
 
 func TestParseRSAPublicKey_ZeroPrefixTooShort(t *testing.T) {
 	// First byte is 0 but only 3 bytes total (need at least 4).
-	_, err := parseRSAPublicKey([]byte{0, 0, 3})
+	_, _, err := parseRSAKeyParts([]byte{0, 0, 3})
 	if err != errInvalidRSAKey {
 		t.Errorf("expected errInvalidRSAKey, got %v", err)
 	}

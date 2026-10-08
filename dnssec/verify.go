@@ -414,11 +414,17 @@ func hashForAlgorithm(algorithm uint8) (crypto.Hash, error) {
 	}
 }
 
-// parseRSAPublicKey parses an RSA public key from DNSKEY wire format (RFC 3110).
+// maxRSAExponentBits caps the public exponent accepted from a DNSKEY.
+// RFC 3110 allows up to 4096 bits, but a huge exponent turns every verify
+// into a private-key-cost modexp. 64 bits matches OpenSSL's
+// OPENSSL_RSA_MAX_PUBEXP_BITS, so anything Unbound/BIND validate passes.
+const maxRSAExponentBits = 64
+
+// parseRSAKeyParts parses an RSA public key from DNSKEY wire format (RFC 3110).
 // Format: exponent length (1 or 3 bytes) + exponent + modulus.
-func parseRSAPublicKey(keyData []byte) (*rsa.PublicKey, error) {
+func parseRSAKeyParts(keyData []byte) (n, e *big.Int, err error) {
 	if len(keyData) < 3 {
-		return nil, errInvalidRSAKey
+		return nil, nil, errInvalidRSAKey
 	}
 
 	var expLen int
@@ -427,7 +433,7 @@ func parseRSAPublicKey(keyData []byte) (*rsa.PublicKey, error) {
 	// If the first byte is zero, the next two bytes contain the exponent length.
 	if keyData[0] == 0 {
 		if len(keyData) < 4 {
-			return nil, errInvalidRSAKey
+			return nil, nil, errInvalidRSAKey
 		}
 		expLen = int(binary.BigEndian.Uint16(keyData[1:3]))
 		offset = 3
@@ -437,24 +443,19 @@ func parseRSAPublicKey(keyData []byte) (*rsa.PublicKey, error) {
 	}
 
 	if offset+expLen >= len(keyData) {
-		return nil, errInvalidRSAKey
+		return nil, nil, errInvalidRSAKey
 	}
 
 	expBytes := keyData[offset : offset+expLen]
 	modBytes := keyData[offset+expLen:] // guaranteed non-empty by check above
 
 	// Parse exponent as big-endian integer.
-	exp := new(big.Int).SetBytes(expBytes)
-	if !exp.IsInt64() || exp.Int64() > 1<<31-1 {
-		return nil, errInvalidRSAKey
+	e = new(big.Int).SetBytes(expBytes)
+	if e.Cmp(big.NewInt(2)) < 0 || e.BitLen() > maxRSAExponentBits {
+		return nil, nil, errInvalidRSAKey
 	}
 
-	modulus := new(big.Int).SetBytes(modBytes)
-
-	return &rsa.PublicKey{
-		N: modulus,
-		E: int(exp.Int64()),
-	}, nil
+	return new(big.Int).SetBytes(modBytes), e, nil
 }
 
 // parseECDSAPublicKey parses an ECDSA public key from DNSKEY wire format.
@@ -501,7 +502,7 @@ func parseECDSAPublicKey(keyData []byte, algorithm uint8) (*ecdsa.PublicKey, err
 
 // verifyRSA verifies an RSA-based DNSSEC signature (algorithms 5, 8, 10).
 func verifyRSA(signedData, signature, keyData []byte, algorithm uint8) error {
-	pubKey, err := parseRSAPublicKey(keyData)
+	n, e, err := parseRSAKeyParts(keyData)
 	if err != nil {
 		return err
 	}
@@ -515,7 +516,60 @@ func verifyRSA(signedData, signature, keyData []byte, algorithm uint8) error {
 	hasher.Write(signedData)
 	hashed := hasher.Sum(nil)
 
+	// Go's crypto/rsa refuses E > 2^31-1. Live zones publish such keys
+	// (nic.istanbul / cdns.net ZSKs use E = 2^32+1); rejecting them made
+	// whole zones Bogus and engaged public-resolver fallback.
+	if e.BitLen() > 31 {
+		return verifyRSABigExponent(n, e, hashAlg, hashed, signature)
+	}
+
+	pubKey := &rsa.PublicKey{N: n, E: int(e.Int64())}
 	if err := rsa.VerifyPKCS1v15(pubKey, hashAlg, hashed, signature); err != nil {
+		return errVerifyFailed
+	}
+	return nil
+}
+
+// rsaDigestInfoPrefix holds the DER DigestInfo prefixes (RFC 8017 §9.2)
+// for the hashes used by DNSSEC RSA algorithms.
+var rsaDigestInfoPrefix = map[crypto.Hash][]byte{
+	crypto.SHA1:   {0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14},
+	crypto.SHA256: {0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20},
+	crypto.SHA512: {0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04, 0x40},
+}
+
+// verifyRSABigExponent performs RSASSA-PKCS1-v1_5 verification (RFC 8017
+// §8.2.2) with math/big for exponents crypto/rsa will not accept. All
+// inputs are public, so constant-time arithmetic is not required.
+func verifyRSABigExponent(n, e *big.Int, hashAlg crypto.Hash, hashed, signature []byte) error {
+	prefix, ok := rsaDigestInfoPrefix[hashAlg]
+	if !ok {
+		return errUnsupportedAlg
+	}
+	if n.Sign() <= 0 || n.Bit(0) == 0 {
+		return errInvalidRSAKey
+	}
+	k := (n.BitLen() + 7) / 8
+	tLen := len(prefix) + len(hashed)
+	if len(signature) != k || k < tLen+11 {
+		return errVerifyFailed
+	}
+
+	s := new(big.Int).SetBytes(signature)
+	if s.Cmp(n) >= 0 {
+		return errVerifyFailed
+	}
+	em := new(big.Int).Exp(s, e, n).FillBytes(make([]byte, k))
+
+	// EM = 0x00 || 0x01 || PS (0xff...) || 0x00 || DigestInfo || H
+	want := make([]byte, k)
+	want[1] = 0x01
+	for i := 2; i < k-tLen-1; i++ {
+		want[i] = 0xff
+	}
+	copy(want[k-tLen:], prefix)
+	copy(want[k-len(hashed):], hashed)
+	if !bytes.Equal(em, want) {
 		return errVerifyFailed
 	}
 	return nil

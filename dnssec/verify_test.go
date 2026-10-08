@@ -114,15 +114,15 @@ func TestParseRSAPublicKey(t *testing.T) {
 	wireKey = append(wireKey, expBytes...)
 	wireKey = append(wireKey, modBytes...)
 
-	parsed, err := parseRSAPublicKey(wireKey)
+	parsedN, parsedE, err := parseRSAKeyParts(wireKey)
 	if err != nil {
-		t.Fatalf("parseRSAPublicKey failed: %v", err)
+		t.Fatalf("parseRSAKeyParts failed: %v", err)
 	}
 
-	if parsed.E != pubKey.E {
-		t.Errorf("exponent mismatch: got %d, want %d", parsed.E, pubKey.E)
+	if parsedE.Int64() != int64(pubKey.E) {
+		t.Errorf("exponent mismatch: got %d, want %d", parsedE.Int64(), pubKey.E)
 	}
-	if parsed.N.Cmp(pubKey.N) != 0 {
+	if parsedN.Cmp(pubKey.N) != 0 {
 		t.Error("modulus mismatch")
 	}
 }
@@ -140,7 +140,7 @@ func TestParseRSAPublicKey_Errors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := parseRSAPublicKey(tt.keyData)
+			_, _, err := parseRSAKeyParts(tt.keyData)
 			if err == nil {
 				t.Error("expected error, got nil")
 			}
