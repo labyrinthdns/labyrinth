@@ -1358,10 +1358,14 @@ func (h *MainHandler) buildError(query []byte, rcode uint8) ([]byte, error) {
 	buf := *bufPtr
 	copy(buf, query[:12])
 
-	// Set flags: QR=1, RA=1, RCODE
+	// Set flags: QR=1, RA=1, RCODE. Opcode, RD and CD are echoed from the
+	// query (RFC 1035 §4.1.1, RFC 4035 §3.2.2); AA, TC, Z and AD are not.
+	// An echoed AD made a SERVFAIL for a Bogus name claim authenticated
+	// data whenever the client set AD in its query (RFC 6840 §5.8).
 	flags := binary.BigEndian.Uint16(buf[2:4])
-	flags |= 1 << 15 // QR
-	flags |= 1 << 7  // RA
+	flags &^= 1<<10 | 1<<9 | 1<<6 | 1<<5 // AA, TC, Z, AD
+	flags |= 1 << 15                     // QR
+	flags |= 1 << 7                      // RA
 	flags = (flags & 0xFFF0) | uint16(rcode)
 	binary.BigEndian.PutUint16(buf[2:4], flags)
 
