@@ -26,12 +26,30 @@ import (
 // Timing here is only a complexity assertion, never a correctness one: the same
 // eviction is measured at two map sizes and the ratio compared, so an O(log n)
 // eviction yields ~1 and an O(n) one yields the size ratio.
+//
+// The repetition count is load-bearing, and was not tuned by eye. Measured
+// with `go test -race`, the ratio by (reps, trials):
+//
+//	reps=3,   trials=3  ->  min 2.00  median 2.46  max 2.84   <- old
+//	reps=25,  trials=5  ->  min 1.08  median 1.20  max 2.16
+//	reps=100, trials=7  ->  min 1.07  median 1.30  max 1.43
+//
+// At reps=3 a single measurement spans only ~36us at N=12500 and ~108us at
+// N=50000. Over so short a window the per-trial fixed cost (timer reads,
+// first-touch cache misses) is not amortised, so the ratio is inflated toward
+// the O(n) signature and sits just under the 3.0 threshold: on a shared CI
+// runner that gap is what turned this test red. Widening the threshold would
+// have hidden the measurement defect and weakened the O(n) guard, so the
+// threshold stays at 3.0 and the window is widened instead. At reps=100 the
+// measured ratio collapses to ~1.3, which is the O(log n) behaviour this test
+// is meant to certify, leaving the whole 3.0..4.0 band free to catch a
+// regression to a full-map scan.
 
 const (
 	dnskeyEvictSmallN  = 12_500
 	dnskeyEvictLargeN  = 50_000
-	dnskeyEvictReps    = 3
-	dnskeyEvictTrials  = 3
+	dnskeyEvictReps    = 100
+	dnskeyEvictTrials  = 7
 	dnskeyEvictMaxRate = 3.0
 )
 
