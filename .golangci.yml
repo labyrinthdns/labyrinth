@@ -104,6 +104,16 @@ formatters:
   # actionable "Go files are not gofmt-clean" message is the one reported
   # rather than the generic formatter finding, and so formatting stays
   # gated even if `enable:` above is ever removed.
+  #
+  # Caveat on `run` reporting drift: this config sets no `issues.uniq-by-line`,
+  # so golangci-lint's default (true) applies and a finding is dropped when
+  # another one shares its line. Measured 2026-10-11 with golangci-lint
+  # 2.14.0: a gofmt error and an `unused` func both on line 3 printed only
+  # "unused"; moving the func to line 8 printed both ("gofmt: 1",
+  # "unused: 1"). So `make lint` alone can stay silent about a drift it would
+  # otherwise report. The `golangci-lint fmt --diff` step is diff-based rather
+  # than issue-based and is unaffected by this; that is a second reason to keep
+  # it, alongside the richer annotation it prints.
   enable:
     - gofmt
   exclusions:

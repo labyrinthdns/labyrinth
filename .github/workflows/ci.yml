@@ -51,6 +51,15 @@ jobs:
       #                             silently accepted as success
       # `set +e` guards the capture so a non-zero status is inspected rather
       # than aborting the step under Actions' default `bash -e`.
+      #
+      # This step is diff-based, so unlike `make lint` it is not subject to
+      # line-level issue dedup. .golangci.yml sets no `issues.uniq-by-line`,
+      # so golangci-lint's default (true) applies there and `run` drops a
+      # finding when another shares its line. Measured 2026-10-11 with
+      # golangci-lint 2.14.0: a gofmt error and an `unused` func both on line 3
+      # made `make lint` print only "unused"; separating the lines printed both.
+      # A drift this step reports while the next one does not is therefore
+      # expected behaviour, not a duplicate report of the same finding.
       - name: gofmt
         run: |
           set +e
