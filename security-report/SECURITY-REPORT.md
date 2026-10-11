@@ -25,7 +25,7 @@
 
 **Single-process Go recursive DNS resolver** with a React 19 SPA admin dashboard:
 
-- **Go 1.26.5** backend with **4 direct dependencies** (minimal supply chain)
+- **Go 1.26.9** backend with **4 direct dependencies** (minimal supply chain)
 - **React 19.2.4** frontend via Vite 8 + TypeScript strict mode
 - **Transport:** DoT (RFC 7858), DoQ (RFC 9250), DoH (RFC 8484), WebSocket streaming
 - **Observability:** Zabbix agent, Prometheus `/metrics`, structured JSON logging

@@ -46,7 +46,7 @@ curl -sSL https://raw.githubusercontent.com/labyrinthdns/labyrinth/main/install.
       <h3 className={h3}>Prerequisites</h3>
 
       <ul className={ul}>
-        <li>Go 1.26.5 or later</li>
+        <li>Go 1.26.9 or later</li>
         <li>Node.js 22 or later and npm</li>
         <li>Git</li>
         <li>Make (optional, for convenience targets)</li>
