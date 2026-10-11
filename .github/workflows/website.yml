@@ -6,6 +6,12 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/website.yml'
+  # No `paths` filter here, deliberately. A filter would mean a PR that does
+  # not touch website/ never reports a check, and `build` can therefore never
+  # be a required status check: GitHub blocks a PR whose required checks
+  # never report. The cost is one website build per PR (~1 min).
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +20,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  # Scoped per event and ref. A single shared "pages" group would let a
+  # pull_request build cancel an in-flight push-to-main deploy (or the other
+  # way round), since both would land in the same group once this workflow
+  # also runs on PRs. Push runs still serialise per ref, which is what the
+  # single group was there to guarantee.
+  group: "pages-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}"
   cancel-in-progress: true
 
 jobs:
@@ -50,6 +61,11 @@ jobs:
           path: website/dist
 
   deploy:
+    # Publish only from a push to main. On a pull_request the build job still
+    # runs and validates the site, but deploying an unmerged ref would
+    # overwrite the live site with unreviewed content. This is also why
+    # `deploy` cannot be a required status check: it never reports on a PR.
+    if: github.event_name == 'push'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
