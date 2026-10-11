@@ -25,7 +25,7 @@ GO_PACKAGES := . \
 	./web \
 	./xfr/...
 
-.PHONY: build build-go webui test test-race check-web-race-tests soak bench fuzz lint vet check-go-package-scope docker clean cross install uninstall
+.PHONY: build build-go webui test test-race check-web-race-tests soak bench fuzz lint vet vuln check-go-package-scope docker clean cross install uninstall
 
 # Parallelism caps for ~8 GiB hosts and GitHub runners. Race builds roughly
 # double RSS; unrestricted package parallelism OOMs the box (exit 143 /
@@ -141,6 +141,21 @@ lint:
 
 vet:
 	go vet -p $(GO_BUILD_P) $(GO_PACKAGES)
+
+# Reachable-vulnerability gate. Scoped to $(GO_PACKAGES) rather than ./... for
+# the same reason as test/lint/vet: after an npm install, ./... also discovers
+# the Go fixtures shipped inside web/ui/node_modules and website/node_modules
+# (flatted/golang), which are third-party code this repository does not own.
+# Scoped with ./... the scan would report on, or fail for, a dependency the
+# repository cannot fix.
+#
+# govulncheck exits 3 when called symbols are reachable from the code under
+# test, so any reachable advisory fails this target. Verified 2026-10-11 with
+# govulncheck v1.7.0 on this repository: exit 3 and "Your code is affected by
+# 15 vulnerabilities from the Go standard library" on go1.26.5, exit 0 and
+# "No vulnerabilities found." on go1.26.9.
+vuln:
+	govulncheck $(GO_PACKAGES)
 
 check-go-package-scope:
 	@packages="$$(go list $(GO_PACKAGES))" || exit 1; \

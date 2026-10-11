@@ -83,6 +83,27 @@ jobs:
       - name: golangci-lint
         run: make lint
 
+      # Reachable-vulnerability gate. Until this step existed nothing in CI ran
+      # a scanner: the 15 reachable standard-library advisories that motivated
+      # the go1.26.9 bump in go.mod:3 were only ever observed by hand, and no
+      # later run would have re-checked them. The count is now measured on
+      # every push and every PR.
+      #
+      # @latest matches the golangci-lint install above. Scan freshness comes
+      # from the remote advisory database govulncheck queries at run time, not
+      # from the binary version. Verified 2026-10-11 against govulncheck v1.9.0,
+      # whose own go.mod requires go 1.26.0 while the runner is on 1.26.9.
+      #
+      # The step is network-dependent: govulncheck fetches the advisory
+      # database, so an outage fails closed rather than silently passing.
+      #
+      # `make vuln` scans $(GO_PACKAGES), not ./... — see the target's comment.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck
+        run: make vuln
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
