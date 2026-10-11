@@ -1,0 +1,66 @@
+# Dependabot configuration.
+#
+# This file was absent until 2026-10-11, which meant the Go ecosystem was not
+# monitored at all: `govulncheck ./...` reported 15 reachable vulnerabilities in
+# the Go standard library that no GitHub surface ever surfaced. The npm
+# advisories were visible only because Dependabot scans npm trees by default,
+# but `gomod` must be declared here explicitly.
+#
+# Schedule is weekly rather than daily to match the repo's existing
+# Stale Issue Management cron cadence. No `labels:` key is set on purpose — the
+# repository has no `dependencies` label, and an update referencing a label that
+# does not exist is rejected by Dependabot.
+version: 2
+
+updates:
+  # Go modules live at the repository root; `gomod` is not auto-detected.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # web/ui is the Vite + React dashboard. Its CI surface is the `typecheck` job
+  # (npm ci -> lint -> test -> tsc -b), so a manifest edit that desyncs the
+  # lockfile fails there.
+  - package-ecosystem: "npm"
+    directory: "/web/ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # vitest and @vitest/coverage-v8 are peer-locked to each other:
+      # @vitest/coverage-v8@X peer-pins vitest to exactly X, and vitest@X pulls
+      # @vitest/mocker@X. Confirmed while closing the 2026 advisories —
+      # `npm audit fix` exited 1 and left 3 findings open until both were
+      # raised together. Updating them in separate PRs reliably produces an
+      # unresolvable tree, so they are grouped.
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/coverage-v8"
+
+  # website/ is the marketing site. It is built and deployed by
+  # .github/workflows/website.yml on push to main, NOT on pull requests, so an
+  # unreviewed dependency bump here is not caught before it reaches the deploy
+  # job.
+  - package-ecosystem: "npm"
+    directory: "/website"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
