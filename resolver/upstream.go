@@ -106,6 +106,9 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 	if isEDNSFormErr(msg) {
 		return r.confirmEDNSFormErr(nsIP, name, qtype, qclass, clientECS, msg)
 	}
+	if r.isCookieFormErr(nsIP, msg) {
+		return r.retryWithoutCookie(nsIP, name, qtype, qclass, clientECS, msg)
+	}
 
 	// RFC 5452 §6.1 hardening: a FORMERR from an EDNS-bearing query was
 	// historically interpreted (per RFC 6891 §7) as "this server hates EDNS,
@@ -163,6 +166,46 @@ func (r *Resolver) confirmEDNSFormErr(nsIP, name string, qtype, qclass uint16, c
 		r.logger.Debug("upstream rejects EDNS; querying it without OPT", "server", nsIP, "name", name)
 	}
 	return plain, nil
+}
+
+// isCookieFormErr reports whether msg looks like a server rejecting our
+// COOKIE option: a FORMERR that carries an OPT record (so EDNS itself is
+// understood) but no server cookie. ns1/ns2.jettsms.com echo our 8-byte
+// client cookie back in such a FORMERR; a server that implements RFC 7873
+// returns a server cookie with it, and its FORMERR is left alone.
+func (r *Resolver) isCookieFormErr(nsIP string, msg *dns.Message) bool {
+	if msg == nil || msg.Header.RCODE() != dns.RCodeFormErr || msg.EDNS0 == nil {
+		return false
+	}
+	if len(r.outboundClientCookie) != 8 || r.noCookieServers.Has(nsIP) {
+		return false
+	}
+	return len(extractServerCookie(msg)) == 0
+}
+
+// retryWithoutCookie handles a FORMERR with OPT received for a query
+// carrying a COOKIE option. Some authoritatives reject every query with a
+// COOKIE option this way (live: ns1/ns2.jettsms.com), so their zones were
+// SERVFAIL; worse, the iterative loop kept re-resolving their in-zone NS
+// names until the request's query budget ran out, which also kept the
+// public-resolver fallback from engaging.
+//
+// The query is asked once more with EDNS and the DO bit but no COOKIE
+// option, with a fresh TXID, source port and 0x20 pattern. Only when that
+// answer is not a FORMERR is the server remembered as cookie-intolerant,
+// so a single forged FORMERR cannot switch cookies off for a server, and
+// the retry is as spoof-resistant as a resolver that never sent cookies.
+// DNSSEC is unaffected: the DO bit and the validator stay as they are.
+func (r *Resolver) retryWithoutCookie(nsIP, name string, qtype, qclass uint16, clientECS *dns.ECSOption, first *dns.Message) (*dns.Message, error) {
+	retry, err := r.sendQueryCookie(nsIP, name, qtype, qclass, true, clientECS, nil, false)
+	if err != nil || retry.Header.RCODE() == dns.RCodeFormErr {
+		return first, nil
+	}
+	r.noCookieServers.Put(nsIP)
+	if r.logger != nil {
+		r.logger.Debug("upstream rejects the DNS COOKIE option; querying it without", "server", nsIP, "name", name)
+	}
+	return retry, nil
 }
 
 // formErrResult surfaces an unresolved EDNS FORMERR to the iterative loop,
@@ -233,12 +276,17 @@ var errCaseMismatch = errors.New("response question case mismatch (0x20)")
 // for a server, and the retry is as spoof-resistant as a resolver that
 // never used 0x20.
 func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte) (*dns.Message, error) {
+	return r.sendQueryCookie(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, !r.noCookieServers.Has(nsIP))
+}
+
+// sendQueryCookie is sendQuery with the COOKIE option chosen by the caller.
+func (r *Resolver) sendQueryCookie(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte, cookie bool) (*dns.Message, error) {
 	caps := r.config.Caps0x20Enabled && !r.noCapsServers.Has(nsIP)
-	msg, err := r.sendQueryCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, caps)
+	msg, err := r.sendQueryCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, caps, cookie)
 	if !caps || !errors.Is(err, errCaseMismatch) {
 		return msg, err
 	}
-	msg, err = r.sendQueryCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, false)
+	msg, err = r.sendQueryCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, false, cookie)
 	if err == nil {
 		r.noCapsServers.Put(nsIP)
 		if r.logger != nil {
@@ -258,8 +306,9 @@ func validateQuestion(msg *dns.Message, queryName string, qtype, qclass uint16, 
 	return err
 }
 
-// sendQueryCaps is sendQuery with 0x20 randomisation chosen by the caller.
-func (r *Resolver) sendQueryCaps(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte, caps bool) (*dns.Message, error) {
+// sendQueryCaps is sendQuery with 0x20 randomisation and the COOKIE option
+// chosen by the caller.
+func (r *Resolver) sendQueryCaps(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte, caps, cookie bool) (*dns.Message, error) {
 	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
@@ -314,7 +363,7 @@ func (r *Resolver) sendQueryCaps(nsIP string, name string, qtype uint16, qclass 
 		// COOKIE option; we verify the echo and drop on mismatch (see
 		// validateResponseCookie). Auths that don't support cookies just
 		// ignore the option, so this is fully back-compatible.
-		if len(r.outboundClientCookie) == 8 {
+		if cookie && len(r.outboundClientCookie) == 8 {
 			cookieData := append([]byte(nil), r.outboundClientCookie...)
 			// RFC 7873 §5.3: a known server cookie (received from this
 			// same auth in a prior BADCOOKIE response) is appended after

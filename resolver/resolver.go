@@ -191,6 +191,10 @@ type Resolver struct {
 	// noCapsServers remembers upstream IPs that rewrite the question case,
 	// so they are queried without 0x20 (see sendQuery).
 	noCapsServers *noEDNSCache
+	// noCookieServers remembers upstream IPs that answer FORMERR to a
+	// query carrying a COOKIE option, so they are queried without one
+	// (see retryWithoutCookie).
+	noCookieServers *noEDNSCache
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -235,6 +239,8 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	r.noEDNSServers = newNoEDNSCache(1024, 15*time.Minute)
 	// Same shape for servers that do not echo 0x20 case.
 	r.noCapsServers = newNoEDNSCache(1024, 15*time.Minute)
+	// And for servers that reject the COOKIE option.
+	r.noCookieServers = newNoEDNSCache(1024, 15*time.Minute)
 	if cfg.FallbackDebug {
 		r.fallbackLog = newFallbackFileLog(cfg.FallbackLogPath)
 	}
