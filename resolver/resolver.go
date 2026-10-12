@@ -350,47 +350,6 @@ func (r *Resolver) DNSSECValidator() *dnssec.Validator {
 	return r.dnssecValidator.Load()
 }
 
-// supportedDNSSECAlgorithms returns the list of DNSKEY/RRSIG algorithm
-// numbers this resolver advertises in the RFC 6975 DAU option. The list
-// reflects what the validator will actually accept — RSASHA1 is omitted
-// unless the operator has explicitly opted into SHA-1 acceptance, and
-// ED448 (alg 16) is omitted because Go's stdlib has no verifier and we
-// don't carry an external crypto dep.
-func (r *Resolver) supportedDNSSECAlgorithms() []uint8 {
-	algs := []uint8{
-		dns.AlgRSASHA256,
-		dns.AlgRSASHA512,
-		dns.AlgECDSAP256,
-		dns.AlgECDSAP384,
-		dns.AlgED25519,
-	}
-	if v := r.dnssecValidator.Load(); v != nil && v.SHA1Allowed() {
-		algs = append(algs, dns.AlgRSASHA1)
-	}
-	return algs
-}
-
-// supportedDSDigests returns the DS digest type numbers this resolver
-// accepts (RFC 6975 DHU option payload). SHA-1 is conditionally included
-// per the same allowSHA1 gate used by the validator.
-func (r *Resolver) supportedDSDigests() []uint8 {
-	digests := []uint8{
-		dns.DigestSHA256,
-		dns.DigestSHA384,
-	}
-	if v := r.dnssecValidator.Load(); v != nil && v.SHA1Allowed() {
-		digests = append(digests, dns.DigestSHA1)
-	}
-	return digests
-}
-
-// supportedNSEC3Hashes returns the NSEC3 hash algorithm numbers this
-// resolver accepts (RFC 6975 N3U option payload). Only SHA-1 (algorithm
-// 1) is currently defined for NSEC3 (RFC 5155 §8) so the list is fixed.
-func (r *Resolver) supportedNSEC3Hashes() []uint8 {
-	return []uint8{1}
-}
-
 // QueryDNSSEC fetches a DNS record for DNSSEC chain validation. It satisfies
 // the dnssec.Querier interface used by the validator to fetch DNSKEY and DS
 // records.
@@ -566,7 +525,9 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	var result *ResolveResult
 	var err error
 
-	if fz := r.forwardTable.Match(name); fz != nil {
+	fz := r.forwardTable.Match(name)
+	configuredZone := fz != nil
+	if fz != nil {
 		if !fz.IsStub {
 			// Forward zone: send directly to configured upstreams with RD=1.
 			// RFC 6840 §5.9 — propagate the client's CD bit so the
@@ -613,7 +574,14 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	}
 
 	// Fallback resolver: on SERVFAIL (not DNSSEC bogus), try one backup resolver.
-	if fb := shouldFallback(result, err); fb.triggered {
+	// A stub or forward zone whose own servers are unreachable stays out of
+	// it: its names are usually internal, and public resolvers would either
+	// leak them or answer with the public view.
+	fb := shouldFallback(result, err)
+	if fb.triggered && configuredZone && result != nil && result.FailureReason == "no-reachable-authority" {
+		fb.triggered = false
+	}
+	if fb.triggered {
 		r.logger.Info("primary resolver failed, trying fallback",
 			"name", name, "qtype", qtype, "reason", fb.reason)
 		if fbResult := r.queryFallbackWithContext(name, qtype, qclass, fb.reason, result, clientECS, cd); fbResult != nil {
