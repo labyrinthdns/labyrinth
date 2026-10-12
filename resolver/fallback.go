@@ -144,14 +144,20 @@ type fallbackReason struct {
 // queryFallback still rejects SERVFAIL from the backup resolver, so names
 // that public resolvers also fail (e.g. dnssec-failed.org) stay failed.
 func shouldFallback(result *ResolveResult, err error) fallbackReason {
-	// Exhausted the delegation or the request budget: public recursive
-	// resolvers typically SERVFAIL the same names. Do not count those
-	// as fallback engagements (they cannot be "recovered").
-	if result != nil {
-		switch result.FailureReason {
-		case "no-reachable-authority", "query-budget-exceeded":
-			return fallbackReason{triggered: false, reason: ""}
-		}
+	// An exhausted request budget (query cap or RequestTimeout) is not
+	// worth a fallback: the client has given up by the deadline, and the
+	// query cap is what an NXNS-style amplification hits.
+	//
+	// "no-reachable-authority" does engage the fallback. Every NS of the
+	// delegation failed *for us*, which is exactly the case the fallback
+	// exists for: live, toksan.com.tr's only nameserver dropped every query
+	// carrying an EDNS option it did not know, so it was EDE 22 here while
+	// 1.1.1.1 and 8.8.8.8 answered. When the public resolvers hit the same
+	// dead servers, queryFallback rejects their SERVFAIL and the client
+	// still gets EDE 22. Stub and forward zones are excluded by the caller
+	// so internal names are never sent to a public resolver.
+	if result != nil && result.FailureReason == "query-budget-exceeded" {
+		return fallbackReason{triggered: false, reason: ""}
 	}
 	// Prefer result.Error over err since resolveIterativeFrom preserves
 	// the underlying upstream error even when returning SERVFAIL.

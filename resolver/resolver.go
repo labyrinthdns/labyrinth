@@ -525,7 +525,9 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	var result *ResolveResult
 	var err error
 
-	if fz := r.forwardTable.Match(name); fz != nil {
+	fz := r.forwardTable.Match(name)
+	configuredZone := fz != nil
+	if fz != nil {
 		if !fz.IsStub {
 			// Forward zone: send directly to configured upstreams with RD=1.
 			// RFC 6840 §5.9 — propagate the client's CD bit so the
@@ -572,7 +574,14 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	}
 
 	// Fallback resolver: on SERVFAIL (not DNSSEC bogus), try one backup resolver.
-	if fb := shouldFallback(result, err); fb.triggered {
+	// A stub or forward zone whose own servers are unreachable stays out of
+	// it: its names are usually internal, and public resolvers would either
+	// leak them or answer with the public view.
+	fb := shouldFallback(result, err)
+	if fb.triggered && configuredZone && result != nil && result.FailureReason == "no-reachable-authority" {
+		fb.triggered = false
+	}
+	if fb.triggered {
 		r.logger.Info("primary resolver failed, trying fallback",
 			"name", name, "qtype", qtype, "reason", fb.reason)
 		if fbResult := r.queryFallbackWithContext(name, qtype, qclass, fb.reason, result, clientECS, cd); fbResult != nil {
