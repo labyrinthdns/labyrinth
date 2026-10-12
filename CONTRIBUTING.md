@@ -194,9 +194,9 @@ docs(web): add API reference for /api/cache endpoints
 
 ## Branch Protection and Release
 
-`main` is protected. Nothing may reach `main` except through a reviewed pull
-request, and a maintainer cannot grant themselves an exception to merge
-without a second set of eyes.
+`main` is protected. Changes reach `main` through a pull request whose
+required status checks have passed. An approving review is no longer required
+by the protection (see [Reviews](#reviews)).
 
 ### Required status checks
 
@@ -221,24 +221,27 @@ check that reports `skipped` on every PR gates nothing, and requiring one that
 never runs blocks every PR permanently. `build` is the part that validates
 your change.
 
-### Required reviews
+### Reviews
 
-One approving review is required (`required_approving_review_count: 1`), and
-`enforce_admins` is on, so the rule applies to admins too.
+As of 2026-10-12 the protection no longer requires an approving review: pull
+requests show no review requirement, and merges have landed without one. The
+five status checks above are still required.
 
-`dismiss_stale_reviews` is off: pushing a new commit does not discard an
-approval already given. If you need approvals invalidated on every push, that
-is a deliberate change to the protection, not a default.
+Asking for a review is still the expected practice for anything beyond a
+trivial change. Approval is now a process rule rather than a merge gate, so
+a reviewer's comments are only binding if the author waits for them.
 
 ### Known limitation: the "block direct pushes" half is not expressible here
 
-The review requirement above *is* GitHub's "Require a pull request before
-merging" rule — `required_pull_request_reviews` is the classic-protection
-equivalent of that checkbox, and it is set.
+GitHub's "Require a pull request before merging" rule is
+`required_pull_request_reviews` in classic protection. Whether that rule was
+removed or kept with zero required approvals is not visible without admin
+access to the protection settings. What is visible is that the five checks
+must pass on the commit that reaches `main`.
 
-The one thing this repository cannot express is `allow_direct_pushes: false`,
-the rulesets-level switch that additionally refuses direct pushes to the
-branch:
+The rulesets-level alternative cannot be configured here either. This
+repository cannot express `allow_direct_pushes: false`, the rulesets-level
+switch that additionally refuses direct pushes to the branch:
 
 - the classic branch protection endpoint on this repository has no
   `allow_direct_pushes` field at all — a PUT carrying it returns `200` and the
@@ -255,21 +258,20 @@ So: **do not rely on this document as evidence that direct pushes are
 blocked.** The protection is enforced server-side and cannot be inspected
 through the API; whether a given direct push is refused has to be established
 by attempting one, which is not something to do casually on `main`. Until the
-ruleset limitation is resolved, the pull-request requirement is a process rule
-enforced by review, not a configuration you can audit from here.
+ruleset limitation is resolved, the pull-request requirement is a process rule,
+not a configuration you can audit from here.
 
-If you are an admin and must land something immediately, that gap is the
-thing to be aware of. Use the pull request anyway — the record of *which*
-review approved a change is the point of the rule.
+If you must land something immediately, use a pull request anyway: it runs
+the required checks and records what was merged and why.
 
 ### Merging
 
-Prefer the GitHub merge button or `gh pr merge`, which honour the review
-requirement and record the merge on the PR. A local `git merge --ff-only` plus
+Prefer the GitHub merge button or `gh pr merge`, which wait for the required
+checks and record the merge on the PR. A local `git merge --ff-only` plus
 `git push origin main` is what several `docs`/`chore` changes in this
 repository's history used, because the PR was already fully green; it is
-recorded here as a known workaround, not as the recommended path, and it skips
-the required review.
+recorded here as a known workaround, not as the recommended path, and it
+bypasses the PR record.
 
 ### Releases
 
