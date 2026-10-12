@@ -14,15 +14,21 @@ import (
 // without AA is a lame server and stays a failure.
 func TestClassify_AuthoritativeNoDataWithoutSOA(t *testing.T) {
 	for _, tc := range []struct {
-		aa   bool
-		want responseType
-	}{{true, responseNoData}, {false, responseServFail}} {
+		aa    bool
+		rcode uint8
+		want  responseType
+	}{
+		{true, dns.RCodeNoError, responseNoData},
+		{false, dns.RCodeNoError, responseServFail},
+		// Any other RCODE (here BADCOOKIE's low bits, 7) is not a NODATA.
+		{true, 7, responseServFail},
+	} {
 		msg := &dns.Message{
-			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetAA(tc.aa).Build(), QDCount: 1},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetAA(tc.aa).SetRCODE(tc.rcode).Build(), QDCount: 1},
 			Questions: []dns.Question{{Name: "cdn.example.net", Type: dns.TypeAAAA, Class: dns.ClassIN}},
 		}
 		if got := classifyResponse(msg, "cdn.example.net", dns.TypeAAAA); got != tc.want {
-			t.Errorf("AA=%v: got %d, want %d", tc.aa, got, tc.want)
+			t.Errorf("AA=%v rcode=%d: got %d, want %d", tc.aa, tc.rcode, got, tc.want)
 		}
 	}
 }
