@@ -1003,8 +1003,15 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		// Scoped tightly: only the empty status, only these meta-types, and
 		// only when a validator is active, so every normal cached answer is
 		// untouched.
+		//
+		// The same holds for an NXDOMAIN / NODATA with no status, whatever the
+		// type: NS-address lookups resolve with validation skipped and cache
+		// their denials. Served to a client, the AAAA NODATA of a signed
+		// zone's nameserver (ns2.private-domain.com) lost its AD bit, and an
+		// unvalidated denial would reach the client unchecked.
 		if ok && entry.DNSSECStatus == "" &&
-			(q.Type == dns.TypeDNSKEY || q.Type == dns.TypeDS || q.Type == dns.TypeNS) &&
+			(q.Type == dns.TypeDNSKEY || q.Type == dns.TypeDS || q.Type == dns.TypeNS ||
+				entry.NegType == cache.NegNXDomain || entry.NegType == cache.NegNoData) &&
 			h.resolver.DNSSECValidator() != nil {
 			ok = false
 			entry = nil
