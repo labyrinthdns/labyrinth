@@ -283,6 +283,14 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 				if typeBitmapHas(iv.typeBitmap, qtype) {
 					continue
 				}
+				// RFC 4035 §3.1.3.1 / RFC 6840 §4.3 — a CNAME at qname means the
+				// answer is that CNAME, not NODATA: the bitmap lists no other
+				// type exactly because none may coexist with it. Synthesising
+				// NODATA here hid the alias (AAAA for a CNAME'd www went AD=1
+				// NODATA once a covering NSEC from a sibling query was cached).
+				if typeBitmapHas(iv.typeBitmap, dns.TypeCNAME) {
+					continue
+				}
 				// RFC 4035 §5.4 / RFC 6840 §4.4 — same delegation-NSEC
 				// guard as the NSEC sibling in nsec_aggressive.go: a
 				// parent-side NSEC3 at the zone cut has NS set and SOA
