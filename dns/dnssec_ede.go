@@ -25,8 +25,10 @@ func BogusReasonToEDE(reason string) (uint16, string) {
 		return EDECodeSignatureExpired, "RRSIG expiration in the past"
 	case "signature-not-yet-valid":
 		return EDECodeSignatureNotYetValid, "RRSIG inception in the future"
-	case "dnskey-missing", "no-matching-dnskey":
+	case "dnskey-missing":
 		return EDECodeDNSKEYMissing, "no DNSKEY available for signer"
+	case "no-matching-dnskey":
+		return EDECodeDNSKEYMissing, "no DNSKEY matches the DS or RRSIG key tag"
 	case "rrsigs-missing":
 		return EDECodeRRSIGsMissing, "answer in signed zone has no RRSIG"
 	case "unsupported-dnskey-algo":
