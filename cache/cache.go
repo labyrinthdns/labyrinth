@@ -513,6 +513,12 @@ func (c *Cache) StoreNegativeWithStatus(name string, qtype uint16, class uint16,
 	if hasAnySOA(authority) && !authorityCoversName(name, authority) {
 		return
 	}
+	// RFC 2308 §5: a negative answer without an SOA SHOULD NOT be cached.
+	// The classifier accepts an authoritative NODATA without SOA (RFC 2308
+	// §2.2 type 3, live from merlincdn.net), which has no negative TTL.
+	if negType == NegNoData && !hasAnySOA(authority) {
+		return
+	}
 	// RFC 2181 §8 / RFC 2308 §4: a TTL of zero on the SOA Minimum field
 	// or the SOA RR itself means the negative answer is for this query
 	// only and MUST NOT be cached.

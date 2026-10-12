@@ -264,7 +264,9 @@ func TestNegativeEntriesUnnamedQType(t *testing.T) {
 	c := NewCache(1000, 5, 86400, 3600, m)
 
 	// NODATA (type-specific) with a qtype that has no mnemonic.
-	c.StoreNegative("unknown-qtype.com", 999, dns.ClassIN, NegNoData, dns.RCodeNoError, nil)
+	soa := []dns.ResourceRecord{{Name: "unknown-qtype.com", Type: dns.TypeSOA, Class: dns.ClassIN, TTL: 300,
+		RData: buildSOARData("ns1.unknown-qtype.com", "admin.unknown-qtype.com", 1, 3600, 900, 604800, 300)}}
+	c.StoreNegative("unknown-qtype.com", 999, dns.ClassIN, NegNoData, dns.RCodeNoError, soa)
 
 	entries := c.NegativeEntries(10)
 	if len(entries) != 1 {
