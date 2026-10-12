@@ -1175,9 +1175,20 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		// behind SERVFAIL. The AD bit is already cleared by the response-
 		// builder under CD=1, which communicates the non-validation state
 		// to the client; the data itself flows through unfiltered.
-		if result != nil && result.DNSSECStatus == "bogus" && !msg.Header.CD() && msg.EDNS0 != nil {
-			edeCode, edeText := dns.BogusReasonToEDE(result.DNSSECReason)
-			bogusResp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, edeCode, edeText)
+		//
+		// A client without EDNS gets the same bare SERVFAIL, minus the OPT
+		// (RFC 6891 §7). Falling through instead returned the validated part
+		// of a CNAME chain under SERVFAIL and cached the failure, which then
+		// answered later CD=1 clients with SERVFAIL rather than the data.
+		if result != nil && result.DNSSECStatus == "bogus" && !msg.Header.CD() {
+			var bogusResp []byte
+			var buildErr error
+			if msg.EDNS0 != nil {
+				edeCode, edeText := dns.BogusReasonToEDE(result.DNSSECReason)
+				bogusResp, buildErr = h.buildErrorWithEDE(query, dns.RCodeServFail, edeCode, edeText)
+			} else {
+				bogusResp, buildErr = h.buildError(query, dns.RCodeServFail)
+			}
 			if buildErr == nil {
 				h.metrics.IncResponses("SERVFAIL")
 				return bogusResp, nil
@@ -2010,6 +2021,17 @@ func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint1
 		return resp, nil // fallback to plain error
 	}
 	h.addEDEToResponse(msg, edeCode, edeText)
+	// RFC 3225 §3: the DO bit of the query MUST be copied in the response.
+	// buildError carries no OPT, so the one addEDEToResponse just created
+	// has DO clear; a validating stub then saw `flags:` on every Bogus
+	// SERVFAIL. Unpacking the query is affordable on this error path.
+	if q, qErr := dns.Unpack(query); qErr == nil && q.EDNS0 != nil && q.EDNS0.DOFlag {
+		for i := range msg.Additional {
+			if msg.Additional[i].Type == dns.TypeOPT {
+				msg.Additional[i].TTL |= 1 << 15
+			}
+		}
+	}
 	// H-5: pack into an owned slice.
 	out, packErr := h.packToOwnedBytes(msg)
 	if packErr != nil {
