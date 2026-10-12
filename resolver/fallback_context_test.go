@@ -49,3 +49,31 @@ func TestResolve_FallbackPreservesClientContext(t *testing.T) {
 	}
 	t.Log("FIX VERIFIED")
 }
+
+// TestQueryFallback_CDKeepsBogusVerdict pins RFC 4035 §3.2.2: under CD=1 the
+// backup does not validate, so its NOERROR answer is the very data our
+// validator ruled Bogus. The verdict must survive; laundered to "" the
+// answer was cached and served to every later CD=0 client.
+func TestQueryFallback_CDKeepsBogusVerdict(t *testing.T) {
+	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
+		return &dns.Message{Header: dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeNoError).Build(), QDCount: 1}, Questions: q.Questions}
+	})
+	defer mock.close()
+	r := testResolver(t, mock)
+	r.config.DNSSECEnabled = true
+	r.config.FallbackResolvers = []string{mock.ip}
+	primary := &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}
+
+	for _, tc := range []struct {
+		cd   bool
+		want string
+	}{{true, "bogus"}, {false, ""}} {
+		got := r.queryFallbackWithContext("host.example.com", dns.TypeA, dns.ClassIN, "DNSSEC bogus", primary, nil, tc.cd)
+		if got == nil {
+			t.Fatalf("CD=%v: fallback did not recover", tc.cd)
+		}
+		if got.DNSSECStatus != tc.want {
+			t.Errorf("CD=%v: DNSSECStatus=%q, want %q", tc.cd, got.DNSSECStatus, tc.want)
+		}
+	}
+}

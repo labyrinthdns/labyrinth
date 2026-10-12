@@ -1017,6 +1017,13 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			ok = false
 			entry = nil
 		}
+		// A Bogus entry exists only because a CD=1 client asked for the
+		// data unvalidated (RFC 4035 §3.2.2). Serving it to a CD=0 client
+		// would bypass validation; resolve instead so it gets SERVFAIL.
+		if ok && entry.DNSSECStatus == "bogus" && !msg.Header.CD() {
+			ok = false
+			entry = nil
+		}
 		// RFC 8198 aggressive NSEC caching: if no direct hit, see whether
 		// a previously cached Secure NSEC interval proves qname does not
 		// exist. Synthesising NXDOMAIN here drops the auth-server load for
@@ -1106,7 +1113,8 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 	// try serving expired cache entry before giving up.
 	resolveOK := err == nil && result != nil && result.RCODE != dns.RCodeServFail
 	if !resolveOK {
-		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok && !staleEntry.Glue {
+		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok && !staleEntry.Glue &&
+			(staleEntry.DNSSECStatus != "bogus" || msg.Header.CD()) {
 			h.logger.Info("serving stale cache", "qname", q.Name, "qtype", qtypeStr)
 			resp, buildErr := h.buildCacheResponse(msg, staleEntry, isStream)
 			if buildErr == nil {
