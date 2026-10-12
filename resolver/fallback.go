@@ -97,6 +97,13 @@ func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass ui
 		if r.config.DNSSECEnabled && msg.Header.AD() {
 			status = "secure"
 		}
+		// Under CD=1 the backup skips validation too (RFC 4035 §3.2.2), so
+		// its answer is the same unvalidated data our validator just ruled
+		// Bogus. Keep that verdict: laundered to "" it was cached and served
+		// to every later CD=0 client, bypassing DNSSEC for all of them.
+		if cd && primary != nil && primary.DNSSECStatus == "bogus" {
+			status = "bogus"
+		}
 		return &ResolveResult{
 			Answers:      msg.Answers,
 			Authority:    msg.Authority,
