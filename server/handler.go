@@ -376,12 +376,23 @@ func chooseCacheECSKey(outboundECS, upstreamECS *dns.ECSOption) string {
 	if upstreamECS.ScopePrefixLen == 0 {
 		return ""
 	}
-	scoped := dns.ECSOption{
-		Family:          outboundECS.Family,
-		SourcePrefixLen: upstreamECS.ScopePrefixLen,
-		Address:         dns.TruncateIP(outboundECS.Address, upstreamECS.ScopePrefixLen),
-	}
-	return scoped.CacheKey()
+	// The key MUST be built from the SOURCE prefix we sent upstream, not from
+	// the SCOPE the upstream echoed back. The lookup path (Handle, the
+	// GetWithECS fallback) can only know the client's source prefix — it runs
+	// before any upstream reply exists — so it keys on
+	// outboundECS.CacheKey(). Deriving the store key from the returned scope
+	// instead produced a different string whenever the authoritative narrowed
+	// the scope below what we asked for (RFC 7871 §7.2.1 explicitly allows
+	// scope <= source: a client asking /24 that gets a /16 answer is the
+	// common "answer is not client-specific" shape). The entry was then stored
+	// under e.g. "1.2.0.0/16" while every lookup asked for "1.2.3.0/24", so
+	// scoped entries became unreachable — a permanent cache miss that also
+	// left the resolver re-resolving the same names upstream forever.
+	//
+	// The echoed scope is not lost: it is recorded on the entry as
+	// Entry.ECSScope (StoreWithECSStatus's ecsScope argument) and is what the
+	// downstream response echoes back per RFC 7871 §7.2.1.
+	return outboundECS.CacheKey()
 }
 
 // SetDownstreamUDPBufferSize configures the EDNS0 UDP payload size this
@@ -1030,7 +1041,11 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			if synth, hit := h.cache.LookupNSECCoversTyped(q.Name, q.Type, q.Class); hit {
 				entry = synth
 				ok = true
-				h.metrics.IncCacheHits()
+				// No IncCacheHits here: the shared `if ok` block below counts
+				// every cache-served query exactly once, whichever path
+				// produced the entry. Counting here as well made each
+				// aggressive-NSEC answer worth two hits, inflating the
+				// operator-visible hit rate.
 			}
 		}
 		// RFC 8198 §5.3 / §5.4 NSEC3 aggressive lookup — second
@@ -1042,7 +1057,8 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			if synth, hit := h.cache.LookupNSEC3CoversTyped(q.Name, q.Type, q.Class); hit {
 				entry = synth
 				ok = true
-				h.metrics.IncCacheHits()
+				// Counted once by the shared `if ok` block below — same as
+				// the direct-hit and NSEC-aggressive paths.
 			}
 		}
 		if ok {
@@ -1224,16 +1240,25 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 				h.cache.StoreWithECSStatus(q.Name, q.Type, q.Class, ecsKey, ecsScope, answersToCache, result.Authority, result.DNSSECStatus)
 			}
 		} else if result.RCODE == dns.RCodeNXDomain {
-			// Negative caching is kept global for now: RFC 7871 §7.3 does
-			// not forbid per-subnet negatives, but NXDOMAIN scoping at
-			// authoritative servers is rare and per-subnet negatives
-			// would inflate cache pressure on the common case.
+			// RFC 7871 §7.3: a negative learned while a client-subnet (ECS)
+			// option is in flight is not safely portable to the global
+			// (name,type,class) cache. One subnet's NXDOMAIN must not deny
+			// service to every other client — including clients that never
+			// sent ECS. The resolver already refuses to store such a denial
+			// (resolver.go: `if clientECS == nil`); the cache has no
+			// scoped-negative API, so mirror that guard here and leave the
+			// scoped denial uncached rather than reintroducing the leak.
+			//
 			// Preserve the validator's verdict so a cached NXDOMAIN keeps its
 			// AD bit on re-serve (RFC 4035); without the status a signed denial
 			// silently downgrades to AD=0 on the second hit.
-			h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority, result.DNSSECStatus)
+			if outboundECS == nil {
+				h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority, result.DNSSECStatus)
+			}
 		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
-			h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority, result.DNSSECStatus)
+			if outboundECS == nil {
+				h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority, result.DNSSECStatus)
+			}
 		} else if result.RCODE == dns.RCodeServFail {
 			// RFC 9520 §3 failure caching for the resolver-returned-SERVFAIL
 			// path (DNSSEC bogus, all NS unreachable, lame delegation, etc.).

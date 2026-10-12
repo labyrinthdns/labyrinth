@@ -47,6 +47,18 @@ func (s *AdminServer) handleTrustChain(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "name query parameter required"})
 		return
 	}
+	// RFC 1035 §2.3.4 caps a domain name at 255 octets. buildTrustChain walks
+	// every label of the name and issues one DNSKEY query per zone plus one DS
+	// query per non-root zone, so its upstream cost is 2*labels+1. Without this
+	// cap a single authenticated GET drives upstream resolution work in
+	// proportion to an operator-supplied label count — the same amplification
+	// the sibling admin handlers refuse (web/api_dnssec.go:152,
+	// web/api_cache.go:123, web/api_blocklist.go:68). Applied before any
+	// resolver work so an over-long name costs zero upstream queries.
+	if len(name) > 255 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "name exceeds RFC 1035 §2.3.4 length cap"})
+		return
+	}
 
 	if s.resolver == nil {
 		jsonResponse(w, http.StatusOK, map[string]interface{}{

@@ -293,6 +293,11 @@ export default function QueriesPage() {
     }
     void fetchTotals()
     const interval = setInterval(() => {
+      // Skip while the tab is backgrounded, matching BlocklistPage,
+      // CachePage, DashboardPage and OperationsPage. Without this a
+      // backgrounded tab keeps hitting /api/stats every 15s for as long
+      // as it stays open.
+      if (document.hidden) return
       void fetchTotals()
     }, 15000)
     return () => {
