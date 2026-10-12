@@ -257,21 +257,14 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 			outgoing.ScopePrefixLen = 0
 			ednsOpts = append(ednsOpts, dns.BuildECS(&outgoing))
 		}
-		// RFC 6975: advertise the DNSSEC algorithms / DS digest types /
-		// NSEC3 hash algorithms this resolver can validate. Multi-signed
-		// zones (key rollovers, dual-algorithm publishing) use this to
-		// pick which signature to ship — without DAU they must include
-		// every signature, inflating both the response and the resolver's
-		// amplification footprint. Only emitted when DNSSEC is enabled
-		// (DO bit set), since RFC 6975 §2 ties the option to validating
-		// queries.
-		if r.config.DNSSECEnabled {
-			ednsOpts = append(ednsOpts,
-				dns.BuildDAUOption(r.supportedDNSSECAlgorithms()),
-				dns.BuildDHUOption(r.supportedDSDigests()),
-				dns.BuildN3UOption(r.supportedNSEC3Hashes()),
-			)
-		}
+		// No RFC 6975 DAU/DHU/N3U options. They are optional and exist only
+		// so zone operators can measure algorithm uptake: RFC 6975 §5 says
+		// they MUST NOT change the authoritative's response, so they buy
+		// nothing. They do cost: some authoritatives silently drop any query
+		// carrying an EDNS option they do not know. Live, 78.135.65.70
+		// (both NS of toksan.com.tr) answers DO+COOKIE but never DAU, NSID,
+		// ECS or an unknown option, so the name was SERVFAIL (EDE 22) here
+		// while public resolvers, which do not send these options, resolved it.
 		// RFC 7873 §5.4 outbound DNS cookies: present our stable 8-byte
 		// client cookie on every EDNS-bearing query. An off-path spoofer
 		// trying to forge a response now has to guess this 64-bit value in
