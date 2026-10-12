@@ -188,6 +188,9 @@ type Resolver struct {
 	// confirmed by a second query, so they are queried without OPT
 	// instead of paying the confirmation round-trip on every query.
 	noEDNSServers *noEDNSCache
+	// noCapsServers remembers upstream IPs that rewrite the question case,
+	// so they are queried without 0x20 (see sendQuery).
+	noCapsServers *noEDNSCache
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -230,6 +233,8 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	// EDNS-intolerant upstreams. 15 minutes lets a server that fixes its
 	// EDNS handling get EDNS (and DNSSEC) back without a restart.
 	r.noEDNSServers = newNoEDNSCache(1024, 15*time.Minute)
+	// Same shape for servers that do not echo 0x20 case.
+	r.noCapsServers = newNoEDNSCache(1024, 15*time.Minute)
 	if cfg.FallbackDebug {
 		r.fallbackLog = newFallbackFileLog(cfg.FallbackLogPath)
 	}
