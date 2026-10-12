@@ -188,6 +188,13 @@ type Resolver struct {
 	// confirmed by a second query, so they are queried without OPT
 	// instead of paying the confirmation round-trip on every query.
 	noEDNSServers *noEDNSCache
+	// noCapsServers remembers upstream IPs that rewrite the question case,
+	// so they are queried without 0x20 (see sendQuery).
+	noCapsServers *noEDNSCache
+	// noCookieServers remembers upstream IPs that answer FORMERR to a
+	// query carrying a COOKIE option, so they are queried without one
+	// (see retryWithoutCookie).
+	noCookieServers *noEDNSCache
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -230,6 +237,10 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	// EDNS-intolerant upstreams. 15 minutes lets a server that fixes its
 	// EDNS handling get EDNS (and DNSSEC) back without a restart.
 	r.noEDNSServers = newNoEDNSCache(1024, 15*time.Minute)
+	// Same shape for servers that do not echo 0x20 case.
+	r.noCapsServers = newNoEDNSCache(1024, 15*time.Minute)
+	// And for servers that reject the COOKIE option.
+	r.noCookieServers = newNoEDNSCache(1024, 15*time.Minute)
 	if cfg.FallbackDebug {
 		r.fallbackLog = newFallbackFileLog(cfg.FallbackLogPath)
 	}
@@ -348,47 +359,6 @@ func (r *Resolver) SetDNSSECNegativeTrustAnchors(entries []string) []string {
 // counters (e.g. NTAMatches) through the metrics endpoint.
 func (r *Resolver) DNSSECValidator() *dnssec.Validator {
 	return r.dnssecValidator.Load()
-}
-
-// supportedDNSSECAlgorithms returns the list of DNSKEY/RRSIG algorithm
-// numbers this resolver advertises in the RFC 6975 DAU option. The list
-// reflects what the validator will actually accept — RSASHA1 is omitted
-// unless the operator has explicitly opted into SHA-1 acceptance, and
-// ED448 (alg 16) is omitted because Go's stdlib has no verifier and we
-// don't carry an external crypto dep.
-func (r *Resolver) supportedDNSSECAlgorithms() []uint8 {
-	algs := []uint8{
-		dns.AlgRSASHA256,
-		dns.AlgRSASHA512,
-		dns.AlgECDSAP256,
-		dns.AlgECDSAP384,
-		dns.AlgED25519,
-	}
-	if v := r.dnssecValidator.Load(); v != nil && v.SHA1Allowed() {
-		algs = append(algs, dns.AlgRSASHA1)
-	}
-	return algs
-}
-
-// supportedDSDigests returns the DS digest type numbers this resolver
-// accepts (RFC 6975 DHU option payload). SHA-1 is conditionally included
-// per the same allowSHA1 gate used by the validator.
-func (r *Resolver) supportedDSDigests() []uint8 {
-	digests := []uint8{
-		dns.DigestSHA256,
-		dns.DigestSHA384,
-	}
-	if v := r.dnssecValidator.Load(); v != nil && v.SHA1Allowed() {
-		digests = append(digests, dns.DigestSHA1)
-	}
-	return digests
-}
-
-// supportedNSEC3Hashes returns the NSEC3 hash algorithm numbers this
-// resolver accepts (RFC 6975 N3U option payload). Only SHA-1 (algorithm
-// 1) is currently defined for NSEC3 (RFC 5155 §8) so the list is fixed.
-func (r *Resolver) supportedNSEC3Hashes() []uint8 {
-	return []uint8{1}
 }
 
 // QueryDNSSEC fetches a DNS record for DNSSEC chain validation. It satisfies
@@ -566,7 +536,9 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	var result *ResolveResult
 	var err error
 
-	if fz := r.forwardTable.Match(name); fz != nil {
+	fz := r.forwardTable.Match(name)
+	configuredZone := fz != nil
+	if fz != nil {
 		if !fz.IsStub {
 			// Forward zone: send directly to configured upstreams with RD=1.
 			// RFC 6840 §5.9 — propagate the client's CD bit so the
@@ -613,7 +585,14 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	}
 
 	// Fallback resolver: on SERVFAIL (not DNSSEC bogus), try one backup resolver.
-	if fb := shouldFallback(result, err); fb.triggered {
+	// A stub or forward zone whose own servers are unreachable stays out of
+	// it: its names are usually internal, and public resolvers would either
+	// leak them or answer with the public view.
+	fb := shouldFallback(result, err)
+	if fb.triggered && configuredZone && result != nil && result.FailureReason == "no-reachable-authority" {
+		fb.triggered = false
+	}
+	if fb.triggered {
 		r.logger.Info("primary resolver failed, trying fallback",
 			"name", name, "qtype", qtype, "reason", fb.reason)
 		if fbResult := r.queryFallbackWithContext(name, qtype, qclass, fb.reason, result, clientECS, cd); fbResult != nil {
@@ -654,8 +633,9 @@ func (r *Resolver) resolveFromClosest(
 	clientECS *dns.ECSOption,
 ) (*ResolveResult, error) {
 	ns, zone := r.seedIterativeStart(name, qtype)
+	visited := r.newRequestVisited()
 	result, err := r.resolveIterativeFromInner(
-		name, qtype, qclass, 0, r.newRequestVisited(), ns, zone, false, clientECS,
+		name, qtype, qclass, 0, visited, ns, zone, false, clientECS,
 	)
 	if zone == "" {
 		return result, err
@@ -663,8 +643,19 @@ func (r *Resolver) resolveFromClosest(
 	if result != nil && result.FailureReason == "no-reachable-authority" {
 		r.logger.Debug("cached delegation unreachable; retrying from root",
 			"name", name, "zone", zone)
+		// Same client request: keep its budget and deadline, and the NS
+		// addresses and names already proven dead. A fresh request budget let the
+		// retry re-ask every dead address and run past RequestTimeout
+		// (live: 225.129.203.in-addr.arpa SERVFAIL after 21 s).
+		retry := newVisitedSetWithBudget(visited.budget)
+		for ip := range visited.failedIPs {
+			retry.MarkFailedIP(ip)
+		}
+		for host := range visited.deadNS {
+			retry.MarkDeadNS(host)
+		}
 		return r.resolveIterativeFromInner(
-			name, qtype, qclass, 0, r.newRequestVisited(),
+			name, qtype, qclass, 0, retry,
 			toNameServerList(r.rootServers), "", false, clientECS,
 		)
 	}
@@ -696,6 +687,10 @@ func (r *Resolver) resolveIterativeFromInner(
 	nameservers := initialNS
 	currentZone := initialZone
 	var lastErr error
+	// sawServFail: an NS of the current delegation answered SERVFAIL. When
+	// the untried alternates then fail to resolve, that SERVFAIL is still
+	// the real reason the delegation is unusable.
+	sawServFail := false
 
 	for depth := 0; depth < r.config.MaxDepth; depth++ {
 		// Pick a nameserver
@@ -706,6 +701,9 @@ func (r *Resolver) resolveIterativeFromInner(
 			// failure mode as the "all NS REFUSED" path below. Tag the
 			// reason so the server emits EDE 22.
 			lastErr = err
+			if sawServFail {
+				lastErr = errors.New("all nameservers returned SERVFAIL")
+			}
 			return &ResolveResult{
 				RCODE:         dns.RCodeServFail,
 				FailureReason: "no-reachable-authority",
@@ -761,6 +759,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			r.logger.Debug("upstream error", "ns", nsIP, "error", err)
 			lastErr = err
 			visited.MarkFailedIP(nsIP)
+			visited.budget.markUnreachable(nsIP)
 			nameservers = excludeNSIP(nameservers, nsIP)
 			if len(nameservers) == 0 {
 				return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
@@ -802,6 +801,7 @@ func (r *Resolver) resolveIterativeFromInner(
 				r.logger.Debug("qmin fallback upstream error", "ns", nsIP, "error", err)
 				lastErr = err
 				visited.MarkFailedIP(nsIP)
+				visited.budget.markUnreachable(nsIP)
 				nameservers = excludeNSIP(nameservers, nsIP)
 				if len(nameservers) == 0 {
 					return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
@@ -1008,6 +1008,8 @@ func (r *Resolver) resolveIterativeFromInner(
 			validateReferralNS(newNS, zone, r.logger)
 			nameservers = delegationToNSList(newNS)
 			currentZone = zone
+			visited.ResetTriedNS()
+			sawServFail = false
 
 			// Cache NS delegation records
 			r.cacheDelegation(response, zone)
@@ -1084,6 +1086,9 @@ func (r *Resolver) resolveIterativeFromInner(
 
 		case responseServFail:
 			visited.MarkFailedIP(nsIP)
+			if response != nil && response.Header.RCODE() == dns.RCodeServFail {
+				sawServFail = true
+			}
 			nameservers = excludeNSIP(nameservers, nsIP)
 			// Do not Happy-Eyeballs-re-resolve a hostname whose only glue
 			// just failed — that cannot recover and, before the nsAddrName
@@ -1193,11 +1198,19 @@ func (r *Resolver) selectAndResolveNS(nameservers []nsEntry, visited *visitedSet
 			if pass == 1 && !inZone {
 				continue
 			}
+			// Each hostname is resolved at most once per delegation:
+			// re-resolving one whose resolved address just failed cannot
+			// recover, and unbounded re-resolution was the goroutine storm.
+			if visited.IsTriedNS(ns.hostname) || visited.IsDeadNS(ns.hostname) {
+				continue
+			}
+			visited.MarkTriedNS(ns.hostname)
 
 			hostname, ip, err := r.resolveNSHappyEyeballs(ns.hostname, happyEyeballsDelay, visited)
 			if err == nil {
 				return hostname, ip, nil
 			}
+			visited.MarkDeadNS(ns.hostname)
 		}
 	}
 
@@ -1354,6 +1367,26 @@ type reqBudget struct {
 	queries    atomic.Int64
 	maxQueries int       // <= 0 means unlimited (tests / internal helpers)
 	deadline   time.Time // zero means no deadline
+	// unreachable holds NS addresses that timed out or could not be dialed
+	// during this client request. Unlike visitedSet.failedIPs (per subtree,
+	// and also fed by query-specific SERVFAILs) it is shared by every
+	// sub-resolution and the retry from the root, so a dead server costs one
+	// timeout per request. Concurrent: Happy Eyeballs branches share it.
+	unreachable sync.Map
+}
+
+func (b *reqBudget) markUnreachable(ip string) {
+	if b != nil && ip != "" {
+		b.unreachable.Store(ip, struct{}{})
+	}
+}
+
+func (b *reqBudget) isUnreachable(ip string) bool {
+	if b == nil || ip == "" {
+		return false
+	}
+	_, ok := b.unreachable.Load(ip)
+	return ok
 }
 
 var (
@@ -1381,7 +1414,17 @@ type visitedSet struct {
 	ns        map[string]struct{}
 	cname     map[string]struct{}
 	failedIPs map[string]struct{}
-	budget    *reqBudget
+	// triedNS holds the NS hostnames of the current delegation that
+	// selectAndResolveNS has already Happy-Eyeballs-resolved. Each is
+	// resolved at most once per delegation; one not in it is an alternate
+	// even when its glue failed, since glue is the parent's copy and can be
+	// stale. Reset on each referral.
+	triedNS map[string]struct{}
+	// deadNS holds NS hostnames whose resolution failed outright this
+	// request. Unlike triedNS it survives referrals and the retry from
+	// the root, so a dead NS name is not resolved again at every level.
+	deadNS map[string]struct{}
+	budget *reqBudget
 	// nsAddrName is the NS hostname currently being resolved via
 	// resolveNSAddr. Copied into child visited sets so selectAndResolveNS
 	// will not Happy-Eyeballs that same hostname again (re-entrancy storm
@@ -1459,9 +1502,67 @@ func (v *visitedSet) MarkFailedIP(ip string) {
 	v.failedIPs[ip] = struct{}{}
 }
 
-// IsFailedIP reports whether ip was already marked unusable this request.
+// MarkTriedNS records that hostname was resolved for the current delegation,
+// so it is not resolved again nor counted as an alternate.
+func (v *visitedSet) MarkTriedNS(hostname string) {
+	if v == nil || hostname == "" {
+		return
+	}
+	if v.triedNS == nil {
+		v.triedNS = make(map[string]struct{}, 8)
+	}
+	v.triedNS[strings.ToLower(strings.TrimSuffix(hostname, "."))] = struct{}{}
+}
+
+// IsTriedNS reports whether hostname was already resolved for the current
+// delegation.
+func (v *visitedSet) IsTriedNS(hostname string) bool {
+	if v == nil || v.triedNS == nil || hostname == "" {
+		return false
+	}
+	_, ok := v.triedNS[strings.ToLower(strings.TrimSuffix(hostname, "."))]
+	return ok
+}
+
+// MarkDeadNS records that hostname could not be resolved to any usable
+// address for the rest of this request.
+func (v *visitedSet) MarkDeadNS(hostname string) {
+	if v == nil || hostname == "" {
+		return
+	}
+	if v.deadNS == nil {
+		v.deadNS = make(map[string]struct{}, 4)
+	}
+	v.deadNS[strings.ToLower(strings.TrimSuffix(hostname, "."))] = struct{}{}
+}
+
+// IsDeadNS reports whether hostname already failed to resolve this request.
+func (v *visitedSet) IsDeadNS(hostname string) bool {
+	if v == nil || v.deadNS == nil || hostname == "" {
+		return false
+	}
+	_, ok := v.deadNS[strings.ToLower(strings.TrimSuffix(hostname, "."))]
+	return ok
+}
+
+// ResetTriedNS forgets the tried hostnames when a referral replaces the
+// nameserver set: the same host may serve the child zone at another address.
+func (v *visitedSet) ResetTriedNS() {
+	if v != nil {
+		v.triedNS = nil
+	}
+}
+
+// IsFailedIP reports whether ip was already marked unusable this request:
+// failed in this subtree, or unreachable anywhere in the request.
 func (v *visitedSet) IsFailedIP(ip string) bool {
-	if v == nil || v.failedIPs == nil || ip == "" {
+	if v == nil || ip == "" {
+		return false
+	}
+	if v.budget.isUnreachable(ip) {
+		return true
+	}
+	if v.failedIPs == nil {
 		return false
 	}
 	_, ok := v.failedIPs[ip]
@@ -1517,6 +1618,16 @@ func nsListHasAlternateAddress(nameservers []nsEntry, visited *visitedSet, r *Re
 		}
 		if r == nil || ns.hostname == "" {
 			continue
+		}
+		// An NS this delegation has not resolved yet is a real alternate:
+		// selectAndResolveNS resolves it next. That covers a glueless NS and
+		// one whose glue failed, since the parent's glue can be stale. Live,
+		// 78.181.in-addr.arpa has four glueless NS and only
+		// ns1.ifxnetworks.co answers, and .co publishes three A glue records
+		// for it of which only the one its own zone serves works.
+		if visited != nil && !visited.IsTriedNS(ns.hostname) && !visited.IsDeadNS(ns.hostname) &&
+			!strings.EqualFold(ns.hostname, visited.nsAddrName) {
+			return true
 		}
 		if entry, ok := r.cache.Get(ns.hostname, dns.TypeA, dns.ClassIN); ok {
 			for _, rr := range entry.Records {
@@ -1598,15 +1709,29 @@ func parseIPv4Bytes(ipStr string) []byte {
 // race (TestResolveIterativeDNSSECBogus hung 10m).
 func (r *Resolver) resolveNSAddr(name string, qtype uint16, parent *visitedSet) (*ResolveResult, error) {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	// RFC 9520 §3 covers NS-address lookups too. Now that an untried
+	// glueless NS is resolved after its siblings SERVFAIL, a dead NS name
+	// (live: stpa.soft.net, ~9 s to fail) would otherwise be re-resolved by
+	// every query into its zone within the failure window.
+	if rcode, reason, hit := r.failureCache.Get(name, qtype, dns.ClassIN); hit {
+		return &ResolveResult{RCODE: rcode, FailureReason: reason, FromFailureCache: true}, nil
+	}
 	// Fresh loop-detection state (a distinct query subtree) but the SAME
 	// request budget, so NXNS-style NS-address fan-out counts against the
 	// originating client request's global query/time allowance.
-	return r.resolveIterativeFromInner(
+	result, err := r.resolveIterativeFromInner(
 		name, qtype, dns.ClassIN, 0, newVisitedSetForNSAddr(parent, name),
 		toNameServerList(r.rootServers), "",
 		true, // skipValidation — see doc comment
 		nil,
 	)
+	// A spent request budget says nothing about this NS name, so it is
+	// not recorded as the name's failure.
+	if err == nil && result != nil && result.RCODE == dns.RCodeServFail &&
+		result.FailureReason != "query-budget-exceeded" {
+		r.failureCache.Put(name, qtype, dns.ClassIN, result.RCODE, result.FailureReason)
+	}
+	return result, err
 }
 
 func (r *Resolver) dnsPort() string {

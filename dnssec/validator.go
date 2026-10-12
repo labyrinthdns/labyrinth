@@ -735,6 +735,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		}] = false
 	}
 	validatedChains := make(map[string]ValidationResult)
+	chainReasons := make(map[string]FailureReason)
 	validatedRRsetCount := 0
 
 	for _, rs := range rrsigs {
@@ -907,7 +908,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 		chainKey := fmt.Sprintf("%s|%d|%d", signerZone, matchingKey.KeyTag(), matchingKey.Algorithm)
 		result, checked := validatedChains[chainKey]
 		if !checked {
-			result = v.validateTrustChainForKey(signerZone, dnskeys, dnskeySignatures, matchingKey, budget)
+			result, chainReasons[chainKey] = v.validateTrustChainForKeyReason(signerZone, dnskeys, dnskeySignatures, matchingKey, budget)
 			validatedChains[chainKey] = result
 		}
 		if result != Secure {
@@ -923,7 +924,11 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 			}
 			if result == Bogus {
 				sawBogus = true
-				setBogusReason(ReasonOther)
+				if r := chainReasons[chainKey]; r != ReasonNone {
+					setBogusReason(r)
+				} else {
+					setBogusReason(ReasonOther)
+				}
 			} else {
 				sawIndeterminate = true
 				setIndetReason(ReasonDNSKEYMissing)
@@ -1068,6 +1073,16 @@ func (v *Validator) validateTrustChainWithSignatures(zone string, dnskeys, dnske
 // final zone's authenticated keys. Direct DS/anchor matches remain usable even
 // when a DNSKEY RRset signature is absent, but unauthenticated siblings do not.
 func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatures []dns.ResourceRecord, targetKey *dns.DNSKEYRecord, budget ...*cryptoBudget) ValidationResult {
+	result, _ := v.validateTrustChainForKeyReason(zone, dnskeys, dnskeySignatures, targetKey, budget...)
+	return result
+}
+
+// validateTrustChainForKeyReason is validateTrustChainForKey plus the cause
+// of a Bogus verdict, so the answer path can emit a specific EDE: a positive
+// DS that no DNSKEY matches is ReasonNoMatchingDNSKEY (EDE 9, as 1.1.1.1 and
+// 8.8.8.8 report it), every other Bogus is ReasonOther. Non-Bogus verdicts
+// carry ReasonNone; callers classify Indeterminate themselves.
+func (v *Validator) validateTrustChainForKeyReason(zone string, dnskeys, dnskeySignatures []dns.ResourceRecord, targetKey *dns.DNSKEYRecord, budget ...*cryptoBudget) (ValidationResult, FailureReason) {
 	cb := budgetFrom(budget)
 	// Build the chain of zones from root to the signer zone.
 	chain := buildZoneChain(zone)
@@ -1080,7 +1095,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 	if len(chain) > maxTrustChainDepth {
 		v.logger.Debug("trust chain exceeds depth cap; refusing to walk",
 			"zone", zone, "depth", len(chain), "cap", maxTrustChainDepth)
-		return Indeterminate
+		return Indeterminate, ReasonNone
 	}
 
 	// parentKeys holds the previous *real* zone's verified DNSKEY RRset.
@@ -1104,13 +1119,13 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				v.logger.Debug("failed to fetch DNSKEYs for chain zone",
 					"zone", chainZone,
 					"error", err)
-				return Indeterminate
+				return Indeterminate, ReasonNone
 			}
 			// Root zone: select the DNSKEYs that match configured trust anchors.
 			trustedKeys = v.dnskeysMatchingTrustAnchors(chainZone, zoneKeys)
 			if len(trustedKeys) == 0 {
 				v.logger.Debug("root DNSKEY does not match trust anchors")
-				return Bogus
+				return Bogus, ReasonOther
 			}
 		} else {
 			// Non-root label: ask the last real parent whether this name is a
@@ -1123,7 +1138,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 					"zone", chainZone,
 					"parent", parentZone,
 					"error", err)
-				return Indeterminate
+				return Indeterminate, ReasonNone
 			}
 			if len(dsRecords) == 0 {
 				// Empty non-terminal: name exists in the parent with no NS/DS
@@ -1138,7 +1153,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 					if i == len(chain)-1 {
 						v.logger.Debug("signer zone DS denied as empty non-terminal — treating as Bogus",
 							"zone", chainZone, "parent", parentZone)
-						return Bogus
+						return Bogus, ReasonOther
 					}
 					v.logger.Debug("skipping empty non-terminal in trust chain",
 						"name", chainZone, "parent", parentZone)
@@ -1153,7 +1168,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				if ok {
 					v.logger.Debug("authenticated insecure delegation",
 						"zone", chainZone, "parent", parentZone)
-					return Insecure
+					return Insecure, ReasonNone
 				}
 				// Multi-label reverse delegations (e.g. 8.222.154.in-addr.arpa
 				// cut published by 154.in-addr.arpa) leave intermediate names
@@ -1169,7 +1184,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				}
 				v.logger.Debug("empty DS response without authenticated denial — treating as Bogus",
 					"zone", chainZone, "parent", parentZone)
-				return Bogus
+				return Bogus, ReasonOther
 			}
 
 			// Positive DS — this label is a real zone cut. Fetch its DNSKEY.
@@ -1178,7 +1193,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				v.logger.Debug("failed to fetch DNSKEYs for chain zone",
 					"zone", chainZone,
 					"error", err)
-				return Indeterminate
+				return Indeterminate, ReasonNone
 			}
 
 			// A positive DS RRset is data from the parent zone. Authenticate the
@@ -1188,7 +1203,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 			if !v.verifyRRSetWithKeys(dsRRset, filterRRSet(dsAnswer, dns.TypeRRSIG), parentKeys, parentZone, dns.TypeDS, cb) {
 				v.logger.Debug("positive DS RRset lacks parent authentication",
 					"zone", chainZone, "parent", parentZone)
-				return Bogus
+				return Bogus, ReasonOther
 			}
 
 			// If every published DS uses a digest type we reject (e.g. SHA1)
@@ -1205,7 +1220,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 			if !usableDS {
 				v.logger.Debug("all DS records use unsupported/weak digest types; treating as insecure",
 					"zone", chainZone, "parent", parentZone)
-				return Insecure
+				return Insecure, ReasonNone
 			}
 
 			trustedKeys = v.dnskeysMatchingDS(zoneKeys, dsRecords, chainZone)
@@ -1223,11 +1238,11 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				if len(v.dnskeysMatchingDSAllowingWeak(zoneKeys, dsRecords, chainZone)) > 0 {
 					v.logger.Debug("DNSKEY matches only weak/unsupported DS digests; treating as insecure",
 						"zone", chainZone)
-					return Insecure
+					return Insecure, ReasonNone
 				}
 				v.logger.Debug("DNSKEY does not match DS",
 					"zone", chainZone)
-				return Bogus
+				return Bogus, ReasonNoMatchingDNSKEY
 			}
 		}
 
@@ -1245,18 +1260,18 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 				if v.trustedKeySignaturesUnusable(zoneSignatures, trustedKeys, chainZone, dns.TypeDNSKEY) {
 					v.logger.Debug("DNSKEY RRset only signed with unsupported/weak algorithms; treating as insecure",
 						"zone", chainZone)
-					return Insecure
+					return Insecure, ReasonNone
 				}
 				v.logger.Debug("DNSKEY RRset RRSIG did not validate",
 					"zone", chainZone)
-				return Bogus
+				return Bogus, ReasonOther
 			}
 			authenticatedKeys = zoneKeys
 		}
 		if i == len(chain)-1 && targetKey != nil && !containsDNSKEY(authenticatedKeys, targetKey) {
 			v.logger.Debug("answer signing key is not authenticated by DNSKEY RRset",
 				"zone", chainZone, "key_tag", targetKey.KeyTag())
-			return Bogus
+			return Bogus, ReasonOther
 		}
 
 		// Carry only authenticated keys forward. This prevents an injected
@@ -1265,7 +1280,7 @@ func (v *Validator) validateTrustChainForKey(zone string, dnskeys, dnskeySignatu
 		lastZone = chainZone
 	}
 
-	return Secure
+	return Secure, ReasonNone
 }
 
 // isAuthenticatedEmptyNonTerminal reports whether authority carries a

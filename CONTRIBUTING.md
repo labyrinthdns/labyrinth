@@ -12,7 +12,8 @@ document provides guidelines and processes for contributing.
 5. [Testing](#testing)
 6. [Commit Messages](#commit-messages)
 7. [Pull Request Process](#pull-request-process)
-8. [RFC Compliance](#rfc-compliance)
+8. [Branch Protection and Release](#branch-protection-and-release)
+9. [RFC Compliance](#rfc-compliance)
 
 ## Code of Conduct
 
@@ -190,6 +191,95 @@ docs(web): add API reference for /api/cache endpoints
    into stacked PRs.
 9. **Request review** from a project maintainer.
 10. **Address review feedback** with additional commits — squash before merge.
+
+## Branch Protection and Release
+
+`main` is protected. Changes reach `main` through a pull request whose
+required status checks have passed. An approving review is no longer required
+by the protection (see [Reviews](#reviews)).
+
+### Required status checks
+
+A pull request cannot be merged until all five of these report **success** on
+its head commit:
+
+| Check | Comes from | What it covers |
+|---|---|---|
+| `lint` | `ci.yml` → `lint` | `make lint` (golangci-lint) and `golangci-lint fmt --diff` |
+| `typecheck` | `ci.yml` → `typecheck` | `web/ui`: `npm ci`, lint, `tsc -b`, vitest |
+| `test` | `ci.yml` → `test` | `make test` and the scoped `-race` lane |
+| `docker-build` | `ci.yml` → `docker-build` | image builds and smoke-runs |
+| `build` | `website.yml` → `build` | `website/`: `npm ci`, lint, `tsc -b && vite build` |
+
+The names are **check-run names, not workflow names**. `website.yml` is called
+"Deploy Website" in its `name:` field, but it emits checks called `build` and
+`deploy`; configuring "Deploy Website" as a required check would match nothing.
+
+`deploy` is deliberately **not** required. It is gated on
+`github.event_name == 'push'`, so on a pull request it reports `skipped`. A
+check that reports `skipped` on every PR gates nothing, and requiring one that
+never runs blocks every PR permanently. `build` is the part that validates
+your change.
+
+### Reviews
+
+As of 2026-10-12 the protection no longer requires an approving review: pull
+requests show no review requirement, and merges have landed without one. The
+five status checks above are still required.
+
+Asking for a review is still the expected practice for anything beyond a
+trivial change. Approval is now a process rule rather than a merge gate, so
+a reviewer's comments are only binding if the author waits for them.
+
+### Known limitation: the "block direct pushes" half is not expressible here
+
+GitHub's "Require a pull request before merging" rule is
+`required_pull_request_reviews` in classic protection. Whether that rule was
+removed or kept with zero required approvals is not visible without admin
+access to the protection settings. What is visible is that the five checks
+must pass on the commit that reaches `main`.
+
+The rulesets-level alternative cannot be configured here either. This
+repository cannot express `allow_direct_pushes: false`, the rulesets-level
+switch that additionally refuses direct pushes to the branch:
+
+- the classic branch protection endpoint on this repository has no
+  `allow_direct_pushes` field at all — a PUT carrying it returns `200` and the
+  field is silently absent from the following GET;
+- the rulesets endpoint rejects the `pull_request` rule whenever parameters
+  are present. `deletion`, `non_fast_forward` and a bare
+  `{"type": "pull_request"}` are accepted; adding any parameter —
+  `allow_direct_pushes` alone, `required_reviewers` alone, the documented
+  four-field minimum, the full documented set, with and without the
+  `X-GitHub-Api-Version` header — returns
+  `422 Invalid property /rules/N: data matches no possible input`.
+
+So: **do not rely on this document as evidence that direct pushes are
+blocked.** The protection is enforced server-side and cannot be inspected
+through the API; whether a given direct push is refused has to be established
+by attempting one, which is not something to do casually on `main`. Until the
+ruleset limitation is resolved, the pull-request requirement is a process rule,
+not a configuration you can audit from here.
+
+If you must land something immediately, use a pull request anyway: it runs
+the required checks and records what was merged and why.
+
+### Merging
+
+Prefer the GitHub merge button or `gh pr merge`, which wait for the required
+checks and record the merge on the PR. A local `git merge --ff-only` plus
+`git push origin main` is what several `docs`/`chore` changes in this
+repository's history used, because the PR was already fully green; it is
+recorded here as a known workaround, not as the recommended path, and it
+bypasses the PR record.
+
+### Releases
+
+Releases are cut by pushing a `v*` tag. `.github/workflows/release.yml` then
+runs frontend lint/test/build, `make check-go-package-scope`, `make test`, and
+only then builds and publishes binaries, the container image and the GitHub
+Release. Keep the `go-version` in `go.mod`, `ci.yml` and `release.yml` in step
+— a partial bump lets CI compile with a toolchain `go.mod` rejects.
 
 ## RFC Compliance
 

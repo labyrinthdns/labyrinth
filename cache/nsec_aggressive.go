@@ -280,6 +280,14 @@ func (c *Cache) lookupNSEC(qname string, qtype uint16, qclass uint16) (*Entry, b
 				if typeBitmapHas(iv.typeBitmap, qtype) {
 					continue // type present — not NODATA
 				}
+				// RFC 4035 §3.1.3.1 / RFC 6840 §4.3 — a CNAME at qname means the
+				// answer is that CNAME, not NODATA: the bitmap lists no other
+				// type exactly because none may coexist with it. Synthesising
+				// NODATA here hid the alias (AAAA for a CNAME'd www went AD=1
+				// NODATA once a covering NSEC from a sibling query was cached).
+				if typeBitmapHas(iv.typeBitmap, dns.TypeCNAME) {
+					continue
+				}
 				// RFC 4035 §5.4 / RFC 6840 §4.4 — refuse to use a
 				// parent-side delegation NSEC (NS bit set, SOA bit
 				// clear) as authoritative NODATA proof for the child

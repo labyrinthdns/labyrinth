@@ -2078,7 +2078,7 @@ func TestHandleCacheHitUnknownRCode(t *testing.T) {
 	c := cache.NewCache(1000, 5, 86400, 3600, m)
 	// StoreNegative with RCODE=9 (not in RCodeToString map)
 	c.StoreNegative("unkrecode.example.com", dns.TypeA, dns.ClassIN,
-		cache.NegNoData, 9, nil)
+		cache.NegNoData, 9, testNegativeSOA(t, "example.com"))
 	res := newTestResolver(c, m)
 	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
 

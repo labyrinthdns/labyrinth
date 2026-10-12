@@ -376,12 +376,23 @@ func chooseCacheECSKey(outboundECS, upstreamECS *dns.ECSOption) string {
 	if upstreamECS.ScopePrefixLen == 0 {
 		return ""
 	}
-	scoped := dns.ECSOption{
-		Family:          outboundECS.Family,
-		SourcePrefixLen: upstreamECS.ScopePrefixLen,
-		Address:         dns.TruncateIP(outboundECS.Address, upstreamECS.ScopePrefixLen),
-	}
-	return scoped.CacheKey()
+	// The key MUST be built from the SOURCE prefix we sent upstream, not from
+	// the SCOPE the upstream echoed back. The lookup path (Handle, the
+	// GetWithECS fallback) can only know the client's source prefix — it runs
+	// before any upstream reply exists — so it keys on
+	// outboundECS.CacheKey(). Deriving the store key from the returned scope
+	// instead produced a different string whenever the authoritative narrowed
+	// the scope below what we asked for (RFC 7871 §7.2.1 explicitly allows
+	// scope <= source: a client asking /24 that gets a /16 answer is the
+	// common "answer is not client-specific" shape). The entry was then stored
+	// under e.g. "1.2.0.0/16" while every lookup asked for "1.2.3.0/24", so
+	// scoped entries became unreachable — a permanent cache miss that also
+	// left the resolver re-resolving the same names upstream forever.
+	//
+	// The echoed scope is not lost: it is recorded on the entry as
+	// Entry.ECSScope (StoreWithECSStatus's ecsScope argument) and is what the
+	// downstream response echoes back per RFC 7871 §7.2.1.
+	return outboundECS.CacheKey()
 }
 
 // SetDownstreamUDPBufferSize configures the EDNS0 UDP payload size this
@@ -1003,8 +1014,15 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		// Scoped tightly: only the empty status, only these meta-types, and
 		// only when a validator is active, so every normal cached answer is
 		// untouched.
+		//
+		// The same holds for an NXDOMAIN / NODATA with no status, whatever the
+		// type: NS-address lookups resolve with validation skipped and cache
+		// their denials. Served to a client, the AAAA NODATA of a signed
+		// zone's nameserver (ns2.private-domain.com) lost its AD bit, and an
+		// unvalidated denial would reach the client unchecked.
 		if ok && entry.DNSSECStatus == "" &&
-			(q.Type == dns.TypeDNSKEY || q.Type == dns.TypeDS || q.Type == dns.TypeNS) &&
+			(q.Type == dns.TypeDNSKEY || q.Type == dns.TypeDS || q.Type == dns.TypeNS ||
+				entry.NegType == cache.NegNXDomain || entry.NegType == cache.NegNoData) &&
 			h.resolver.DNSSECValidator() != nil {
 			ok = false
 			entry = nil
@@ -1014,6 +1032,13 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		// a0.nic.istanbul) without AD and bypass DNSSEC. Resolve instead;
 		// the authoritative answer then replaces the glue entry.
 		if ok && entry.Glue {
+			ok = false
+			entry = nil
+		}
+		// A Bogus entry exists only because a CD=1 client asked for the
+		// data unvalidated (RFC 4035 §3.2.2). Serving it to a CD=0 client
+		// would bypass validation; resolve instead so it gets SERVFAIL.
+		if ok && entry.DNSSECStatus == "bogus" && !msg.Header.CD() {
 			ok = false
 			entry = nil
 		}
@@ -1030,7 +1055,11 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			if synth, hit := h.cache.LookupNSECCoversTyped(q.Name, q.Type, q.Class); hit {
 				entry = synth
 				ok = true
-				h.metrics.IncCacheHits()
+				// No IncCacheHits here: the shared `if ok` block below counts
+				// every cache-served query exactly once, whichever path
+				// produced the entry. Counting here as well made each
+				// aggressive-NSEC answer worth two hits, inflating the
+				// operator-visible hit rate.
 			}
 		}
 		// RFC 8198 §5.3 / §5.4 NSEC3 aggressive lookup — second
@@ -1042,7 +1071,8 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			if synth, hit := h.cache.LookupNSEC3CoversTyped(q.Name, q.Type, q.Class); hit {
 				entry = synth
 				ok = true
-				h.metrics.IncCacheHits()
+				// Counted once by the shared `if ok` block below — same as
+				// the direct-hit and NSEC-aggressive paths.
 			}
 		}
 		if ok {
@@ -1106,7 +1136,8 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 	// try serving expired cache entry before giving up.
 	resolveOK := err == nil && result != nil && result.RCODE != dns.RCodeServFail
 	if !resolveOK {
-		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok && !staleEntry.Glue {
+		if staleEntry, ok := h.cache.GetStale(q.Name, q.Type, q.Class); ok && !staleEntry.Glue &&
+			(staleEntry.DNSSECStatus != "bogus" || msg.Header.CD()) {
 			h.logger.Info("serving stale cache", "qname", q.Name, "qtype", qtypeStr)
 			resp, buildErr := h.buildCacheResponse(msg, staleEntry, isStream)
 			if buildErr == nil {
@@ -1167,9 +1198,20 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 		// behind SERVFAIL. The AD bit is already cleared by the response-
 		// builder under CD=1, which communicates the non-validation state
 		// to the client; the data itself flows through unfiltered.
-		if result != nil && result.DNSSECStatus == "bogus" && !msg.Header.CD() && msg.EDNS0 != nil {
-			edeCode, edeText := dns.BogusReasonToEDE(result.DNSSECReason)
-			bogusResp, buildErr := h.buildErrorWithEDE(query, dns.RCodeServFail, edeCode, edeText)
+		//
+		// A client without EDNS gets the same bare SERVFAIL, minus the OPT
+		// (RFC 6891 §7). Falling through instead returned the validated part
+		// of a CNAME chain under SERVFAIL and cached the failure, which then
+		// answered later CD=1 clients with SERVFAIL rather than the data.
+		if result != nil && result.DNSSECStatus == "bogus" && !msg.Header.CD() {
+			var bogusResp []byte
+			var buildErr error
+			if msg.EDNS0 != nil {
+				edeCode, edeText := dns.BogusReasonToEDE(result.DNSSECReason)
+				bogusResp, buildErr = h.buildErrorWithEDE(query, dns.RCodeServFail, edeCode, edeText)
+			} else {
+				bogusResp, buildErr = h.buildError(query, dns.RCodeServFail)
+			}
 			if buildErr == nil {
 				h.metrics.IncResponses("SERVFAIL")
 				return bogusResp, nil
@@ -1224,16 +1266,25 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 				h.cache.StoreWithECSStatus(q.Name, q.Type, q.Class, ecsKey, ecsScope, answersToCache, result.Authority, result.DNSSECStatus)
 			}
 		} else if result.RCODE == dns.RCodeNXDomain {
-			// Negative caching is kept global for now: RFC 7871 §7.3 does
-			// not forbid per-subnet negatives, but NXDOMAIN scoping at
-			// authoritative servers is rare and per-subnet negatives
-			// would inflate cache pressure on the common case.
+			// RFC 7871 §7.3: a negative learned while a client-subnet (ECS)
+			// option is in flight is not safely portable to the global
+			// (name,type,class) cache. One subnet's NXDOMAIN must not deny
+			// service to every other client — including clients that never
+			// sent ECS. The resolver already refuses to store such a denial
+			// (resolver.go: `if clientECS == nil`); the cache has no
+			// scoped-negative API, so mirror that guard here and leave the
+			// scoped denial uncached rather than reintroducing the leak.
+			//
 			// Preserve the validator's verdict so a cached NXDOMAIN keeps its
 			// AD bit on re-serve (RFC 4035); without the status a signed denial
 			// silently downgrades to AD=0 on the second hit.
-			h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority, result.DNSSECStatus)
+			if outboundECS == nil {
+				h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority, result.DNSSECStatus)
+			}
 		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
-			h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority, result.DNSSECStatus)
+			if outboundECS == nil {
+				h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority, result.DNSSECStatus)
+			}
 		} else if result.RCODE == dns.RCodeServFail {
 			// RFC 9520 §3 failure caching for the resolver-returned-SERVFAIL
 			// path (DNSSEC bogus, all NS unreachable, lame delegation, etc.).
@@ -2002,6 +2053,17 @@ func (h *MainHandler) buildErrorWithEDE(query []byte, rcode uint8, edeCode uint1
 		return resp, nil // fallback to plain error
 	}
 	h.addEDEToResponse(msg, edeCode, edeText)
+	// RFC 3225 §3: the DO bit of the query MUST be copied in the response.
+	// buildError carries no OPT, so the one addEDEToResponse just created
+	// has DO clear; a validating stub then saw `flags:` on every Bogus
+	// SERVFAIL. Unpacking the query is affordable on this error path.
+	if q, qErr := dns.Unpack(query); qErr == nil && q.EDNS0 != nil && q.EDNS0.DOFlag {
+		for i := range msg.Additional {
+			if msg.Additional[i].Type == dns.TypeOPT {
+				msg.Additional[i].TTL |= 1 << 15
+			}
+		}
+	}
 	// H-5: pack into an owned slice.
 	out, packErr := h.packToOwnedBytes(msg)
 	if packErr != nil {

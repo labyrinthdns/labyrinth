@@ -62,18 +62,19 @@ func TestShouldFallback_NXDOMAIN(t *testing.T) {
 	}
 }
 
+// TestShouldFallback_NoReachableAuthority: every NS failing *for us* is the
+// case the fallback exists for (live: toksan.com.tr, whose only server drops
+// queries with unknown EDNS options, answered by 1.1.1.1 and 8.8.8.8).
 func TestShouldFallback_NoReachableAuthority(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail, FailureReason: "no-reachable-authority", Error: errTXIDMismatch}
 	fb := shouldFallback(result, nil)
-	if fb.triggered {
-		t.Error("expected shouldFallback=false when every NS was already exhausted")
+	if !fb.triggered {
+		t.Error("expected shouldFallback=true when every NS of the delegation failed")
 	}
 }
 
-// TestShouldFallback_AllNSServFailTagged pins the fallback.jsonl regression:
-// Error="all nameservers returned SERVFAIL" used to win over an empty
-// FailureReason and fire public fallback. Once tagged, Error may still be
-// set for operators/logs, but shouldFallback must not trigger.
+// TestShouldFallback_AllNSServFailTagged: the tag keeps EDE 22 for the client
+// when the fallback cannot recover, and the error text is the logged reason.
 func TestShouldFallback_AllNSServFailTagged(t *testing.T) {
 	result := &ResolveResult{
 		RCODE:         dns.RCodeServFail,
@@ -81,8 +82,17 @@ func TestShouldFallback_AllNSServFailTagged(t *testing.T) {
 		Error:         errAllNSServFail,
 	}
 	fb := shouldFallback(result, nil)
-	if fb.triggered {
-		t.Fatalf("expected shouldFallback=false for tagged all-NS SERVFAIL, got reason %q", fb.reason)
+	if !fb.triggered || fb.reason != errAllNSServFail.Error() {
+		t.Fatalf("want fallback with reason %q, got triggered=%v reason %q", errAllNSServFail.Error(), fb.triggered, fb.reason)
+	}
+}
+
+// TestShouldFallback_QueryBudgetExceeded: a spent request budget (query cap
+// or RequestTimeout) does not engage the fallback.
+func TestShouldFallback_QueryBudgetExceeded(t *testing.T) {
+	result := &ResolveResult{RCODE: dns.RCodeServFail, FailureReason: "query-budget-exceeded", Error: errQueryBudgetExceeded}
+	if fb := shouldFallback(result, nil); fb.triggered {
+		t.Errorf("expected shouldFallback=false for an exhausted request budget, got reason %q", fb.reason)
 	}
 }
 
@@ -256,16 +266,15 @@ func TestQueryFallback_NXDOMAIN_IsRecovery(t *testing.T) {
 	}
 }
 
-func TestResolve_NoFallbackOnIterativeServFail(t *testing.T) {
-	// Exhausted iterative SERVFAIL is tagged no-reachable-authority.
-	// Public recursive fallback would hit the same dead auth (EDE 22);
-	// even if a fallback listener would answer, Resolve must not engage it.
+func TestResolve_FallbackOnIterativeServFail(t *testing.T) {
+	// Exhausted iterative SERVFAIL is tagged no-reachable-authority. Every
+	// NS failed for this resolver, so the public fallback is asked; when it
+	// answers, the client gets that answer instead of EDE 22.
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		if len(q.Questions) == 0 {
 			return nil
 		}
 		if q.Header.RD() {
-			t.Error("public fallback must not be queried for all-NS SERVFAIL")
 			return &dns.Message{
 				Header: dns.Header{
 					Flags:   dns.NewFlagBuilder().SetQR(true).SetRD(true).SetRA(true).Build(),
@@ -311,22 +320,16 @@ func TestResolve_NoFallbackOnIterativeServFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.RCODE != dns.RCodeServFail {
-		t.Errorf("expected SERVFAIL without fallback, got %d", result.RCODE)
-	}
-	if result.FailureReason != "no-reachable-authority" {
-		t.Errorf("FailureReason: want no-reachable-authority, got %q", result.FailureReason)
-	}
-	if len(result.Answers) != 0 {
-		t.Errorf("expected 0 answers, got %d", len(result.Answers))
+	if result.RCODE != dns.RCodeNoError || len(result.Answers) != 1 {
+		t.Errorf("expected the fallback's answer, got rcode %d with %d answers", result.RCODE, len(result.Answers))
 	}
 
 	snap := m.Snapshot()
-	if snap.FallbackQueries != 0 {
-		t.Errorf("expected 0 fallback queries, got %d", snap.FallbackQueries)
+	if snap.FallbackQueries != 1 {
+		t.Errorf("expected 1 fallback query, got %d", snap.FallbackQueries)
 	}
-	if snap.FallbackRecoveries != 0 {
-		t.Errorf("expected 0 fallback recoveries, got %d", snap.FallbackRecoveries)
+	if snap.FallbackRecoveries != 1 {
+		t.Errorf("expected 1 fallback recovery, got %d", snap.FallbackRecoveries)
 	}
 }
 

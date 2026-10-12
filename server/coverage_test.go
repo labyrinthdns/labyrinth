@@ -720,7 +720,7 @@ func TestBuildCacheResponseNODATA(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := cache.NewCache(1000, 5, 86400, 3600, m)
 	c.StoreNegative("nodata.example.com", dns.TypeAAAA, dns.ClassIN,
-		cache.NegNoData, dns.RCodeNoError, nil)
+		cache.NegNoData, dns.RCodeNoError, testNegativeSOA(t, "example.com"))
 	res := newTestResolver(c, m)
 	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())
 

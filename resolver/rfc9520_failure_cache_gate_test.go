@@ -123,7 +123,9 @@ func TestFailureCache_NotPopulatedByECSResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if r.failureCache.Len() != 0 {
+	// Checked by key, not Len(): the root hint's NS-address lookup carries
+	// no ECS, so its own failure is subnet-portable and may be cached.
+	if _, _, hit := r.failureCache.Get("y60-ecs.com", dns.TypeA, dns.ClassIN); hit {
 		t.Errorf("ECS-bearing SERVFAIL entered failure cache — RFC 7871 §7.1 violation: failures are not subnet-portable")
 	}
 }

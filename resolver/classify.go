@@ -148,6 +148,20 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 		return responseNoData
 	}
 
+	// 6b. NODATA without SOA (RFC 2308 §2.2, "NODATA type 3"): an
+	// authoritative answer with RCODE NOERROR and empty answer and
+	// authority sections. Live, the merlincdn.net and bplslb.com servers
+	// answer AAAA this way (behind www.hurriyet.com.tr and
+	// www.tgrthaber.com), and treating it as a server failure made those
+	// names SERVFAIL while public resolvers returned NODATA. AA=1 is
+	// required: an empty non-authoritative reply is a lame server.
+	// Without an SOA there is no negative TTL, so the resolver does not
+	// cache it (RFC 2308 §5); in a signed zone the missing denial proof
+	// still makes the validator return Bogus.
+	if rcode == dns.RCodeNoError && msg.Header.AA() && !hasNS && len(msg.Answers) == 0 && len(msg.Authority) == 0 {
+		return responseNoData
+	}
+
 	// 7. Fallback
 	return responseServFail
 }
