@@ -215,11 +215,51 @@ func extractServerCookie(msg *dns.Message) []byte {
 	return nil
 }
 
+// errCaseMismatch is a response whose question matches ours except for the
+// letter case 0x20 randomised: the server rewrote the case instead of echoing it.
+var errCaseMismatch = errors.New("response question case mismatch (0x20)")
+
 // sendQuery builds, sends and validates a single upstream DNS query.
 // When clientECS is non-nil and withEDNS0 is true, the OPT record carries
 // an EDNS Client Subnet option (RFC 7871). The outgoing ECS always has
 // SCOPE PREFIX-LENGTH = 0 — only authoritative answers set that field.
+//
+// Some authoritatives do not echo the 0x20 case of the question (live:
+// ns0/ns1.easynet.co.uk lowercase it), so every answer from them failed
+// the 0x20 check and their zones were SERVFAIL. Such a response is still
+// discarded; the query is asked once more without 0x20, with a fresh TXID
+// and source port, and only when that succeeds is the server remembered
+// as case-folding. A single forged packet therefore cannot switch 0x20 off
+// for a server, and the retry is as spoof-resistant as a resolver that
+// never used 0x20.
 func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte) (*dns.Message, error) {
+	caps := r.config.Caps0x20Enabled && !r.noCapsServers.Has(nsIP)
+	msg, err := r.sendQueryCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, caps)
+	if !caps || !errors.Is(err, errCaseMismatch) {
+		return msg, err
+	}
+	msg, err = r.sendQueryCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, false)
+	if err == nil {
+		r.noCapsServers.Put(nsIP)
+		if r.logger != nil {
+			r.logger.Debug("upstream does not preserve 0x20 case; querying it without", "server", nsIP, "name", name)
+		}
+	}
+	return msg, err
+}
+
+// validateQuestion checks the response question, reporting a case-only
+// difference under 0x20 as errCaseMismatch.
+func validateQuestion(msg *dns.Message, queryName string, qtype, qclass uint16, caps bool) error {
+	err := validateResponseQuestionEx(msg, queryName, qtype, qclass, caps)
+	if err != nil && caps && validateResponseQuestionEx(msg, queryName, qtype, qclass, false) == nil {
+		return errCaseMismatch
+	}
+	return err
+}
+
+// sendQueryCaps is sendQuery with 0x20 randomisation chosen by the caller.
+func (r *Resolver) sendQueryCaps(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte, caps bool) (*dns.Message, error) {
 	txID, err := randTXIDFunc()
 	if err != nil {
 		return nil, err
@@ -227,7 +267,7 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 
 	// Apply 0x20 case randomization (RFC 5452 anti-spoofing measure).
 	queryName := name
-	if r.config.Caps0x20Enabled {
+	if caps {
 		queryName = randomizeCase(name)
 	}
 
@@ -332,7 +372,7 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 	}
 	// Validate question section matches what we asked.
 	// When 0x20 is active, compare case-sensitively against the randomized name.
-	if err := validateResponseQuestionEx(msg, queryName, qtype, qclass, r.config.Caps0x20Enabled); err != nil {
+	if err := validateQuestion(msg, queryName, qtype, qclass, caps); err != nil {
 		return nil, err
 	}
 	// RFC 7873 §5.4 outbound cookie echo check: if the response carries a
@@ -359,7 +399,7 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 		if msg.Header.ID != txID {
 			return nil, errTXIDMismatch
 		}
-		if err := validateResponseQuestionEx(msg, queryName, qtype, qclass, r.config.Caps0x20Enabled); err != nil {
+		if err := validateQuestion(msg, queryName, qtype, qclass, caps); err != nil {
 			return nil, err
 		}
 		// RFC 7873 §5.4 cookie echo applies to EVERY response, not just
