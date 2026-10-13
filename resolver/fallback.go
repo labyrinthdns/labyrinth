@@ -143,7 +143,14 @@ type fallbackReason struct {
 // SERVFAIL (including DNSSEC bogus), upstream error, or nil result.
 // queryFallback still rejects SERVFAIL from the backup resolver, so names
 // that public resolvers also fail (e.g. dnssec-failed.org) stay failed.
-func shouldFallback(result *ResolveResult, err error) fallbackReason {
+func shouldFallback(qtype uint16, result *ResolveResult, err error) fallbackReason {
+	// PTR almost never recovers via a public resolver: broken reverse
+	// delegations (REFUSED / soft SERVFAIL from every NS) fail at 1.1.1.1
+	// and 8.8.8.8 the same way, so the fallback only adds a round trip
+	// and fills fallback.jsonl. Forward types stay eligible.
+	if qtype == dns.TypePTR {
+		return fallbackReason{triggered: false, reason: ""}
+	}
 	// An exhausted request budget (query cap or RequestTimeout) is not
 	// worth a fallback: the client has given up by the deadline, and the
 	// query cap is what an NXNS-style amplification hits.

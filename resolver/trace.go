@@ -198,7 +198,7 @@ func (r *Resolver) traceFinishWithFallback(
 	qclass uint16,
 	opts TraceOptions,
 ) (*ResolveResult, error) {
-	if fb := shouldFallback(result, err); fb.triggered {
+	if fb := shouldFallback(qtype, result, err); fb.triggered {
 		t.emit("fallback", TraceStatusWarn, fmt.Sprintf("primary failed (%s) — trying fallback resolver", fb.reason), map[string]any{
 			"reason":    fb.reason,
 			"resolvers": r.config.FallbackResolvers,

@@ -52,9 +52,9 @@ func TestResolveIterative_AllNSRefused_TagsNoReachableAuthority(t *testing.T) {
 // TestResolveIterative_AllNSServFail_TagsNoReachableAuthority pins the
 // soft-SERVFAIL exhaustion shape seen in fallback.jsonl for broken reverse
 // zones (e.g. ip6.arpa delegations whose auth answers SERVFAIL). The tag
-// gives the client EDE 22 when the fallback cannot recover; the fallback is
-// still asked, since every NS failing for this resolver does not mean the
-// public resolvers fail too (live: toksan.com.tr).
+// gives the client EDE 22. PTR itself skips the public-resolver fallback
+// (those queries almost never recover there); the same failure shape for a
+// forward type still engages it (live: toksan.com.tr).
 func TestResolveIterative_AllNSServFail_TagsNoReachableAuthority(t *testing.T) {
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		if len(q.Questions) == 0 {
@@ -84,10 +84,13 @@ func TestResolveIterative_AllNSServFail_TagsNoReachableAuthority(t *testing.T) {
 	if result.Error == nil || result.Error.Error() != "all nameservers returned SERVFAIL" {
 		t.Errorf("Error: want all-nameservers SERVFAIL, got %v", result.Error)
 	}
-	// The tag gives the client EDE 22 when the fallback cannot recover;
-	// it no longer suppresses the fallback itself.
-	if fb := shouldFallback(result, nil); !fb.triggered {
-		t.Fatal("shouldFallback must engage for all-NS soft SERVFAIL")
+	// PTR skips the public fallback; the same failure on a forward type still
+	// engages it so zones like toksan.com.tr can recover via 1.1.1.1/8.8.8.8.
+	if fb := shouldFallback(dns.TypePTR, result, nil); fb.triggered {
+		t.Fatal("shouldFallback must stay off for PTR")
+	}
+	if fb := shouldFallback(dns.TypeA, result, nil); !fb.triggered {
+		t.Fatal("shouldFallback must engage for all-NS soft SERVFAIL on forward types")
 	}
 }
 

@@ -205,34 +205,46 @@ func (r *Resolver) primeZoneNS(zone string) error {
 
 func (r *Resolver) cacheDelegationGlue(del []DelegationNS) {
 	for _, delNS := range del {
-		if delNS.IPv4 != "" {
-			ip := parseIPv4Bytes(delNS.IPv4)
-			if ip != nil {
-				ttl := delNS.IPv4TTL
-				if ttl == 0 {
-					ttl = 3600
-				}
-				r.cache.StoreGlue(delNS.Hostname, dns.TypeA, dns.ClassIN,
-					[]dns.ResourceRecord{{
-						Name: delNS.Hostname, Type: dns.TypeA, Class: dns.ClassIN,
-						TTL: ttl, RDLength: 4, RData: ip,
-					}})
+		v4 := delNS.IPv4s
+		if len(v4) == 0 && delNS.IPv4 != "" {
+			v4 = []string{delNS.IPv4}
+		}
+		ttl := delNS.IPv4TTL
+		if ttl == 0 {
+			ttl = 3600
+		}
+		var rrs []dns.ResourceRecord
+		for _, s := range v4 {
+			if ip := parseIPv4Bytes(s); ip != nil {
+				rrs = append(rrs, dns.ResourceRecord{
+					Name: delNS.Hostname, Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: ttl, RDLength: 4, RData: ip,
+				})
 			}
 		}
-		if delNS.IPv6 != "" {
-			ip := net.ParseIP(delNS.IPv6)
-			if ip != nil {
-				ipBytes := ip.To16()
-				ttl := delNS.IPv6TTL
-				if ttl == 0 {
-					ttl = 3600
-				}
-				r.cache.StoreGlue(delNS.Hostname, dns.TypeAAAA, dns.ClassIN,
-					[]dns.ResourceRecord{{
-						Name: delNS.Hostname, Type: dns.TypeAAAA, Class: dns.ClassIN,
-						TTL: ttl, RDLength: 16, RData: ipBytes,
-					}})
+		if len(rrs) > 0 {
+			r.cache.StoreGlue(delNS.Hostname, dns.TypeA, dns.ClassIN, rrs)
+		}
+
+		v6 := delNS.IPv6s
+		if len(v6) == 0 && delNS.IPv6 != "" {
+			v6 = []string{delNS.IPv6}
+		}
+		ttl = delNS.IPv6TTL
+		if ttl == 0 {
+			ttl = 3600
+		}
+		rrs = nil
+		for _, s := range v6 {
+			if ip := net.ParseIP(s); ip != nil {
+				rrs = append(rrs, dns.ResourceRecord{
+					Name: delNS.Hostname, Type: dns.TypeAAAA, Class: dns.ClassIN,
+					TTL: ttl, RDLength: 16, RData: ip.To16(),
+				})
 			}
+		}
+		if len(rrs) > 0 {
+			r.cache.StoreGlue(delNS.Hostname, dns.TypeAAAA, dns.ClassIN, rrs)
 		}
 	}
 }
@@ -251,6 +263,14 @@ func (r *Resolver) cacheOutOfBailiwickNSGlue(resp *dns.Message, del []Delegation
 			want[h] = struct{}{}
 		}
 	}
+	// Group per (owner, type) and store each RRset once: storing record by
+	// record left only the last address of a multi-homed NS in the cache.
+	type glueKey struct {
+		owner string
+		qtype uint16
+	}
+	var order []glueKey
+	sets := make(map[glueKey][]dns.ResourceRecord)
 	for _, rr := range resp.Additional {
 		if rr.Class != dns.ClassIN {
 			continue
@@ -259,31 +279,23 @@ func (r *Resolver) cacheOutOfBailiwickNSGlue(resp *dns.Message, del []Delegation
 		if _, ok := want[owner]; !ok {
 			continue
 		}
-		switch rr.Type {
-		case dns.TypeA:
-			if len(rr.RData) == 4 {
-				ttl := rr.TTL
-				if ttl == 0 {
-					ttl = 172800
-				}
-				r.cache.StoreGlue(owner, dns.TypeA, dns.ClassIN,
-					[]dns.ResourceRecord{{
-						Name: owner, Type: dns.TypeA, Class: dns.ClassIN,
-						TTL: ttl, RDLength: 4, RData: append([]byte(nil), rr.RData...),
-					}})
-			}
-		case dns.TypeAAAA:
-			if len(rr.RData) == 16 {
-				ttl := rr.TTL
-				if ttl == 0 {
-					ttl = 172800
-				}
-				r.cache.StoreGlue(owner, dns.TypeAAAA, dns.ClassIN,
-					[]dns.ResourceRecord{{
-						Name: owner, Type: dns.TypeAAAA, Class: dns.ClassIN,
-						TTL: ttl, RDLength: 16, RData: append([]byte(nil), rr.RData...),
-					}})
-			}
+		if !(rr.Type == dns.TypeA && len(rr.RData) == 4) && !(rr.Type == dns.TypeAAAA && len(rr.RData) == 16) {
+			continue
 		}
+		ttl := rr.TTL
+		if ttl == 0 {
+			ttl = 172800
+		}
+		k := glueKey{owner, rr.Type}
+		if _, seen := sets[k]; !seen {
+			order = append(order, k)
+		}
+		sets[k] = append(sets[k], dns.ResourceRecord{
+			Name: owner, Type: rr.Type, Class: dns.ClassIN,
+			TTL: ttl, RDLength: uint16(len(rr.RData)), RData: append([]byte(nil), rr.RData...),
+		})
+	}
+	for _, k := range order {
+		r.cache.StoreGlue(k.owner, k.qtype, dns.ClassIN, sets[k])
 	}
 }

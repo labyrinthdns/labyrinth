@@ -588,7 +588,7 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	// A stub or forward zone whose own servers are unreachable stays out of
 	// it: its names are usually internal, and public resolvers would either
 	// leak them or answer with the public view.
-	fb := shouldFallback(result, err)
+	fb := shouldFallback(qtype, result, err)
 	if fb.triggered && configuredZone && result != nil && result.FailureReason == "no-reachable-authority" {
 		fb.triggered = false
 	}
@@ -1593,10 +1593,23 @@ func toNameServerList(servers []NameServer) []nsEntry {
 	return result
 }
 
+// delegationToNSList yields one candidate per glue address, so every
+// address of a multi-homed NS name is RTT-sorted and tried before the
+// delegation is declared unreachable.
 func delegationToNSList(delegation []DelegationNS) []nsEntry {
-	result := make([]nsEntry, len(delegation))
-	for i, d := range delegation {
-		result[i] = nsEntry{hostname: d.Hostname, ipv4: d.IPv4, ipv6: d.IPv6}
+	result := make([]nsEntry, 0, len(delegation))
+	for _, d := range delegation {
+		result = append(result, nsEntry{hostname: d.Hostname, ipv4: d.IPv4, ipv6: d.IPv6})
+		for _, ip := range d.IPv4s {
+			if ip != d.IPv4 {
+				result = append(result, nsEntry{hostname: d.Hostname, ipv4: ip})
+			}
+		}
+		for _, ip := range d.IPv6s {
+			if ip != d.IPv6 {
+				result = append(result, nsEntry{hostname: d.Hostname, ipv6: ip})
+			}
+		}
 	}
 	return result
 }
