@@ -17,7 +17,7 @@ var errAllNSServFail = errors.New("all nameservers returned SERVFAIL")
 
 func TestShouldFallback_ServFail(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail}
-	fb := shouldFallback(result, nil)
+	fb := shouldFallback(dns.TypeA, result, nil)
 	if !fb.triggered {
 		t.Error("expected shouldFallback=true for SERVFAIL")
 	}
@@ -27,7 +27,7 @@ func TestShouldFallback_ServFail(t *testing.T) {
 }
 
 func TestShouldFallback_Error(t *testing.T) {
-	fb := shouldFallback(nil, errTXIDMismatch)
+	fb := shouldFallback(dns.TypeA, nil, errTXIDMismatch)
 	if !fb.triggered {
 		t.Error("expected shouldFallback=true for non-nil error")
 	}
@@ -37,7 +37,7 @@ func TestShouldFallback_Error(t *testing.T) {
 }
 
 func TestShouldFallback_NilResult(t *testing.T) {
-	fb := shouldFallback(nil, nil)
+	fb := shouldFallback(dns.TypeA, nil, nil)
 	if !fb.triggered {
 		t.Error("expected shouldFallback=true for nil result")
 	}
@@ -48,7 +48,7 @@ func TestShouldFallback_NilResult(t *testing.T) {
 
 func TestShouldFallback_NoError(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeNoError}
-	fb := shouldFallback(result, nil)
+	fb := shouldFallback(dns.TypeA, result, nil)
 	if fb.triggered {
 		t.Error("expected shouldFallback=false for NOERROR")
 	}
@@ -56,7 +56,7 @@ func TestShouldFallback_NoError(t *testing.T) {
 
 func TestShouldFallback_NXDOMAIN(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeNXDomain}
-	fb := shouldFallback(result, nil)
+	fb := shouldFallback(dns.TypeA, result, nil)
 	if fb.triggered {
 		t.Error("expected shouldFallback=false for NXDOMAIN")
 	}
@@ -67,7 +67,7 @@ func TestShouldFallback_NXDOMAIN(t *testing.T) {
 // queries with unknown EDNS options, answered by 1.1.1.1 and 8.8.8.8).
 func TestShouldFallback_NoReachableAuthority(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail, FailureReason: "no-reachable-authority", Error: errTXIDMismatch}
-	fb := shouldFallback(result, nil)
+	fb := shouldFallback(dns.TypeA, result, nil)
 	if !fb.triggered {
 		t.Error("expected shouldFallback=true when every NS of the delegation failed")
 	}
@@ -81,7 +81,7 @@ func TestShouldFallback_AllNSServFailTagged(t *testing.T) {
 		FailureReason: "no-reachable-authority",
 		Error:         errAllNSServFail,
 	}
-	fb := shouldFallback(result, nil)
+	fb := shouldFallback(dns.TypeA, result, nil)
 	if !fb.triggered || fb.reason != errAllNSServFail.Error() {
 		t.Fatalf("want fallback with reason %q, got triggered=%v reason %q", errAllNSServFail.Error(), fb.triggered, fb.reason)
 	}
@@ -91,19 +91,39 @@ func TestShouldFallback_AllNSServFailTagged(t *testing.T) {
 // or RequestTimeout) does not engage the fallback.
 func TestShouldFallback_QueryBudgetExceeded(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail, FailureReason: "query-budget-exceeded", Error: errQueryBudgetExceeded}
-	if fb := shouldFallback(result, nil); fb.triggered {
+	if fb := shouldFallback(dns.TypeA, result, nil); fb.triggered {
 		t.Errorf("expected shouldFallback=false for an exhausted request budget, got reason %q", fb.reason)
 	}
 }
 
 func TestShouldFallback_DNSSECBogus(t *testing.T) {
 	result := &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}
-	fb := shouldFallback(result, nil)
+	fb := shouldFallback(dns.TypeA, result, nil)
 	if !fb.triggered {
 		t.Error("expected shouldFallback=true for DNSSEC bogus (recover via public resolver when it answers)")
 	}
 	if fb.reason != "DNSSEC bogus" {
 		t.Errorf("expected reason %q, got %q", "DNSSEC bogus", fb.reason)
+	}
+}
+
+// TestShouldFallback_PTR: broken reverse zones dominate production
+// fallback.jsonl and almost never recover at 1.1.1.1/8.8.8.8, so PTR skips
+// the public-resolver fallback entirely.
+func TestShouldFallback_PTR(t *testing.T) {
+	result := &ResolveResult{
+		RCODE:         dns.RCodeServFail,
+		FailureReason: "no-reachable-authority",
+		Error:         errAllNSServFail,
+	}
+	if fb := shouldFallback(dns.TypePTR, result, nil); fb.triggered {
+		t.Errorf("expected shouldFallback=false for PTR, got reason %q", fb.reason)
+	}
+	if fb := shouldFallback(dns.TypePTR, result, errTXIDMismatch); fb.triggered {
+		t.Errorf("expected shouldFallback=false for PTR even with err, got reason %q", fb.reason)
+	}
+	if fb := shouldFallback(dns.TypePTR, &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil); fb.triggered {
+		t.Error("expected shouldFallback=false for PTR DNSSEC bogus")
 	}
 }
 
@@ -383,6 +403,74 @@ func TestResolve_NoFallbackOnSuccess(t *testing.T) {
 	snap := m.Snapshot()
 	if snap.FallbackQueries != 0 {
 		t.Errorf("expected 0 fallback queries, got %d", snap.FallbackQueries)
+	}
+}
+
+// TestResolve_NoFallbackOnPTR: a PTR that exhausts every NS with SERVFAIL
+// must not engage the public-resolver fallback, even when a backup would
+// answer. Same RD-bit mock as TestResolve_FallbackOnIterativeServFail —
+// recursive (RD=1) answers NOERROR, so a triggered fallback would recover.
+func TestResolve_NoFallbackOnPTR(t *testing.T) {
+	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
+		if len(q.Questions) == 0 {
+			return nil
+		}
+		if q.Header.RD() {
+			return &dns.Message{
+				Header: dns.Header{
+					Flags:   dns.NewFlagBuilder().SetQR(true).SetRD(true).SetRA(true).Build(),
+					QDCount: 1,
+					ANCount: 1,
+				},
+				Questions: q.Questions,
+				Answers: []dns.ResourceRecord{{
+					Name: q.Questions[0].Name, Type: dns.TypePTR, Class: dns.ClassIN,
+					TTL: 300, RDLength: 0, RData: nil,
+				}},
+			}
+		}
+		return &dns.Message{
+			Header: dns.Header{
+				Flags:   dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeServFail).Build(),
+				QDCount: 1,
+			},
+			Questions: q.Questions,
+		}
+	})
+	defer mock.close()
+
+	m := metrics.NewMetrics()
+	c := cache.NewCache(100, 5, 86400, 3600, m)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	r := NewResolver(c, ResolverConfig{
+		MaxDepth:          30,
+		MaxCNAMEDepth:     10,
+		UpstreamTimeout:   2 * time.Second,
+		UpstreamRetries:   1,
+		QMinEnabled:       false,
+		PreferIPv4:        true,
+		UpstreamPort:      mock.port,
+		FallbackResolvers: []string{mock.ip},
+	}, m, logger)
+
+	r.rootServers = []NameServer{{Name: "mock.root", IPv4: mock.ip}}
+	r.ready.Store(true)
+
+	// Avoid RFC 6303 locally-served reverse (127.in-addr.arpa → NXDOMAIN).
+	result, _ := r.Resolve("203.0.113.55.in-addr.arpa", dns.TypePTR, dns.ClassIN)
+	if result == nil {
+		t.Fatal("expected SERVFAIL ResolveResult, got nil")
+	}
+	if result.RCODE != dns.RCodeServFail {
+		t.Fatalf("rcode: want SERVFAIL (no fallback recovery), got %d", result.RCODE)
+	}
+	snap := m.Snapshot()
+	if snap.FallbackQueries != 0 {
+		t.Errorf("expected 0 fallback queries for PTR, got %d", snap.FallbackQueries)
+	}
+	if snap.FallbackRecoveries != 0 {
+		t.Errorf("expected 0 fallback recoveries for PTR, got %d", snap.FallbackRecoveries)
 	}
 }
 

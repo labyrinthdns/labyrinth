@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Every glue address of a multi-homed NS is kept and tried.** A referral listing several A/AAAA records for one NS name kept only the last one (in the delegation and in the glue cache), so when that address was dead the whole delegation failed (live: freemailbl-s.snb.it, one NS name with three addresses, the last REFUSED, every query fell back to 1.1.1.1/8.8.8.8). `DelegationNS` now carries `IPv4s`/`IPv6s` and each address becomes its own candidate. [resolver/delegation.go](resolver/delegation.go), [resolver/closest_delegation.go](resolver/closest_delegation.go), [resolver/resolver.go](resolver/resolver.go).
+
+### Changed
+- **PTR queries skip the public-resolver fallback.** Broken reverse delegations dominate production `fallback.jsonl` and almost never recover at 1.1.1.1/8.8.8.8 — the extra round trip only delayed EDE 22. Forward types (A/AAAA/…) still engage the fallback on SERVFAIL / no-reachable-authority. [resolver/fallback.go](resolver/fallback.go).
+
 ### Added
 - **Per-source TCP/DoT connection caps.** TCPServer and DoTServer now track connections per client IP. A source exceeding `server.max_tcp_conns_per_client` or `server.max_dot_conns_per_client` (both default 16) has new connections silently closed — slow-loris defence beyond the global connection pool. [server/tcp.go](server/tcp.go), [server/dot.go](server/dot.go).
 - **Per-delegation NS name cap.** `extractDelegation` now accepts a `maxNames` parameter (config key `resolver.max_ns_names_per_delegation`, default 13). NS hostnames beyond the cap are dropped from the delegation — bounds NXNS amplification (CVE-2020-8616) beyond the existing per-request query budget. [resolver/delegation.go](resolver/delegation.go).

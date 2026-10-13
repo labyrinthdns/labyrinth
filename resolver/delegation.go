@@ -8,10 +8,16 @@ import (
 )
 
 // DelegationNS represents a delegated nameserver with optional glue.
+// IPv4/IPv6 hold the first glue address of each family; IPv4s/IPv6s hold
+// every one, in referral order. A hostname with several A records (live:
+// freemailbl-s.snb.it, one NS name with three addresses, one of them
+// REFUSED) must keep them all, or the dead one is the only one tried.
 type DelegationNS struct {
 	Hostname string
 	IPv4     string
 	IPv6     string
+	IPv4s    []string
+	IPv6s    []string
 	IPv4TTL  uint32
 	IPv6TTL  uint32
 }
@@ -90,15 +96,21 @@ func extractDelegationForQName(msg *dns.Message, qname string, maxNames int) ([]
 		switch rr.Type {
 		case dns.TypeA:
 			ip, err := dns.ParseA(rr.RData)
-			if err == nil {
-				ns.IPv4 = ip.String()
-				ns.IPv4TTL = rr.TTL
+			if err == nil && !containsString(ns.IPv4s, ip.String()) {
+				if ns.IPv4 == "" {
+					ns.IPv4 = ip.String()
+					ns.IPv4TTL = rr.TTL
+				}
+				ns.IPv4s = append(ns.IPv4s, ip.String())
 			}
 		case dns.TypeAAAA:
 			ip, err := dns.ParseAAAA(rr.RData)
-			if err == nil {
-				ns.IPv6 = ip.String()
-				ns.IPv6TTL = rr.TTL
+			if err == nil && !containsString(ns.IPv6s, ip.String()) {
+				if ns.IPv6 == "" {
+					ns.IPv6 = ip.String()
+					ns.IPv6TTL = rr.TTL
+				}
+				ns.IPv6s = append(ns.IPv6s, ip.String())
 			}
 		}
 	}
@@ -109,6 +121,15 @@ func extractDelegationForQName(msg *dns.Message, qname string, maxNames int) ([]
 	}
 
 	return result, zone
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalDNSName(name string) string {
