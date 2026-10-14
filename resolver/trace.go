@@ -166,7 +166,7 @@ func (r *Resolver) Trace(
 		if !fz.IsStub {
 			result, err = r.traceForward(t, fz.Addrs, name, qtype, qclass)
 		} else {
-			result, err = r.traceIterative(t, name, qtype, qclass, fz.Addrs, fz.Name, 0, maxDepth, maxCNAME, opts, newVisitedSet())
+			result, err = r.traceIterative(t, name, qtype, qclass, fz.Addrs, fz.Name, 0, maxDepth, maxCNAME, opts, r.newRequestVisited())
 		}
 		return r.traceFinishWithFallback(t, result, err, name, qtype, qclass, opts, true)
 	}
@@ -183,7 +183,7 @@ func (r *Resolver) Trace(
 		"root_count": len(rootAddrs),
 	})
 
-	result, err := r.traceIterative(t, name, qtype, qclass, rootAddrs, "", 0, maxDepth, maxCNAME, opts, newVisitedSet())
+	result, err := r.traceIterative(t, name, qtype, qclass, rootAddrs, "", 0, maxDepth, maxCNAME, opts, r.newRequestVisited())
 	return r.traceFinishWithFallback(t, result, err, name, qtype, qclass, opts, false)
 }
 
@@ -343,7 +343,10 @@ func (r *Resolver) traceIterative(
 				"hostname": next,
 				"zone":     currentZone,
 			})
-			res, err := r.resolveNSAddr(next, dns.TypeA, nil)
+			// visited carries the request budget (query cap + deadline), so a
+			// cyclic glueless delegation cannot run the trace forever (live:
+			// marcatel.net.mx / marcatel.com.mx with stale registry glue).
+			res, err := r.resolveNSAddr(next, dns.TypeA, visited)
 			if err == nil && res != nil {
 				for _, rr := range res.Answers {
 					if rr.Type == dns.TypeA {
@@ -357,7 +360,7 @@ func (r *Resolver) traceIterative(
 				break
 			}
 			// Try AAAA before moving on.
-			res, err = r.resolveNSAddr(next, dns.TypeAAAA, nil)
+			res, err = r.resolveNSAddr(next, dns.TypeAAAA, visited)
 			if err == nil && res != nil {
 				for _, rr := range res.Answers {
 					if rr.Type == dns.TypeAAAA {
@@ -542,7 +545,7 @@ func (r *Resolver) traceIterative(
 			// we have an IP to query next iteration.
 			if len(nsIPs) == 0 {
 				for _, ns := range newNS {
-					if res, err := r.resolveNSAddr(ns.Hostname, dns.TypeA, nil); err == nil {
+					if res, err := r.resolveNSAddr(ns.Hostname, dns.TypeA, visited); err == nil {
 						for _, rr := range res.Answers {
 							if rr.Type == dns.TypeA {
 								if ip, perr := dns.ParseA(rr.RData); perr == nil {
