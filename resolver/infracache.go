@@ -209,6 +209,11 @@ func (ic *InfraCache) RecordRTT(nsIP string, rtt time.Duration) {
 		// EWMA: new = 0.7*old + 0.3*sample
 		info.RTT = time.Duration(float64(info.RTT)*0.7 + float64(rtt)*0.3)
 	}
+	// A successful exchange halves the failure penalty. Without decay a
+	// burst of timeouts ranked a recovered server behind slower peers for
+	// as long as it stayed in use; a server that keeps failing still
+	// accumulates penalty faster than its occasional answers remove it.
+	info.FailCount /= 2
 }
 
 // RecordFailure increments the fail count for a nameserver.

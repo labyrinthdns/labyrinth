@@ -595,10 +595,7 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	// A stub or forward zone whose own servers are unreachable stays out of
 	// it: its names are usually internal, and public resolvers would either
 	// leak them or answer with the public view.
-	fb := shouldFallback(qtype, result, err)
-	if fb.triggered && configuredZone && result != nil && result.FailureReason == "no-reachable-authority" {
-		fb.triggered = false
-	}
+	fb := shouldFallbackForZone(qtype, result, err, configuredZone)
 	if fb.triggered {
 		r.logger.Info("primary resolver failed, trying fallback",
 			"name", name, "qtype", qtype, "reason", fb.reason)

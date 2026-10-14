@@ -22,6 +22,12 @@ type ListSource struct {
 	LastUpdate time.Time `json:"last_update"`
 	RuleCount  int       `json:"rule_count"`
 	Error      string    `json:"error,omitempty"`
+
+	// domains and rpzRules hold the last successfully loaded contents, so
+	// a refresh whose download or parse fails keeps enforcing them instead
+	// of dropping the whole list until the next successful refresh.
+	domains  []string
+	rpzRules []RPZRule
 }
 
 // ManagerConfig holds the configuration for a blocklist Manager.
@@ -193,6 +199,9 @@ func (mgr *Manager) Start(ctx context.Context) {
 // global blocked-query counter. It checks RPZ rules first, then the
 // traditional matcher.
 func (mgr *Manager) IsBlocked(domain string) bool {
+	if mgr.allowed(domain) {
+		return false
+	}
 	// Check RPZ first: passthru returns nil (not blocked), other actions
 	// mean the domain is blocked.
 	if rpz := mgr.rpzMatcher.Load(); rpz != nil {
@@ -208,8 +217,20 @@ func (mgr *Manager) IsBlocked(domain string) bool {
 	return false
 }
 
+// allowed reports whether the operator allow list (blocklist.whitelist and
+// UnblockDomain) exempts domain. It lives in the classic matcher but governs
+// every blocking source: without this check an RPZ hit was reported blocked
+// even after the operator unblocked the name.
+func (mgr *Manager) allowed(domain string) bool {
+	m := mgr.matcher.Load()
+	return m != nil && m.Whitelisted(domain)
+}
+
 // RPZAction returns the RPZ action for a domain, or nil if no RPZ rule matches.
 func (mgr *Manager) RPZAction(domain string) *RPZAction {
+	if mgr.allowed(domain) {
+		return nil
+	}
 	rpz := mgr.rpzMatcher.Load()
 	if rpz == nil {
 		return nil
@@ -275,7 +296,11 @@ func (mgr *Manager) RefreshAll() {
 				)
 				mgr.mu.Lock()
 				src.Error = err.Error()
+				lastGood := src.rpzRules
 				mgr.mu.Unlock()
+				for _, rule := range lastGood {
+					newRPZMatcher.AddRule(rule)
+				}
 				continue
 			}
 
@@ -287,6 +312,7 @@ func (mgr *Manager) RefreshAll() {
 			src.LastUpdate = time.Now()
 			src.RuleCount = len(rules)
 			src.Error = ""
+			src.rpzRules = rules
 			mgr.mu.Unlock()
 
 			mgr.logger.Info("rpz loaded",
@@ -304,7 +330,11 @@ func (mgr *Manager) RefreshAll() {
 			)
 			mgr.mu.Lock()
 			src.Error = err.Error()
+			lastGood := src.domains
 			mgr.mu.Unlock()
+			for _, d := range lastGood {
+				newMatcher.AddExact(d)
+			}
 			continue
 		}
 
@@ -316,6 +346,7 @@ func (mgr *Manager) RefreshAll() {
 		src.LastUpdate = time.Now()
 		src.RuleCount = len(domains)
 		src.Error = ""
+		src.domains = domains
 		mgr.mu.Unlock()
 
 		mgr.logger.Info("blocklist loaded",
@@ -371,11 +402,11 @@ func (mgr *Manager) downloadAndParse(url, format string) ([]string, error) {
 
 	switch strings.ToLower(format) {
 	case "hosts":
-		return ParseHostsFile(limited), nil
+		return parseHostsFile(limited)
 	case "domains":
-		return ParseDomainList(limited), nil
+		return parseDomainList(limited)
 	case "abp":
-		return ParseABP(limited), nil
+		return parseABP(limited)
 	default:
 		return nil, fmt.Errorf("unknown list format %q", format)
 	}
@@ -516,6 +547,9 @@ func (mgr *Manager) UnblockDomain(domain string) error {
 // CheckDomain returns whether a domain is blocked without incrementing
 // the blocked-query counter.
 func (mgr *Manager) CheckDomain(domain string) bool {
+	if mgr.allowed(domain) {
+		return false
+	}
 	if rpz := mgr.rpzMatcher.Load(); rpz != nil && rpz.Match(domain) != nil {
 		return true
 	}

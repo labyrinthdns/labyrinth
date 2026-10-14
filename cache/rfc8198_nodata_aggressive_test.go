@@ -169,6 +169,8 @@ func TestLookupNSEC_NODATA_TypePresentSkipsSynth(t *testing.T) {
 func TestLookupNSEC_NXDomainStillWorks(t *testing.T) {
 	c := NewCache(1024, 60, 86400, 3600, nil)
 	authority := newFakeNSECAuthority(t, "alpha.example.com", "delta.example.com", []uint16{dns.TypeA})
+	// (apex, alpha) denies *.example.com, completing the NXDOMAIN proof.
+	authority = append(authority, newFakeNSECAuthority(t, "example.com", "alpha.example.com", []uint16{dns.TypeSOA, dns.TypeNS})[1])
 	c.RegisterNSECInterval("example.com", 300, authority)
 
 	got, ok := c.LookupNSECCoversTyped("charlie.example.com", dns.TypeA, dns.ClassIN)

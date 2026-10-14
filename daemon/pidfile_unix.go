@@ -9,3 +9,10 @@ import "syscall"
 func platformPIDOpenFlags() int {
 	return syscall.O_NOFOLLOW
 }
+
+// pidBelongsToLabyrinth reports whether pid is a running labyrinth process
+// (by /proc/<pid>/comm on Linux, liveness elsewhere — see
+// verifyPIDIsLabyrinth).
+func pidBelongsToLabyrinth(pid int) bool {
+	return verifyPIDIsLabyrinth(pid) == nil
+}

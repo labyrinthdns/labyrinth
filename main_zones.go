@@ -243,18 +243,23 @@ func portFromListenAddr(addr string, def uint16) uint16 {
 //
 // The extended-error list names the codes that carry a *policy* meaning here
 // — the ones that mean "we deliberately did not answer that" rather than
-// "something broke". A client seeing EDE 17 from a resolver that declared it
+// "something broke". A client seeing EDE 15 from a resolver that declared it
 // knows the answer was filtered by design and can say so to the user, instead
-// of showing a generic failure.
+// of showing a generic failure. Each code is declared exactly when the policy
+// that emits it in server.MainHandler is active.
 func buildResolverInfo(cfg *config.Config) dns.ResolverInfo {
 	info := dns.ResolverInfo{
 		QnameMinimisation: cfg.Resolver.QMinEnabled,
 	}
 	if cfg.Blocklist.Enabled {
-		info.ExtendedErrors = append(info.ExtendedErrors,
-			dns.EDECodeFiltered,   // 17 — blocked by blocklist policy
-			dns.EDECodeProhibited, // 18 — refused by ACL
-		)
+		info.ExtendedErrors = append(info.ExtendedErrors, dns.EDECodeBlocked) // 15 — blocklist hit
+	}
+	if cfg.Security.RateLimit.Enabled {
+		info.ExtendedErrors = append(info.ExtendedErrors, dns.EDECodeFiltered) // 17 — rate limit refusal
+	}
+	// Same condition main uses to build the ACL.
+	if len(cfg.ACL.Allow) > 0 || len(cfg.ACL.Deny) > 0 || len(cfg.ACL.Zones) > 0 {
+		info.ExtendedErrors = append(info.ExtendedErrors, dns.EDECodeProhibited) // 18 — ACL refusal
 	}
 	return info
 }

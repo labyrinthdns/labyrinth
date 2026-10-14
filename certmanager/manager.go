@@ -32,6 +32,9 @@ type CertInfo struct {
 
 // Manager wraps autocert.Manager and provides certificate status inspection.
 type Manager struct {
+	// acm is replaced by ForceRenew (under mu): autocert keeps issued
+	// certificates in an in-memory map with no eviction API, so a fresh
+	// manager is the only way to stop serving the old certificate.
 	acm    *autocert.Manager
 	domain string
 	email  string
@@ -39,6 +42,13 @@ type Manager struct {
 
 	mu       sync.RWMutex
 	lastCert *x509.Certificate
+}
+
+// current returns the autocert manager in use.
+func (m *Manager) current() *autocert.Manager {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.acm
 }
 
 // New creates a new certificate manager.
@@ -69,13 +79,14 @@ func New(domain, email, cacheDir string, staging bool, logger *slog.Logger) *Man
 // TLSConfig returns a *tls.Config that automatically provisions certificates.
 // Use this for both the web server and DoT server.
 func (m *Manager) TLSConfig() *tls.Config {
-	tlsCfg := m.acm.TLSConfig()
+	tlsCfg := m.current().TLSConfig()
 	tlsCfg.MinVersion = tls.VersionTLS12
 
-	// Wrap GetCertificate to capture cert info for status reporting.
-	origGetCert := tlsCfg.GetCertificate
+	// Wrap GetCertificate to capture cert info for status reporting. It
+	// resolves the autocert manager per handshake so a ForceRenew takes
+	// effect on listeners that were configured before it.
 	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		cert, err := origGetCert(hello)
+		cert, err := m.current().GetCertificate(hello)
 		if err != nil {
 			return nil, err
 		}
@@ -99,7 +110,11 @@ func (m *Manager) TLSConfig() *tls.Config {
 // HTTPHandler returns an http.Handler that serves ACME HTTP-01 challenges
 // and redirects all other traffic to HTTPS. Use this on port 80.
 func (m *Manager) HTTPHandler(fallback http.Handler) http.Handler {
-	return m.acm.HTTPHandler(fallback)
+	// Resolved per request, like GetCertificate: HTTP-01 tokens live in the
+	// autocert manager that placed the order, which is the current one.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.current().HTTPHandler(fallback).ServeHTTP(w, r)
+	})
 }
 
 // Info returns information about the currently active certificate.
@@ -136,7 +151,7 @@ func (m *Manager) Domain() string {
 // ForceRenew removes the cached certificate so autocert provisions a new one
 // on the next TLS handshake.
 func (m *Manager) ForceRenew(ctx context.Context) error {
-	cache := m.acm.Cache
+	cache := m.current().Cache
 
 	// autocert caches certs under the domain name and domain+rsa keys.
 	for _, key := range []string{m.domain, m.domain + "+rsa", m.domain + "+token"} {
@@ -145,12 +160,36 @@ func (m *Manager) ForceRenew(ctx context.Context) error {
 		}
 	}
 
+	// Deleting the disk cache alone changes nothing: autocert serves the
+	// certificate from its in-memory state until renewal is due. A manager
+	// with the same configuration and empty state provisions anew on the
+	// next handshake.
 	m.mu.Lock()
+	m.acm = freshAutocert(m.acm)
 	m.lastCert = nil
 	m.mu.Unlock()
 
 	m.logger.Info("auto-tls: cached certificate removed, will re-provision on next handshake", "domain", m.domain)
 	return nil
+}
+
+// freshAutocert returns an autocert manager with old's configuration and no
+// in-memory certificates. The ACME client is recreated rather than shared so
+// the two managers never contend over one client's account state.
+func freshAutocert(old *autocert.Manager) *autocert.Manager {
+	acm := &autocert.Manager{
+		Prompt:                 old.Prompt,
+		Cache:                  old.Cache,
+		HostPolicy:             old.HostPolicy,
+		RenewBefore:            old.RenewBefore,
+		Email:                  old.Email,
+		ExtraExtensions:        old.ExtraExtensions,
+		ExternalAccountBinding: old.ExternalAccountBinding,
+	}
+	if old.Client != nil {
+		acm.Client = &acme.Client{DirectoryURL: old.Client.DirectoryURL}
+	}
+	return acm
 }
 
 // InfoFromStatic returns CertInfo by reading a static cert+key file pair.

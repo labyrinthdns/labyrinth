@@ -311,29 +311,17 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 				}
 			}
 		}
-		// Second pass: NXDOMAIN via interval coverage (§5.2).
-		for _, iv := range intervals {
-			if !iv.expiresAt.After(now) {
-				continue
-			}
-			cost := int(iv.iterations) + 1
-			budgetRemaining -= cost
-			if budgetRemaining < 0 {
-				return nil, false
-			}
-			qHash, err := computeNSEC3HashForCache(q, iv.hashAlg, iv.iterations, iv.salt)
-			if err != nil {
-				continue
-			}
-			if !nsec3HashCovers(iv.ownerHash, iv.nextHash, qHash) {
-				continue
-			}
+		// Second pass: NXDOMAIN via the closest-encloser proof (§5.3).
+		if iv, ok := nsec3NXDOMAINProof(intervals, name, q, now, &budgetRemaining); ok {
 			if entry, ok := c.buildNSEC3SynthEntry(iv, now, NegNXDomain, dns.RCodeNXDomain); ok {
 				if c.metrics != nil {
 					c.metrics.IncNSEC3AggressiveSynthNX()
 				}
 				return entry, true
 			}
+		}
+		if budgetRemaining < 0 {
+			return nil, false
 		}
 		dot := strings.IndexByte(name, '.')
 		if dot < 0 {
@@ -342,6 +330,90 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 		name = name[dot+1:]
 	}
 	return nil, false
+}
+
+// nsec3NXDOMAINProof looks for an RFC 5155 §8.4 closest-encloser proof of
+// q's nonexistence among zone's cached intervals: an NSEC3 matching the
+// closest encloser that is neither a delegation point (NS without SOA) nor a
+// DNAME owner, one covering the next closer name, and one covering the
+// wildcard at the closest encloser. A covered hash(q) alone proves only that
+// q is not an owner name: q may sit below a zone cut, in another zone, or a
+// wildcard may synthesise it. Returns the interval covering the next closer
+// name. Hash work is charged against budget; all three proofs use the hash
+// parameters of the first live interval.
+func nsec3NXDOMAINProof(intervals []nsec3Interval, zone, q string, now time.Time, budget *int) (nsec3Interval, bool) {
+	live := make([]nsec3Interval, 0, len(intervals))
+	for _, iv := range intervals {
+		if iv.expiresAt.After(now) {
+			live = append(live, iv)
+		}
+	}
+	if len(live) == 0 || !isStrictSubdomain(q, zone) {
+		return nsec3Interval{}, false
+	}
+	params := live[0]
+	hashes := make(map[string][]byte)
+	hash := func(name string) ([]byte, bool) {
+		if h, ok := hashes[name]; ok {
+			return h, true
+		}
+		*budget -= int(params.iterations) + 1
+		if *budget < 0 {
+			return nil, false
+		}
+		h, err := computeNSEC3HashForCache(name, params.hashAlg, params.iterations, params.salt)
+		if err != nil {
+			return nil, false
+		}
+		hashes[name] = h
+		return h, true
+	}
+	find := func(h []byte, covers bool) (nsec3Interval, bool) {
+		for _, iv := range live {
+			if iv.hashAlg != params.hashAlg || iv.iterations != params.iterations || !equalBytes(iv.salt, params.salt) {
+				continue
+			}
+			if (covers && nsec3HashCovers(iv.ownerHash, iv.nextHash, h)) || (!covers && equalBytes(iv.ownerHash, h)) {
+				return iv, true
+			}
+		}
+		return nsec3Interval{}, false
+	}
+
+	nextCloser := q
+	for {
+		ce := nextCloser[strings.IndexByte(nextCloser, '.')+1:]
+		ceHash, ok := hash(ce)
+		if !ok {
+			return nsec3Interval{}, false
+		}
+		if match, found := find(ceHash, false); found {
+			if typeBitmapHas(match.typeBitmap, dns.TypeDNAME) ||
+				(typeBitmapHas(match.typeBitmap, dns.TypeNS) && !typeBitmapHas(match.typeBitmap, dns.TypeSOA)) {
+				return nsec3Interval{}, false
+			}
+			ncHash, ok := hash(nextCloser)
+			if !ok {
+				return nsec3Interval{}, false
+			}
+			cover, found := find(ncHash, true)
+			if !found {
+				return nsec3Interval{}, false
+			}
+			wcHash, ok := hash("*." + ce)
+			if !ok {
+				return nsec3Interval{}, false
+			}
+			if _, found := find(wcHash, true); !found {
+				return nsec3Interval{}, false
+			}
+			return cover, true
+		}
+		if ce == zone {
+			return nsec3Interval{}, false
+		}
+		nextCloser = ce
+	}
 }
 
 // buildNSEC3SynthEntry materialises an Entry from a cached NSEC3

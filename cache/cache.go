@@ -196,10 +196,16 @@ func (c *Cache) Get(name string, qtype uint16, class uint16) (*Entry, bool) {
 		// they may still be served via GetStale on upstream failure.
 		if !c.serveStale {
 			s.mu.Lock()
-			delete(s.entries, lookupKey)
-			s.maybeCompactEvictionQueueLocked()
+			// The read lock was released after the lookup, so a Store may
+			// have refreshed this key in between. Delete only the expired
+			// entry that was read, never its fresh replacement.
+			evicted := s.entries[lookupKey] == entry
+			if evicted {
+				delete(s.entries, lookupKey)
+				s.maybeCompactEvictionQueueLocked()
+			}
 			s.mu.Unlock()
-			if c.metrics != nil {
+			if evicted && c.metrics != nil {
 				c.metrics.IncCacheEvictions("expired")
 			}
 		}

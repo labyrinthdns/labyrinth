@@ -31,18 +31,14 @@ import (
 func TestRegisterNSEC3Interval_OptOutDropped(t *testing.T) {
 	t.Run("opt-out flag SET → interval dropped → no NXDOMAIN synth", func(t *testing.T) {
 		c := NewCache(1024, 60, 86400, 3600, nil)
-		// Owner hash before qname's hash; next-hash all-ones — qname
-		// would fall inside (owner, next) IF the interval were live.
-		ownerHash := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00}
-		nextHash := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-			0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-			0xff, 0xff, 0xff, 0xff}
+		// A one-name zone: the apex NSEC3 links to itself, so it matches the
+		// closest encloser and covers every other hash (RFC 5155 §8.4).
+		ownerHash := nsec3Hash("example.com")
+		nextHash := ownerHash
 		authority := newFakeNSEC3AuthorityWithBitmap(t,
 			ownerHash, nextHash,
 			0x01, /* opt-out flag set — RFC 5155 §6 */
-			[]uint16{dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC3})
+			[]uint16{dns.TypeSOA, dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC3})
 		c.RegisterNSEC3Interval("example.com", 300, authority)
 
 		// Any qname in the (owner, next) gap would normally synth NXDOMAIN.
@@ -53,17 +49,14 @@ func TestRegisterNSEC3Interval_OptOutDropped(t *testing.T) {
 
 	t.Run("opt-out flag CLEAR → interval cached → NXDOMAIN synth fires", func(t *testing.T) {
 		c := NewCache(1024, 60, 86400, 3600, nil)
-		// Cover the entire hash space so any qname falls inside.
-		ownerHash := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00}
-		nextHash := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-			0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-			0xff, 0xff, 0xff, 0xff}
+		// A one-name zone: the apex NSEC3 links to itself, so it matches the
+		// closest encloser and covers every other hash (RFC 5155 §8.4).
+		ownerHash := nsec3Hash("example.com")
+		nextHash := ownerHash
 		authority := newFakeNSEC3AuthorityWithBitmap(t,
 			ownerHash, nextHash,
 			0x00, /* opt-out CLEAR */
-			[]uint16{dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC3})
+			[]uint16{dns.TypeSOA, dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC3})
 		c.RegisterNSEC3Interval("example.com", 300, authority)
 
 		if _, ok := c.LookupNSEC3Covers("nonexistent.example.com", dns.ClassIN); !ok {

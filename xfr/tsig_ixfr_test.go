@@ -116,12 +116,14 @@ func (p *mockPrimary) serve() {
 
 func testSOA(t *testing.T, zone string, serial uint32) dns.ResourceRecord {
 	t.Helper()
+	rdata := buildSOARDATA("ns1."+zone, "admin."+zone, serial, 3600, 900, 604800, 86400)
 	return dns.ResourceRecord{
-		Name:  zone,
-		Type:  dns.TypeSOA,
-		Class: dns.ClassIN,
-		TTL:   3600,
-		RData: buildSOARDATA("ns1."+zone, "admin."+zone, serial, 3600, 900, 604800, 86400),
+		Name:     zone,
+		Type:     dns.TypeSOA,
+		Class:    dns.ClassIN,
+		TTL:      3600,
+		RDLength: uint16(len(rdata)),
+		RData:    rdata,
 	}
 }
 

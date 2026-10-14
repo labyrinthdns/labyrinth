@@ -190,3 +190,16 @@ func shouldFallback(qtype uint16, result *ResolveResult, err error) fallbackReas
 	}
 	return fallbackReason{triggered: true, reason: "SERVFAIL"}
 }
+
+// shouldFallbackForZone is shouldFallback for a name that may belong to a
+// stub or forward zone. A configured zone whose own servers are unreachable
+// stays out of the fallback: its names are usually internal, and public
+// resolvers would either leak them or answer with the public view. Resolve
+// and Trace share it so a trace never takes a fallback production refuses.
+func shouldFallbackForZone(qtype uint16, result *ResolveResult, err error, configuredZone bool) fallbackReason {
+	fb := shouldFallback(qtype, result, err)
+	if fb.triggered && configuredZone && result != nil && result.FailureReason == "no-reachable-authority" {
+		fb.triggered = false
+	}
+	return fb
+}

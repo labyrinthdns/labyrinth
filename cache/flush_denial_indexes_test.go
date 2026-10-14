@@ -7,14 +7,13 @@ import (
 
 func TestFlushClearsAggressiveDenialIndexes(t *testing.T) {
 	c := NewCache(1000, 1, 86400, 3600, nil)
-	auth := []dns.ResourceRecord{soaForZone("example.com", 300, 300), {Name: "foo.example.com", Type: dns.TypeNSEC, Class: dns.ClassIN, TTL: 300, RData: buildNSECRData(t, "hop.example.com")}}
+	auth := []dns.ResourceRecord{soaForZone("example.com", 300, 300), {Name: "foo.example.com", Type: dns.TypeNSEC, Class: dns.ClassIN, TTL: 300, RData: buildNSECRData(t, "hop.example.com")}, {Name: "example.com", Type: dns.TypeNSEC, Class: dns.ClassIN, TTL: 300, RData: buildNSECRData(t, "foo.example.com")}}
 	c.RegisterNSECInterval("example.com", 300, auth)
-	next := make([]byte, 20)
-	for i := range next {
-		next[i] = 255
-	}
-	rdata := append([]byte{1, 0, 0, 0, 0, 20}, next...)
-	n3 := []dns.ResourceRecord{soaForZone("example.com", 300, 300), {Name: nsec3Base32.EncodeToString(make([]byte, 20)) + ".example.com", Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 300, RData: rdata}}
+	// A one-name zone: the apex NSEC3 links to itself, matching the closest
+	// encloser and covering every other hash (RFC 5155 §8.4 proof).
+	apex := nsec3Hash("example.com")
+	rdata := append([]byte{1, 0, 0, 0, 0, 20}, apex...)
+	n3 := []dns.ResourceRecord{soaForZone("example.com", 300, 300), {Name: nsec3Base32.EncodeToString(apex) + ".example.com", Type: dns.TypeNSEC3, Class: dns.ClassIN, TTL: 300, RData: rdata}}
 	c.RegisterNSEC3Interval("example.com", 300, n3)
 	if _, ok := c.LookupNSEC3Covers("h.example.com", dns.ClassIN); !ok {
 		t.Fatal("NSEC3 control absent")

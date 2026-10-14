@@ -63,6 +63,11 @@ const (
 	// of memory with a stream that is individually well-formed at every
 	// step. Large real zones (a ccTLD) are comfortably under this.
 	maxXFRRecords = 5_000_000
+
+	// maxUnsignedXFRMessages is how many consecutive unsigned messages a
+	// TSIG-protected transfer may carry: RFC 8945 §5.3.1 requires a TSIG on
+	// at least every 100th message.
+	maxUnsignedXFRMessages = 99
 )
 
 var (
@@ -138,6 +143,11 @@ type Result struct {
 	Deltas []Delta
 	// Serial is the zone serial after applying the transfer.
 	Serial uint32
+	// SOA is the zone's new SOA record, set for an incremental transfer.
+	// Deltas carry no SOA of their own (RFC 1995 §2 uses SOAs only as
+	// section markers), so this is the only place the new REFRESH, RETRY,
+	// EXPIRE, MINIMUM and names arrive.
+	SOA *dns.ResourceRecord
 }
 
 // AXFR performs a full zone transfer.
@@ -251,6 +261,14 @@ func readStream(conn net.Conn, cfg ClientConfig, txID uint16, qtype uint16, aske
 		priorMAC = requestMAC
 		firstMsg = true
 		complete = false
+		// lastSigned tracks whether the most recent message carried a
+		// verified TSIG. RFC 8945 §5.3.1 lets a primary leave intermediate
+		// messages unsigned, but the final one MUST be signed: its MAC is
+		// what closes the chain over the stream.
+		lastSigned = false
+		// unsigned holds the messages received without a TSIG since the
+		// last signed one; the next signature digests them (§5.3.1).
+		unsigned [][]byte
 	)
 
 	for msgCount := 0; msgCount < maxXFRMessages; msgCount++ {
@@ -271,20 +289,26 @@ func readStream(conn net.Conn, cfg ClientConfig, txID uint16, qtype uint16, aske
 			} else {
 				// Later messages chain off the previous message's MAC
 				// (§5.3.1), which is what makes the stream untruncatable.
-				_, mac, err = dns.TSIGVerifyStream(wire, cfg.TSIGKey, priorMAC, time.Now())
+				_, mac, err = dns.TSIGVerifyStream(wire, cfg.TSIGKey, priorMAC, time.Now(), unsigned...)
 			}
 			if err != nil {
 				// RFC 8945 §5.3.1 lets a primary sign only every Nth
 				// message of a long stream. An unsigned intermediate
-				// message is therefore not a failure — but the chain MAC
-				// carries forward unchanged, so the next signed message
-				// still covers it.
-				if errors.Is(err, dns.ErrTSIGNotSigned) && !firstMsg {
+				// message is therefore not a failure: the chain MAC
+				// carries forward unchanged and the message is held until
+				// the next signed message, whose MAC must cover it. The
+				// RFC caps the run at 99 unsigned messages, which also
+				// bounds what is held.
+				if errors.Is(err, dns.ErrTSIGNotSigned) && !firstMsg && len(unsigned) < maxUnsignedXFRMessages {
 					mac = priorMAC
+					unsigned = append(unsigned, wire)
 				} else {
 					return nil, fmt.Errorf("xfr: message %d: %w", msgCount, err)
 				}
+			} else {
+				unsigned = nil
 			}
+			lastSigned = err == nil
 			priorMAC = mac
 		}
 
@@ -369,6 +393,12 @@ func readStream(conn net.Conn, cfg ClientConfig, txID uint16, qtype uint16, aske
 	}
 	if !complete {
 		return nil, errors.New("xfr: transfer exceeded the message limit before completion")
+	}
+	// An unsigned final message leaves everything after the last signed
+	// message unauthenticated: stripping the TSIG from the tail of the
+	// stream would otherwise let an on-path attacker rewrite the zone.
+	if cfg.tsigEnabled() && !lastSigned {
+		return nil, fmt.Errorf("xfr: final message: %w", dns.ErrTSIGNotSigned)
 	}
 	if qtype == dns.TypeIXFR {
 		return parseIXFR(records)
@@ -478,7 +508,8 @@ func parseIXFR(records []dns.ResourceRecord) (*Result, error) {
 		}
 	}
 
-	return &Result{Incremental: true, Deltas: deltas, Serial: finalSerial}, nil
+	soa := records[0]
+	return &Result{Incremental: true, Deltas: deltas, Serial: finalSerial, SOA: &soa}, nil
 }
 
 // buildQuery constructs the AXFR or IXFR query.
