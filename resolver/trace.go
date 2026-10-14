@@ -428,7 +428,7 @@ func (r *Resolver) traceIterative(
 		// yield a referral. Same semantics as resolveIterativeFromInner.
 		minimised := queryName != name || queryType != qtype
 		referralQName := queryName
-		if r.config.QMinEnabled && minimised && rtype != responseReferral {
+		if r.config.QMinEnabled && minimised && (rtype != responseReferral || !referralDescends(response, queryName, currentZone)) {
 			t.emit("classify", TraceStatusInfo, "qmin: minimised query did not yield a referral, re-asking full question", map[string]any{
 				"minimised_type": typeName(queryType),
 				"full_name":      name,
@@ -448,6 +448,10 @@ func (r *Resolver) traceIterative(
 			security.SanitizeBailiwick(response, currentZone)
 			rtype = classifyResponse(response, name, qtype)
 			referralQName = name
+		}
+		// Same lame self-referral guard as resolveIterativeFromInner.
+		if rtype == responseReferral && !referralDescends(response, referralQName, currentZone) {
+			rtype = responseServFail
 		}
 
 		t.emit("classify", TraceStatusInfo, fmt.Sprintf("classified as %s", classifyName(rtype)), map[string]any{
@@ -514,7 +518,7 @@ func (r *Resolver) traceIterative(
 			return sub, nil
 
 		case responseReferral:
-			newNS, zone := extractDelegationForQName(response, referralQName, r.config.MaxNSNamesPerDelegation)
+			newNS, zone := extractDelegationForQName(response, referralQName, currentZone, r.config.MaxNSNamesPerDelegation)
 			if len(newNS) == 0 {
 				t.emit("delegation", TraceStatusError, "referral has no usable NS records", nil)
 				return &ResolveResult{RCODE: dns.RCodeServFail}, nil

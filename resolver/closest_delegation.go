@@ -169,13 +169,13 @@ func (r *Resolver) primeZoneNS(zone string) error {
 		// Prefer Authority referrals (normal root response). Fall back to
 		// synthesizing a referral view from ANSWER+ADDITIONAL when a root
 		// returns the NS RRset as an answer.
-		del, z := extractDelegationForQName(resp, zone, r.config.MaxNSNamesPerDelegation)
+		del, z := extractDelegationForQName(resp, zone, "", r.config.MaxNSNamesPerDelegation)
 		if len(del) == 0 && len(resp.Answers) > 0 {
 			synth := &dns.Message{
 				Authority:  resp.Answers,
 				Additional: resp.Additional,
 			}
-			del, z = extractDelegationForQName(synth, zone, r.config.MaxNSNamesPerDelegation)
+			del, z = extractDelegationForQName(synth, zone, "", r.config.MaxNSNamesPerDelegation)
 			if len(del) > 0 {
 				resp = synth
 			}

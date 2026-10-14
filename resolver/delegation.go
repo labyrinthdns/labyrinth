@@ -26,11 +26,17 @@ type DelegationNS struct {
 // not have the upstream QNAME. Production resolution uses
 // extractDelegationForQName so owner selection is bound to the actual query.
 func extractDelegation(msg *dns.Message, maxNames int) ([]DelegationNS, string) {
-	return extractDelegationForQName(msg, "", maxNames)
+	return extractDelegationForQName(msg, "", "", maxNames)
 }
 
-func extractDelegationForQName(msg *dns.Message, qname string, maxNames int) ([]DelegationNS, string) {
+// serverZone is the zone of the server that sent the referral (the
+// resolver's currentZone; "" for the root). Glue for an NS name inside it
+// is usable even when the name is outside the delegated zone ("sibling
+// glue", RFC 9471): gov.tr's servers delegating sivas.gov.tr to
+// ns1/ns2.isay.gov.tr are authoritative for those addresses too.
+func extractDelegationForQName(msg *dns.Message, qname, serverZone string, maxNames int) ([]DelegationNS, string) {
 	qname = canonicalDNSName(qname)
+	serverZone = canonicalDNSName(serverZone)
 
 	// A referral may contain multiple NS owners. Only one can be the next
 	// delegation point: the closest (longest) ancestor of the name that was
@@ -80,8 +86,9 @@ func extractDelegationForQName(msg *dns.Message, qname string, maxNames int) ([]
 	}
 
 	// Glue is usable only for an NS name at or below the selected delegation
-	// owner. Out-of-bailiwick NS names remain valid delegation targets, but
-	// their addresses must be resolved through their own authority chain.
+	// owner or the referring server's zone. Out-of-bailiwick NS names remain
+	// valid delegation targets, but their addresses must be resolved through
+	// their own authority chain.
 	for _, rr := range msg.Additional {
 		if rr.Type == dns.TypeOPT || rr.Class != dns.ClassIN {
 			continue
@@ -89,7 +96,7 @@ func extractDelegationForQName(msg *dns.Message, qname string, maxNames int) ([]
 
 		rrName := canonicalDNSName(rr.Name)
 		ns, exists := nsMap[rrName]
-		if !exists || !nameAtOrBelow(rrName, zone) {
+		if !exists || (!nameAtOrBelow(rrName, zone) && !nameAtOrBelow(rrName, serverZone)) {
 			continue
 		}
 
@@ -121,6 +128,15 @@ func extractDelegationForQName(msg *dns.Message, qname string, maxNames int) ([]
 	}
 
 	return result, zone
+}
+
+// referralDescends reports whether a referral for qname delegates to a zone
+// strictly below currentZone. A referral to currentZone itself or to an
+// ancestor makes no progress.
+func referralDescends(msg *dns.Message, qname, currentZone string) bool {
+	_, zone := extractDelegationForQName(msg, qname, currentZone, 0)
+	current := canonicalDNSName(currentZone)
+	return zone != "" && zone != current && nameAtOrBelow(zone, current)
 }
 
 func containsString(list []string, s string) bool {
