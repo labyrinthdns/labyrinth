@@ -80,7 +80,13 @@ func TestHandle_AggressiveCacheHit_CountedOnce(t *testing.T) {
 		Name: "example.com", Type: dns.TypeSOA, Class: dns.ClassIN,
 		TTL: 300, RDLength: uint16(len(soaRD)), RData: soaRD,
 	}
-	c.RegisterNSECInterval("example.com", 300, []dns.ResourceRecord{soa, nsec})
+	// (apex, foo) denies *.example.com, completing the NXDOMAIN proof.
+	apexRD := nsecRDataFor(t, "foo.example.com.")
+	apexNSEC := dns.ResourceRecord{
+		Name: "example.com", Type: dns.TypeNSEC, Class: dns.ClassIN,
+		TTL: 300, RDLength: uint16(len(apexRD)), RData: apexRD,
+	}
+	c.RegisterNSECInterval("example.com", 300, []dns.ResourceRecord{soa, nsec, apexNSEC})
 
 	res := newFailFastResolver(c, m)
 	handler := NewMainHandler(res, c, nil, nil, nil, m, discardLogger())

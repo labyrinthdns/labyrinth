@@ -63,7 +63,14 @@ func TestLookupNSECCovers_SynthesizesNXDOMAINInGap(t *testing.T) {
 		TTL: 300, RData: buildNSECRData(t, "hop.example.com"),
 	}
 	nsec.RDLength = uint16(len(nsec.RData))
-	auth := []dns.ResourceRecord{soaForZone("example.com", 600, 300), nsec}
+	// (apex, foo) denies *.example.com: coverage alone is not an NXDOMAIN
+	// proof without the wildcard denial (RFC 8198 §5.2).
+	wildcardDenial := dns.ResourceRecord{
+		Name: "example.com", Type: dns.TypeNSEC, Class: dns.ClassIN,
+		TTL: 300, RData: buildNSECRData(t, "foo.example.com"),
+	}
+	wildcardDenial.RDLength = uint16(len(wildcardDenial.RData))
+	auth := []dns.ResourceRecord{soaForZone("example.com", 600, 300), nsec, wildcardDenial}
 
 	c.RegisterNSECInterval("example.com", 300, auth)
 

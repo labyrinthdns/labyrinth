@@ -168,7 +168,7 @@ func (r *Resolver) Trace(
 		} else {
 			result, err = r.traceIterative(t, name, qtype, qclass, fz.Addrs, fz.Name, 0, maxDepth, maxCNAME, opts, newVisitedSet())
 		}
-		return r.traceFinishWithFallback(t, result, err, name, qtype, qclass, opts)
+		return r.traceFinishWithFallback(t, result, err, name, qtype, qclass, opts, true)
 	}
 	t.emit("forward-zones", TraceStatusInfo, "no forward/stub zone match", nil)
 
@@ -184,7 +184,7 @@ func (r *Resolver) Trace(
 	})
 
 	result, err := r.traceIterative(t, name, qtype, qclass, rootAddrs, "", 0, maxDepth, maxCNAME, opts, newVisitedSet())
-	return r.traceFinishWithFallback(t, result, err, name, qtype, qclass, opts)
+	return r.traceFinishWithFallback(t, result, err, name, qtype, qclass, opts, false)
 }
 
 // traceFinishWithFallback runs the same fallback-resolver hook that prod
@@ -197,8 +197,9 @@ func (r *Resolver) traceFinishWithFallback(
 	qtype uint16,
 	qclass uint16,
 	opts TraceOptions,
+	configuredZone bool,
 ) (*ResolveResult, error) {
-	if fb := shouldFallback(qtype, result, err); fb.triggered {
+	if fb := shouldFallbackForZone(qtype, result, err, configuredZone); fb.triggered {
 		t.emit("fallback", TraceStatusWarn, fmt.Sprintf("primary failed (%s) — trying fallback resolver", fb.reason), map[string]any{
 			"reason":    fb.reason,
 			"resolvers": r.config.FallbackResolvers,
@@ -373,7 +374,7 @@ func (r *Resolver) traceIterative(
 				"zone":  currentZone,
 				"depth": depth,
 			})
-			return &ResolveResult{RCODE: dns.RCodeServFail, Error: errors.New("no reachable nameserver")}, nil
+			return &ResolveResult{RCODE: dns.RCodeServFail, FailureReason: "no-reachable-authority", Error: errors.New("no reachable nameserver")}, nil
 		}
 
 		nsIP := nameservers[0]
@@ -645,7 +646,7 @@ func (r *Resolver) traceIterative(
 	t.emit("iterative-step", TraceStatusError, "max iterative depth reached", map[string]any{
 		"max_depth": maxDepth,
 	})
-	return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
+	return &ResolveResult{RCODE: dns.RCodeServFail, FailureReason: "no-reachable-authority", Error: lastErr}, nil
 }
 
 func (r *Resolver) traceDNSSEC(t *tracer, response *dns.Message, name string, qtype uint16, opts TraceOptions, result *ResolveResult) {

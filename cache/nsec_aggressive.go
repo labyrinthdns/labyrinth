@@ -319,6 +319,9 @@ func (c *Cache) lookupNSEC(qname string, qtype uint16, qclass uint16) (*Entry, b
 			if !nsecIntervalCovers(iv.owner, iv.next, q) {
 				continue
 			}
+			if !nsecProvesNXDOMAIN(intervals, iv, q, now) {
+				continue
+			}
 			if entry, ok := c.buildNSECSynthEntry(iv, now, NegNXDomain, dns.RCodeNXDomain); ok {
 				if c.metrics != nil {
 					c.metrics.IncNSECAggressiveSynthNX()
@@ -369,6 +372,60 @@ func (c *Cache) buildNSECSynthEntry(iv nsecInterval, now time.Time, negType Nega
 		DNSSECStatus: "secure",
 		Synthesized:  true,
 	}, true
+}
+
+// nsecProvesNXDOMAIN reports whether cover, a cached interval covering q,
+// together with the zone's other cached intervals proves q does not exist
+// (RFC 4035 §5.4, RFC 8198 §5.2). Coverage alone is not enough:
+//   - an NSEC owned by a delegation point (NS without SOA) or a DNAME owner
+//     says nothing about the names below it, which belong to another zone;
+//   - when the next name is below q, q is an empty non-terminal: it exists,
+//     and the answer is NODATA, not NXDOMAIN;
+//   - a wildcard at the closest encloser could synthesise q, so a cached
+//     interval must deny that wildcard too.
+func nsecProvesNXDOMAIN(intervals []nsecInterval, cover nsecInterval, q string, now time.Time) bool {
+	if isStrictSubdomain(q, cover.owner) && (typeBitmapHas(cover.typeBitmap, dns.TypeDNAME) ||
+		(typeBitmapHas(cover.typeBitmap, dns.TypeNS) && !typeBitmapHas(cover.typeBitmap, dns.TypeSOA))) {
+		return false
+	}
+	if isStrictSubdomain(cover.next, q) {
+		return false
+	}
+	// The closest encloser is the deeper of q's common ancestors with the
+	// NSEC's owner and next names.
+	ce := commonAncestor(q, cover.owner)
+	if other := commonAncestor(q, cover.next); len(other) > len(ce) {
+		ce = other
+	}
+	if ce == "" {
+		return false
+	}
+	wildcard := "*." + ce
+	for _, iv := range intervals {
+		if iv.expiresAt.After(now) && nsecIntervalCovers(iv.owner, iv.next, wildcard) {
+			return true
+		}
+	}
+	return false
+}
+
+// isStrictSubdomain reports whether name is below parent (not equal to it).
+// Both are lowercase without a trailing dot.
+func isStrictSubdomain(name, parent string) bool {
+	return strings.HasSuffix(name, "."+parent)
+}
+
+// commonAncestor returns the longest common suffix of a and b on label
+// boundaries, or "" when they share no label.
+func commonAncestor(a, b string) string {
+	aLabels := splitCanonicalLabels(a)
+	bLabels := splitCanonicalLabels(b)
+	n := 0
+	for n < len(aLabels) && n < len(bLabels) &&
+		aLabels[len(aLabels)-1-n] == bLabels[len(bLabels)-1-n] {
+		n++
+	}
+	return strings.Join(aLabels[len(aLabels)-n:], ".")
 }
 
 // typeBitmapHas reports whether qtype appears in a parsed NSEC/NSEC3

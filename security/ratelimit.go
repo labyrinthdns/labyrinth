@@ -117,11 +117,12 @@ func (rl *RateLimiter) evictOldestLocked() {
 	}
 	for rl.evictHeap.Len() > 0 {
 		he, _ := heap.Pop(rl.evictHeap).(*evictHeapEntry)
-		if _, exists := rl.clients[he.ip]; exists {
+		if tb, exists := rl.clients[he.ip]; exists && tb.entry == he {
 			delete(rl.clients, he.ip)
 			return
 		}
-		// Stale entry (already evicted by cleanup tick). Skip and
+		// Stale entry (already evicted by cleanup tick, or left over from
+		// an earlier bucket for an IP that has since returned). Skip and
 		// continue — the heap may have accumulated stale entries
 		// between cleanup cycles.
 	}

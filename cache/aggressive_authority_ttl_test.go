@@ -29,7 +29,8 @@ func TestAggressiveAuthorityTTL(t *testing.T) {
 					var register func(string, uint32, []dns.ResourceRecord)
 					var lookup func() (*Entry, bool)
 					if kind == "NSEC" {
-						auth = []dns.ResourceRecord{soaForZone("example.com", tc.soa, 300), {Name: "foo.example.com", Type: dns.TypeNSEC, Class: dns.ClassIN, TTL: tc.proof, RData: buildNSECRData(t, "hop.example.com")}}
+						// (foo, hop) covers the name; (apex, foo) denies *.example.com.
+						auth = []dns.ResourceRecord{soaForZone("example.com", tc.soa, 300), {Name: "foo.example.com", Type: dns.TypeNSEC, Class: dns.ClassIN, TTL: tc.proof, RData: buildNSECRData(t, "hop.example.com")}, {Name: "example.com", Type: dns.TypeNSEC, Class: dns.ClassIN, TTL: tc.proof, RData: buildNSECRData(t, "foo.example.com")}}
 						register = c.RegisterNSECInterval
 						lookup = func() (*Entry, bool) { return c.LookupNSECCovers(name, dns.ClassIN) }
 					} else {

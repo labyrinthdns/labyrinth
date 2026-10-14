@@ -426,16 +426,36 @@ func (m *Manager) applyIXFR(z *zoneState, res *xfr.Result) time.Duration {
 			m.mu.Unlock()
 			return m.onFailure(z, errNoSOA{zone: z.cfg.Name})
 		}
-		_, offset, err := dns.DecodeName(soa.RData, 0)
-		if err == nil {
-			_, offset, err = dns.DecodeName(soa.RData, offset)
+		if res.SOA != nil {
+			// The transfer's opening SOA is the zone's new SOA (RFC 1995
+			// §2). Take it whole: changes to REFRESH, RETRY, EXPIRE,
+			// MINIMUM or the names must reach the served copy and the
+			// refresh/expiry schedule, not just the new serial.
+			parsed, err := dns.ParseSOA(res.SOA.RData, 0)
+			if err != nil || parsed == nil {
+				m.mu.Unlock()
+				return m.onFailure(z, errNoSOA{zone: z.cfg.Name})
+			}
+			*soa = *res.SOA
+			soa.RData = append([]byte(nil), res.SOA.RData...)
+			z.refresh = clampRefresh(time.Duration(parsed.Refresh) * time.Second)
+			z.retry = clampRetry(time.Duration(parsed.Retry) * time.Second)
+			z.expire = defaultExpire
+			if parsed.Expire > 0 {
+				z.expire = time.Duration(parsed.Expire) * time.Second
+			}
+		} else {
+			_, offset, err := dns.DecodeName(soa.RData, 0)
+			if err == nil {
+				_, offset, err = dns.DecodeName(soa.RData, offset)
+			}
+			if err != nil || len(soa.RData)-offset < 20 {
+				m.mu.Unlock()
+				return m.onFailure(z, errNoSOA{zone: z.cfg.Name})
+			}
+			soa.RData = append([]byte(nil), soa.RData...)
+			binary.BigEndian.PutUint32(soa.RData[offset:offset+4], res.Serial)
 		}
-		if err != nil || len(soa.RData)-offset < 20 {
-			m.mu.Unlock()
-			return m.onFailure(z, errNoSOA{zone: z.cfg.Name})
-		}
-		soa.RData = append([]byte(nil), soa.RData...)
-		binary.BigEndian.PutUint32(soa.RData[offset:offset+4], res.Serial)
 		for _, d := range res.Deltas {
 			records = applyDelta(records, d)
 		}
@@ -520,7 +540,13 @@ func (m *Manager) onFailure(z *zoneState, err error) time.Duration {
 func (m *Manager) republish() {
 	m.mu.Lock()
 	zones := make([]resolver.LocalZone, 0, len(m.static)+len(m.zones))
-	zones = append(zones, m.static...)
+	// NewLocalZoneTable normalises record names in place, so hand it copies:
+	// the static record arrays are shared with the live table (built from
+	// the same zones at startup) and with any concurrent republish.
+	for _, sz := range m.static {
+		sz.Records = append([]resolver.LocalRecord(nil), sz.Records...)
+		zones = append(zones, sz)
+	}
 	for _, z := range m.zones {
 		if !z.loaded || len(z.records) == 0 {
 			continue

@@ -132,11 +132,15 @@ func (r *Resolver) reportError(response *dns.Message, name string, qtype uint16,
 		return // report name too long, or a report about a report (§6.3)
 	}
 
-	if !er.shouldSend(reportName, time.Now()) {
+	// Take an inflight slot before consulting the dedup table: a report the
+	// cap drops was never sent, so it must not be recorded as sent and then
+	// suppressed for the whole dedup window.
+	if er.inflight.Add(1) > maxInflightReports {
+		er.inflight.Add(-1)
 		return
 	}
 
-	if er.inflight.Add(1) > maxInflightReports {
+	if !er.shouldSend(reportName, time.Now()) {
 		er.inflight.Add(-1)
 		return
 	}

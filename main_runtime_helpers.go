@@ -349,6 +349,11 @@ func waitForShutdown(
 			}
 			logger.Error("server error", "error", err)
 			cancel()
+			// The process exits here as well, so the PID file must go
+			// with it, exactly as on the signal path above.
+			if daemonMode && cfg.Daemon.PIDFile != "" {
+				daemon.RemovePID(cfg.Daemon.PIDFile)
+			}
 			return 1
 		}
 	}

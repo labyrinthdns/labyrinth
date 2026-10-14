@@ -47,6 +47,9 @@ func readMemoryIXFR(t *testing.T, parts [][]dns.ResourceRecord, serial uint32) (
 		for i := range res.Records {
 			res.Records[i].RDataOffset = 0
 		}
+		if res.SOA != nil {
+			res.SOA.RDataOffset = 0
+		}
 		for i := range res.Deltas {
 			for j := range res.Deltas[i].Deleted {
 				res.Deltas[i].Deleted[j].RDataOffset = 0

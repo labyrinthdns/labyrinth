@@ -164,7 +164,7 @@ func TSIGSign(msg []byte, key TSIGKey, timeSigned time.Time, fudge uint16, reque
 	signedTime := uint64(timeSigned.Unix())
 	originalID := binary.BigEndian.Uint16(msg[0:2])
 
-	mac := computeTSIGMAC(newH, key, msg, requestMAC, tsigVariables{
+	mac := computeTSIGMAC(newH, key, msg, requestMAC, nil, tsigVariables{
 		keyName:    key.Name,
 		algorithm:  key.algorithm(),
 		timeSigned: signedTime,
@@ -207,37 +207,16 @@ func TSIGVerify(msg []byte, keyFor func(name string) (TSIGKey, bool), requestMAC
 	if !ok {
 		return rec, nil, fmt.Errorf("%w: %q", ErrTSIGBadKey, rec.KeyName)
 	}
-	// The algorithm is chosen by the sender, so it is attacker-controlled
-	// input on an unauthenticated message. Verify against the algorithm the
-	// *record* names rather than the one the local key is configured with —
-	// but only after confirming we support it, so an unknown name is a clean
-	// rejection instead of a nil dereference.
-	newH, err := newHash(rec.Algorithm)
+	newH, err := checkTSIGRecord(rec, key)
 	if err != nil {
 		return rec, nil, err
-	}
-	if !strings.EqualFold(rec.Algorithm, key.algorithm()) {
-		return rec, nil, fmt.Errorf("%w: message uses %q, key %q is configured for %q",
-			ErrTSIGBadAlgorithm, rec.Algorithm, rec.KeyName, key.algorithm())
-	}
-
-	// RFC 8945 §5.2.2.1: a truncated MAC must be at least half the full
-	// digest length and at least 10 octets. Without the floor, a peer could
-	// negotiate the MAC down to a length brute-forceable offline.
-	full := newH().Size()
-	if len(rec.MAC) < full/2 || len(rec.MAC) < 10 {
-		return rec, nil, fmt.Errorf("%w: %d octets, minimum %d",
-			ErrTSIGBadTrunc, len(rec.MAC), maxInt(full/2, 10))
-	}
-	if len(rec.MAC) > full {
-		return rec, nil, fmt.Errorf("%w: MAC longer than the algorithm's digest", ErrTSIGMalformed)
 	}
 
 	// Reconstruct the message the sender digested: everything before the
 	// TSIG record, with ARCOUNT decremented and the original ID restored.
 	stripped := stripTSIG(msg, rrStart, rec.OriginalID)
 
-	want := computeTSIGMAC(newH, key, stripped, requestMAC, tsigVariables{
+	want := computeTSIGMAC(newH, key, stripped, requestMAC, nil, tsigVariables{
 		keyName:    rec.KeyName,
 		algorithm:  rec.Algorithm,
 		timeSigned: rec.TimeSigned,
@@ -265,6 +244,39 @@ func TSIGVerify(msg []byte, keyFor func(name string) (TSIGKey, bool), requestMAC
 	return rec, rec.MAC, nil
 }
 
+// checkTSIGRecord validates a received TSIG record against the local key
+// before any MAC is computed, and returns the HMAC constructor to verify with.
+// Every received TSIG goes through it, stream continuations included: a check
+// skipped there is skipped for all but the first message of a transfer.
+func checkTSIGRecord(rec *TSIGRecord, key TSIGKey) (func() hash.Hash, error) {
+	// The algorithm is chosen by the sender, so it is attacker-controlled
+	// input on an unauthenticated message. Verify against the algorithm the
+	// *record* names rather than the one the local key is configured with —
+	// but only after confirming we support it, so an unknown name is a clean
+	// rejection instead of a nil dereference.
+	newH, err := newHash(rec.Algorithm)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(rec.Algorithm, key.algorithm()) {
+		return nil, fmt.Errorf("%w: message uses %q, key %q is configured for %q",
+			ErrTSIGBadAlgorithm, rec.Algorithm, rec.KeyName, key.algorithm())
+	}
+
+	// RFC 8945 §5.2.2.1: a truncated MAC must be at least half the full
+	// digest length and at least 10 octets. Without the floor, a peer could
+	// negotiate the MAC down to a length brute-forceable offline.
+	full := newH().Size()
+	if len(rec.MAC) < full/2 || len(rec.MAC) < 10 {
+		return nil, fmt.Errorf("%w: %d octets, minimum %d",
+			ErrTSIGBadTrunc, len(rec.MAC), maxInt(full/2, 10))
+	}
+	if len(rec.MAC) > full {
+		return nil, fmt.Errorf("%w: MAC longer than the algorithm's digest", ErrTSIGMalformed)
+	}
+	return newH, nil
+}
+
 // TSIGSignStream signs a subsequent message of a multi-message stream, such
 // as the second and later messages of an AXFR (RFC 8945 §5.3.1).
 //
@@ -273,7 +285,12 @@ func TSIGVerify(msg []byte, keyFor func(name string) (TSIGKey, bool), requestMAC
 // rather than the full TSIG variables block. That is what chains the messages
 // together — a stream cannot be reordered or have messages dropped from the
 // middle without the chain breaking.
-func TSIGSignStream(msg []byte, key TSIGKey, timeSigned time.Time, fudge uint16, priorMAC []byte) ([]byte, []byte, error) {
+//
+// unsigned holds the messages sent without a TSIG since the last signed one,
+// in order. RFC 8945 §5.3.1 lets a sender sign only every Nth message; the
+// next signature then digests those messages too, which is all that
+// authenticates them.
+func TSIGSignStream(msg []byte, key TSIGKey, timeSigned time.Time, fudge uint16, priorMAC []byte, unsigned ...[]byte) ([]byte, []byte, error) {
 	if len(msg) < 12 {
 		return nil, nil, ErrTSIGMalformed
 	}
@@ -288,7 +305,7 @@ func TSIGSignStream(msg []byte, key TSIGKey, timeSigned time.Time, fudge uint16,
 	signedTime := uint64(timeSigned.Unix())
 	originalID := binary.BigEndian.Uint16(msg[0:2])
 
-	mac := computeTSIGMAC(newH, key, msg, priorMAC, tsigVariables{
+	mac := computeTSIGMAC(newH, key, msg, priorMAC, unsigned, tsigVariables{
 		timeSigned: signedTime,
 		fudge:      fudge,
 	}, true)
@@ -305,25 +322,24 @@ func TSIGSignStream(msg []byte, key TSIGKey, timeSigned time.Time, fudge uint16,
 }
 
 // TSIGVerifyStream is the verification counterpart of TSIGSignStream.
-func TSIGVerifyStream(msg []byte, key TSIGKey, priorMAC []byte, now time.Time) (*TSIGRecord, []byte, error) {
+// unsigned must hold every message received without a TSIG since the last
+// signed one, as received; leaving one out fails verification.
+func TSIGVerifyStream(msg []byte, key TSIGKey, priorMAC []byte, now time.Time, unsigned ...[]byte) (*TSIGRecord, []byte, error) {
 	rec, rrStart, err := extractTSIG(msg)
 	if err != nil {
 		return nil, nil, err
 	}
-	newH, err := newHash(rec.Algorithm)
+	newH, err := checkTSIGRecord(rec, key)
 	if err != nil {
 		return rec, nil, err
 	}
 
 	stripped := stripTSIG(msg, rrStart, rec.OriginalID)
-	want := computeTSIGMAC(newH, key, stripped, priorMAC, tsigVariables{
+	want := computeTSIGMAC(newH, key, stripped, priorMAC, unsigned, tsigVariables{
 		timeSigned: rec.TimeSigned,
 		fudge:      rec.Fudge,
 	}, true)
 
-	if len(rec.MAC) == 0 || len(rec.MAC) > len(want) {
-		return rec, nil, ErrTSIGMalformed
-	}
 	if !hmac.Equal(rec.MAC, want[:len(rec.MAC)]) {
 		return rec, nil, ErrTSIGBadSig
 	}
@@ -351,12 +367,13 @@ type tsigVariables struct {
 // The order is fixed by RFC 8945 §4.3:
 //
 //  1. the request MAC, length-prefixed  (§4.3.1, responses and stream continuations only)
-//  2. the DNS message, sans TSIG        (§4.3.2)
+//  2. the DNS message, sans TSIG        (§4.3.2), preceded on a stream
+//     continuation by the unsigned messages since the last TSIG (§5.3.1)
 //  3. the TSIG variables                (§4.3.3)
 //
 // streamContinuation selects the reduced variables block of §5.3.1, which
 // carries only Time Signed and Fudge.
-func computeTSIGMAC(newH func() hash.Hash, key TSIGKey, msg, priorMAC []byte, v tsigVariables, streamContinuation bool) []byte {
+func computeTSIGMAC(newH func() hash.Hash, key TSIGKey, msg, priorMAC []byte, unsigned [][]byte, v tsigVariables, streamContinuation bool) []byte {
 	mac := hmac.New(newH, key.Secret)
 
 	// (1) Request/prior MAC, prefixed with its 2-octet length.
@@ -367,7 +384,10 @@ func computeTSIGMAC(newH func() hash.Hash, key TSIGKey, msg, priorMAC []byte, v 
 		mac.Write(priorMAC)
 	}
 
-	// (2) The message itself.
+	// (2) The message itself, after any unsigned messages it vouches for.
+	for _, u := range unsigned {
+		mac.Write(u)
+	}
 	mac.Write(msg)
 
 	// (3) TSIG variables.

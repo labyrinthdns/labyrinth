@@ -215,14 +215,38 @@ func canonicalRRSetWire(rrset []dns.ResourceRecord, rrsig *dns.RRSIGRecord) []by
 // alone. Length is preserved so the surrounding RDLENGTH stays correct.
 func canonicalRData(rdata []byte, rrtype uint16) []byte {
 	switch rrtype {
-	case dns.TypeCNAME, dns.TypeNS, dns.TypePTR, dns.TypeDNAME:
+	case dns.TypeCNAME, dns.TypeNS, dns.TypePTR, dns.TypeDNAME,
+		typeMD, typeMF, typeMB, typeMG, typeMR:
 		out, ok := lowercaseWireName(rdata, 0)
 		if !ok {
 			return rdata
 		}
 		return out
-	case dns.TypeMX:
-		// 2-byte preference then a name.
+	case typeRP, typeMINFO:
+		// Two consecutive names (RP: mbox, txt; MINFO: rmailbx, emailbx).
+		return lowercaseWireNames(rdata, 0, 2)
+	case typePX:
+		// 2-byte preference then MAP822 and MAPX400.
+		if len(rdata) < 3 {
+			return rdata
+		}
+		return lowercaseWireNames(rdata, 2, 2)
+	case dns.TypeNAPTR:
+		// Order(2) + preference(2) + flags, services, regexp character-strings,
+		// then the replacement name.
+		i := 4
+		for n := 0; n < 3; n++ {
+			if i >= len(rdata) {
+				return rdata
+			}
+			i += 1 + int(rdata[i])
+		}
+		if i > len(rdata) {
+			return rdata
+		}
+		return lowercaseWireNames(rdata, i, 1)
+	case dns.TypeMX, typeAFSDB, typeRT, typeKX:
+		// 2-byte preference (AFSDB: subtype) then a name.
 		if len(rdata) < 3 {
 			return rdata
 		}
@@ -271,6 +295,39 @@ func canonicalRData(rdata []byte, rrtype uint16) []byte {
 	// untouched (RRSIG RRsets are not themselves validated, but the rule is
 	// the same). Both fall through here and return their RDATA unchanged.
 	return rdata
+}
+
+// RFC 4034 §6.2 item 3 types without a constant in package dns.
+const (
+	typeMD    uint16 = 3
+	typeMF    uint16 = 4
+	typeMB    uint16 = 7
+	typeMG    uint16 = 8
+	typeMR    uint16 = 9
+	typeMINFO uint16 = 14
+	typeRP    uint16 = 17
+	typeAFSDB uint16 = 18
+	typeRT    uint16 = 21
+	typePX    uint16 = 26
+	typeKX    uint16 = 36
+)
+
+// lowercaseWireNames lowercases `count` consecutive wire names starting at
+// `start`, returning rdata unchanged if any of them is malformed.
+func lowercaseWireNames(rdata []byte, start, count int) []byte {
+	out := rdata
+	for n := 0; n < count; n++ {
+		lowered, ok := lowercaseWireName(out, start)
+		if !ok {
+			return rdata
+		}
+		end, ok := scanWireNameEnd(lowered, start)
+		if !ok {
+			return rdata
+		}
+		out, start = lowered, end
+	}
+	return out
 }
 
 // lowercaseWireName returns a copy of rdata in which the wire-format domain

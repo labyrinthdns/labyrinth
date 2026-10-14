@@ -27,6 +27,14 @@ var skipDomains = map[string]struct{}{
 // whose first field is "0.0.0.0" or "127.0.0.1" are considered. Standard
 // local entries (localhost, broadcasthost, etc.) are skipped.
 func ParseHostsFile(r io.Reader) []string {
+	domains, _ := parseHostsFile(r)
+	return domains
+}
+
+// parseHostsFile is ParseHostsFile that also reports a read error, including
+// bufio.ErrTooLong for a line over the scanner's limit — the scanner stops
+// there, so the rest of the list would otherwise vanish without a trace.
+func parseHostsFile(r io.Reader) ([]string, error) {
 	var domains []string
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -61,12 +69,19 @@ func ParseHostsFile(r io.Reader) []string {
 			domains = append(domains, domain)
 		}
 	}
-	return domains
+	return domains, scanner.Err()
 }
 
 // ParseDomainList parses a plain domain list with one domain per line.
 // Blank lines and lines starting with '#' or '!' are skipped.
 func ParseDomainList(r io.Reader) []string {
+	domains, _ := parseDomainList(r)
+	return domains
+}
+
+// parseDomainList is ParseDomainList that also reports a read error (see
+// parseHostsFile).
+func parseDomainList(r io.Reader) ([]string, error) {
 	var domains []string
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -85,13 +100,19 @@ func ParseDomainList(r io.Reader) []string {
 
 		domains = append(domains, strings.ToLower(line))
 	}
-	return domains
+	return domains, scanner.Err()
 }
 
 // ParseABP parses an AdBlock Plus format blocklist. It extracts domains
 // from rules of the form "||ads.example.com^". Other ABP rule types
 // (element hiding, exceptions, etc.) are ignored.
 func ParseABP(r io.Reader) []string {
+	domains, _ := parseABP(r)
+	return domains
+}
+
+// parseABP is ParseABP that also reports a read error (see parseHostsFile).
+func parseABP(r io.Reader) ([]string, error) {
 	var domains []string
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -125,5 +146,5 @@ func ParseABP(r io.Reader) []string {
 
 		domains = append(domains, domain)
 	}
-	return domains
+	return domains, scanner.Err()
 }

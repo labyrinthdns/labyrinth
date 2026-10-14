@@ -52,21 +52,8 @@ func (m *Matcher) Match(domain string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// --- whitelist check ---
-	if _, ok := m.whitelist[domain]; ok {
+	if m.whitelistedLocked(domain) {
 		return false
-	}
-	// wildcard whitelist walk
-	d := domain
-	for {
-		if _, ok := m.wildcardWhitelist[d]; ok {
-			return false
-		}
-		idx := strings.IndexByte(d, '.')
-		if idx < 0 {
-			break
-		}
-		d = d[idx+1:]
 	}
 
 	// --- block check ---
@@ -74,7 +61,7 @@ func (m *Matcher) Match(domain string) bool {
 		return true
 	}
 	// wildcard block walk
-	d = domain
+	d := domain
 	for {
 		if _, ok := m.wildcards[d]; ok {
 			return true
@@ -87,6 +74,38 @@ func (m *Matcher) Match(domain string) bool {
 	}
 
 	return false
+}
+
+// Whitelisted reports whether domain is exempted by a whitelist rule (exact,
+// or wildcard on the domain or any parent). The Manager consults it before
+// any blocking source, RPZ included, so an operator allow always wins.
+func (m *Matcher) Whitelisted(domain string) bool {
+	domain = normalize(domain)
+	if domain == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.whitelistedLocked(domain)
+}
+
+// whitelistedLocked is Whitelisted for a normalised domain; caller holds mu.
+func (m *Matcher) whitelistedLocked(domain string) bool {
+	if _, ok := m.whitelist[domain]; ok {
+		return true
+	}
+	// wildcard whitelist walk
+	d := domain
+	for {
+		if _, ok := m.wildcardWhitelist[d]; ok {
+			return true
+		}
+		idx := strings.IndexByte(d, '.')
+		if idx < 0 {
+			return false
+		}
+		d = d[idx+1:]
+	}
 }
 
 // AddExact adds an exact domain block rule.

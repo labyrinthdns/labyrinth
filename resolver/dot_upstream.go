@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -186,9 +188,11 @@ func verifyPin(chain []*x509.Certificate, pins []string) error {
 // same reason: the peer may have closed an idle session, and that must not
 // surface as a client-visible failure.
 func (r *Resolver) queryDoT(addr string, cfg DoTPolicy, query []byte) ([]byte, error) {
-	// The pool key includes the auth name so two zones pointing at the same
-	// IP under different authentication policies never share a session.
-	key := "dot|" + addr + "|" + cfg.AuthName
+	// The pool key includes the auth name and the pinset so two zones
+	// pointing at the same IP under different authentication policies never
+	// share a session: a session verified against one zone's pins proves
+	// nothing about another zone's.
+	key := dotPoolKey(addr, cfg)
 
 	if conn := r.tcpPool.get(key); conn != nil {
 		resp, err := r.tcpExchange(conn, query)
@@ -211,4 +215,13 @@ func (r *Resolver) queryDoT(addr string, cfg DoTPolicy, query []byte) ([]byte, e
 	}
 	r.tcpPool.put(key, conn)
 	return resp, nil
+}
+
+// dotPoolKey identifies a pooled DoT session by address and the full
+// authentication policy. Pins are base64 (no '|' or ','), and are sorted so
+// the same pinset listed in a different order still shares a session.
+func dotPoolKey(addr string, cfg DoTPolicy) string {
+	pins := append([]string(nil), cfg.Pins...)
+	sort.Strings(pins)
+	return "dot|" + addr + "|" + cfg.AuthName + "|" + strings.Join(pins, ",")
 }

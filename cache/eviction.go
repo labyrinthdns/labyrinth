@@ -35,15 +35,25 @@ func (c *Cache) StartSweeper(ctx context.Context, interval time.Duration) {
 
 func (c *Cache) sweep() {
 	evicted := 0
-	now := time.Now()
+	// With serve-stale on, Get keeps expired entries so GetStale can serve
+	// them until they are staleMaxAge past expiry (RFC 8767 §3.3); the
+	// sweeper must not delete them sooner. staleMaxAge == 0 is the
+	// documented "no ceiling", so nothing expired is swept then.
+	cutoff := time.Now()
+	if c.serveStale {
+		if c.staleMaxAge == 0 {
+			return
+		}
+		cutoff = cutoff.Add(-time.Duration(c.staleMaxAge) * time.Second)
+	}
 
 	for i := range c.shards {
 		s := &c.shards[i]
 		s.mu.Lock()
-		evicted += s.evictExpiredLocked(now)
+		evicted += s.evictExpiredLocked(cutoff)
 		if len(s.entries) > 0 && s.evictQ.Len() == 0 {
 			// Compatibility path for entries inserted without queue metadata.
-			evicted += s.evictExpiredFallbackLocked()
+			evicted += s.evictExpiredBeforeFallbackLocked(cutoff)
 		}
 
 		s.mu.Unlock()

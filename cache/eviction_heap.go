@@ -133,9 +133,15 @@ func (s *shard) evictExpiredLocked(now time.Time) int {
 }
 
 func (s *shard) evictExpiredFallbackLocked() int {
+	return s.evictExpiredBeforeFallbackLocked(time.Now())
+}
+
+// evictExpiredBeforeFallbackLocked deletes entries whose expiry is at or
+// before cutoff, scanning the map for entries without queue metadata.
+func (s *shard) evictExpiredBeforeFallbackLocked(cutoff time.Time) int {
 	evicted := 0
 	for key, entry := range s.entries {
-		if entry.RemainingTTL() == 0 {
+		if !entry.InsertedAt.Add(time.Duration(entry.OrigTTL) * time.Second).After(cutoff) {
 			delete(s.entries, key)
 			evicted++
 		}

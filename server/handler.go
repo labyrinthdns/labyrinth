@@ -690,6 +690,10 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			return
 		}
 		resp = h.decorateResponse(query, resp, queryEDNS, clientAddr)
+		// The decorator and the ECS/EDE appends in the body all run after the
+		// builders' maybeTruncateUDP, so re-apply the cap to the final bytes or
+		// a near-limit answer leaves above the client's EDNS buffer with TC=0.
+		resp = h.maybeTruncateUDP(resp, &dns.Message{EDNS0: queryEDNS}, isStreamTransport(clientAddr))
 	}()
 
 	// Defence-in-depth: any panic that escapes from the resolver, the

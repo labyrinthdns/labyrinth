@@ -199,7 +199,16 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusConflict, map[string]string{"error": "update already in progress"})
 		return
 	}
-	defer s.updateApplyRunning.Store(false)
+	// Released on every early return, but NOT once a restart is scheduled:
+	// the restart goroutine below still owns the update until it either
+	// re-execs or fails, and a second apply in that window would download,
+	// install and schedule a second restart.
+	restartScheduled := false
+	defer func() {
+		if !restartScheduled {
+			s.updateApplyRunning.Store(false)
+		}
+	}()
 
 	info, err := checkForUpdate()
 	if err != nil {
@@ -335,10 +344,12 @@ func (s *AdminServer) handleApplyUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Delay restart slightly to ensure HTTP response is sent
+	restartScheduled = true
 	go func() {
 		updateSleep(500 * time.Millisecond)
 		if err := updateRestartSelf(); err != nil {
 			s.logger.Error("restart failed", "error", err)
+			s.updateApplyRunning.Store(false)
 		}
 	}()
 }
