@@ -85,17 +85,17 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 			return responseServFail
 		}
 
-		// RFC 1034 §3.7 / RFC 2181 §6.1: an authoritative server MUST set
-		// AA=1 on responses for names in its zone. The resolver issues
-		// iterative queries (RD=0) and addresses them at servers it
-		// believes are authoritative for the relevant zone. A response
-		// that carries an answer but has AA=0 is either a lame server
-		// echoing its cache or an off-path forgery race-winner. Either
-		// way the answer is not safe to cache as authoritative — skip
-		// the NS and let the resolver try a sibling. (Forwarding mode
-		// uses a different code path and never calls classifyResponse,
-		// so RD=1 recursive answers without AA are not affected here.)
-		if !msg.Header.AA() {
+		// RFC 1034 §3.7 / RFC 2181 §6.1 say an authoritative server sets
+		// AA=1, but some real authoritatives never do (live: the Huawei
+		// OBS and probe.performance.dropbox.com servers answer with only
+		// QR set). Unbound takes such an answer or CNAME as one, and only
+		// treats it as lame when RA=1 too — a recursive resolver echoing
+		// its cache (iter_resptype.c, RESPONSE_TYPE_REC_LAME). Google
+		// Public DNS judges credibility by delegation position, not AA.
+		// AA is no defence against forgery (a forger sets it); TXID,
+		// port, 0x20, cookies and the bailiwick scrub are. (Forwarding
+		// mode never calls classifyResponse.)
+		if !msg.Header.AA() && msg.Header.RA() {
 			if hasRequestedType || hasCNAME || hasDNAME {
 				return responseServFail
 			}

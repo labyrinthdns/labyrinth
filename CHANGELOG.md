@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Nameservers that drop 0x20-cased queries.** Two of the three `isnet.net.tr` NS sit behind a balancer that silently drops 55–75% of mixed-case spellings and no lowercase one, so both attempts often timed out and the name needed the public fallback. After a timeout with 0x20 on, the last retry now goes out lowercase, like Unbound's capsforid fallback on timeouts; the server is queried without 0x20 for 15 minutes only after this happens twice. A server that answers nothing is unaffected. [resolver/upstream.go](resolver/upstream.go).
+- **Answers without the AA bit are accepted unless RA is set.** The Huawei OBS (`*.obs.*.myhuaweicloud.com/.eu`) and `probe.performance.dropbox.com` authoritatives answer with only QR set, and such answers were rejected as lame, so those names always needed the public fallback. As in Unbound, an answer or CNAME with AA=0 is now taken, and only one with AA=0 and RA=1 (a recursive resolver echoing its cache) is lame. AA is no defence against forgery; TXID, port, 0x20, cookies and the bailiwick scrub stay in force. [resolver/classify.go](resolver/classify.go).
+
 ### Added
 - **Per-source TCP/DoT connection caps.** TCPServer and DoTServer now track connections per client IP. A source exceeding `server.max_tcp_conns_per_client` or `server.max_dot_conns_per_client` (both default 16) has new connections silently closed — slow-loris defence beyond the global connection pool. [server/tcp.go](server/tcp.go), [server/dot.go](server/dot.go).
 - **Per-delegation NS name cap.** `extractDelegation` now accepts a `maxNames` parameter (config key `resolver.max_ns_names_per_delegation`, default 13). NS hostnames beyond the cap are dropped from the delegation — bounds NXNS amplification (CVE-2020-8616) beyond the existing per-request query budget. [resolver/delegation.go](resolver/delegation.go).
