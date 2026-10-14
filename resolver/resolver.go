@@ -195,6 +195,11 @@ type Resolver struct {
 	// query carrying a COOKIE option, so they are queried without one
 	// (see retryWithoutCookie).
 	noCookieServers *noEDNSCache
+	// noServerCookieServers remembers upstream IPs that reject their own
+	// server cookie when it comes back on a later query (live: the
+	// stabletransit.com / hostingmatrix.net NS bind it to the source
+	// port), so they get the client cookie only (see queryUpstreamOnceECS).
+	noServerCookieServers *noEDNSCache
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -241,6 +246,8 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	r.noCapsServers = newNoEDNSCache(1024, 15*time.Minute)
 	// And for servers that reject the COOKIE option.
 	r.noCookieServers = newNoEDNSCache(1024, 15*time.Minute)
+	// And for servers that reject their own server cookie on a later query.
+	r.noServerCookieServers = newNoEDNSCache(1024, 15*time.Minute)
 	if cfg.FallbackDebug {
 		r.fallbackLog = newFallbackFileLog(cfg.FallbackLogPath)
 	}

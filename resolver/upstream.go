@@ -63,7 +63,10 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 	// exchange with this auth (if any) so the FIRST query already
 	// carries client||server cookie. Saves the BADCOOKIE round-trip on
 	// every query after the cache is warm.
-	cachedSC := r.serverCookieCache.Get(nsIP)
+	var cachedSC []byte
+	if !r.noServerCookieServers.Has(nsIP) {
+		cachedSC = r.serverCookieCache.Get(nsIP)
+	}
 	if r.metrics != nil {
 		if len(cachedSC) > 0 {
 			r.metrics.IncServerCookieCacheHits()
@@ -85,6 +88,7 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 	// enforce cookies — they will reply BADCOOKIE forever. We retry once
 	// only: a second BADCOOKIE is bogus and is surfaced as the answer.
 	if extendedRCODE(msg) == dns.RCodeBadCookie {
+		sentSC := len(cachedSC) > 0
 		if sc := extractServerCookie(msg); len(sc) > 0 {
 			if r.metrics != nil {
 				r.metrics.IncOutboundBadCookieRetries()
@@ -92,12 +96,30 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 			retried, retryErr := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, sc)
 			if retryErr == nil {
 				msg = retried
+				sentSC = true
 				// Cache the cookie we negotiated through the BADCOOKIE
 				// round-trip so the next query skips it.
-				r.serverCookieCache.Put(nsIP, sc)
+				if extendedRCODE(retried) != dns.RCodeBadCookie {
+					r.serverCookieCache.Put(nsIP, sc)
+				}
 			}
 		}
-	} else if sc := extractServerCookie(msg); len(sc) > 0 {
+		// A server that rejects the very cookie it just handed out cannot
+		// be satisfied from a fresh socket: live, the stabletransit.com NS
+		// bind it to the source port, and every query here uses a new one.
+		// They answer a client-cookie-only query normally, so ask once
+		// more that way and stop sending them server cookies.
+		if sentSC && extendedRCODE(msg) == dns.RCodeBadCookie {
+			plain, plainErr := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, nil)
+			if plainErr == nil && extendedRCODE(plain) != dns.RCodeBadCookie {
+				msg = plain
+				r.noServerCookieServers.Put(nsIP)
+				if r.logger != nil {
+					r.logger.Debug("upstream rejects its own server cookie; sending client cookie only", "server", nsIP, "name", name)
+				}
+			}
+		}
+	} else if sc := extractServerCookie(msg); len(sc) > 0 && !r.noServerCookieServers.Has(nsIP) {
 		// Friendly auth that included a server cookie on a successful
 		// response — record it for future queries (RFC 7873 §5.3).
 		r.serverCookieCache.Put(nsIP, sc)
