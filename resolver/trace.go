@@ -514,7 +514,7 @@ func (r *Resolver) traceIterative(
 			return sub, nil
 
 		case responseReferral:
-			newNS, zone := extractDelegationForQName(response, referralQName, r.config.MaxNSNamesPerDelegation)
+			newNS, zone := extractDelegationForQName(response, referralQName, currentZone, r.config.MaxNSNamesPerDelegation)
 			if len(newNS) == 0 {
 				t.emit("delegation", TraceStatusError, "referral has no usable NS records", nil)
 				return &ResolveResult{RCODE: dns.RCodeServFail}, nil

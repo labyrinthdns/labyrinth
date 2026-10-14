@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Sibling glue is used.** Referral glue was accepted only for NS names under the delegated zone, so gov.tr delegating `sivas.gov.tr` to `ns1/ns2.isay.gov.tr` with glue for both left no glue at all: the resolver looked up the first NS name (whose server is dead), queried only that address, and every `www.sivas.gov.tr` query fell back to 1.1.1.1/8.8.8.8. Glue is now accepted for names inside the referring server's zone (RFC 9471); glue outside it is still dropped. [resolver/delegation.go](resolver/delegation.go).
 - **Every glue address of a multi-homed NS is kept and tried.** A referral listing several A/AAAA records for one NS name kept only the last one (in the delegation and in the glue cache), so when that address was dead the whole delegation failed (live: freemailbl-s.snb.it, one NS name with three addresses, the last REFUSED, every query fell back to 1.1.1.1/8.8.8.8). `DelegationNS` now carries `IPv4s`/`IPv6s` and each address becomes its own candidate. [resolver/delegation.go](resolver/delegation.go), [resolver/closest_delegation.go](resolver/closest_delegation.go), [resolver/resolver.go](resolver/resolver.go).
 
 ### Changed

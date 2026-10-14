@@ -1000,7 +1000,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			return result, nil
 
 		case responseReferral:
-			newNS, zone := extractDelegationForQName(response, referralQName, r.config.MaxNSNamesPerDelegation)
+			newNS, zone := extractDelegationForQName(response, referralQName, currentZone, r.config.MaxNSNamesPerDelegation)
 			if len(newNS) == 0 {
 				return &ResolveResult{RCODE: dns.RCodeServFail}, nil
 			}
