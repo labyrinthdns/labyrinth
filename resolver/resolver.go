@@ -787,7 +787,11 @@ func (r *Resolver) resolveIterativeFromInner(
 		// (RFC 9156 §3). A referral means the NS delegated to a child
 		// zone — we follow that. Anything else (answer for the minimized
 		// name, NXDOMAIN, NODATA, ServFail) means we should ask the
-		// full question to get the real delegation or answer.
+		// full question to get the real delegation or answer. So does a
+		// referral that does not descend below currentZone: live, the
+		// pool.telefonica.de servers answer "12.pool.telefonica.de NS"
+		// with a non-AA referral back to pool.telefonica.de itself, and
+		// following it re-asked the same question until max depth.
 		//
 		// Type change matters too: if qmin rewrote the qtype (e.g. into NS
 		// for an intermediate step), an "answer" classified against the
@@ -795,7 +799,7 @@ func (r *Resolver) resolveIterativeFromInner(
 		// (root NS records instead of root DNSKEY, breaking DNSSEC).
 		minimized := queryName != name || queryType != qtype
 		referralQName := queryName
-		if r.config.QMinEnabled && minimized && rtype != responseReferral {
+		if r.config.QMinEnabled && minimized && (rtype != responseReferral || !referralDescends(response, queryName, currentZone)) {
 			if err := visited.budget.charge(); err != nil {
 				return &ResolveResult{
 					RCODE:         dns.RCodeServFail,
@@ -818,6 +822,13 @@ func (r *Resolver) resolveIterativeFromInner(
 			security.SanitizeBailiwick(response, currentZone)
 			rtype = classifyResponse(response, name, qtype)
 			referralQName = name
+		}
+		// A referral that does not descend below currentZone is a lame
+		// server pointing back at its own zone (live: the Comcast NS of
+		// 99.236.71.in-addr.arpa); following it re-asks the same question
+		// until max depth. Treat it as that server failing.
+		if rtype == responseReferral && !referralDescends(response, referralQName, currentZone) {
+			rtype = responseServFail
 		}
 
 		switch rtype {

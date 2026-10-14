@@ -207,3 +207,30 @@ func TestResolveNSHappyEyeballs_CancelsDelayedLoser(t *testing.T) {
 		t.Fatalf("upstream queries = %d, want 1; delayed loser was not canceled", got)
 	}
 }
+
+// TestReferralDescends pins the two live loops: pool.telefonica.de answering
+// a minimised "12.pool.telefonica.de NS" with a referral back to itself, and
+// the Comcast NS of 99.236.71.in-addr.arpa referring the zone's own NS query
+// to the zone. Neither makes progress; only a strictly deeper zone does.
+func TestReferralDescends(t *testing.T) {
+	ref := func(owner string) *dns.Message {
+		rd := dns.BuildPlainName("ns1.telefonica.de")
+		return &dns.Message{Authority: []dns.ResourceRecord{
+			{Name: owner, Type: dns.TypeNS, Class: dns.ClassIN, TTL: 300, RDLength: uint16(len(rd)), RData: rd},
+		}}
+	}
+	cases := []struct {
+		owner, qname, current string
+		want                  bool
+	}{
+		{"pool.telefonica.de", "12.pool.telefonica.de", "pool.telefonica.de", false},
+		{"telefonica.de", "12.pool.telefonica.de", "pool.telefonica.de", false},
+		{"12.pool.telefonica.de", "12.pool.telefonica.de", "pool.telefonica.de", true},
+		{"de", "telefonica.de", "", true},
+	}
+	for _, c := range cases {
+		if got := referralDescends(ref(c.owner), c.qname, c.current); got != c.want {
+			t.Errorf("referral to %q for %q from %q: descends=%v, want %v", c.owner, c.qname, c.current, got, c.want)
+		}
+	}
+}

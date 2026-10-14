@@ -130,6 +130,15 @@ func extractDelegationForQName(msg *dns.Message, qname, serverZone string, maxNa
 	return result, zone
 }
 
+// referralDescends reports whether a referral for qname delegates to a zone
+// strictly below currentZone. A referral to currentZone itself or to an
+// ancestor makes no progress.
+func referralDescends(msg *dns.Message, qname, currentZone string) bool {
+	_, zone := extractDelegationForQName(msg, qname, currentZone, 0)
+	current := canonicalDNSName(currentZone)
+	return zone != "" && zone != current && nameAtOrBelow(zone, current)
+}
+
 func containsString(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {
