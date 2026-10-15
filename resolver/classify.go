@@ -183,3 +183,10 @@ func servFailOutcome(msg *dns.Message) string {
 	}
 	return "unusable answer"
 }
+
+// isEmptyNoError reports a NOERROR reply with empty answer and authority
+// sections — an "empty NODATA" without SOA (see emptyNoData).
+func isEmptyNoError(msg *dns.Message) bool {
+	return msg != nil && msg.Header.RCODE() == dns.RCodeNoError &&
+		len(msg.Answers) == 0 && len(msg.Authority) == 0
+}

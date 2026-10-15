@@ -711,6 +711,30 @@ func (r *Resolver) resolveIterativeFromInner(
 	// the untried alternates then fail to resolve, that SERVFAIL is still
 	// the real reason the delegation is unusable.
 	sawServFail := false
+	// emptyNoData: an NS of the current delegation answered NOERROR with
+	// empty answer and authority sections but without AA. Like Unbound
+	// (iter_resptype.c, empty_nodata_found → THROWAWAY, then ANSWER) the
+	// other servers are tried first; if none does better, the delegation
+	// answered NODATA. Live: the GSLB servers of pims.turktelekom.com.tr
+	// answer AAAA that way (flags qr ad), and SERVFAIL sent every AAAA
+	// query to the public fallback, where 8.8.8.8 and 1.1.1.1 say NODATA.
+	var emptyNoData *dns.Message
+	// emptyNoDataResult turns a remembered empty NOERROR into the NODATA
+	// result once the delegation is exhausted (nil when there is none).
+	// Without an SOA there is no negative TTL, so it is not cached (RFC
+	// 2308 §5); in a signed zone the missing denial proof still makes the
+	// validator return Bogus.
+	emptyNoDataResult := func() *ResolveResult {
+		if emptyNoData == nil {
+			return nil
+		}
+		result := &ResolveResult{RCODE: dns.RCodeNoError, UpstreamECS: extractResponseECS(emptyNoData)}
+		result.DNSSECStatus = r.validateDenialIfEnabled(emptyNoData, name, qtype, skipValidation)
+		if result.DNSSECStatus == "bogus" {
+			return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}
+		}
+		return result
+	}
 
 	for depth := 0; depth < r.config.MaxDepth; depth++ {
 		// Pick a nameserver
@@ -721,6 +745,9 @@ func (r *Resolver) resolveIterativeFromInner(
 			// failure mode as the "all NS REFUSED" path below. Tag the
 			// reason so the server emits EDE 22.
 			lastErr = err
+			if res := emptyNoDataResult(); res != nil {
+				return res, nil
+			}
 			if sawServFail {
 				lastErr = errors.New("all nameservers returned SERVFAIL")
 			}
@@ -746,6 +773,9 @@ func (r *Resolver) resolveIterativeFromInner(
 			visited.MarkFailedIP(nsIP)
 			nameservers = excludeNSIP(nameservers, nsIP)
 			if len(nameservers) == 0 {
+				if res := emptyNoDataResult(); res != nil {
+					return res, nil
+				}
 				return &ResolveResult{RCODE: dns.RCodeServFail, Error: lastErr}, nil
 			}
 			continue
@@ -1043,6 +1073,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			currentZone = zone
 			visited.ResetTriedNS()
 			sawServFail = false
+			emptyNoData = nil
 
 			// Cache NS delegation records
 			r.cacheDelegation(response, zone)
@@ -1123,11 +1154,18 @@ func (r *Resolver) resolveIterativeFromInner(
 			if response != nil && response.Header.RCODE() == dns.RCodeServFail {
 				sawServFail = true
 			}
+			if isEmptyNoError(response) {
+				emptyNoData = response
+			}
 			nameservers = excludeNSIP(nameservers, nsIP)
 			// Do not Happy-Eyeballs-re-resolve a hostname whose only glue
 			// just failed — that cannot recover and, before the nsAddrName
 			// guard, fanned out into a goroutine storm.
 			if !nsListHasAlternateAddress(nameservers, visited, r) {
+				// No NS did better than an empty NOERROR: NODATA.
+				if res := emptyNoDataResult(); res != nil {
+					return res, nil
+				}
 				// Every authoritative NS in the final delegation returned a
 				// hard failure (REFUSED/FORMERR) or soft SERVFAIL. Public
 				// recursive fallback cannot invent a better answer — they

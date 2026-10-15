@@ -326,6 +326,9 @@ func (r *Resolver) traceIterative(
 	// thinking the resolver itself was broken.
 	var pendingNSHostnames []string
 	var lastErr error
+	// emptyNoData mirrors resolveIterativeFromInner: an empty NOERROR is
+	// NODATA once no other NS of the delegation does better.
+	var emptyNoData *dns.Message
 
 	for depth := 0; depth < maxDepth; depth++ {
 		if err := t.ctxErr(); err != nil {
@@ -372,6 +375,17 @@ func (r *Resolver) traceIterative(
 			}
 		}
 
+		if len(nameservers) == 0 && emptyNoData != nil {
+			t.emit("classify", TraceStatusInfo, "every NS answered empty NOERROR (or failed) — treating as NODATA", map[string]any{"zone": currentZone})
+			result := &ResolveResult{RCODE: dns.RCodeNoError}
+			if r.dnssecValidator.Load() != nil && !opts.SkipDNSSEC {
+				result.DNSSECStatus = r.validateDenialIfEnabled(emptyNoData, name, qtype, false)
+				if result.DNSSECStatus == "bogus" {
+					return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
+				}
+			}
+			return result, nil
+		}
 		if len(nameservers) == 0 {
 			t.emit("iterative-step", TraceStatusError, "no reachable nameserver", map[string]any{
 				"zone":  currentZone,
@@ -565,6 +579,7 @@ func (r *Resolver) traceIterative(
 			// exhaustion path can fall back to them when the primary IPs
 			// REFUSE/ServFail (RFC 1034 §4.3.2: try every authoritative).
 			pendingNSHostnames = pendingNSHostnames[:0]
+			emptyNoData = nil
 			for _, d := range newNS {
 				if _, used := glueOwners[strings.ToLower(d.Hostname)]; used {
 					continue
@@ -641,6 +656,9 @@ func (r *Resolver) traceIterative(
 				"ns":    nsIP,
 				"rcode": rcodeName(response.Header.RCODE()),
 			})
+			if isEmptyNoError(response) {
+				emptyNoData = response
+			}
 			nameservers = nameservers[1:]
 			continue
 		}
