@@ -104,7 +104,11 @@ type ResolveResult struct {
 	// reason mapped to, so downstream operators can tell a cache replay
 	// from a live fresh failure without having to track query timing.
 	FromFailureCache bool
-	Error            error // underlying error if resolution failed
+	// Attempts lists the authoritative exchanges that failed while the
+	// request was resolved ("zone@ip: outcome", at most maxAttemptLog), so
+	// the fallback log says why the primary resolution gave up.
+	Attempts []string
+	Error    error // underlying error if resolution failed
 
 	// UpstreamECS is the EDNS Client Subnet option that the authoritative
 	// (or forward) server included in its response, if any. The SCOPE
@@ -600,7 +604,7 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	// A stub or forward zone whose own servers are unreachable stays out of
 	// it: its names are usually internal, and public resolvers would either
 	// leak them or answer with the public view.
-	fb := shouldFallbackForZone(qtype, result, err, configuredZone)
+	fb := shouldFallbackForZone(name, qtype, result, err, configuredZone)
 	if fb.triggered {
 		r.logger.Info("primary resolver failed, trying fallback",
 			"name", name, "qtype", qtype, "reason", fb.reason)
@@ -640,10 +644,17 @@ func (r *Resolver) resolveFromClosest(
 	qtype uint16,
 	qclass uint16,
 	clientECS *dns.ECSOption,
-) (*ResolveResult, error) {
+) (result *ResolveResult, err error) {
 	ns, zone := r.seedIterativeStart(name, qtype)
 	visited := r.newRequestVisited()
-	result, err := r.resolveIterativeFromInner(
+	// Every return path below shares visited.budget, so the attempt log
+	// covers the retry from the root too.
+	defer func() {
+		if result != nil && result.RCODE == dns.RCodeServFail {
+			result.Attempts = visited.budget.attempts()
+		}
+	}()
+	result, err = r.resolveIterativeFromInner(
 		name, qtype, qclass, 0, visited, ns, zone, false, clientECS,
 	)
 	if zone == "" {
@@ -764,6 +775,7 @@ func (r *Resolver) resolveIterativeFromInner(
 		queryStart := time.Now()
 		response, err := r.queryUpstreamECS(nsIP, queryName, queryType, qclass, clientECS)
 		if err != nil {
+			visited.budget.noteAttempt(currentZone, nsIP, upstreamErrOutcome(err))
 			r.infraCache.RecordFailure(nsIP)
 			r.logger.Debug("upstream error", "ns", nsIP, "error", err)
 			lastErr = err
@@ -811,6 +823,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			}
 			response, err = r.queryUpstreamECS(nsIP, name, qtype, qclass, clientECS)
 			if err != nil {
+				visited.budget.noteAttempt(currentZone, nsIP, upstreamErrOutcome(err))
 				r.logger.Debug("qmin fallback upstream error", "ns", nsIP, "error", err)
 				lastErr = err
 				visited.MarkFailedIP(nsIP)
@@ -1105,6 +1118,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			return result, nil
 
 		case responseServFail:
+			visited.budget.noteAttempt(currentZone, nsIP, servFailOutcome(response))
 			visited.MarkFailedIP(nsIP)
 			if response != nil && response.Header.RCODE() == dns.RCodeServFail {
 				sawServFail = true
@@ -1393,6 +1407,49 @@ type reqBudget struct {
 	// sub-resolution and the retry from the root, so a dead server costs one
 	// timeout per request. Concurrent: Happy Eyeballs branches share it.
 	unreachable sync.Map
+
+	attemptMu  sync.Mutex
+	attemptLog []string
+}
+
+// maxAttemptLog bounds the per-request failed-exchange log.
+const maxAttemptLog = 16
+
+// noteAttempt records one failed authoritative exchange for the fallback
+// log. Concurrent: Happy Eyeballs branches share the budget.
+func (b *reqBudget) noteAttempt(zone, ip, outcome string) {
+	if b == nil {
+		return
+	}
+	if zone == "" {
+		zone = "."
+	}
+	b.attemptMu.Lock()
+	if len(b.attemptLog) < maxAttemptLog {
+		b.attemptLog = append(b.attemptLog, zone+"@"+ip+": "+outcome)
+	}
+	b.attemptMu.Unlock()
+}
+
+func (b *reqBudget) attempts() []string {
+	if b == nil {
+		return nil
+	}
+	b.attemptMu.Lock()
+	defer b.attemptMu.Unlock()
+	return append([]string(nil), b.attemptLog...)
+}
+
+// upstreamErrOutcome names an upstream error for the attempt log.
+func upstreamErrOutcome(err error) string {
+	if isTimeoutErr(err) {
+		return "timeout"
+	}
+	msg := err.Error()
+	if i := strings.LastIndex(msg, ": "); i >= 0 {
+		msg = msg[i+2:]
+	}
+	return msg
 }
 
 func (b *reqBudget) markUnreachable(ip string) {
