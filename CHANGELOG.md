@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **An empty NOERROR from every nameserver is NODATA, not SERVFAIL.** The GSLB servers of `pims.turktelekom.com.tr` answer AAAA with NOERROR and empty answer and authority sections but no AA bit; that counted as a lame reply, so every AAAA query was SERVFAIL and went to the public fallback (~60 times an hour), where 8.8.8.8 and 1.1.1.1 answer NODATA. As in Unbound (`iter_resptype.c`: empty NODATA is thrown away at first, then accepted), the other servers are tried first and the empty reply becomes NODATA once the delegation is exhausted; it has no SOA, so it is not cached (RFC 2308 §5), and in a signed zone the missing denial proof still makes it Bogus. [resolver/resolver.go](resolver/resolver.go), [resolver/trace.go](resolver/trace.go).
+
 ### Added
 - **Per-source TCP/DoT connection caps.** TCPServer and DoTServer now track connections per client IP. A source exceeding `server.max_tcp_conns_per_client` or `server.max_dot_conns_per_client` (both default 16) has new connections silently closed — slow-loris defence beyond the global connection pool. [server/tcp.go](server/tcp.go), [server/dot.go](server/dot.go).
 - **Per-delegation NS name cap.** `extractDelegation` now accepts a `maxNames` parameter (config key `resolver.max_ns_names_per_delegation`, default 13). NS hostnames beyond the cap are dropped from the delegation — bounds NXNS amplification (CVE-2020-8616) beyond the existing per-request query budget. [resolver/delegation.go](resolver/delegation.go).

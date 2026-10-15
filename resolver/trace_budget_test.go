@@ -67,8 +67,11 @@ func TestTrace_CyclicGluelessDelegationHonoursBudget(t *testing.T) {
 	}()
 	select {
 	case res := <-done:
-		if res == nil || res.RCODE != dns.RCodeServFail {
-			t.Fatalf("trace result = %+v, want SERVFAIL", res)
+		// The point is that the trace ends within the budget. Every server
+		// answers an empty NOERROR, which (as in Unbound) ends as NODATA
+		// once the delegation is exhausted; SERVFAIL would be fine too.
+		if res == nil || len(res.Answers) != 0 || (res.RCODE != dns.RCodeNoError && res.RCODE != dns.RCodeServFail) {
+			t.Fatalf("trace result = %+v, want NODATA or SERVFAIL", res)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("trace of a cyclic glueless delegation did not finish within 15s (RequestTimeout 2s)")
