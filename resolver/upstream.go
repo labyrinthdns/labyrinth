@@ -33,15 +33,50 @@ func (r *Resolver) queryUpstreamECS(nsIP string, name string, qtype uint16, qcla
 	}
 
 	var lastErr error
+	capsTimedOut := false
 	for attempt := 0; attempt < retries; attempt++ {
-		msg, err := r.queryUpstreamOnceECS(nsIP, name, qtype, qclass, clientECS)
+		// Some authoritatives sit behind a balancer that hashes the
+		// case-sensitive QNAME and silently drop a share of 0x20
+		// spellings (live: two of the three isnet.net.tr NS lose 55-75%
+		// of random spellings, none lowercase). After a timeout with 0x20
+		// on, the last retry goes out lowercase — Unbound's capsforid
+		// fallback on timeouts does the same.
+		noCaps := capsTimedOut && attempt > 0 && attempt == retries-1
+		msg, err := r.queryUpstreamOnceOpts(nsIP, name, qtype, qclass, clientECS, noCaps)
 		if err == nil {
+			if noCaps {
+				r.noteCapsTimeoutRecovery(nsIP, name)
+			}
 			return msg, nil
 		}
 		lastErr = err
 		r.metrics.IncUpstreamErrors()
+		if isTimeoutErr(err) && r.config.Caps0x20Enabled && !r.noCapsServers.Has(nsIP) {
+			capsTimedOut = true
+		}
 	}
 	return nil, lastErr
+}
+
+// noteCapsTimeoutRecovery records a lowercase retry that succeeded after a
+// 0x20 query timed out. Once is ordinary packet loss as often as not, so
+// the server only loses 0x20 (15 minutes, like noCapsServers' other path)
+// the second time within the window. Only an on-path attacker can make
+// our queries time out, and an on-path attacker defeats 0x20 anyway.
+func (r *Resolver) noteCapsTimeoutRecovery(nsIP, name string) {
+	if !r.capsTimeoutSuspects.Has(nsIP) {
+		r.capsTimeoutSuspects.Put(nsIP)
+		return
+	}
+	r.noCapsServers.Put(nsIP)
+	if r.logger != nil {
+		r.logger.Debug("upstream drops 0x20 queries; querying it without", "server", nsIP, "name", name)
+	}
+}
+
+func isTimeoutErr(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // randTXIDFunc is the function used to generate transaction IDs.
@@ -53,10 +88,19 @@ func (r *Resolver) queryUpstreamOnce(nsIP string, name string, qtype uint16, qcl
 }
 
 func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption) (*dns.Message, error) {
+	return r.queryUpstreamOnceOpts(nsIP, name, qtype, qclass, clientECS, false)
+}
+
+// queryUpstreamOnceOpts is queryUpstreamOnceECS with noCaps forcing 0x20
+// off for this exchange (see queryUpstreamECS).
+func (r *Resolver) queryUpstreamOnceOpts(nsIP string, name string, qtype uint16, qclass uint16, clientECS *dns.ECSOption, noCaps bool) (*dns.Message, error) {
+	sendQuery := func(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte) (*dns.Message, error) {
+		return r.sendQueryCookieCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, !r.noCookieServers.Has(nsIP), noCaps)
+	}
 	// A server already confirmed to reject EDNS is queried directly
 	// without OPT — see confirmEDNSFormErr.
 	if r.noEDNSServers.Has(nsIP) {
-		return r.sendQuery(nsIP, name, qtype, qclass, false, nil, nil)
+		return sendQuery(nsIP, name, qtype, qclass, false, nil, nil)
 	}
 
 	// RFC 7873 §5.3 — pre-load the server cookie cached from a prior
@@ -74,7 +118,7 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 			r.metrics.IncServerCookieCacheMisses()
 		}
 	}
-	msg, err := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, cachedSC)
+	msg, err := sendQuery(nsIP, name, qtype, qclass, true, clientECS, cachedSC)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +137,7 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 			if r.metrics != nil {
 				r.metrics.IncOutboundBadCookieRetries()
 			}
-			retried, retryErr := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, sc)
+			retried, retryErr := sendQuery(nsIP, name, qtype, qclass, true, clientECS, sc)
 			if retryErr == nil {
 				msg = retried
 				sentSC = true
@@ -110,7 +154,7 @@ func (r *Resolver) queryUpstreamOnceECS(nsIP string, name string, qtype uint16, 
 		// They answer a client-cookie-only query normally, so ask once
 		// more that way and stop sending them server cookies.
 		if sentSC && extendedRCODE(msg) == dns.RCodeBadCookie {
-			plain, plainErr := r.sendQuery(nsIP, name, qtype, qclass, true, clientECS, nil)
+			plain, plainErr := sendQuery(nsIP, name, qtype, qclass, true, clientECS, nil)
 			if plainErr == nil && extendedRCODE(plain) != dns.RCodeBadCookie {
 				msg = plain
 				r.noServerCookieServers.Put(nsIP)
@@ -303,7 +347,11 @@ func (r *Resolver) sendQuery(nsIP string, name string, qtype uint16, qclass uint
 
 // sendQueryCookie is sendQuery with the COOKIE option chosen by the caller.
 func (r *Resolver) sendQueryCookie(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte, cookie bool) (*dns.Message, error) {
-	caps := r.config.Caps0x20Enabled && !r.noCapsServers.Has(nsIP)
+	return r.sendQueryCookieCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, cookie, false)
+}
+
+func (r *Resolver) sendQueryCookieCaps(nsIP string, name string, qtype uint16, qclass uint16, withEDNS0 bool, clientECS *dns.ECSOption, serverCookie []byte, cookie, noCaps bool) (*dns.Message, error) {
+	caps := r.config.Caps0x20Enabled && !noCaps && !r.noCapsServers.Has(nsIP)
 	msg, err := r.sendQueryCaps(nsIP, name, qtype, qclass, withEDNS0, clientECS, serverCookie, caps, cookie)
 	if !caps || !errors.Is(err, errCaseMismatch) {
 		return msg, err

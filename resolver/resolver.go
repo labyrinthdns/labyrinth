@@ -200,6 +200,10 @@ type Resolver struct {
 	// stabletransit.com / hostingmatrix.net NS bind it to the source
 	// port), so they get the client cookie only (see queryUpstreamOnceECS).
 	noServerCookieServers *noEDNSCache
+	// capsTimeoutSuspects remembers upstream IPs whose lowercase retry
+	// succeeded once after a 0x20 query timed out; a second time moves
+	// them to noCapsServers (see noteCapsTimeoutRecovery).
+	capsTimeoutSuspects *noEDNSCache
 }
 
 // SetForwardTable configures forward and stub zones for the resolver.
@@ -248,6 +252,7 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	r.noCookieServers = newNoEDNSCache(1024, 15*time.Minute)
 	// And for servers that reject their own server cookie on a later query.
 	r.noServerCookieServers = newNoEDNSCache(1024, 15*time.Minute)
+	r.capsTimeoutSuspects = newNoEDNSCache(1024, 15*time.Minute)
 	if cfg.FallbackDebug {
 		r.fallbackLog = newFallbackFileLog(cfg.FallbackLogPath)
 	}

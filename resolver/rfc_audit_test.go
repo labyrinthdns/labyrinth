@@ -23,26 +23,26 @@ func TestClassify_FORMERRTreatedAsServFail(t *testing.T) {
 	}
 }
 
-// TestClassify_NonAuthoritativeAnswerRejected pins the R2 fix
-// (RFC 1034 §3.7 / RFC 2181 §6.1): an iterative response carrying an
-// answer but with AA=0 is not trusted as authoritative and must not be
-// promoted to responseAnswer. The fix classifies such a response as
-// responseServFail so the resolver loop tries a sibling NS rather than
-// caching a lame/forged answer.
-func TestClassify_NonAuthoritativeAnswerRejected(t *testing.T) {
-	msg := &dns.Message{
-		Header: dns.Header{
-			// QR=1, AA=0 (deliberately omitted) — a lame answer.
-			Flags:   dns.NewFlagBuilder().SetQR(true).Build(),
-			ANCount: 1,
-		},
-		Answers: []dns.ResourceRecord{{
-			Name: "test.example.com", Type: dns.TypeA, Class: dns.ClassIN,
-			TTL: 300, RDLength: 4, RData: []byte{1, 2, 3, 4},
-		}},
+// TestClassify_NonAuthoritativeAnswer pins the Unbound-compatible AA rule:
+// an iterative answer with AA=0 is accepted unless RA=1, which marks a
+// recursive resolver echoing its cache (Unbound's REC_LAME). Live, the
+// Huawei OBS and probe.performance.dropbox.com authoritatives answer with
+// only QR set and were SERVFAIL here while public resolvers answered.
+func TestClassify_NonAuthoritativeAnswer(t *testing.T) {
+	answer := func(flags uint16) *dns.Message {
+		return &dns.Message{
+			Header: dns.Header{Flags: flags, ANCount: 1},
+			Answers: []dns.ResourceRecord{{
+				Name: "test.example.com", Type: dns.TypeA, Class: dns.ClassIN,
+				TTL: 300, RDLength: 4, RData: []byte{1, 2, 3, 4},
+			}},
+		}
 	}
-	if got := classifyResponse(msg, "test.example.com", dns.TypeA); got != responseServFail {
-		t.Errorf("answer without AA=1 must classify as responseServFail, got %d", got)
+	if got := classifyResponse(answer(dns.NewFlagBuilder().SetQR(true).Build()), "test.example.com", dns.TypeA); got != responseAnswer {
+		t.Errorf("AA=0 RA=0 answer: got %d, want responseAnswer", got)
+	}
+	if got := classifyResponse(answer(dns.NewFlagBuilder().SetQR(true).SetRA(true).Build()), "test.example.com", dns.TypeA); got != responseServFail {
+		t.Errorf("AA=0 RA=1 answer (recursive-lame): got %d, want responseServFail", got)
 	}
 }
 
@@ -64,22 +64,23 @@ func TestClassify_AuthoritativeAnswerAccepted(t *testing.T) {
 	}
 }
 
-// TestClassify_NonAuthoritativeCNAMERejected mirrors the AA check for the
-// CNAME chase path — a CNAME answer without AA=1 is equally untrusted and
-// must not be followed.
-func TestClassify_NonAuthoritativeCNAMERejected(t *testing.T) {
-	msg := &dns.Message{
-		Header: dns.Header{
-			Flags:   dns.NewFlagBuilder().SetQR(true).Build(),
-			ANCount: 1,
-		},
-		Answers: []dns.ResourceRecord{{
-			Name: "alias.example.com", Type: dns.TypeCNAME, Class: dns.ClassIN,
-			TTL: 300, RDLength: 0, RData: nil,
-		}},
+// TestClassify_NonAuthoritativeCNAME mirrors the AA rule for the CNAME
+// chase path: followed without AA (live: Huawei OBS), lame with RA=1.
+func TestClassify_NonAuthoritativeCNAME(t *testing.T) {
+	cname := func(flags uint16) *dns.Message {
+		return &dns.Message{
+			Header: dns.Header{Flags: flags, ANCount: 1},
+			Answers: []dns.ResourceRecord{{
+				Name: "alias.example.com", Type: dns.TypeCNAME, Class: dns.ClassIN,
+				TTL: 300, RDLength: 0, RData: nil,
+			}},
+		}
 	}
-	if got := classifyResponse(msg, "alias.example.com", dns.TypeA); got != responseServFail {
-		t.Errorf("CNAME without AA=1 must classify as responseServFail, got %d", got)
+	if got := classifyResponse(cname(dns.NewFlagBuilder().SetQR(true).Build()), "alias.example.com", dns.TypeA); got != responseCNAME {
+		t.Errorf("AA=0 RA=0 CNAME: got %d, want responseCNAME", got)
+	}
+	if got := classifyResponse(cname(dns.NewFlagBuilder().SetQR(true).SetRA(true).Build()), "alias.example.com", dns.TypeA); got != responseServFail {
+		t.Errorf("AA=0 RA=1 CNAME (recursive-lame): got %d, want responseServFail", got)
 	}
 }
 
