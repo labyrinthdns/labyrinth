@@ -165,3 +165,21 @@ func classifyResponse(msg *dns.Message, qname string, qtype uint16) responseType
 	// 7. Fallback
 	return responseServFail
 }
+
+// servFailOutcome names why a response was classified responseServFail,
+// for the per-request attempt log.
+func servFailOutcome(msg *dns.Message) string {
+	if msg == nil {
+		return "no response"
+	}
+	if rc := msg.Header.RCODE(); rc != dns.RCodeNoError {
+		return rcodeName(rc)
+	}
+	if !msg.Header.AA() && msg.Header.RA() {
+		return "recursion-lame (AA=0 RA=1)"
+	}
+	if len(msg.Answers) == 0 {
+		return "lame (no answer, no progress)"
+	}
+	return "unusable answer"
+}

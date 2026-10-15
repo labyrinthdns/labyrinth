@@ -199,7 +199,7 @@ func (r *Resolver) traceFinishWithFallback(
 	opts TraceOptions,
 	configuredZone bool,
 ) (*ResolveResult, error) {
-	if fb := shouldFallbackForZone(qtype, result, err, configuredZone); fb.triggered {
+	if fb := shouldFallbackForZone(name, qtype, result, err, configuredZone); fb.triggered {
 		t.emit("fallback", TraceStatusWarn, fmt.Sprintf("primary failed (%s) — trying fallback resolver", fb.reason), map[string]any{
 			"reason":    fb.reason,
 			"resolvers": r.config.FallbackResolvers,

@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/labyrinthdns/labyrinth/dns"
@@ -34,6 +35,10 @@ func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass ui
 	r.logger.Debug("trying fallback resolvers", "addrs", addrs, "name", name, "qtype", qtype)
 
 	dnssecStatus, dnssecReason, failReason, primaryRcode := primaryFallbackFields(primary)
+	var primaryAttempts []string
+	if primary != nil {
+		primaryAttempts = primary.Attempts
+	}
 	tried := 0
 	var lastEvent metrics.FallbackEvent
 	for _, addr := range addrs {
@@ -79,18 +84,19 @@ func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass ui
 		r.logger.Info("fallback resolver recovered query", "addr", addr, "name", name, "rcode", rcode)
 
 		r.fallbackLog.write(fallbackLogRecord{
-			Name:          name,
-			QType:         qtype,
-			QTypeName:     qtypeName(qtype),
-			Reason:        fbReason,
-			DNSSECStatus:  dnssecStatus,
-			DNSSECReason:  dnssecReason,
-			FailureReason: failReason,
-			PrimaryRCODE:  primaryRcode,
-			Recovered:     true,
-			FallbackAddr:  addr,
-			FallbackRCODE: rcodeName(rcode),
-			FallbackTried: tried,
+			Name:            name,
+			QType:           qtype,
+			QTypeName:       qtypeName(qtype),
+			Reason:          fbReason,
+			DNSSECStatus:    dnssecStatus,
+			DNSSECReason:    dnssecReason,
+			FailureReason:   failReason,
+			PrimaryRCODE:    primaryRcode,
+			Recovered:       true,
+			FallbackAddr:    addr,
+			FallbackRCODE:   rcodeName(rcode),
+			FallbackTried:   tried,
+			PrimaryAttempts: primaryAttempts,
 		})
 
 		status := ""
@@ -116,19 +122,20 @@ func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass ui
 
 	r.metrics.FallbackEventRing().Add(lastEvent)
 	r.fallbackLog.write(fallbackLogRecord{
-		Name:          name,
-		QType:         qtype,
-		QTypeName:     qtypeName(qtype),
-		Reason:        fbReason,
-		DNSSECStatus:  dnssecStatus,
-		DNSSECReason:  dnssecReason,
-		FailureReason: failReason,
-		PrimaryRCODE:  primaryRcode,
-		Recovered:     false,
-		FallbackAddr:  lastEvent.ResolverAddr,
-		FallbackRCODE: rcodeNameForEvent(lastEvent.RCODE, lastEvent.Error),
-		FallbackError: lastEvent.Error,
-		FallbackTried: tried,
+		Name:            name,
+		QType:           qtype,
+		QTypeName:       qtypeName(qtype),
+		Reason:          fbReason,
+		DNSSECStatus:    dnssecStatus,
+		DNSSECReason:    dnssecReason,
+		FailureReason:   failReason,
+		PrimaryRCODE:    primaryRcode,
+		Recovered:       false,
+		FallbackAddr:    lastEvent.ResolverAddr,
+		FallbackRCODE:   rcodeNameForEvent(lastEvent.RCODE, lastEvent.Error),
+		FallbackError:   lastEvent.Error,
+		FallbackTried:   tried,
+		PrimaryAttempts: primaryAttempts,
 	})
 	return nil
 }
@@ -196,10 +203,40 @@ func shouldFallback(qtype uint16, result *ResolveResult, err error) fallbackReas
 // stays out of the fallback: its names are usually internal, and public
 // resolvers would either leak them or answer with the public view. Resolve
 // and Trace share it so a trace never takes a fallback production refuses.
-func shouldFallbackForZone(qtype uint16, result *ResolveResult, err error, configuredZone bool) fallbackReason {
+func shouldFallbackForZone(name string, qtype uint16, result *ResolveResult, err error, configuredZone bool) fallbackReason {
+	if publicResolverBlockedZone(name) {
+		return fallbackReason{}
+	}
 	fb := shouldFallback(qtype, result, err)
 	if fb.triggered && configuredZone && result != nil && result.FailureReason == "no-reachable-authority" {
 		fb.triggered = false
 	}
 	return fb
+}
+
+// fallbackBlockedSuffixes are DNSBL zones whose operators refuse queries
+// from large public resolvers and answer them with a policy code instead of
+// the listing (checked 2026-10-15 with the zones' own test records):
+// Spamhaus gives 127.255.255.254 at 1.1.1.1 and nothing at 8.8.8.8,
+// URIBL gives 127.0.0.1 ("query refused") at both, and SURBL nothing at
+// 1.1.1.1. Sent through the fallback such an answer reaches a mail server
+// as a listing or an error, which is worse than SERVFAIL, so these names
+// never use it. spamhaus.net covers the Data Query Service (dq.spamhaus.net).
+var fallbackBlockedSuffixes = []string{
+	"spamhaus.org",
+	"spamhaus.net",
+	"uribl.com",
+	"surbl.org",
+}
+
+// publicResolverBlockedZone reports whether name is at or below one of the
+// fallbackBlockedSuffixes.
+func publicResolverBlockedZone(name string) bool {
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	for _, z := range fallbackBlockedSuffixes {
+		if name == z || strings.HasSuffix(name, "."+z) {
+			return true
+		}
+	}
+	return false
 }

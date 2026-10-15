@@ -30,6 +30,9 @@ type fallbackLogRecord struct {
 	FallbackRCODE string `json:"fallback_rcode,omitempty"`
 	FallbackError string `json:"fallback_error,omitempty"`
 	FallbackTried int    `json:"fallback_tried"`
+	// PrimaryAttempts lists the authoritative exchanges that failed in the
+	// primary resolution ("zone@ip: outcome").
+	PrimaryAttempts []string `json:"primary_attempts,omitempty"`
 }
 
 type fallbackFileLog struct {
