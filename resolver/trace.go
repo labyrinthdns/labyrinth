@@ -469,7 +469,7 @@ func (r *Resolver) traceIterative(
 		}
 		// Same lame self-referral guard as resolveIterativeFromInner.
 		if rtype == responseReferral && !referralDescends(response, referralQName, currentZone) {
-			rtype = responseServFail
+			rtype = nonDescendingReferralType(response, referralQName, currentZone)
 		}
 
 		t.emit("classify", TraceStatusInfo, fmt.Sprintf("classified as %s", classifyName(rtype)), map[string]any{

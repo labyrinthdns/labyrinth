@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -802,23 +803,35 @@ func TestResolveQNAMEMin(t *testing.T) {
 }
 
 func TestResolveMaxDepthExceeded(t *testing.T) {
-	// Mock that always returns referral → should hit max depth
+	// Mock whose every reply is a referral one label deeper than the last,
+	// so resolution keeps descending and must stop at MaxDepth. (A referral
+	// back to the same zone no longer loops: with AA, which this mock sets
+	// on every reply with records, it is NODATA as in Unbound.)
+	const qname = "a.b.c.d.e.f.g.loop.com"
+	labels := strings.Split(qname, ".")
+	var n atomic.Int32
 	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 		if len(q.Questions) == 0 {
 			return nil
 		}
-		nsRData := dns.BuildPlainName("ns.loop.com")
+		depth := int(n.Add(1))
+		if depth > len(labels)-1 {
+			depth = len(labels) - 1
+		}
+		zone := strings.Join(labels[len(labels)-1-depth:], ".")
+		nsName := "ns." + zone
+		nsRData := dns.BuildPlainName(nsName)
 		return &dns.Message{
 			Header: dns.Header{
 				Flags: dns.NewFlagBuilder().SetQR(true).Build(),
 			},
 			Questions: q.Questions,
 			Authority: []dns.ResourceRecord{{
-				Name: "loop.com", Type: dns.TypeNS, Class: dns.ClassIN,
+				Name: zone, Type: dns.TypeNS, Class: dns.ClassIN,
 				TTL: 3600, RDLength: uint16(len(nsRData)), RData: nsRData,
 			}},
 			Additional: []dns.ResourceRecord{{
-				Name: "ns.loop.com", Type: dns.TypeA, Class: dns.ClassIN,
+				Name: nsName, Type: dns.TypeA, Class: dns.ClassIN,
 				TTL: 3600, RDLength: 4, RData: []byte{127, 0, 0, 1},
 			}},
 		}
@@ -838,7 +851,7 @@ func TestResolveMaxDepthExceeded(t *testing.T) {
 	}, m, logger)
 	r.rootServers = []NameServer{{Name: "mock.root", IPv4: mock.ip}}
 
-	result, err := r.Resolve("deep.loop.com", dns.TypeA, dns.ClassIN)
+	result, err := r.Resolve(qname, dns.TypeA, dns.ClassIN)
 	if err != nil {
 		t.Fatalf("resolve error: %v", err)
 	}
