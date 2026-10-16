@@ -139,6 +139,22 @@ func referralDescends(msg *dns.Message, qname, currentZone string) bool {
 	return zone != "" && zone != current && nameAtOrBelow(zone, current)
 }
 
+// nonDescendingReferralType classifies a referral that does not descend
+// below currentZone. Like Unbound (iter_resptype.c: an NS RRset at the
+// delegation point with AA set is RESPONSE_TYPE_ANSWER), an authoritative
+// reply with no answers and the zone's own NS RRset in authority is NODATA
+// — live: the delta1/delta2.rdrhost.com servers of
+// ip-109-238-212-091.aim-net.cz answer AAAA that way, with AA and no SOA.
+// Without AA, or pointing at an ancestor, it is a lame server.
+func nonDescendingReferralType(msg *dns.Message, qname, currentZone string) responseType {
+	if msg.Header.AA() && len(msg.Answers) == 0 {
+		if _, zone := extractDelegationForQName(msg, qname, currentZone, 0); zone != "" && zone == canonicalDNSName(currentZone) {
+			return responseNoData
+		}
+	}
+	return responseServFail
+}
+
 func containsString(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {

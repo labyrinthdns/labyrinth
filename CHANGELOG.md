@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **An authoritative reply with the zone's own NS and no answer is NODATA.** The `delta1`/`delta2.rdrhost.com` servers of `ip-109-238-212-091.aim-net.cz` answer AAAA with AA=1, no answer, no SOA and the zone's NS RRset in authority. The non-descending-referral guard (v0.8.40) called every such reply lame, so the name was SERVFAIL and went to the public fallback. As in Unbound (`iter_resptype.c`: an NS RRset at the delegation point with AA set is `RESPONSE_TYPE_ANSWER`), it is now NODATA; without AA, or pointing at an ancestor zone, it is still lame. [resolver/delegation.go](resolver/delegation.go).
+
 ### Added
 - **Per-source TCP/DoT connection caps.** TCPServer and DoTServer now track connections per client IP. A source exceeding `server.max_tcp_conns_per_client` or `server.max_dot_conns_per_client` (both default 16) has new connections silently closed — slow-loris defence beyond the global connection pool. [server/tcp.go](server/tcp.go), [server/dot.go](server/dot.go).
 - **Per-delegation NS name cap.** `extractDelegation` now accepts a `maxNames` parameter (config key `resolver.max_ns_names_per_delegation`, default 13). NS hostnames beyond the cap are dropped from the delegation — bounds NXNS amplification (CVE-2020-8616) beyond the existing per-request query budget. [resolver/delegation.go](resolver/delegation.go).

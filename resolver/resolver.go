@@ -871,9 +871,10 @@ func (r *Resolver) resolveIterativeFromInner(
 		// A referral that does not descend below currentZone is a lame
 		// server pointing back at its own zone (live: the Comcast NS of
 		// 99.236.71.in-addr.arpa); following it re-asks the same question
-		// until max depth. Treat it as that server failing.
+		// until max depth. Treat it as that server failing — unless it is
+		// an authoritative NODATA carrying the zone's own NS RRset.
 		if rtype == responseReferral && !referralDescends(response, referralQName, currentZone) {
-			rtype = responseServFail
+			rtype = nonDescendingReferralType(response, referralQName, currentZone)
 		}
 
 		switch rtype {
