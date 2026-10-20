@@ -622,7 +622,7 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 	if fb.triggered {
 		r.logger.Info("primary resolver failed, trying fallback",
 			"name", name, "qtype", qtype, "reason", fb.reason)
-		if fbResult := r.queryFallbackWithContext(name, qtype, qclass, fb.reason, result, clientECS, cd); fbResult != nil {
+		if fbResult := r.queryFallbackCoalesced(name, qtype, qclass, fb.reason, result, clientECS, cd); fbResult != nil {
 			return fbResult, nil
 		}
 	}
@@ -1116,11 +1116,12 @@ func (r *Resolver) resolveIterativeFromInner(
 				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
 			}
 			// RFC 7871 §7.3: a negative learned while an ECS option is in
-			// flight is not safely portable to the global (name,type,class)
-			// cache. The cache has no scoped-negative API, so use the minimal
-			// safe behaviour and leave it uncached rather than letting one
-			// subnet's NXDOMAIN deny service to every client.
-			if clientECS == nil {
+			// flight is portable to the global (name,type,class) cache only
+			// when the authoritative scoped it to every client (no ECS in
+			// the reply, or SCOPE 0 — §7.3.1). The cache has no
+			// scoped-negative API, so a subnet-scoped one stays uncached
+			// rather than letting one subnet's NXDOMAIN deny every client.
+			if ecsGlobalScope(clientECS, result.UpstreamECS) {
 				r.cache.StoreNegativeWithStatus(name, qtype, qclass, cache.NegNXDomain, dns.RCodeNXDomain, response.Authority, result.DNSSECStatus)
 			}
 			// RFC 8198 aggressive NSEC caching: when the denial is Secure
@@ -1130,7 +1131,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			// covered by the same gap can be answered from cache, dropping
 			// the upstream auth-server load for popular signed zones (.com,
 			// .org, ccTLDs).
-			if clientECS == nil && result.DNSSECStatus == "secure" {
+			if ecsGlobalScope(clientECS, result.UpstreamECS) && result.DNSSECStatus == "secure" {
 				zone := nsecZoneFromAuthority(response.Authority)
 				if zone != "" {
 					// RFC 9077 §4: each index gets a TTL clamped by the TTL
@@ -1161,7 +1162,7 @@ func (r *Resolver) resolveIterativeFromInner(
 			if result.DNSSECStatus == "bogus" {
 				return &ResolveResult{RCODE: dns.RCodeServFail, DNSSECStatus: "bogus"}, nil
 			}
-			if clientECS == nil {
+			if ecsGlobalScope(clientECS, result.UpstreamECS) {
 				r.cache.StoreNegativeWithStatus(name, qtype, qclass, cache.NegNoData, dns.RCodeNoError, response.Authority, result.DNSSECStatus)
 			}
 			return result, nil
