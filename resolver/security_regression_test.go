@@ -23,6 +23,8 @@ func TestResolveWithECS_DoesNotCacheNegativeGlobally(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// An ECS-aware authoritative scoping its answer to the client's
+			// /24 (RFC 7871 §7.2.1).
 			mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
 				return &dns.Message{
 					Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(tt.rcode).Build()},
@@ -31,6 +33,9 @@ func TestResolveWithECS_DoesNotCacheNegativeGlobally(t *testing.T) {
 						Name: "ecstest.net", Type: dns.TypeSOA, Class: dns.ClassIN,
 						TTL: 300, RDLength: uint16(len(soa)), RData: soa,
 					}},
+					Additional: []dns.ResourceRecord{dns.BuildOPTWithOptions(1232, false, []dns.EDNSOption{dns.BuildECS(&dns.ECSOption{
+						Family: 1, SourcePrefixLen: 24, ScopePrefixLen: 24, Address: []byte{192, 0, 2, 0},
+					})})},
 				}
 			})
 			defer mock.close()
@@ -52,6 +57,34 @@ func TestResolveWithECS_DoesNotCacheNegativeGlobally(t *testing.T) {
 				t.Fatal("ECS-scoped negative response poisoned the global cache")
 			}
 		})
+	}
+}
+
+// TestResolveWithECS_GlobalScopeNegativeCachedGlobally: RFC 7871 §7.3.1
+// — a negative reply without ECS (an ECS-unaware authoritative) answers
+// every client, so it is cached under the global key.
+func TestResolveWithECS_GlobalScopeNegativeCachedGlobally(t *testing.T) {
+	soa := buildSOARData()
+	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
+		return &dns.Message{
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeNXDomain).Build()},
+			Questions: q.Questions,
+			Authority: []dns.ResourceRecord{{
+				Name: "ecstest.net", Type: dns.TypeSOA, Class: dns.ClassIN,
+				TTL: 300, RDLength: uint16(len(soa)), RData: soa,
+			}},
+		}
+	})
+	defer mock.close()
+	r := testResolver(t, mock)
+	r.config.ECSEnabled = true
+	ecs := &dns.ECSOption{Family: 1, SourcePrefixLen: 24, Address: []byte{192, 0, 2, 0}}
+	res, err := r.ResolveWithECS("missing.ecstest.net", dns.TypeA, dns.ClassIN, ecs)
+	if err != nil || res == nil || res.RCODE != dns.RCodeNXDomain {
+		t.Fatalf("res=%+v err=%v, want NXDOMAIN", res, err)
+	}
+	if _, ok := r.cache.Lookup("missing.ecstest.net", 0, dns.ClassIN); !ok {
+		t.Error("unscoped NXDOMAIN learned for an ECS client was not cached globally")
 	}
 }
 

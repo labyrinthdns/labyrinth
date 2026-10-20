@@ -1271,22 +1271,22 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			}
 		} else if result.RCODE == dns.RCodeNXDomain {
 			// RFC 7871 §7.3: a negative learned while a client-subnet (ECS)
-			// option is in flight is not safely portable to the global
-			// (name,type,class) cache. One subnet's NXDOMAIN must not deny
-			// service to every other client — including clients that never
-			// sent ECS. The resolver already refuses to store such a denial
-			// (resolver.go: `if clientECS == nil`); the cache has no
-			// scoped-negative API, so mirror that guard here and leave the
-			// scoped denial uncached rather than reintroducing the leak.
+			// option is in flight is portable to the global (name,type,class)
+			// cache only when the authoritative scoped it to every client —
+			// no ECS in the reply, or SCOPE 0 (§7.3.1); chooseCacheECSKey
+			// returns "" exactly then. One subnet's NXDOMAIN must not deny
+			// service to every other client, and the cache has no
+			// scoped-negative API, so a subnet-scoped denial stays uncached
+			// (the resolver applies the same rule: ecsGlobalScope).
 			//
 			// Preserve the validator's verdict so a cached NXDOMAIN keeps its
 			// AD bit on re-serve (RFC 4035); without the status a signed denial
 			// silently downgrades to AD=0 on the second hit.
-			if outboundECS == nil {
+			if ecsKey == "" {
 				h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNXDomain, result.RCODE, result.Authority, result.DNSSECStatus)
 			}
 		} else if result.RCODE == dns.RCodeNoError && len(result.Answers) == 0 {
-			if outboundECS == nil {
+			if ecsKey == "" {
 				h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority, result.DNSSECStatus)
 			}
 		} else if result.RCODE == dns.RCodeServFail {

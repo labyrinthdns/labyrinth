@@ -720,6 +720,15 @@ func (r *Resolver) validateResponseCookie(msg *dns.Message) bool {
 	return true
 }
 
+// ecsGlobalScope reports whether an answer learned for clientECS applies
+// to every client: no subnet was sent, or the authoritative replied
+// without ECS or with SCOPE PREFIX-LENGTH 0 (RFC 7871 §7.3.1: "treat this
+// as being equivalent to having received a SCOPE PREFIX-LENGTH of 0,
+// which is an answer suitable for all client addresses").
+func ecsGlobalScope(clientECS, upstreamECS *dns.ECSOption) bool {
+	return clientECS == nil || upstreamECS == nil || upstreamECS.ScopePrefixLen == 0
+}
+
 // extractResponseECS parses the OPT record from a DNS response message and
 // returns the EDNS Client Subnet option if the authoritative server included
 // one. The returned option's SCOPE PREFIX-LENGTH is the authoritative cache

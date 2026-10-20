@@ -26,7 +26,21 @@ type scopedNXForward struct {
 	ecsSeen atomic.Int64
 }
 
+// noECSEcho makes startScopedNXForwardScope reply without an ECS option.
+const noECSEcho = -1
+
+// startScopedNXForward is an ECS-aware upstream: NXDOMAIN for a client
+// subnet, echoed with SCOPE /24 as RFC 7871 §7.2.1 requires of a server
+// whose answer depends on the subnet.
 func startScopedNXForward(t *testing.T) *scopedNXForward {
+	t.Helper()
+	return startScopedNXForwardScope(t, 24)
+}
+
+// startScopedNXForwardScope answers queries carrying ECS with NXDOMAIN,
+// echoing ECS with the given SCOPE PREFIX-LENGTH (noECSEcho: no ECS in
+// the reply), and queries without ECS with an address.
+func startScopedNXForwardScope(t *testing.T, scope int) *scopedNXForward {
 	t.Helper()
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -49,6 +63,7 @@ func startScopedNXForward(t *testing.T) *scopedNXForward {
 			}
 
 			hasECS := false
+			var queryECS *dns.ECSOption
 			for i := range q.Additional {
 				if q.Additional[i].Type != dns.TypeOPT {
 					continue
@@ -59,6 +74,7 @@ func startScopedNXForward(t *testing.T) *scopedNXForward {
 				}
 				if ecs, eerr := dns.ExtractECSFromOPT(opt); eerr == nil && ecs != nil && ecs.SourcePrefixLen > 0 {
 					hasECS = true
+					queryECS = ecs
 				}
 			}
 			if hasECS {
@@ -90,6 +106,14 @@ func startScopedNXForward(t *testing.T) *scopedNXForward {
 					Name: "forward.example.org", Type: dns.TypeSOA, Class: dns.ClassIN,
 					TTL: 300, RDLength: uint16(len(soaRD)), RData: soaRD,
 				}}
+				if scope != noECSEcho {
+					echo := *queryECS
+					echo.ScopePrefixLen = uint8(scope)
+					resp.Additional = []dns.ResourceRecord{
+						dns.BuildOPTWithOptions(1232, false, []dns.EDNSOption{dns.BuildECS(&echo)}),
+					}
+					resp.Header.ARCount = 1
+				}
 			} else {
 				// Unscoped view: the name exists.
 				resp.Header.ANCount = 1
@@ -239,5 +263,46 @@ func TestHandle_ECS_NegativeNotCachedGlobally(t *testing.T) {
 	}
 	if impactRcode == dns.RCodeNXDomain {
 		t.Errorf("ECS leak: a scoped NXDOMAIN (1.2.3.0/24) was served to an unrelated unscoped client; upstream consulted=%v", consulted)
+	}
+}
+
+// TestHandle_ECS_GlobalScopeNegativeCachedGlobally: RFC 7871 §7.3.1 — a
+// reply without ECS, or with SCOPE 0, "is an answer suitable for all
+// client addresses", so a negative learned for an ECS client is cached
+// under the global key like any other (Unbound's subnet module does the
+// same). Live: NXDOMAINs for clients that send ECS were never cached, so
+// every repeat re-resolved and re-asked the public fallback.
+func TestHandle_ECS_GlobalScopeNegativeCachedGlobally(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		scope int
+	}{{"no ECS in reply", noECSEcho}, {"scope 0", 0}} {
+		t.Run(tc.name, func(t *testing.T) {
+			fw := startScopedNXForwardScope(t, tc.scope)
+			m := metrics.NewMetrics()
+			c := cache.NewCache(1000, 1, 86400, 3600, m)
+			logger := discardLogger()
+			res := resolver.NewResolver(c, resolver.ResolverConfig{
+				MaxDepth: 5, MaxCNAMEDepth: 2, UpstreamTimeout: 500 * time.Millisecond,
+				UpstreamRetries: 1, UpstreamPort: fw.port, ECSEnabled: true,
+			}, m, logger)
+			res.SetForwardTable(resolver.NewForwardTable([]resolver.ForwardZone{
+				{Name: "forward.example.org", Addrs: []string{"127.0.0.1"}},
+			}))
+			handler := NewMainHandler(res, c, nil, nil, nil, m, logger)
+			handler.SetECS(true, 24)
+
+			const qname = "gone.forward.example.org"
+			for i := 0; i < 2; i++ {
+				resp, err := handler.Handle(ecsScopedQuery(t, qname, dns.TypeA, "1.2.3.4"),
+					&mockAddr{network: "udp", addr: "203.0.113.4:2222"})
+				if rc, rerr := ecsScopeRcodeOf(resp, err); rerr != nil || rc != dns.RCodeNXDomain {
+					t.Fatalf("query %d: rcode=%d err=%v, want NXDOMAIN", i+1, rc, rerr)
+				}
+			}
+			if n := fw.queries.Load(); n != 1 {
+				t.Errorf("upstream asked %d times, want 1 (second answer from the global negative cache)", n)
+			}
+		})
 	}
 }

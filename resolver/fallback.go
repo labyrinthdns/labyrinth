@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"math/rand/v2"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,28 @@ func (r *Resolver) queryFallback(name string, qtype uint16, qclass uint16, fbRea
 
 func (r *Resolver) queryFallbackWithPrimary(name string, qtype uint16, qclass uint16, fbReason string, primary *ResolveResult) *ResolveResult {
 	return r.queryFallbackWithContext(name, qtype, qclass, fbReason, primary, nil, false)
+}
+
+// queryFallbackCoalesced asks the public fallback once for concurrent
+// identical failures. The primary resolution is already coalesced
+// (r.inflight), but every waiter used to receive the shared SERVFAIL and
+// then run its own fallback query and log line — live, three clients of
+// buddhaonline.art in the same second meant three fallback exchanges.
+// Unbound's mesh and BIND's fetch sharing answer such clients from one
+// exchange. The key carries the client subnet and the CD bit, which
+// change what the fallback is asked.
+func (r *Resolver) queryFallbackCoalesced(name string, qtype uint16, qclass uint16, fbReason string, primary *ResolveResult, clientECS *dns.ECSOption, cd bool) *ResolveResult {
+	if len(r.config.FallbackResolvers) == 0 {
+		return nil
+	}
+	key := "fallback|" + name + "|" + strconv.Itoa(int(qtype)) + "|" + strconv.Itoa(int(qclass)) + "|" + strconv.FormatBool(cd)
+	if clientECS != nil {
+		key += "|" + clientECS.CacheKey()
+	}
+	res, _ := r.inflight.do(key, func() (*ResolveResult, error) {
+		return r.queryFallbackWithContext(name, qtype, qclass, fbReason, primary, clientECS, cd), nil
+	})
+	return res
 }
 
 func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass uint16, fbReason string, primary *ResolveResult, clientECS *dns.ECSOption, cd bool) *ResolveResult {

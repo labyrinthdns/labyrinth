@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,5 +142,64 @@ func TestFallback_SkipsPublicResolverBlockedDNSBLs(t *testing.T) {
 		if publicResolverBlockedZone(n) {
 			t.Errorf("publicResolverBlockedZone(%q) = true", n)
 		}
+	}
+}
+
+// TestFallback_ConcurrentFailuresShareOneExchange: the primary resolution
+// of concurrent identical queries is coalesced, and so is the fallback
+// that follows. Live: buddhaonline.art asked by three clients in the same
+// second produced three fallback exchanges and three log lines.
+func TestFallback_ConcurrentFailuresShareOneExchange(t *testing.T) {
+	var recursive atomic.Int32
+	release := make(chan struct{})
+	mock := startMockDNS(t, func(q *dns.Message) *dns.Message {
+		if q.Header.RD() {
+			recursive.Add(1)
+			<-release
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRD(true).SetRA(true).Build(), QDCount: 1, ANCount: 1},
+				Questions: q.Questions,
+				Answers: []dns.ResourceRecord{{
+					Name: q.Questions[0].Name, Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 300, RDLength: 4, RData: []byte{127, 0, 0, 2},
+				}},
+			}
+		}
+		return &dns.Message{
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeRefused).Build(), QDCount: 1},
+			Questions: q.Questions,
+		}
+	})
+	defer mock.close()
+	r, logPath := fallbackLogResolver(t, mock)
+
+	const n = 3
+	var wg sync.WaitGroup
+	results := make([]*ResolveResult, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], _ = r.Resolve("www.coalesce.com", dns.TypeA, dns.ClassIN)
+		}(i)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for recursive.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // let the other waiters join
+	close(release)
+	wg.Wait()
+
+	for i, res := range results {
+		if res == nil || res.RCODE != dns.RCodeNoError || len(res.Answers) != 1 {
+			t.Errorf("client %d: res=%+v, want the fallback's answer", i, res)
+		}
+	}
+	if got := recursive.Load(); got != 1 {
+		t.Errorf("fallback asked %d times, want 1", got)
+	}
+	if recs := readFallbackLog(t, logPath); len(recs) != 1 {
+		t.Errorf("fallback log has %d records, want 1", len(recs))
 	}
 }
