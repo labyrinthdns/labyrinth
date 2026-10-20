@@ -27,10 +27,8 @@ func TestFailureCache_PutThenGetReplaysSameRcode(t *testing.T) {
 	}
 }
 
-// TestFailureCache_TTLExpiresEntry pins the upper bound: RFC 9520 §4
-// caps the failure cache TTL at 5 seconds so a transient outage
-// recovers quickly. After the TTL passes a Get must miss so the
-// resolver re-attempts upstream.
+// TestFailureCache_TTLExpiresEntry pins expiry: after the entry's TTL
+// passes a Get must miss so the resolver re-attempts upstream.
 func TestFailureCache_TTLExpiresEntry(t *testing.T) {
 	c := newFailureCache(64, 2*time.Millisecond)
 	c.Put("flaky.example", dns.TypeA, dns.ClassIN, dns.RCodeServFail, "")

@@ -206,6 +206,8 @@ func run() int {
 		UpstreamRetries:         cfg.Resolver.UpstreamRetries,
 		MaxQueriesPerRequest:    cfg.Resolver.MaxQueriesPerRequest,
 		RequestTimeout:          cfg.Resolver.RequestTimeout,
+		FailureCacheMinTTL:      cfg.Resolver.FailureCacheMinTTL,
+		FailureCacheMaxTTL:      cfg.Resolver.FailureCacheMaxTTL,
 		QMinEnabled:             cfg.Resolver.QMinEnabled,
 		Caps0x20Enabled:         cfg.Resolver.Caps0x20Enabled,
 		PreferIPv4:              cfg.Resolver.PreferIPv4,

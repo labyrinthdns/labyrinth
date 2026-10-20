@@ -126,6 +126,8 @@ resolver:
   upstream_retries: 3           # Retries per upstream
   max_queries_per_request: 200  # Total query budget per client request
   request_timeout: 20s          # Wall-clock deadline per request
+  failure_cache_min_ttl: 5s     # RFC 9520: first hold time for a failed name
+  failure_cache_max_ttl: 5m     # Backoff ceiling for a name that keeps failing
   max_ns_names_per_delegation: 13  # NS count cap per delegation (NXNS defence)
   qname_minimization: true      # RFC 9156
   caps_for_id: true             # RFC 5452 §9.2 0x20
