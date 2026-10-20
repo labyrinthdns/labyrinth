@@ -307,12 +307,18 @@ type ResolverConfig struct {
 	// request. It bounds pathological delegation/CNAME trees that stay under
 	// the query budget but where each hop is slow. 0 or negative is floored
 	// to the default by clampConfigBounds.
-	RequestTimeout  time.Duration
-	QMinEnabled     bool
-	Caps0x20Enabled bool
-	PreferIPv4      bool
-	DNSSECEnabled   bool
-	DNSSECAllowSHA1 bool
+	RequestTimeout time.Duration
+	// FailureCacheMinTTL is how long a resolution failure is cached at
+	// first (RFC 9520 §3.2: at least 1 second, operator-configurable);
+	// FailureCacheMaxTTL is the backoff ceiling a persistent failure
+	// grows to (at most 5 minutes). clampConfigBounds enforces both.
+	FailureCacheMinTTL time.Duration
+	FailureCacheMaxTTL time.Duration
+	QMinEnabled        bool
+	Caps0x20Enabled    bool
+	PreferIPv4         bool
+	DNSSECEnabled      bool
+	DNSSECAllowSHA1    bool
 	// DNSSECNegativeTrustAnchors is the operator-installed NTA list
 	// (RFC 7646). Each entry is "<zone>|<RFC3339 expiry>|<reason>" — the
 	// pipe separator keeps the format trivially parseable from a YAML
@@ -570,6 +576,8 @@ func applyYAML(cfg *Config, values map[string]string) {
 	setInt(&cfg.Resolver.UpstreamRetries, "resolver.upstream_retries")
 	setInt(&cfg.Resolver.MaxQueriesPerRequest, "resolver.max_queries_per_request")
 	setDuration(&cfg.Resolver.RequestTimeout, "resolver.request_timeout")
+	setDuration(&cfg.Resolver.FailureCacheMinTTL, "resolver.failure_cache_min_ttl")
+	setDuration(&cfg.Resolver.FailureCacheMaxTTL, "resolver.failure_cache_max_ttl")
 	setBool(&cfg.Resolver.QMinEnabled, "resolver.qname_minimization")
 	setBool(&cfg.Resolver.Caps0x20Enabled, "resolver.caps_for_id")
 	setBool(&cfg.Resolver.PreferIPv4, "resolver.prefer_ipv4")
@@ -800,6 +808,9 @@ const (
 	// a typo can't pin a worker for hours; 120s is far above any healthy
 	// resolution yet bounds the pathological tail.
 	clampMaxRequestTimeout = 120 * time.Second
+	// resolver.failure_cache_{min,max}_ttl: RFC 9520 §3.2 / RFC 2308
+	// ceiling for caching a resolution failure.
+	clampMaxFailureCacheTTL = 5 * time.Minute
 	// resolver.upstream_timeout: per-upstream-query deadline. A duration
 	// not an integer, but the same operator-bypass surface as the
 	// integer knobs. A YAML typo of `upstream_timeout: 24h` (intended
@@ -984,6 +995,28 @@ func clampConfigBounds(cfg *Config) {
 		cfg.Resolver.RequestTimeout = defaultRequestTimeout
 	}
 
+	// RFC 9520 §3.2 resolution-failure cache: "Resolvers MUST cache
+	// resolution failures for at least 1 second" and "MUST NOT be cached
+	// for longer than 5 minutes". Zero/negative means the default.
+	if cfg.Resolver.FailureCacheMinTTL <= 0 {
+		cfg.Resolver.FailureCacheMinTTL = defaultFailureCacheMinTTL
+	}
+	if cfg.Resolver.FailureCacheMinTTL < time.Second {
+		cfg.Resolver.FailureCacheMinTTL = time.Second
+	}
+	if cfg.Resolver.FailureCacheMinTTL > clampMaxFailureCacheTTL {
+		cfg.Resolver.FailureCacheMinTTL = clampMaxFailureCacheTTL
+	}
+	if cfg.Resolver.FailureCacheMaxTTL <= 0 {
+		cfg.Resolver.FailureCacheMaxTTL = defaultFailureCacheMaxTTL
+	}
+	if cfg.Resolver.FailureCacheMaxTTL > clampMaxFailureCacheTTL {
+		cfg.Resolver.FailureCacheMaxTTL = clampMaxFailureCacheTTL
+	}
+	if cfg.Resolver.FailureCacheMaxTTL < cfg.Resolver.FailureCacheMinTTL {
+		cfg.Resolver.FailureCacheMaxTTL = cfg.Resolver.FailureCacheMinTTL
+	}
+
 	// Upstream timeout floor. `r.config.UpstreamTimeout` feeds two call
 	// sites: `net.DialTimeout("udp"|"tcp", addr, r.config.UpstreamTimeout)`
 	// and `conn.SetDeadline(time.Now().Add(r.config.UpstreamTimeout))`.
@@ -1072,6 +1105,8 @@ const (
 	defaultRRLResponsesPerSecond   = 5.0
 	defaultMaxQueriesPerRequest    = 200
 	defaultRequestTimeout          = 20 * time.Second
+	defaultFailureCacheMinTTL      = 5 * time.Second
+	defaultFailureCacheMaxTTL      = 5 * time.Minute
 	defaultMaxNSNamesPerDelegation = 13
 )
 

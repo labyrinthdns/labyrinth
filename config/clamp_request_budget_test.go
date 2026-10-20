@@ -78,3 +78,28 @@ func TestClampConfigBounds_RequestTimeoutBounds(t *testing.T) {
 			cfg.Resolver.RequestTimeout, clampMaxRequestTimeout)
 	}
 }
+
+// TestClampFailureCacheTTL pins RFC 9520 §3.2's bounds on the
+// resolution-failure cache: at least 1 second, at most 5 minutes, and a
+// maximum never below the minimum.
+func TestClampFailureCacheTTL(t *testing.T) {
+	cases := []struct {
+		min, max         time.Duration
+		wantMin, wantMax time.Duration
+	}{
+		{0, 0, 5 * time.Second, 5 * time.Minute},
+		{100 * time.Millisecond, time.Hour, time.Second, 5 * time.Minute},
+		{time.Hour, 0, 5 * time.Minute, 5 * time.Minute},
+		{30 * time.Second, 10 * time.Second, 30 * time.Second, 30 * time.Second},
+		{2 * time.Second, time.Minute, 2 * time.Second, time.Minute},
+	}
+	for _, c := range cases {
+		cfg := defaultConfig()
+		cfg.Resolver.FailureCacheMinTTL, cfg.Resolver.FailureCacheMaxTTL = c.min, c.max
+		clampConfigBounds(cfg)
+		if cfg.Resolver.FailureCacheMinTTL != c.wantMin || cfg.Resolver.FailureCacheMaxTTL != c.wantMax {
+			t.Errorf("min=%v max=%v: got %v/%v, want %v/%v", c.min, c.max,
+				cfg.Resolver.FailureCacheMinTTL, cfg.Resolver.FailureCacheMaxTTL, c.wantMin, c.wantMax)
+		}
+	}
+}

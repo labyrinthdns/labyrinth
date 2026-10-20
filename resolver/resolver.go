@@ -32,11 +32,17 @@ type ResolverConfig struct {
 	MaxQueriesPerRequest int
 	// RequestTimeout is the wall-clock deadline for one client request.
 	// <= 0 means no deadline.
-	RequestTimeout  time.Duration
-	QMinEnabled     bool
-	Caps0x20Enabled bool // DNS 0x20 case randomization (RFC 5452)
-	PreferIPv4      bool
-	DNSSECEnabled   bool
+	RequestTimeout time.Duration
+	// FailureCacheMinTTL / FailureCacheMaxTTL bound the RFC 9520 §3.2
+	// resolution-failure cache: a failure is held FailureCacheMinTTL at
+	// first and twice as long each time it recurs, up to
+	// FailureCacheMaxTTL (capped at 5 minutes). <= 0 means 5s / 5m.
+	FailureCacheMinTTL time.Duration
+	FailureCacheMaxTTL time.Duration
+	QMinEnabled        bool
+	Caps0x20Enabled    bool // DNS 0x20 case randomization (RFC 5452)
+	PreferIPv4         bool
+	DNSSECEnabled      bool
 	// UpstreamPort overrides the DNS port for upstream queries (default "53").
 	// Used for testing with mock DNS servers.
 	UpstreamPort string
@@ -245,8 +251,16 @@ func NewResolver(c *cache.Cache, cfg ResolverConfig, m *metrics.Metrics, logger 
 	r.serverCookieCache = newServerCookieCache(1024, time.Hour)
 	// RFC 9520 resolution-failure cache. Capacity 4096 covers the
 	// usual long-tail of broken delegations a busy resolver
-	// encounters in a given hour; ttl 5s is the RFC §4 upper bound.
-	r.failureCache = newFailureCache(4096, 5*time.Second)
+	// encounters in a given hour. A failure is held 5s at first and
+	// backs off to 5 minutes while it persists (§3.2).
+	failMin, failMax := cfg.FailureCacheMinTTL, cfg.FailureCacheMaxTTL
+	if failMin <= 0 {
+		failMin = 5 * time.Second
+	}
+	if failMax <= 0 {
+		failMax = failureCacheMaxTTL
+	}
+	r.failureCache = newFailureCacheBackoff(4096, failMin, failMax)
 	// EDNS-intolerant upstreams. 15 minutes lets a server that fixes its
 	// EDNS handling get EDNS (and DNSSEC) back without a restart.
 	r.noEDNSServers = newNoEDNSCache(1024, 15*time.Minute)
@@ -613,14 +627,17 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 		}
 	}
 
-	// RFC 9520 — record the failure so the next identical query in the
-	// next few seconds is served from cache. Only when we ended up with
+	// RFC 9520 — record the failure so the next identical query within
+	// the entry's backoff window is served from cache. Only when we ended up with
 	// SERVFAIL AND we are not carrying ECS (subnet-specific failures
 	// would poison cross-subnet queries). DNSSEC-bogus outcomes are
 	// excluded because the answer cache will keep their SERVFAIL with
 	// the bogus marker on its own schedule.
 	if clientECS == nil && result != nil && result.RCODE == dns.RCodeServFail && result.DNSSECStatus != "bogus" {
 		r.failureCache.Put(name, qtype, qclass, result.RCODE, result.FailureReason)
+	} else if clientECS == nil && err == nil && result != nil && result.RCODE != dns.RCodeServFail {
+		// Resolved again: the name's next failure starts the backoff over.
+		r.failureCache.Forget(name, qtype, qclass)
 	}
 
 	return result, err
@@ -1859,6 +1876,8 @@ func (r *Resolver) resolveNSAddr(name string, qtype uint16, parent *visitedSet) 
 	if err == nil && result != nil && result.RCODE == dns.RCodeServFail &&
 		result.FailureReason != "query-budget-exceeded" {
 		r.failureCache.Put(name, qtype, dns.ClassIN, result.RCODE, result.FailureReason)
+	} else if err == nil && result != nil && result.RCODE != dns.RCodeServFail {
+		r.failureCache.Forget(name, qtype, dns.ClassIN)
 	}
 	return result, err
 }

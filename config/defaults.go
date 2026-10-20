@@ -28,6 +28,8 @@ func defaultConfig() *Config {
 			UpstreamRetries:         3,
 			MaxQueriesPerRequest:    200,
 			RequestTimeout:          20 * time.Second,
+			FailureCacheMinTTL:      5 * time.Second,
+			FailureCacheMaxTTL:      5 * time.Minute,
 			QMinEnabled:             true,
 			Caps0x20Enabled:         true,
 			PreferIPv4:              true,
