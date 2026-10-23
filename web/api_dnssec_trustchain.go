@@ -146,6 +146,10 @@ func (s *AdminServer) buildTrustChain(name string) []trustChainLevel {
 
 		// Determine status.
 		switch {
+		case len(level.DNSKEYs) > 0 && i > 0 && len(level.DS) == 0:
+			// Signed but no DS at the parent: an island of security,
+			// which validation treats as insecure.
+			level.Status = "insecure"
 		case len(level.DNSKEYs) > 0:
 			level.Status = "secure"
 		case level.Error != "":

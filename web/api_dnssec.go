@@ -205,6 +205,11 @@ func (s *AdminServer) handleNTAAdd(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "expiry is already in the past"})
 		return
 	}
+	// The same 30-day ceiling applies to an explicit expires_at; otherwise
+	// a far-future timestamp installs a multi-year validation bypass.
+	if ceiling := time.Now().Add(30 * 24 * time.Hour); expiry.After(ceiling) {
+		expiry = ceiling
+	}
 
 	if err := store.Add(zone, expiry, req.Reason); err != nil {
 		// 507 Insufficient Storage when the per-store cap is hit.

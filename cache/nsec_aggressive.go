@@ -303,6 +303,11 @@ func (c *Cache) lookupNSEC(qname string, qtype uint16, qclass uint16) (*Entry, b
 					!typeBitmapHas(iv.typeBitmap, dns.TypeSOA) {
 					continue
 				}
+				// Mirror image for DS: the child's apex NSEC (SOA set)
+				// never lists DS because DS lives in the parent zone.
+				if qtype == dns.TypeDS && typeBitmapHas(iv.typeBitmap, dns.TypeSOA) {
+					continue
+				}
 				if entry, ok := c.buildNSECSynthEntry(iv, now, NegNoData, dns.RCodeNoError); ok {
 					if c.metrics != nil {
 						c.metrics.IncNSECAggressiveSynthNoData()
