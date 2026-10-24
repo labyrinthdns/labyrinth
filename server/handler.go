@@ -150,6 +150,31 @@ func (h *MainHandler) SetPrivateFilter(enabled bool) {
 	h.privateFilter.Store(enabled)
 }
 
+// filterPrivateAddresses applies the private-address filter. With DNS64
+// enabled, a AAAA inside the /96 synthesis prefix is judged by the IPv4 it
+// embeds (RFC 6052 §2.2), not by the prefix: the well-known 64:ff9b::/96 is
+// itself reserved, while a network-specific prefix may be globally routable.
+func (h *MainHandler) filterPrivateAddresses(answers []dns.ResourceRecord) []dns.ResourceRecord {
+	if h.resolver == nil {
+		return security.FilterPrivateAddresses(answers)
+	}
+	prefix, enabled := h.resolver.DNS64Prefix()
+	if ones, bits := prefix.Mask.Size(); !enabled || ones != 96 || bits != 128 {
+		return security.FilterPrivateAddresses(answers)
+	}
+	filtered := make([]dns.ResourceRecord, 0, len(answers))
+	for _, rr := range answers {
+		if rr.Type == dns.TypeAAAA && len(rr.RData) == 16 && prefix.Contains(net.IP(rr.RData)) {
+			if !security.IsReservedIP(net.IP(rr.RData[12:16])) {
+				filtered = append(filtered, rr)
+			}
+			continue
+		}
+		filtered = append(filtered, security.FilterPrivateAddresses([]dns.ResourceRecord{rr})...)
+	}
+	return filtered
+}
+
 // ecsRuntime is the immutable snapshot of the three ECS knobs the DNS
 // handler reads on every query that carries an OPT. See ecsCfg field
 // comment for why the trio is packaged together.
@@ -1262,7 +1287,7 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			// (buildCacheResponse) are clean by construction.
 			answersToCache := result.Answers
 			if h.privateFilter.Load() {
-				answersToCache = security.FilterPrivateAddresses(answersToCache)
+				answersToCache = h.filterPrivateAddresses(answersToCache)
 			}
 			if ecsKey == "" {
 				h.cache.StoreWithStatus(q.Name, q.Type, q.Class, answersToCache, result.Authority, result.DNSSECStatus)
@@ -1503,7 +1528,7 @@ func (h *MainHandler) buildCacheResponse(query *dns.Message, entry *cache.Entry,
 	authority := entry.Authority
 	privateStripped := false
 	if h.privateFilter.Load() {
-		filtered := security.FilterPrivateAddresses(answers)
+		filtered := h.filterPrivateAddresses(answers)
 		privateStripped = len(filtered) != len(answers)
 		answers = filtered
 	}
@@ -1737,7 +1762,7 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 	answers := result.Answers
 	privateStripped := false
 	if h.privateFilter.Load() {
-		filtered := security.FilterPrivateAddresses(answers)
+		filtered := h.filterPrivateAddresses(answers)
 		if len(filtered) != len(answers) {
 			privateStripped = true
 		}
