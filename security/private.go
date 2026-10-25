@@ -32,12 +32,15 @@ var reservedV4 = []*net.IPNet{
 var reservedV6 = []*net.IPNet{
 	cidr("::1/128"),        // loopback
 	cidr("::/128"),         // unspecified
+	cidr("::/96"),          // RFC 4291 §2.5.5.1 deprecated IPv4-compatible (encodes IPv4)
 	cidr("64:ff9b::/96"),   // RFC 6052 well-known NAT64
 	cidr("64:ff9b:1::/48"), // RFC 8215 local-use NAT64
 	cidr("100::/64"),       // RFC 6666 discard-only
 	cidr("2001::/23"),      // RFC 2928 IETF protocol assignments (covers Teredo, ORCHID, etc.)
 	cidr("2001:db8::/32"),  // RFC 3849 documentation
 	cidr("2002::/16"),      // RFC 3056 6to4 (encodes IPv4)
+	cidr("3fff::/20"),      // RFC 9637 documentation
+	cidr("fec0::/10"),      // RFC 3879 deprecated site-local
 	cidr("fc00::/7"),       // RFC 4193 ULA
 	cidr("fe80::/10"),      // RFC 4291 link-local
 	cidr("ff00::/8"),       // RFC 4291 multicast

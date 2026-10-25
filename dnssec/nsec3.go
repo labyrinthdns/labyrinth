@@ -518,6 +518,11 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 				if HasType(&m.NSEC3Record, dns.TypeNS) && !HasType(&m.NSEC3Record, dns.TypeSOA) {
 					return false, nil
 				}
+				// A DS denial must come from the parent side of the cut; the
+				// child's own apex NSEC3 never lists DS (RFC 5155 §8.9).
+				if qtype == dns.TypeDS && qname != "" && HasType(&m.NSEC3Record, dns.TypeSOA) {
+					return false, nil
+				}
 				return true, nil
 			}
 			// Owner-match with qtype present means the type DOES exist —
@@ -543,7 +548,14 @@ func VerifyNSEC3Denial5155(qname string, qtype uint16, rcode uint8, records []NS
 		if err != nil {
 			return false, fmt.Errorf("computing NSEC3 hash for ancestor %q: %w", ancestor, err)
 		}
-		if findNSEC3Match(records, h) != nil {
+		if m := findNSEC3Match(records, h); m != nil {
+			// RFC 6840 §4.1: a parent-side delegation (NS without SOA) or a
+			// DNAME owner cannot be the closest encloser — names below it
+			// are not served from this zone.
+			if HasType(&m.NSEC3Record, dns.TypeDNAME) ||
+				(HasType(&m.NSEC3Record, dns.TypeNS) && !HasType(&m.NSEC3Record, dns.TypeSOA)) {
+				return false, nil
+			}
 			ce = ancestor
 			nc = prev
 			found = true
@@ -653,7 +665,8 @@ func VerifyNSEC3DenialDSAbsent(childZone string, records []NSEC3RecordWithOwner,
 		return false, fmt.Errorf("computing NSEC3 hash for child zone: %w", err)
 	}
 	if m := findNSEC3Match(records, childHash); m != nil {
-		if !HasType(&m.NSEC3Record, dns.TypeDS) {
+		// SOA marks the child-side apex NSEC3, which cannot deny the DS.
+		if !HasType(&m.NSEC3Record, dns.TypeDS) && !HasType(&m.NSEC3Record, dns.TypeSOA) {
 			return true, nil
 		}
 		return false, nil

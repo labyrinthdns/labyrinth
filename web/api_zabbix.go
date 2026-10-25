@@ -175,6 +175,23 @@ func StartZabbixAgent(ctx context.Context, addr string, m *metrics.Metrics, c *c
 	}
 }
 
+// zabbixFrameIncomplete reports whether b is a ZBXD-framed request (or a
+// prefix of the "ZBXD\x01" signature) whose header or declared payload has
+// not fully arrived. Plain-text requests are never incomplete.
+func zabbixFrameIncomplete(b []byte) bool {
+	const sig = "ZBXD\x01"
+	if len(b) < len(sig) {
+		return strings.HasPrefix(sig, string(b))
+	}
+	if string(b[:len(sig)]) != sig {
+		return false
+	}
+	if len(b) < 13 {
+		return true
+	}
+	return uint64(len(b)-13) < binary.LittleEndian.Uint64(b[5:13])
+}
+
 // handleZabbixConn handles a single Zabbix agent protocol connection.
 // Protocol: client sends a key (newline-terminated), server responds with ZBXD\x01 + 8-byte length + data.
 func handleZabbixConn(conn net.Conn, m *metrics.Metrics, c *cache.Cache, logger *slog.Logger) {
@@ -184,6 +201,14 @@ func handleZabbixConn(conn net.Conn, m *metrics.Metrics, c *cache.Cache, logger 
 	// Read the request (key name, up to 1024 bytes)
 	buf := make([]byte, 1024)
 	n, err := conn.Read(buf)
+	// TCP is a byte stream: a ZBXD-framed request may arrive split across
+	// reads, so keep reading until the declared payload is complete (bounded
+	// by the buffer and the connection deadline).
+	for err == nil && n < len(buf) && zabbixFrameIncomplete(buf[:n]) {
+		var more int
+		more, err = conn.Read(buf[n:])
+		n += more
+	}
 	if err != nil && err != io.EOF {
 		return
 	}

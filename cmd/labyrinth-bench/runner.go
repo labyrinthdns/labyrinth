@@ -144,7 +144,12 @@ func RunBenchmark(cfg RunConfig, onSnapshot func(RunResult)) RunResult {
 			for {
 				select {
 				case <-snapTicker.C:
-					snap := buildSnapshot(&stats, &latMu, allLatencies, cfg.Name, start)
+					// Read the slice header under latMu: the collector
+					// appends to allLatencies concurrently.
+					latMu.Lock()
+					latencies := allLatencies
+					latMu.Unlock()
+					snap := buildSnapshot(&stats, &latMu, latencies, cfg.Name, start)
 					if onSnapshot != nil {
 						onSnapshot(snap)
 					}
@@ -248,7 +253,23 @@ func worker(id int, cfg RunConfig, deadline time.Time, tokens <-chan struct{}, s
 			continue
 		}
 
-		n, readErr := conn.Read(recvBuf)
+		// A late reply to an earlier, timed-out query can still be queued on
+		// this socket; skip replies whose ID does not match this query.
+		var n int
+		var readErr error
+		var resp *dns.Message
+		var parseErr error
+		for {
+			n, readErr = conn.Read(recvBuf)
+			if readErr != nil {
+				break
+			}
+			resp, parseErr = dns.Unpack(recvBuf[:n])
+			if parseErr == nil && resp.Header.ID != msg.Header.ID {
+				continue
+			}
+			break
+		}
 		elapsed := time.Since(queryStart)
 
 		stats.totalQueries.Add(1)
@@ -265,8 +286,7 @@ func worker(id int, cfg RunConfig, deadline time.Time, tokens <-chan struct{}, s
 			continue
 		}
 
-		// Parse response to get RCODE.
-		resp, parseErr := dns.Unpack(recvBuf[:n])
+		// Response parsed above to match its ID; use it for the RCODE.
 		if parseErr != nil {
 			stats.errorCount.Add(1)
 			latencyCh <- queryLatency{durationNs: elapsed.Nanoseconds()}

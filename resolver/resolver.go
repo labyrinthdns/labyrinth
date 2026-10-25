@@ -391,6 +391,13 @@ func (r *Resolver) DNSSECValidator() *dnssec.Validator {
 	return r.dnssecValidator.Load()
 }
 
+// DNS64Prefix reports the DNS64 synthesis prefix and whether DNS64 is
+// enabled. The server's private-address filter uses it to judge synthesised
+// AAAA records by the IPv4 address they embed.
+func (r *Resolver) DNS64Prefix() (net.IPNet, bool) {
+	return r.config.DNS64Prefix, r.config.DNS64Enabled
+}
+
 // QueryDNSSEC fetches a DNS record for DNSSEC chain validation. It satisfies
 // the dnssec.Querier interface used by the validator to fetch DNSKEY and DS
 // records.

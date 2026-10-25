@@ -221,7 +221,7 @@ func (s *TrustAnchorStore) TrackRefresh(owner string, dnskeys []*dns.DNSKEYRecor
 			// signed DNSKEY RRset, not via 5011.
 			continue
 		}
-		key := candidateKey{owner, k.KeyTag(), k.Algorithm}
+		key := candidateKey{owner, anchorKeyTag(k), k.Algorithm}
 		observed[key] = k
 	}
 
@@ -237,7 +237,7 @@ func (s *TrustAnchorStore) TrackRefresh(owner string, dnskeys []*dns.DNSKEYRecor
 			if existing == nil {
 				existing = &AnchorCandidate{
 					Owner:         owner,
-					KeyTag:        k.KeyTag(),
+					KeyTag:        anchorKeyTag(k),
 					Algorithm:     k.Algorithm,
 					Flags:         k.Flags,
 					PublicKeyHash: hash,
@@ -262,7 +262,7 @@ func (s *TrustAnchorStore) TrackRefresh(owner string, dnskeys []*dns.DNSKEYRecor
 			}
 			s.candidates[key] = &AnchorCandidate{
 				Owner:         owner,
-				KeyTag:        k.KeyTag(),
+				KeyTag:        anchorKeyTag(k),
 				Algorithm:     k.Algorithm,
 				Flags:         k.Flags,
 				PublicKeyHash: hash,
@@ -361,6 +361,15 @@ func (s *TrustAnchorStore) All() []AnchorCandidate {
 		out = append(out, *c)
 	}
 	return out
+}
+
+// anchorKeyTag is the key tag of k with the REVOKE bit cleared. Setting
+// REVOKE changes the RFC 4034 key tag, so the revoked publication of a
+// tracked KSK must be matched by its unrevoked tag (RFC 5011 §2.1, §7).
+func anchorKeyTag(k *dns.DNSKEYRecord) uint16 {
+	unrevoked := *k
+	unrevoked.Flags &^= 0x0080
+	return unrevoked.KeyTag()
 }
 
 // sha256DNSKEY computes the canonical hash over the DNSKEY RDATA wire

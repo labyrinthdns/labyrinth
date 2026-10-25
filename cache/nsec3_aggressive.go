@@ -303,6 +303,11 @@ func (c *Cache) lookupNSEC3(qname string, qtype uint16, qclass uint16) (*Entry, 
 					!typeBitmapHas(iv.typeBitmap, dns.TypeSOA) {
 					continue
 				}
+				// Mirror image for DS: the child's apex NSEC3 (SOA set)
+				// never lists DS because DS lives in the parent zone.
+				if qtype == dns.TypeDS && typeBitmapHas(iv.typeBitmap, dns.TypeSOA) {
+					continue
+				}
 				if entry, ok := c.buildNSEC3SynthEntry(iv, now, NegNoData, dns.RCodeNoError); ok {
 					if c.metrics != nil {
 						c.metrics.IncNSEC3AggressiveSynthND()
@@ -404,16 +409,42 @@ func nsec3NXDOMAINProof(intervals []nsec3Interval, zone, q string, now time.Time
 			if !ok {
 				return nsec3Interval{}, false
 			}
-			if _, found := find(wcHash, true); !found {
+			wcCover, found := find(wcHash, true)
+			if !found {
 				return nsec3Interval{}, false
 			}
-			return cover, true
+			return mergeNSEC3Proof(cover, match, wcCover), true
 		}
 		if ce == zone {
 			return nsec3Interval{}, false
 		}
 		nextCloser = ce
 	}
+}
+
+// mergeNSEC3Proof combines the intervals of a closest-encloser proof, which
+// may have been learned from different responses, into one interval whose
+// authority carries every proof record (deduplicated) and whose lifetime is
+// that of the earliest-expiring part.
+func mergeNSEC3Proof(parts ...nsec3Interval) nsec3Interval {
+	out := parts[0]
+	var authority []dns.ResourceRecord
+	for _, iv := range parts {
+		if iv.expiresAt.Before(out.expiresAt) {
+			out.expiresAt, out.origTTL, out.registeredAt = iv.expiresAt, iv.origTTL, iv.registeredAt
+		}
+	next:
+		for _, rr := range iv.authority {
+			for _, seen := range authority {
+				if seen.Type == rr.Type && seen.Class == rr.Class && strings.EqualFold(seen.Name, rr.Name) && equalBytes(seen.RData, rr.RData) {
+					continue next
+				}
+			}
+			authority = append(authority, rr)
+		}
+	}
+	out.authority = authority
+	return out
 }
 
 // buildNSEC3SynthEntry materialises an Entry from a cached NSEC3
