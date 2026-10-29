@@ -983,7 +983,7 @@ func (v *Validator) validateResponseImpl(response *dns.Message, qname string, qt
 	// delegation must yield Insecure — not Bogus — even when the island's
 	// own signatures fail. Without this, public resolvers answer these
 	// names while Labyrinth SERVFAILs and leans on fallback.
-	if v.signersAuthenticatedInsecure(rrsigs, budget) {
+	if v.signersAuthenticatedInsecure(qname, rrsigs, budget) {
 		push(ValidationStep{
 			Stage:   "insecure-delegation",
 			Outcome: "insecure",
@@ -1021,7 +1021,15 @@ func verdictToOutcome(v ValidationResult) string {
 // (expired/broken local RRSIGs) to Insecure instead of Bogus — matching
 // public recursive resolvers. Returns false when the set is empty or any
 // signer cannot be proven Insecure (fail closed).
-func (v *Validator) signersAuthenticatedInsecure(rrsigs []rrsigWithOwner, budget *cryptoBudget) bool {
+//
+// A signer that is not an ancestor of qname cannot have signed it, so it is
+// left out, as Unbound's validator does ("signer name is not a parent of
+// lookupname, omitted"). When no signer is left, the response counts as
+// unsigned and qname's own chain decides: Insecure only under an
+// authenticated no-DS, so an unsigned answer in a signed zone stays Bogus.
+// Live: telefonica.com (no DS in com) answers A with an RRSIG whose signer
+// is cloudflare.net; Google and Cloudflare return it as insecure.
+func (v *Validator) signersAuthenticatedInsecure(qname string, rrsigs []rrsigWithOwner, budget *cryptoBudget) bool {
 	if len(rrsigs) == 0 {
 		return false
 	}
@@ -1032,6 +1040,9 @@ func (v *Validator) signersAuthenticatedInsecure(rrsigs []rrsigWithOwner, budget
 			continue
 		}
 		zone := normalizeName(rs.rrsig.SignerName)
+		if !isInBailiwick(qname, zone) {
+			continue
+		}
 		if zone == "" || zone == "." {
 			// Root is never an "insecure island" relative to itself.
 			return false
@@ -1051,6 +1062,13 @@ func (v *Validator) signersAuthenticatedInsecure(rrsigs []rrsigWithOwner, budget
 		if v.validateTrustChainForKey(zone, dnskeys, dnskeySignatures, nil, budget) != Insecure {
 			return false
 		}
+	}
+	if !any {
+		zone := normalizeName(qname)
+		if zone == "" || zone == "." {
+			return false
+		}
+		return v.validateTrustChainForKey(zone, nil, nil, nil, budget) == Insecure
 	}
 	return any
 }
@@ -2577,7 +2595,7 @@ func (v *Validator) validateDenialResponseN(response *dns.Message, qname string,
 	// Exception: authenticated insecure delegation at the signer — local
 	// island RRSIGs (expired SOA/NSEC) must not force Bogus/SERVFAIL.
 	if len(authenticRRsets) == 0 {
-		if v.signersAuthenticatedInsecure(rrsigs, cb) {
+		if v.signersAuthenticatedInsecure(qname, rrsigs, cb) {
 			v.logger.Debug("denial response: signer insecure; ignoring local RRSIG failures",
 				"qname", qname, "qtype", qtype)
 			return Insecure

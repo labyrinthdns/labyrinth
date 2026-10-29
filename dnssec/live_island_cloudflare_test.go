@@ -119,3 +119,37 @@ func TestLive_CloudflareIsland_Pulse_NotBogus(t *testing.T) {
 		t.Fatalf("island marked Bogus — want Insecure")
 	}
 }
+
+// TestLive_UnrelatedSigner_Telefonica_NotBogus: telefonica.com has no DS in
+// com, and its servers sign the A RRset as cloudflare.net.
+func TestLive_UnrelatedSigner_Telefonica_NotBogus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live")
+	}
+	addrs, err := net.LookupHost("dns1.movistar.es")
+	if err != nil || len(addrs) == 0 {
+		t.Skip(err)
+	}
+	resp, err := udpRecurseQuerier{addr: net.JoinHostPort(addrs[0], "53")}.QueryDNSSEC("telefonica.com", dns.TypeA, dns.ClassIN)
+	if err != nil {
+		t.Skip(err)
+	}
+	unrelated := false
+	for _, rr := range resp.Answers {
+		if rr.Type != dns.TypeRRSIG {
+			continue
+		}
+		if sig, err := dns.ParseRRSIG(rr.RData, 0); err == nil && !isInBailiwick("telefonica.com.", normalizeName(sig.SignerName)) {
+			unrelated = true
+		}
+	}
+	if !unrelated {
+		t.Skip("answer no longer carries an unrelated signer")
+	}
+	v := NewValidator(udpRecurseQuerier{addr: "1.1.1.1:53"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	verdict, reason := v.ValidateResponseWithReason(resp, "telefonica.com", dns.TypeA)
+	t.Logf("verdict=%v reason=%v", verdict, reason)
+	if verdict != Insecure {
+		t.Fatalf("verdict=%v, want Insecure", verdict)
+	}
+}
