@@ -86,19 +86,19 @@ func (m *Manager) TLSConfig() *tls.Config {
 	// resolves the autocert manager per handshake so a ForceRenew takes
 	// effect on listeners that were configured before it.
 	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		cert, err := m.current().GetCertificate(hello)
+		// F003: pin the autocert manager this handshake runs against. A
+		// ForceRenew that lands mid-handshake swaps the manager and clears
+		// lastCert; the stale handshake must not republish the old leaf.
+		acm := m.current()
+		cert, err := acm.GetCertificate(hello)
 		if err != nil {
 			return nil, err
 		}
 		if cert != nil && cert.Leaf != nil {
-			m.mu.Lock()
-			m.lastCert = cert.Leaf
-			m.mu.Unlock()
+			m.publishLeaf(acm, cert.Leaf)
 		} else if cert != nil && len(cert.Certificate) > 0 {
 			if parsed, parseErr := x509.ParseCertificate(cert.Certificate[0]); parseErr == nil {
-				m.mu.Lock()
-				m.lastCert = parsed
-				m.mu.Unlock()
+				m.publishLeaf(acm, parsed)
 			}
 		}
 		return cert, nil
@@ -115,6 +115,16 @@ func (m *Manager) HTTPHandler(fallback http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.current().HTTPHandler(fallback).ServeHTTP(w, r)
 	})
+}
+
+// publishLeaf records leaf as the last served certificate, but only while acm
+// is still the active autocert manager.
+func (m *Manager) publishLeaf(acm *autocert.Manager, leaf *x509.Certificate) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.acm == acm {
+		m.lastCert = leaf
+	}
 }
 
 // Info returns information about the currently active certificate.
