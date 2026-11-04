@@ -1251,7 +1251,11 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			// RFC 9520 §3: cache the resolution failure for a few seconds
 			// so a retry loop on a broken name does not re-run the full
 			// iterative chain on every QPS spike. TTL is capped at 30 s.
-			if !bypassCache {
+			// F55: a failure seen while a client-subnet (ECS) option was in
+			// flight is not portable to clients without that subnet (the
+			// resolver applies the same rule), so it must not be written to
+			// the global key.
+			if !bypassCache && outboundECS == nil {
 				h.cache.StoreFailure(q.Name, q.Type, q.Class, cache.DefaultFailureTTL)
 			}
 			if msg.EDNS0 != nil {
@@ -1314,9 +1318,10 @@ func (h *MainHandler) Handle(query []byte, clientAddr net.Addr) (resp []byte, er
 			if ecsKey == "" {
 				h.cache.StoreNegativeWithStatus(q.Name, q.Type, q.Class, cache.NegNoData, result.RCODE, result.Authority, result.DNSSECStatus)
 			}
-		} else if result.RCODE == dns.RCodeServFail {
+		} else if result.RCODE == dns.RCodeServFail && outboundECS == nil {
 			// RFC 9520 §3 failure caching for the resolver-returned-SERVFAIL
 			// path (DNSSEC bogus, all NS unreachable, lame delegation, etc.).
+			// F55: skipped under ECS, see the err != nil path above.
 			h.cache.StoreFailure(q.Name, q.Type, q.Class, cache.DefaultFailureTTL)
 		}
 	}
