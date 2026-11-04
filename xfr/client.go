@@ -189,7 +189,18 @@ func transfer(ctx context.Context, cfg ClientConfig, qtype uint16, serial uint32
 	}
 	defer conn.Close()
 
-	return runTransfer(conn, cfg, qtype, serial)
+	// F002: the per-message deadlines do not observe ctx, so a primary that
+	// stalls after the query would pin the caller (and a Manager shutdown or a
+	// withdrawn catalog member) for the full timeout per message. Closing the
+	// connection on cancellation unblocks the pending read immediately.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+
+	res, err := runTransfer(conn, cfg, qtype, serial)
+	if err != nil && ctx.Err() != nil {
+		return nil, fmt.Errorf("xfr: transfer from %s cancelled: %w", addr, ctx.Err())
+	}
+	return res, err
 }
 
 // dial connects to the primary, over TLS when configured.
