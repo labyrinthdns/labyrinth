@@ -189,7 +189,7 @@ func transfer(ctx context.Context, cfg ClientConfig, qtype uint16, serial uint32
 	}
 	defer conn.Close()
 
-	// F002: the per-message deadlines do not observe ctx, so a primary that
+	// F53: the per-message deadlines do not observe ctx, so a primary that
 	// stalls after the query would pin the caller (and a Manager shutdown or a
 	// withdrawn catalog member) for the full timeout per message. Closing the
 	// connection on cancellation unblocks the pending read immediately.

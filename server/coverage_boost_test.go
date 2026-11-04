@@ -1333,7 +1333,7 @@ func TestDoTHandleWriteResponseError(t *testing.T) {
 	}
 
 	// Now send a query but close the connection before reading the response
-	query2 := buildMinimalQuery(0xF002)
+	query2 := buildMinimalQuery(0xF53)
 	binary.Write(conn, binary.BigEndian, uint16(len(query2)))
 	conn.Write(query2)
 	conn.Close()
