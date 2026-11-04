@@ -86,7 +86,7 @@ func (m *Manager) TLSConfig() *tls.Config {
 	// resolves the autocert manager per handshake so a ForceRenew takes
 	// effect on listeners that were configured before it.
 	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		// F003: pin the autocert manager this handshake runs against. A
+		// F54: pin the autocert manager this handshake runs against. A
 		// ForceRenew that lands mid-handshake swaps the manager and clears
 		// lastCert; the stale handshake must not republish the old leaf.
 		acm := m.current()
