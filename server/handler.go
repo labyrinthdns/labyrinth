@@ -1828,7 +1828,7 @@ func (h *MainHandler) buildResponse(query *dns.Message, result *resolver.Resolve
 	// clients can tell rebind-protection apart from a genuinely empty
 	// authoritative answer.
 	if query.EDNS0 != nil {
-		// F001: result.Additional is shared by coalesced waiters and may have
+		// F52: result.Additional is shared by coalesced waiters and may have
 		// spare capacity; clip it so append reallocates instead of writing
 		// this client's OPT into the shared backing array.
 		resp.Additional = append(resp.Additional[:len(resp.Additional):len(resp.Additional)], dns.BuildOPT(h.advertisedUDPBufferSize(), query.EDNS0.DOFlag))

@@ -1326,7 +1326,7 @@ func TestDoTHandleWriteResponseError(t *testing.T) {
 	conn.SetDeadline(time.Now().Add(2 * time.Second))
 
 	// Send a query, read the response, then send another and close before reading
-	query := buildMinimalQuery(0xF001)
+	query := buildMinimalQuery(0xF52)
 	resp := sendDoTQuery(t, conn, query)
 	if len(resp) < 12 {
 		t.Fatalf("first response too short: %d", len(resp))
