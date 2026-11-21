@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.8.49] - 2026-11-21
 
+### Security
+- **Go 1.26.11 (GO-2026-6859).** go1.26.10's `net/http` could crash on a `MaxBytesReader` header race; govulncheck is clean again. [go.mod](go.mod), [.github/workflows/ci.yml](.github/workflows/ci.yml), [.github/workflows/release.yml](.github/workflows/release.yml).
+
 ### Fixed
 - **Public-resolver fallback skips REFUSED-only primary attempts and Abusix/dsbl.** Production `fallback.jsonl` (~16.7k lines over 9 days) recovered only 9%; ~46% were auth DNS REFUSED on every attempt — 1.1.1.1/8.8.8.8 hit the same NS and SERVFAIL'd. Those engagements are skipped; timeouts and mixed REFUSED+unreachable stay eligible (live: `turkiye.gov.tr`). `abusix.zone` and retired `dsbl.org` join the Spamhaus/URIBL/SURBL block list. Trace forwards ClientECS and CD on the fallback path so diagnostics match Resolve. [resolver/fallback.go](resolver/fallback.go), [resolver/trace.go](resolver/trace.go).
 - **An ECS query's SERVFAIL is not cached under the global failure key.** Resolver already skipped failure caching under ECS, but Handle wrote the SERVFAIL to the unscoped key so other clients inherited it for the failure TTL. (#86)
