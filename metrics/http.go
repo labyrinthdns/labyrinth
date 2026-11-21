@@ -72,11 +72,11 @@ func (m *Metrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "# TYPE labyrinth_rate_limited_total counter")
 	fmt.Fprintf(w, "labyrinth_rate_limited_total %d\n", m.rateLimited.Load())
 
-	fmt.Fprintln(w, "# HELP labyrinth_fallback_queries_total Queries that engaged the failure-cache fallback.")
+	fmt.Fprintln(w, "# HELP labyrinth_fallback_queries_total Queries that engaged the public-resolver fallback.")
 	fmt.Fprintln(w, "# TYPE labyrinth_fallback_queries_total counter")
 	fmt.Fprintf(w, "labyrinth_fallback_queries_total %d\n", m.fallbackQueries.Load())
 
-	fmt.Fprintln(w, "# HELP labyrinth_fallback_recoveries_total Failure-cache entries that subsequently recovered to a real answer.")
+	fmt.Fprintln(w, "# HELP labyrinth_fallback_recoveries_total Public-resolver fallback queries that recovered with NOERROR or NXDOMAIN.")
 	fmt.Fprintln(w, "# TYPE labyrinth_fallback_recoveries_total counter")
 	fmt.Fprintf(w, "labyrinth_fallback_recoveries_total %d\n", m.fallbackRecoveries.Load())
 

@@ -50,6 +50,14 @@ type TraceOptions struct {
 	// resolver has it enabled. Useful when diagnosing whether a SERVFAIL is
 	// upstream-related or validation-related.
 	SkipDNSSEC bool
+	// ClientECS is forwarded on the public-resolver fallback the same way
+	// ResolveWithECSAndCD does, so a diagnostic trace of an ECS client sees
+	// the same backup answer production would. Nil skips ECS on fallback.
+	ClientECS *dns.ECSOption
+	// CheckingDisabled is the CD bit for the fallback exchange (RFC 4035
+	// §3.2.2). When true and the primary was DNSSEC-bogus, the recovered
+	// answer keeps the bogus verdict instead of laundering to secure/empty.
+	CheckingDisabled bool
 	// MaxDepth caps the number of iterative steps; 0 falls back to resolver
 	// MaxDepth.
 	MaxDepth int
@@ -92,17 +100,19 @@ func (r *Resolver) Trace(
 	}
 
 	t.emit("start", TraceStatusInfo, fmt.Sprintf("resolving %s %s", name, typeName(qtype)), map[string]any{
-		"name":            name,
-		"qtype":           qtype,
-		"qtype_name":      typeName(qtype),
-		"qclass":          qclass,
-		"bypass_cache":    opts.BypassCache,
-		"skip_dnssec":     opts.SkipDNSSEC,
-		"qmin_enabled":    r.config.QMinEnabled,
-		"dnssec_enabled":  r.config.DNSSECEnabled && !opts.SkipDNSSEC && r.dnssecValidator.Load() != nil,
-		"max_depth":       maxDepth,
-		"max_cname_depth": maxCNAME,
-		"resolver_ready":  r.IsReady(),
+		"name":              name,
+		"qtype":             qtype,
+		"qtype_name":        typeName(qtype),
+		"qclass":            qclass,
+		"bypass_cache":      opts.BypassCache,
+		"skip_dnssec":       opts.SkipDNSSEC,
+		"checking_disabled": opts.CheckingDisabled,
+		"client_ecs":        opts.ClientECS != nil,
+		"qmin_enabled":      r.config.QMinEnabled,
+		"dnssec_enabled":    r.config.DNSSECEnabled && !opts.SkipDNSSEC && r.dnssecValidator.Load() != nil,
+		"max_depth":         maxDepth,
+		"max_cname_depth":   maxCNAME,
+		"resolver_ready":    r.IsReady(),
 	})
 
 	// 1. Local zones (operator-configured authoritative data wins over the
@@ -188,7 +198,9 @@ func (r *Resolver) Trace(
 }
 
 // traceFinishWithFallback runs the same fallback-resolver hook that prod
-// Resolve uses, then emits the terminal event.
+// Resolve uses (including ClientECS and CD), then emits the terminal event.
+// Trace still skips the inflight coalescer so each diagnostic stays
+// independent of concurrent production resolutions.
 func (r *Resolver) traceFinishWithFallback(
 	t *tracer,
 	result *ResolveResult,
@@ -200,12 +212,14 @@ func (r *Resolver) traceFinishWithFallback(
 	configuredZone bool,
 ) (*ResolveResult, error) {
 	if fb := shouldFallbackForZone(name, qtype, result, err, configuredZone); fb.triggered {
-		t.emit("fallback", TraceStatusWarn, fmt.Sprintf("primary failed (%s) — trying fallback resolver", fb.reason), map[string]any{
+		t.emit("fallback", TraceStatusWarn, fmt.Sprintf("primary failed (%s) — trying fallback resolvers", fb.reason), map[string]any{
 			"reason":    fb.reason,
 			"resolvers": r.config.FallbackResolvers,
+			"cd":        opts.CheckingDisabled,
+			"ecs":       opts.ClientECS != nil,
 		})
-		if fbResult := r.queryFallbackWithPrimary(name, qtype, qclass, fb.reason, result); fbResult != nil {
-			t.emit("fallback", TraceStatusOK, "fallback resolver answered", map[string]any{
+		if fbResult := r.queryFallbackWithContext(name, qtype, qclass, fb.reason, result, opts.ClientECS, opts.CheckingDisabled); fbResult != nil {
+			t.emit("fallback", TraceStatusOK, "fallback resolvers answered", map[string]any{
 				"rcode":         rcodeName(fbResult.RCODE),
 				"answers":       len(fbResult.Answers),
 				"dnssec_status": fbResult.DNSSECStatus,
@@ -213,7 +227,7 @@ func (r *Resolver) traceFinishWithFallback(
 			t.emit("finish", TraceStatusOK, "done (fallback)", nil)
 			return fbResult, nil
 		}
-		t.emit("fallback", TraceStatusError, "fallback resolver did not produce an answer", nil)
+		t.emit("fallback", TraceStatusError, "fallback resolvers did not produce an answer", nil)
 	}
 
 	if err != nil {

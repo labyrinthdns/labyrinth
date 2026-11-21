@@ -122,6 +122,9 @@ func (r *Resolver) queryFallbackWithContext(name string, qtype uint16, qclass ui
 			PrimaryAttempts: primaryAttempts,
 		})
 
+		// Trust the backup's AD as local "secure" when DNSSEC is on: the
+		// public resolver has already validated. Operators who want only
+		// Labyrinth-validated AD should leave fallback_resolvers empty.
 		status := ""
 		if r.config.DNSSECEnabled && msg.Header.AD() {
 			status = "secure"
@@ -196,6 +199,14 @@ func shouldFallback(qtype uint16, result *ResolveResult, err error) fallbackReas
 	if result != nil && result.FailureReason == "query-budget-exceeded" {
 		return fallbackReason{triggered: false, reason: ""}
 	}
+	// When every recorded authoritative exchange was DNS REFUSED, the
+	// public resolvers hit the same NS and also SERVFAIL (live: ~46% of
+	// fallback.jsonl — 360smartmedia.com, asayistv.com.tr, bl.spamcop.net
+	// NS). Timeouts / "network is unreachable" stay eligible: those are
+	// the EDNS-intolerant / path-asymmetric cases the fallback heals.
+	if primaryAttemptsExclusivelyRefused(result) {
+		return fallbackReason{triggered: false, reason: ""}
+	}
 	// Prefer result.Error over err since resolveIterativeFrom preserves
 	// the underlying upstream error even when returning SERVFAIL.
 	if result != nil && result.Error != nil {
@@ -222,10 +233,13 @@ func shouldFallback(qtype uint16, result *ResolveResult, err error) fallbackReas
 }
 
 // shouldFallbackForZone is shouldFallback for a name that may belong to a
-// stub or forward zone. A configured zone whose own servers are unreachable
-// stays out of the fallback: its names are usually internal, and public
-// resolvers would either leak them or answer with the public view. Resolve
-// and Trace share it so a trace never takes a fallback production refuses.
+// stub or forward zone. Stub zones tag exhausted auth as
+// no-reachable-authority and stay out of the fallback: those names are
+// usually internal, and public resolvers would leak them or answer the
+// public view. Forward zones remain eligible — their upstream SERVFAIL
+// (or transport error) is the soft outage the public backups are meant
+// to heal. Resolve and Trace share this gate so a trace never takes a
+// fallback production refuses.
 func shouldFallbackForZone(name string, qtype uint16, result *ResolveResult, err error, configuredZone bool) fallbackReason {
 	if publicResolverBlockedZone(name) {
 		return fallbackReason{}
@@ -237,19 +251,25 @@ func shouldFallbackForZone(name string, qtype uint16, result *ResolveResult, err
 	return fb
 }
 
-// fallbackBlockedSuffixes are DNSBL zones whose operators refuse queries
-// from large public resolvers and answer them with a policy code instead of
-// the listing (checked 2026-10-15 with the zones' own test records):
+// fallbackBlockedSuffixes are zones that must not use the public-resolver
+// fallback. DNSBLs whose operators refuse queries from large public
+// resolvers (checked 2026-10-15 / 2026-11-21 with the zones' own records):
 // Spamhaus gives 127.255.255.254 at 1.1.1.1 and nothing at 8.8.8.8,
-// URIBL gives 127.0.0.1 ("query refused") at both, and SURBL nothing at
-// 1.1.1.1. Sent through the fallback such an answer reaches a mail server
-// as a listing or an error, which is worse than SERVFAIL, so these names
-// never use it. spamhaus.net covers the Data Query Service (dq.spamhaus.net).
+// URIBL gives 127.0.0.1 ("query refused") at both, SURBL nothing at
+// 1.1.1.1, and Abusix black.mail.* REFUSES unauthenticated clients at both
+// (live fallback.jsonl: 565× SERVFAIL). Sent through the fallback such an
+// answer reaches a mail server as a listing or an error, which is worse
+// than SERVFAIL. dsbl.org is a retired list whose NS is 192.0.2.1 — public
+// resolvers also fail (672×, 0% recovery). spamhaus.net covers the Data
+// Query Service (dq.spamhaus.net). Barracuda / SpamCop / Mailspike answer
+// public resolvers correctly and stay eligible.
 var fallbackBlockedSuffixes = []string{
 	"spamhaus.org",
 	"spamhaus.net",
 	"uribl.com",
 	"surbl.org",
+	"abusix.zone",
+	"dsbl.org",
 }
 
 // publicResolverBlockedZone reports whether name is at or below one of the
@@ -262,4 +282,22 @@ func publicResolverBlockedZone(name string) bool {
 		}
 	}
 	return false
+}
+
+// primaryAttemptsExclusivelyRefused reports that every recorded
+// authoritative failure was a DNS REFUSED rcode. Attempt lines are
+// "zone@ip: outcome" (IPv6 addresses contain colons, so the outcome is
+// after the last ": "). Empty Attempts means we lack evidence — keep
+// fallback eligible.
+func primaryAttemptsExclusivelyRefused(result *ResolveResult) bool {
+	if result == nil || len(result.Attempts) == 0 {
+		return false
+	}
+	for _, a := range result.Attempts {
+		i := strings.LastIndex(a, ": ")
+		if i < 0 || a[i+2:] != "REFUSED" {
+			return false
+		}
+	}
+	return true
 }

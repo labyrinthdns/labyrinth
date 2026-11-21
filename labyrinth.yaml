@@ -80,6 +80,13 @@ resolver:
   ecs_max_prefix_v6: 56
   dns64_enabled: false
   dns64_prefix: "64:ff9b::/96"
+  # Public-resolver fallback on primary SERVFAIL (incl. DNSSEC bogus) or
+  # upstream error. Addresses are shuffled and tried until NOERROR/NXDOMAIN.
+  # Empty / omitted disables the feature. Skipped for: PTR; stub unreachable
+  # auth; primary attempts that are all DNS REFUSED; DNSBL/policy zones
+  # (Spamhaus/URIBL/SURBL/Abusix) and retired dsbl.org. Forward-zone upstream
+  # SERVFAIL and timeout-shaped no-reachable-authority remain eligible.
+  # fallback_resolvers: "1.1.1.1, 8.8.8.8"
   upstream_udp_buffer_size: 1232
 
 cache:

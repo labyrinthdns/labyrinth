@@ -141,7 +141,7 @@ resolver:
   ecs_max_prefix_v6: 56         # IPv6 ECS prefix ceiling
   dns64_enabled: false          # DNS64/NAT64 synthesis (RFC 6147)
   dns64_prefix: "64:ff9b::/96"
-  fallback_resolvers: []        # Backup resolvers (e.g. 8.8.8.8, 1.1.1.1)
+  fallback_resolvers: []        # Public backups on SERVFAIL. Skips PTR, stub unreachable-auth, REFUSED-only auth, Spamhaus/URIBL/SURBL/Abusix/dsbl; forward + timeout stay eligible.
   upstream_udp_buffer_size: 1232
 
 cache:

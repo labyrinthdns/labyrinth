@@ -35,7 +35,7 @@ main.go (CLI entry)
 │   ├── resolver.go     — Core iterative logic (1463 lines)
 │   ├── upstream.go     — Outbound query with retry + DNS cookies
 │   ├── forward.go      — Forward/stub zone table
-│   ├── fallback.go     — Random-pick fallback resolver
+│   ├── fallback.go     — Shuffled walk of configured public fallback resolvers
 │   ├── classify.go     — Response type classification
 │   ├── inflight.go     — Request coalescing (sync.WaitGroup)
 │   └── cname.go        — CNAME chain resolution
