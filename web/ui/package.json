@@ -13,7 +13,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@tanstack/react-virtual": "^3.14.13",
+    "@tanstack/react-virtual": "^3.14.23",
     "clsx": "^2.1.1",
     "lucide-react": "^1.53.0",
     "react": "^19.2.4",
