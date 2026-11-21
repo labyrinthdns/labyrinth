@@ -73,6 +73,18 @@ func TestPrometheusExport_HasHelpAndTypeForEverySeries(t *testing.T) {
 			t.Errorf("missing or wrong TYPE line for %s (want %q)", f.name, typeLine)
 		}
 	}
+
+	// Pin wording so these series are not confused with the RFC 9520
+	// failure-cache counters that sit next to them in the exposition.
+	exactHelp := []string{
+		"# HELP labyrinth_fallback_queries_total Queries that engaged the public-resolver fallback.",
+		"# HELP labyrinth_fallback_recoveries_total Public-resolver fallback queries that recovered with NOERROR or NXDOMAIN.",
+	}
+	for _, line := range exactHelp {
+		if !strings.Contains(body, line) {
+			t.Errorf("missing exact HELP wording %q", line)
+		}
+	}
 }
 
 // TestPrometheusExport_ContentTypeIsExpositionFormat pins the

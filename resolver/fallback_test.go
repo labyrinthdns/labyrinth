@@ -127,6 +127,96 @@ func TestShouldFallback_PTR(t *testing.T) {
 	}
 }
 
+// TestShouldFallbackForZone pins stub vs forward policy: stub
+// no-reachable-authority stays out; the same tag on iterative names and
+// plain forward SERVFAIL (empty FailureReason) stay in.
+func TestShouldFallbackForZone(t *testing.T) {
+	unreachable := &ResolveResult{
+		RCODE:         dns.RCodeServFail,
+		FailureReason: "no-reachable-authority",
+		Error:         errAllNSServFail,
+	}
+	forwardServFail := &ResolveResult{RCODE: dns.RCodeServFail}
+	refusedOnly := &ResolveResult{
+		RCODE:         dns.RCodeServFail,
+		FailureReason: "no-reachable-authority",
+		Error:         errors.New("no reachable nameserver"),
+		Attempts:      []string{"example.com@192.0.2.1: REFUSED"},
+	}
+
+	cases := []struct {
+		name           string
+		qname          string
+		qtype          uint16
+		result         *ResolveResult
+		err            error
+		configuredZone bool
+		want           bool
+	}{
+		{"iterative unreachable", "example.com", dns.TypeA, unreachable, nil, false, true},
+		{"stub unreachable", "host.internal.corp", dns.TypeA, unreachable, nil, true, false},
+		{"forward servfail", "fwd.example.com", dns.TypeA, forwardServFail, nil, true, true},
+		{"forward transport err", "fwd.example.com", dns.TypeA, nil, errTXIDMismatch, true, true},
+		{"dnsbl blocked", "2.0.0.127.zen.spamhaus.org", dns.TypeA, forwardServFail, nil, false, false},
+		{"abusix blocked", "1.2.3.4.black.mail.abusix.zone", dns.TypeA, forwardServFail, nil, false, false},
+		{"dsbl blocked", "1.2.3.4.list.dsbl.org", dns.TypeA, forwardServFail, nil, false, false},
+		{"ptr configured", "1.0.0.10.in-addr.arpa", dns.TypePTR, unreachable, nil, true, false},
+		{"refused-only primary", "dead.example", dns.TypeA, refusedOnly, nil, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fb := shouldFallbackForZone(tc.qname, tc.qtype, tc.result, tc.err, tc.configuredZone)
+			if fb.triggered != tc.want {
+				t.Fatalf("triggered=%v, want %v (reason=%q)", fb.triggered, tc.want, fb.reason)
+			}
+		})
+	}
+}
+
+// TestShouldFallback_RefusedOnlyPrimary: live fallback.jsonl showed ~46% of
+// engagements were auth REFUSED on every attempt; 1.1.1.1/8.8.8.8 hit the
+// same NS and SERVFAIL'd. Timeouts and mixed REFUSED+unreachable stay in.
+func TestShouldFallback_RefusedOnlyPrimary(t *testing.T) {
+	refused := &ResolveResult{
+		RCODE:         dns.RCodeServFail,
+		FailureReason: "no-reachable-authority",
+		Error:         errors.New("no reachable nameserver"),
+		Attempts: []string{
+			"asayistv.com.tr@185.81.155.163: REFUSED",
+		},
+	}
+	if fb := shouldFallback(dns.TypeA, refused, nil); fb.triggered {
+		t.Fatalf("REFUSED-only: triggered=%v reason=%q, want false", fb.triggered, fb.reason)
+	}
+
+	mixed := &ResolveResult{
+		RCODE:         dns.RCodeServFail,
+		FailureReason: "no-reachable-authority",
+		Error:         errors.New("no reachable nameserver"),
+		Attempts: []string{
+			"turkiye.gov.tr@94.55.117.7: REFUSED",
+			"turkiye.gov.tr@2a00:1d58:0:1901:94:55:117:7: network is unreachable",
+		},
+	}
+	if fb := shouldFallback(dns.TypeA, mixed, nil); !fb.triggered {
+		t.Fatal("REFUSED+unreachable must stay fallback-eligible")
+	}
+
+	timeout := &ResolveResult{
+		RCODE:         dns.RCodeServFail,
+		FailureReason: "no-reachable-authority",
+		Error:         errors.New("no reachable nameserver"),
+		Attempts:      []string{"toksan.com.tr@1.2.3.4: timeout"},
+	}
+	if fb := shouldFallback(dns.TypeA, timeout, nil); !fb.triggered {
+		t.Fatal("timeout-only must stay fallback-eligible")
+	}
+
+	if primaryAttemptsExclusivelyRefused(nil) || primaryAttemptsExclusivelyRefused(&ResolveResult{}) {
+		t.Fatal("empty Attempts must not count as REFUSED-only")
+	}
+}
+
 func TestQueryFallback_NotConfigured(t *testing.T) {
 	m := metrics.NewMetrics()
 	c := cache.NewCache(100, 5, 86400, 3600, m)

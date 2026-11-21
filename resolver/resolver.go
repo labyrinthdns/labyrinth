@@ -55,7 +55,8 @@ type ResolverConfig struct {
 	// ECSMaxPrefix is the maximum source prefix length for ECS (default 24).
 	ECSMaxPrefix int
 	// FallbackResolvers is a list of backup recursive DNS servers (e.g. 8.8.8.8, 1.1.1.1).
-	// When primary resolution returns SERVFAIL, one randomly-picked fallback is tried once.
+	// On primary SERVFAIL (including DNSSEC bogus) or upstream error, the list is
+	// shuffled and tried in order until one returns NOERROR or NXDOMAIN.
 	FallbackResolvers []string
 	// FallbackDebug enables JSONL writes to FallbackLogPath for each
 	// public-resolver fallback engagement (reason + recovered).
@@ -621,10 +622,10 @@ func (r *Resolver) ResolveWithECSAndCD(name string, qtype uint16, qclass uint16,
 		return r.dns64Synthesize(name, qclass, result, r.config.DNS64Prefix)
 	}
 
-	// Fallback resolver: on SERVFAIL (not DNSSEC bogus), try one backup resolver.
-	// A stub or forward zone whose own servers are unreachable stays out of
-	// it: its names are usually internal, and public resolvers would either
-	// leak them or answer with the public view.
+	// Fallback: on SERVFAIL (including DNSSEC bogus) or upstream error, walk
+	// shuffled public resolvers until NOERROR/NXDOMAIN. Stub zones whose own
+	// servers are unreachable stay out of it (internal names). Forward zones
+	// remain eligible so a soft upstream outage can still recover.
 	fb := shouldFallbackForZone(name, qtype, result, err, configuredZone)
 	if fb.triggered {
 		r.logger.Info("primary resolver failed, trying fallback",
@@ -1193,13 +1194,14 @@ func (r *Resolver) resolveIterativeFromInner(
 					return res, nil
 				}
 				// Every authoritative NS in the final delegation returned a
-				// hard failure (REFUSED/FORMERR) or soft SERVFAIL. Public
-				// recursive fallback cannot invent a better answer — they
-				// hit the same broken auth (live: reverse ip6.arpa zones
-				// that 1.1.1.1 also tags EDE 22). Tag no-reachable-authority
-				// so the server emits EDE 22 and shouldFallback stays off.
-				// Forward-zone soft SERVFAIL still falls through a different
-				// path and remains fallback-eligible.
+				// hard failure (REFUSED/FORMERR) or soft SERVFAIL. Tag
+				// no-reachable-authority so the server emits EDE 22 when the
+				// public fallback also fails. Iterative forward types still
+				// engage the fallback (live: toksan.com.tr / EDNS-intolerant
+				// auth that 1.1.1.1 answers); PTR skips it, and stub zones
+				// with this tag stay out via shouldFallbackForZone. Forward-
+				// zone soft SERVFAIL uses a different path and remains
+				// fallback-eligible.
 				if response != nil && response.Header.RCODE() != dns.RCodeServFail {
 					return &ResolveResult{
 						RCODE:         dns.RCodeServFail,

@@ -16,12 +16,34 @@ import (
 	"github.com/labyrinthdns/labyrinth/metrics"
 )
 
-// refusingAuthMock refuses every iterative (RD=0) query and answers every
-// recursive (RD=1) one, so the primary resolution fails at the root and the
-// same mock, used as the fallback resolver, recovers the name.
+// softServFailAuthMock soft-SERVFAILs every iterative (RD=0) query and
+// answers every recursive (RD=1) one. Soft SERVFAIL (not REFUSED) keeps the
+// public-resolver fallback eligible — REFUSED-only primary attempts skip it.
+func softServFailAuthMock(t *testing.T) *mockDNSServer {
+	return startMockDNS(t, func(q *dns.Message) *dns.Message {
+		if q.Header.RD() {
+			return &dns.Message{
+				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRD(true).SetRA(true).Build(), QDCount: 1, ANCount: 1},
+				Questions: q.Questions,
+				Answers: []dns.ResourceRecord{{
+					Name: q.Questions[0].Name, Type: dns.TypeA, Class: dns.ClassIN,
+					TTL: 300, RDLength: 4, RData: []byte{127, 0, 0, 2},
+				}},
+			}
+		}
+		return &dns.Message{
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeServFail).Build(), QDCount: 1},
+			Questions: q.Questions,
+		}
+	})
+}
+
+// refusingAuthMock REFUSES every iterative query. Used to pin that
+// REFUSED-only primary attempts do not engage the public fallback.
 func refusingAuthMock(t *testing.T) *mockDNSServer {
 	return startMockDNS(t, func(q *dns.Message) *dns.Message {
 		if q.Header.RD() {
+			t.Error("public fallback must not be queried when primary attempts are REFUSED-only")
 			return &dns.Message{
 				Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRD(true).SetRA(true).Build(), QDCount: 1, ANCount: 1},
 				Questions: q.Questions,
@@ -78,7 +100,7 @@ func readFallbackLog(t *testing.T, path string) []fallbackLogRecord {
 // recovered queries (live: hourly DNSBL bursts, all "no reachable
 // nameserver") shows whether the servers timed out, refused or were lame.
 func TestFallbackLog_RecordsPrimaryAttempts(t *testing.T) {
-	mock := refusingAuthMock(t)
+	mock := softServFailAuthMock(t)
 	defer mock.close()
 	r, logPath := fallbackLogResolver(t, mock)
 
@@ -90,7 +112,7 @@ func TestFallbackLog_RecordsPrimaryAttempts(t *testing.T) {
 	if len(recs) != 1 || !recs[0].Recovered {
 		t.Fatalf("fallback log = %+v, want one recovered record", recs)
 	}
-	want := ".@" + mock.ip + ": REFUSED"
+	want := ".@" + mock.ip + ": SERVFAIL"
 	found := false
 	for _, a := range recs[0].PrimaryAttempts {
 		if a == want {
@@ -102,6 +124,26 @@ func TestFallbackLog_RecordsPrimaryAttempts(t *testing.T) {
 	}
 }
 
+// TestFallback_SkipsRefusedOnlyPrimary: auth that DNS-REFUSES every query
+// fails the same way at 1.1.1.1/8.8.8.8, so the public fallback is skipped
+// (live: ~46% of fallback.jsonl — 360smartmedia.com, asayistv.com.tr).
+func TestFallback_SkipsRefusedOnlyPrimary(t *testing.T) {
+	mock := refusingAuthMock(t)
+	defer mock.close()
+	r, logPath := fallbackLogResolver(t, mock)
+
+	res, err := r.Resolve("dead.example.com", dns.TypeA, dns.ClassIN)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if res == nil || res.RCODE != dns.RCodeServFail {
+		t.Fatalf("res=%+v, want SERVFAIL without fallback", res)
+	}
+	if recs := readFallbackLog(t, logPath); len(recs) != 0 {
+		t.Fatalf("REFUSED-only primary reached the fallback: %+v", recs)
+	}
+}
+
 // TestFallback_SkipsPublicResolverBlockedDNSBLs: Spamhaus, URIBL and SURBL
 // answer queries from large public resolvers with a policy code (Spamhaus
 // 127.255.255.254, URIBL 127.0.0.1) instead of the listing. Such an answer
@@ -109,7 +151,9 @@ func TestFallbackLog_RecordsPrimaryAttempts(t *testing.T) {
 // fallback; other DNSBLs (Barracuda, SpamCop) answer public resolvers
 // correctly and keep it.
 func TestFallback_SkipsPublicResolverBlockedDNSBLs(t *testing.T) {
-	mock := refusingAuthMock(t)
+	// Soft SERVFAIL so Barracuda (not blocked) can still recover via fallback;
+	// blocked zones are gated before attempts are considered.
+	mock := softServFailAuthMock(t)
 	defer mock.close()
 	r, logPath := fallbackLogResolver(t, mock)
 
@@ -119,6 +163,8 @@ func TestFallback_SkipsPublicResolverBlockedDNSBLs(t *testing.T) {
 		"key.zen.dq.spamhaus.net",
 		"test.uribl.com.multi.uribl.com",
 		"test.surbl.org.multi.surbl.org",
+		"1.2.3.4.black.mail.abusix.zone",
+		"1.2.3.4.list.dsbl.org",
 	} {
 		res, _ := r.Resolve(name, dns.TypeA, dns.ClassIN)
 		if res == nil || res.RCODE != dns.RCodeServFail {
@@ -133,12 +179,15 @@ func TestFallback_SkipsPublicResolverBlockedDNSBLs(t *testing.T) {
 	if res == nil || res.RCODE != dns.RCodeNoError {
 		t.Errorf("barracudacentral: res=%+v, want the fallback's answer", res)
 	}
-	for _, n := range []string{"spamhaus.org", "x.spamhaus.org", "ZEN.SPAMHAUS.ORG."} {
+	for _, n := range []string{
+		"spamhaus.org", "x.spamhaus.org", "ZEN.SPAMHAUS.ORG.",
+		"black.mail.abusix.zone", "list.dsbl.org",
+	} {
 		if !publicResolverBlockedZone(n) {
 			t.Errorf("publicResolverBlockedZone(%q) = false", n)
 		}
 	}
-	for _, n := range []string{"notspamhaus.org", "spamhaus.org.example.com", "b.barracudacentral.org"} {
+	for _, n := range []string{"notspamhaus.org", "spamhaus.org.example.com", "b.barracudacentral.org", "notdsbl.org"} {
 		if publicResolverBlockedZone(n) {
 			t.Errorf("publicResolverBlockedZone(%q) = true", n)
 		}
@@ -165,8 +214,9 @@ func TestFallback_ConcurrentFailuresShareOneExchange(t *testing.T) {
 				}},
 			}
 		}
+		// Soft SERVFAIL (not REFUSED): REFUSED-only primary skips fallback.
 		return &dns.Message{
-			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeRefused).Build(), QDCount: 1},
+			Header:    dns.Header{Flags: dns.NewFlagBuilder().SetQR(true).SetRCODE(dns.RCodeServFail).Build(), QDCount: 1},
 			Questions: q.Questions,
 		}
 	})

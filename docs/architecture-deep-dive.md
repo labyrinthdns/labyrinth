@@ -133,12 +133,17 @@ Resolve(name, qtype, qclass):
        - Answer section: return on success
        - CNAME/DNAME: follow the chain, resolve target
        - Delegation: extract NS glue, continue from (a)
-       - SERVFAIL/REFUSED: try next nameserver or fallback resolver
+       - SERVFAIL/REFUSED: try next nameserver
        - NXDOMAIN: return immediately
     d. Cache NS sets, glue, negative responses
   
   5. DNSSEC validation on the final response
-  6. Return ResolveResult to handler
+  6. Public-resolver fallback on SERVFAIL / upstream error (shuffled
+     walk of configured backups until NOERROR/NXDOMAIN; skipped for
+     PTR, query-budget exhaustion, stub no-reachable-authority,
+     REFUSED-only primary attempts, and DNSBL/policy zones that refuse
+     public resolvers; forward zones and timeout-shaped failures stay eligible)
+  7. Return ResolveResult to handler
 ```
 
 **Key design decisions:**
@@ -301,8 +306,9 @@ by helpers in `cname.go`, `delegation.go`, `fallback.go`, `forward.go`,
 ```
 
 The budget is shared across all CNAME hops, QNAME-minimisation steps,
-NS-address sub-resolutions, and fallback attempts. It is carried through
-the resolution tree via the `visitedSet` map.
+and NS-address sub-resolutions. Public-resolver fallback queries sit
+outside this iterative budget. The budget is carried through the
+resolution tree via the `visitedSet` map.
 
 **Infra cache**: stores per-nameserver RTT measurements used for
 server selection. Periodically cleaned up (10-minute sweep, 1-hour
